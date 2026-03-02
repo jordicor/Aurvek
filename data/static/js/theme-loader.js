@@ -50,7 +50,7 @@
 
     // Use CDN if available (CDN_BASE_URL defined in base.html before this script)
     if (window.CDN_BASE_URL && window.CDN_BASE_URL.indexOf('http') === 0) {
-        // CDN_BASE_URL is like "https://fstcdn.aurvek.com/static"
+        // CDN_BASE_URL is like "https://fstcdn.example.com/static"
         // cssPath is like "/static/css/themes/" - remove /static prefix
         var relativePath = cssPath.replace(/^\/static/, '');
         cssUrl = window.CDN_BASE_URL + relativePath + theme + '.css';

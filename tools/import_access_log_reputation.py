@@ -2,7 +2,7 @@
 One-time import: Parse nginx access.log and seed IP Reputation database.
 
 Reads the historical access.log, applies the same scoring logic as the
-IP Reputation system, and inserts aggregated results into data/security.db.
+IP Reputation system, and inserts aggregated results into db/security.db.
 
 Usage: python import_access_log_reputation.py [--dry-run]
 
@@ -27,7 +27,7 @@ _NGINX_BASE = os.getenv("NGINX_BASE_PATH", "")
 ACCESS_LOG_PATH = os.getenv("ACCESS_LOG_PATH", os.path.join(_NGINX_BASE, "logs", "access.log") if _NGINX_BASE else "")
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SECURITY_DB_PATH = os.path.join(_PROJECT_ROOT, "data", "security.db")
+SECURITY_DB_PATH = os.path.join(_PROJECT_ROOT, "db", "security.db")
 
 DRY_RUN = "--dry-run" in sys.argv
 
@@ -104,6 +104,7 @@ WHITELIST_PATHS = {
     "/sitemap_index.xml", "/manifest.json", "/site.webmanifest",
     "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
     "/browserconfig.xml", "/humans.txt", "/ads.txt", "/security.txt",
+    "/.well-known/security.txt",
 }
 
 # Nginx combined log format parser

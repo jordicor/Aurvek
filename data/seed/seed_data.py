@@ -18,9 +18,13 @@ Or from the project root:
 
 import os
 import sys
+import re
 import sqlite3
 import shutil
 import hashlib
+import secrets
+import string
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 
@@ -30,7 +34,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Configuration
-DATABASE_PATH = PROJECT_ROOT / "data" / "Aurvek.db"
+DATABASE_PATH = PROJECT_ROOT / "db" / "Aurvek.db"
 SEED_DIR = SCRIPT_DIR
 SEED_IMAGES_DIR = SEED_DIR / "images"
 SEED_PROMPTS_DIR = SEED_DIR / "prompts"
@@ -58,6 +62,41 @@ def get_user_directory_path(username: str) -> Path:
     prefix1 = user_hash[:3]
     prefix2 = user_hash[3:7]
     return Path("users") / prefix1 / prefix2 / user_hash
+
+
+BASE62_CHARS = string.ascii_letters + string.digits
+
+
+def generate_public_id(length: int = 8) -> str:
+    """Generate a random base62 public ID for prompt URLs."""
+    return ''.join(secrets.choice(BASE62_CHARS) for _ in range(length))
+
+
+def slugify(name: str) -> str:
+    """Convert a prompt name to a URL-friendly slug (mirrors common.py logic)."""
+    if not name:
+        return ''
+    normalized = unicodedata.normalize('NFKD', name)
+    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+    slug = ascii_text.lower()
+    slug = re.sub(r'[\s_]+', '-', slug)
+    slug = re.sub(r'[^a-z0-9-]', '', slug)
+    slug = re.sub(r'-+', '-', slug)
+    slug = slug.strip('-')
+    return slug[:64]
+
+
+def get_landing_base_url(public_id: str, slug: str) -> str:
+    """Build the landing base URL for a prompt.
+
+    Uses PRIMARY_APP_DOMAIN from env if available (full absolute URL).
+    Falls back to a path-only URL if the domain is not configured yet.
+    """
+    domain = os.getenv("PRIMARY_APP_DOMAIN", "")
+    path = f"/p/{public_id}/{slug}"
+    if domain:
+        return f"https://{domain}{path}"
+    return path
 
 
 # =============================================================================
@@ -389,10 +428,19 @@ def seed_prompts(conn, admin_id):
         prompt_folder = f"{prompt_id:04d}_{prompt_name_sanitized}"
         image_relative_path = str(user_dir / "prompts" / "000" / prompt_folder / "static" / "img" / f"{prompt_id}_{prompt_name_sanitized}")
 
+        # Generate public_id and slug for landing page URLs
+        public_id = generate_public_id()
+        prompt_slug = slugify(prompt_data["name"])
+
+        # Check if this prompt has a seed landing page
+        landing_folder_name = prompt_data.get("landing_folder", prompt_data["image_folder"])
+        src_landing_folder = SEED_LANDINGS_DIR / landing_folder_name
+        has_landing = 1 if (src_landing_folder / "home.html").exists() else 0
+
         # Insert prompt
         cursor.execute("""
-            INSERT INTO PROMPTS (id, name, prompt, voice_id, description, image, created_by_user_id, created_at, public)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO PROMPTS (id, name, prompt, voice_id, description, image, created_by_user_id, created_at, public, public_id, has_landing_page)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             prompt_data["id"],
             prompt_data["name"],
@@ -402,7 +450,9 @@ def seed_prompts(conn, admin_id):
             image_relative_path,
             admin_id,
             datetime.now().isoformat(),
-            prompt_data["public"]
+            prompt_data["public"],
+            public_id,
+            has_landing
         ))
 
         # Destination folder for this prompt
@@ -420,14 +470,17 @@ def seed_prompts(conn, admin_id):
                 if src_file.exists():
                     shutil.copy2(src_file, dst_file)
 
-        # Copy landing page if it exists
-        landing_folder_name = prompt_data.get("landing_folder", prompt_data["image_folder"])
-        src_landing_folder = SEED_LANDINGS_DIR / landing_folder_name
+        # Copy landing page if it exists (landing_folder_name and src_landing_folder computed above)
         if src_landing_folder.exists():
-            # Copy home.html
+            # Copy home.html with placeholder replacement
             src_home = src_landing_folder / "home.html"
             if src_home.exists():
-                shutil.copy2(src_home, dst_prompt_folder / "home.html")
+                landing_base_url = get_landing_base_url(public_id, prompt_slug)
+                html_content = src_home.read_text(encoding="utf-8")
+                html_content = html_content.replace("{{LANDING_BASE_URL}}", landing_base_url)
+                dst_home = dst_prompt_folder / "home.html"
+                dst_home.parent.mkdir(parents=True, exist_ok=True)
+                dst_home.write_text(html_content, encoding="utf-8")
                 landings_count += 1
 
             # Copy static folder (CSS, JS, additional images)

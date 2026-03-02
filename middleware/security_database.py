@@ -1,5 +1,5 @@
 """
-Security database connection helpers for data/security.db.
+Security database connection helpers for db/security.db.
 
 Simplified async connection manager for the IP Reputation system.
 Separate from the main database.py to keep security data isolated.
@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import aiosqlite
 
 SECURITY_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "data", "security.db"
+    os.path.dirname(os.path.dirname(__file__)), "db", "security.db"
 )
 
 _wal_initialized = False

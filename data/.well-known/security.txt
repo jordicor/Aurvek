@@ -1,0 +1,6 @@
+# Security policy for Aurvek
+# https://securitytxt.org/
+
+Contact: mailto:security@example.com
+Expires: 2027-03-02T00:00:00.000Z
+Preferred-Languages: en, es

@@ -17,7 +17,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 # Own libraries
 from log_config import logger
 from rediscfg import is_user_revoked
-from common import SECRET_KEY, PEPPER, decode_jwt_cached, verify_token_expiration
+from common import SECRET_KEY, PEPPER, SECURE_COOKIES, decode_jwt_cached, verify_token_expiration
 
 load_dotenv()
 
@@ -334,14 +334,13 @@ def create_login_response(user_info, redirect_url=None, default_redirect="/home"
 
     # Configure cookie with correct expiration time
     max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # convert to seconds
-    secure_cookies = os.getenv("SECURE_COOKIES", "false").lower() == "true"
     response.set_cookie(
         key="session",
         value=token,
         max_age=max_age,
         httponly=True,
         samesite='lax',
-        secure=secure_cookies
+        secure=SECURE_COOKIES
     )
     
     return response
@@ -353,7 +352,7 @@ def unauthenticated_response():
         content={"error": "unauthenticated", "redirect": "/login"},
         status_code=401
     )
-    response.delete_cookie(key="session", path="/")
+    response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
     return response
 
 

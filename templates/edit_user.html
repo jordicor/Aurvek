@@ -109,7 +109,23 @@
                             </select>
                         </div>
                     </div>
-                    <div class="flex-column"></div>
+                    <div class="flex-column">
+                        {% if user_data.auth_provider %}
+                        <div class="mb-3">
+                            <label class="form-label">Auth Provider</label>
+                            <div class="mt-1">
+                                {% if user_data.auth_provider in ('google', 'google_linked') %}
+                                <span class="badge bg-light text-dark border" style="font-size: 0.85rem;">
+                                    <img src="/static/img/providers/google.svg" width="14" height="14" alt="" class="me-1" style="vertical-align: -1px;">
+                                    {% if user_data.auth_provider == 'google' %}Google{% else %}Google (linked){% endif %}
+                                </span>
+                                {% else %}
+                                <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ user_data.auth_provider }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
                 </div>
             </div>
 

@@ -576,7 +576,7 @@
                 </ul>
 
                 <div class="nav__actions">
-                    <a href="https://github.com/jordicor/Aurvek" class="btn btn--secondary btn--small" style="border-color: var(--infra-border); color: var(--infra-text-primary);">
+                    <a href="https://github.com/jordicor/SparkAI" class="btn btn--secondary btn--small" style="border-color: var(--infra-border); color: var(--infra-text-primary);">
                         <i class="ph-duotone ph-github-logo"></i> GitHub
                     </a>
                     <a href="index.html" class="btn btn--primary btn--small">Platform</a>
@@ -612,7 +612,7 @@
                     <a href="#architecture" class="btn btn--primary btn--large">
                         Explore Architecture
                     </a>
-                    <a href="https://github.com/jordicor/Aurvek" class="btn btn--secondary btn--large" style="border-color: var(--infra-border); color: var(--infra-text-primary);">
+                    <a href="https://github.com/jordicor/SparkAI" class="btn btn--secondary btn--large" style="border-color: var(--infra-border); color: var(--infra-text-primary);">
                         <i class="ph-duotone ph-github-logo"></i> View on GitHub
                     </a>
                 </div>
@@ -979,7 +979,7 @@
                     Every security layer, every configuration, every line of code is available for inspection. We believe the best security is security that can be audited.
                 </p>
                 <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
-                    <a href="https://github.com/jordicor/Aurvek" class="btn btn--primary btn--large">
+                    <a href="https://github.com/jordicor/SparkAI" class="btn btn--primary btn--large">
                         <i class="ph-duotone ph-github-logo"></i> View Repository
                     </a>
                     <a href="#" class="btn btn--secondary btn--large" style="border-color: var(--infra-border); color: var(--infra-text-primary);">
@@ -1009,9 +1009,9 @@
                     <h4 class="footer__title">Platform</h4>
                     <ul class="footer__links">
                         <li><a href="index.html">Overview</a></li>
-                        <li><a href="for-creators-landing.html">For Creators</a></li>
-                        <li><a href="for-teams-landing.html">For Teams</a></li>
-                        <li><a href="for-agencies-landing.html">For Agencies</a></li>
+                        <li><a href="/for-creators">For Creators</a></li>
+                        <li><a href="/for-teams">For Teams</a></li>
+                        <li><a href="/for-agencies">For Agencies</a></li>
                     </ul>
                 </div>
 
@@ -1028,7 +1028,7 @@
                 <div>
                     <h4 class="footer__title">Resources</h4>
                     <ul class="footer__links">
-                        <li><a href="https://github.com/jordicor/Aurvek">GitHub</a></li>
+                        <li><a href="https://github.com/jordicor/SparkAI">GitHub</a></li>
                         <li><a href="#">Documentation</a></li>
                         <li><a href="#">API Reference</a></li>
                         <li><a href="#">Status Page</a></li>
@@ -1052,7 +1052,7 @@
         // Dynamically set links to point to aurvek subdomain
         (function() {
             const host = window.location.host;
-            // Extract base domain (e.g., "jordicor.com" from "fstcdn.aurvek.com")
+            // Extract base domain (e.g., "example.com" from "sub.example.com")
             const parts = host.split('.');
             const baseDomain = parts.length >= 2 ? parts.slice(-2).join('.') : host;
             const aurvekBase = '//' + 'aurvek.' + baseDomain;

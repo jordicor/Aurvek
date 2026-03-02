@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Change Password - AURVEK{% endblock %}
+{% block title %}{% if auth_provider in ('google', 'google_linked') and not has_password %}Set Password{% else %}Change Password{% endif %} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -48,16 +48,103 @@
         border-color: #4f545c;
         color: #fff;
     }
+    .google-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.3rem 0.7rem;
+        background-color: rgba(66, 133, 244, 0.1);
+        border: 1px solid rgba(66, 133, 244, 0.3);
+        border-radius: 12px;
+        font-size: 0.85rem;
+        color: #4285f4;
+    }
 </style>
 {% endblock %}
 
-{% block page_title %}Change Password{% endblock %}
+{% block page_title %}{% if auth_provider in ('google', 'google_linked') and not has_password %}Set Password{% else %}Change Password{% endif %}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block toolbar %}{% endblock %}
 
 {% block content %}
+{% if auth_provider in ('google', 'google_linked') and not has_password %}
+{# -- Set Password form for Google OAuth users without a password -- #}
+<form id="set-password-form">
+    <!-- Info Section -->
+    <div class="section-container">
+        <div class="section-title"><i class="fas fa-info-circle me-2"></i>Account Info</div>
+        <div class="flex-row">
+            <div class="flex-column">
+                <p class="mb-2">
+                    <span class="google-badge">
+                        <img src="/static/img/providers/google.svg" width="16" height="16" alt="">
+                        Google Account
+                    </span>
+                </p>
+                <p class="text-muted small mb-0">
+                    Your account was created via Google sign-in. Set a password below so you can also log in with your username and password.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Password Section -->
+    <div class="section-container">
+        <div class="section-title"><i class="fas fa-lock me-2"></i>Create Password</div>
+        <div class="flex-row">
+            <div class="flex-column">
+                <div class="mb-3">
+                    <label for="new-password" class="form-label">Password</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" id="new-password" name="new_password"
+                               required minlength="8" oninput="checkSetPasswordStrength()">
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('new-password', this)">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                    <ul class="password-requirements mt-2 list-unstyled">
+                        <li id="req-length" class="invalid">At least 8 characters</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="flex-column">
+                <div class="mb-3">
+                    <label for="confirm-password" class="form-label">Confirm Password</label>
+                    <div class="input-group">
+                        <input type="password" class="form-control" id="confirm-password"
+                               required oninput="checkSetPasswordMatch()">
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('confirm-password', this)">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                    <div id="password-match-status" class="password-match"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error/Success Messages -->
+    <div id="error-message" class="alert alert-danger" style="display: none;">
+        <i class="fas fa-exclamation-circle me-2"></i><span id="error-text"></span>
+    </div>
+    <div id="success-message" class="alert alert-success" style="display: none;">
+        <i class="fas fa-check-circle me-2"></i><span id="success-text"></span>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary" id="submit-btn">
+            <i class="fas fa-save me-1"></i> Set Password
+        </button>
+        <a href="/" class="btn btn-secondary">
+            <i class="fas fa-arrow-left me-1"></i> Back to Chat
+        </a>
+    </div>
+</form>
+{% else %}
+{# -- Standard Change Password form -- #}
 <form id="change-password-form">
     <!-- Current Password Section -->
     <div class="section-container">
@@ -132,6 +219,7 @@
         </a>
     </div>
 </form>
+{% endif %}
 {% endblock %}
 
 {% block scripts_inline %}
@@ -150,6 +238,105 @@
         }
     }
 
+    {% if auth_provider in ('google', 'google_linked') and not has_password %}
+    // -- Set Password form logic (Google OAuth users) --
+    function checkSetPasswordStrength() {
+        const newPassword = document.getElementById('new-password').value;
+        const reqLength = document.getElementById('req-length');
+        if (newPassword.length >= 8) {
+            reqLength.classList.remove('invalid');
+            reqLength.classList.add('valid');
+        } else {
+            reqLength.classList.remove('valid');
+            reqLength.classList.add('invalid');
+        }
+        checkSetPasswordMatch();
+    }
+
+    function checkSetPasswordMatch() {
+        const newPassword = document.getElementById('new-password').value;
+        const confirmPassword = document.getElementById('confirm-password').value;
+        const statusDiv = document.getElementById('password-match-status');
+
+        if (!confirmPassword) {
+            statusDiv.textContent = '';
+            statusDiv.className = 'password-match';
+            return;
+        }
+
+        if (newPassword === confirmPassword) {
+            statusDiv.innerHTML = '<i class="fas fa-check me-1"></i>Passwords match';
+            statusDiv.className = 'password-match match';
+        } else {
+            statusDiv.innerHTML = '<i class="fas fa-times me-1"></i>Passwords do not match';
+            statusDiv.className = 'password-match no-match';
+        }
+    }
+
+    document.getElementById('set-password-form').addEventListener('submit', async function(event) {
+        event.preventDefault();
+
+        const newPassword = document.getElementById('new-password').value;
+        const confirmPassword = document.getElementById('confirm-password').value;
+        const errorDiv = document.getElementById('error-message');
+        const errorText = document.getElementById('error-text');
+        const successDiv = document.getElementById('success-message');
+        const successText = document.getElementById('success-text');
+        const submitBtn = document.getElementById('submit-btn');
+
+        errorDiv.style.display = 'none';
+        successDiv.style.display = 'none';
+
+        if (newPassword !== confirmPassword) {
+            errorText.textContent = 'Passwords do not match.';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        if (newPassword.length < 8) {
+            errorText.textContent = 'Password must be at least 8 characters.';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Setting...';
+
+        try {
+            const formData = new URLSearchParams();
+            formData.append('new_password', newPassword);
+
+            const response = await fetch('/api/set-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: formData
+            });
+
+            if (response.ok) {
+                successText.textContent = 'Password set successfully! Redirecting...';
+                successDiv.style.display = 'block';
+                setTimeout(() => {
+                    window.location.href = '/';
+                }, 1500);
+            } else {
+                const data = await response.json();
+                errorText.textContent = data.detail || 'Error setting password. Please try again.';
+                errorDiv.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Set Password';
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            errorText.textContent = 'An unexpected error occurred. Please try again.';
+            errorDiv.style.display = 'block';
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Set Password';
+        }
+    });
+    {% else %}
+    // -- Change Password form logic (standard users) --
     function checkPasswordStrength() {
         const newPassword = document.getElementById('new-password').value;
         const oldPassword = document.getElementById('old-password').value;
@@ -278,5 +465,6 @@
             submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Change Password';
         }
     });
+    {% endif %}
 </script>
 {% endblock %}

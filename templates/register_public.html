@@ -228,6 +228,7 @@
                     </div>
                 </form>
 
+                {% if google_oauth_available %}
                 <div id="googleSignIn" class="mt-4">
                     <div class="divider-with-text">
                         <span>or</span>
@@ -241,6 +242,7 @@
                         </a>
                     </div>
                 </div>
+                {% endif %}
 
                 <div id="loginLink">
                     <hr class="my-4">

@@ -1,7 +1,7 @@
 """
 IP Reputation Manager - Persistent behavioral scoring for scanner detection.
 
-Tracks IP behavior over time in SQLite (data/security.db), detects slow scanners
+Tracks IP behavior over time in SQLite (db/security.db), detects slow scanners
 via error ratio analysis, and remembers repeat offenders across restarts.
 
 Architecture:

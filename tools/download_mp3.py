@@ -17,9 +17,9 @@ from common import Cost, generate_user_hash, has_sufficient_balance, cost_tts, c
 
 # Logging Configuration
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setLevel(logging.DEBUG)
+stream_handler.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
@@ -37,7 +37,7 @@ BASE_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'users')
 
 async def generate_and_save_mp3(conversation_id: int, user_id: int, is_admin: bool):
     logger.debug(f"Starting MP3 generation for conversation_id: {conversation_id}")
-    async with aiosqlite.connect(f"file:data/{DB_NAME}?mode=ro", uri=True) as conn:
+    async with aiosqlite.connect(f"file:db/{DB_NAME}?mode=ro", uri=True) as conn:
         conn.row_factory = aiosqlite.Row
 
         # Verify permissions and conversation existence

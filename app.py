@@ -53,6 +53,7 @@ from reportlab.lib import colors
 from html import escape, unescape
 from unicodedata import normalize
 from fastapi import Query, Header, BackgroundTasks
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 from google_auth_oauthlib.flow import Flow
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -109,10 +110,11 @@ from ultra_admin import (
 from common import Cost, generate_user_hash, has_sufficient_balance, cost_tts, cache_directory, users_directory, tts_engine, get_balance, deduct_balance, record_daily_usage, load_service_costs, estimate_message_tokens, custom_unescape, sanitize_name, templates, validate_path_within_directory, slugify, is_internal_ip, generate_public_id, get_template_context
 from common import SCRIPT_DIR, DATA_DIR, CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, CLOUDFLARE_ZONE_ID, CLOUDFLARE_API_URL, CLOUDFLARE_FOR_IMAGES, CLOUDFLARE_SECRET, CLOUDFLARE_IMAGE_SUBDOMAIN, CLOUDFLARE_BASE_URL, generate_cloudflare_signature, generate_signed_url_cloudflare, CLOUDFLARE_DOMAIN, CLOUDFLARE_CNAME_TARGET
 from common import ALGORITHM, MAX_TOKENS, MAX_MESSAGE_SIZE, MAX_IMAGE_UPLOAD_SIZE, MAX_IMAGE_PIXELS, PERPLEXITY_API_KEY, elevenlabs_key, openai_key, claude_key, gemini_key, openrouter_key, service_sid, twilio_sid, twilio_auth, twilio_messaging_service_sid, decode_jwt_cached, verify_token_expiration, validate_twilio_media_url, AVATAR_TOKEN_EXPIRE_HOURS, MEDIA_TOKEN_EXPIRE_HOURS
-from common import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
-from common import STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET
+from common import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+from common import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 from common import encrypt_api_key, decrypt_api_key, mask_api_key
 from common import CDN_FILES_URL, ENABLE_CDN
+from common import SECURE_COOKIES
 import nh3
 from elevenlabs_service import service as elevenlabs_service
 from message_search import build_fts_query, execute_search
@@ -298,7 +300,14 @@ async def lifespan(app: FastAPI):
         from save_images import close_memory_db
         await close_memory_db()    
 
-app = FastAPI(lifespan=lifespan)
+# Disable Swagger/ReDoc/OpenAPI schema in production (set ENABLE_API_DOCS=1 in .env to enable)
+# All three must be disabled: leaving openapi_url exposed leaks the full API schema,
+# especially via custom domains where nginx proxies ALL requests to FastAPI.
+_enable_docs = os.getenv("ENABLE_API_DOCS", "").lower() in ("1", "true", "yes")
+docs_url = "/docs" if _enable_docs else None
+redoc_url = "/redoc" if _enable_docs else None
+openapi_url = "/openapi.json" if _enable_docs else None
+app = FastAPI(lifespan=lifespan, docs_url=docs_url, redoc_url=redoc_url, openapi_url=openapi_url)
    
 app.include_router(ai_router)
 app.include_router(prompts_router)
@@ -326,7 +335,8 @@ num_cpus = psutil.cpu_count(logical=False)
 # Calculate max_pool based on formula
 max_pool = num_cpus * 2 + 1
 
-tracemalloc.start()
+if os.getenv("APP_DEBUG", "false").lower() == "true":
+    tracemalloc.start()
 load_dotenv()
 
 app.secret_key = os.getenv('APP_SECRET_KEY')
@@ -368,7 +378,7 @@ PEPPER = os.getenv('PEPPER')
 rol = "santa"
 role_file_path = f"rols/{rol}.txt"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-app.add_middleware(SessionMiddleware, secret_key=os.urandom(24))
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, session_cookie="_oauth_state")
 
 # Custom Domain Middleware - configure primary domains that skip DB lookup
 PRIMARY_APP_DOMAIN = os.getenv("PRIMARY_APP_DOMAIN", "")
@@ -383,6 +393,33 @@ app.add_middleware(CustomDomainMiddleware)
 # Security middleware - MUST be last (executes first in request chain)
 # Blocks scanners/bots by pattern matching and 404 accumulation
 app.add_middleware(SecurityMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# SEO: noindex header for non-public routes
+# ---------------------------------------------------------------------------
+# Adds X-Robots-Tag: noindex to responses for authenticated, admin, API, and
+# internal routes so search engines only index public-facing pages.
+_PUBLIC_EXACT_PATHS = frozenset(("/", "/sitemap.xml", "/robots.txt", "/favicon.ico"))
+_PUBLIC_PREFIXES = ("/p/", "/store/", "/pack/", "/static/", "/.well-known/")
+
+
+@app.middleware("http")
+async def add_noindex_header(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    is_public = (
+        path in _PUBLIC_EXACT_PATHS
+        or any(path.startswith(pfx) for pfx in _PUBLIC_PREFIXES)
+        or (path.endswith(".html") and "/" not in path[1:])  # root-level .html files
+    )
+
+    if not is_public:
+        response.headers["X-Robots-Tag"] = "noindex"
+
+    return response
+
 
 class PhoneNumberRequest(BaseModel):
     phone: str
@@ -481,14 +518,13 @@ async def get_user_llm_cost(user_id):
             logger.error(f"Error loading LLM cost for user {user_id}: {e}")
             return None
         
-def handle_error(error_code: int, error_message: str, request: Optional[Request] = None):
+def handle_error(request: Request, error_code: int, error_message: str):
     context = {
+        "request": request,
         "error_code": error_code,
         "error_message": error_message
     }
-    if request:
-        context["request"] = request
-    return templates.TemplateResponse("error.html", context)
+    return templates.TemplateResponse("error.html", context, status_code=error_code)
 
         
         
@@ -921,9 +957,19 @@ async def get_app_metrics(current_user: User = Depends(get_current_user)):
 @app.get("/change-password")
 async def show_change_password_form(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
+
+    # Fetch auth_provider and password status for Google OAuth users
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            "SELECT auth_provider, password IS NOT NULL FROM USERS WHERE id = ?",
+            (current_user.id,)
+        )
+        row = await cursor.fetchone()
 
     context = await get_template_context(request, current_user)
+    context["auth_provider"] = row[0] if row else None
+    context["has_password"] = bool(row[1]) if row else True
     return templates.TemplateResponse("admin_profile.html", context)
 
 @app.post("/api/change-password")
@@ -964,10 +1010,56 @@ async def change_password(
 
     return JSONResponse(status_code=200, content={"detail": "Password changed successfully"})
 
+@app.post("/api/set-password")
+async def set_initial_password(
+    request: Request,
+    new_password: str = Form(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Set initial password for users who registered via Google OAuth."""
+    if current_user is None:
+        return unauthenticated_response()
+
+    if not current_user.can_change_password:
+        raise HTTPException(status_code=403, detail="You don't have permission to set a password")
+
+    async with get_db_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT password, auth_provider FROM USERS WHERE id = ?",
+            (current_user.id,)
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        stored_password, auth_provider = row[0], row[1]
+
+        # Only allow if user has no password set (Google OAuth users)
+        if stored_password is not None:
+            raise HTTPException(status_code=400, detail="Password already set. Use change-password instead.")
+
+        if auth_provider not in ("google", "google_linked"):
+            raise HTTPException(status_code=400, detail="This endpoint is only for Google OAuth users")
+
+        if len(new_password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+        hashed = hash_password(new_password)
+        await conn.execute(
+            "UPDATE USERS SET password = ? WHERE id = ?",
+            (hashed, current_user.id)
+        )
+        await conn.commit()
+
+        logger.info(f"User {current_user.username} (ID={current_user.id}) set initial password via Google OAuth flow")
+
+    return JSONResponse(content={"detail": "Password set successfully"})
+
 @app.get("/edit-profile")
 async def show_edit_profile_form(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -1052,7 +1144,7 @@ async def show_edit_profile_form(request: Request, current_user: User = Depends(
 async def settings_page(request: Request, current_user: User = Depends(get_current_user)):
     """Unified settings page with Profile, Usage & Billing, and API Keys tabs."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     from common import get_user_api_key_mode, user_requires_own_keys
 
@@ -1149,7 +1241,7 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
 async def api_credentials_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the API credentials management page."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     from common import get_user_api_key_mode, user_requires_own_keys
 
@@ -1612,7 +1704,7 @@ async def update_curation_settings(
 async def curation_settings_page(request: Request, current_user: User = Depends(get_current_user)):
     """Page for managers to configure their curation markup settings."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     # Only managers and admins can access
     if not await current_user.is_manager and not await current_user.is_admin:
@@ -1644,7 +1736,7 @@ async def curation_settings_page(request: Request, current_user: User = Depends(
 async def manager_team_billing_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the team billing dashboard page for managers."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_manager and not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Only managers can access the team billing dashboard")
@@ -1824,7 +1916,7 @@ async def get_manager_team_billing(request: Request, current_user: User = Depend
 async def my_branding_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the manager branding configuration page."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_manager and not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Only managers can access branding settings")
@@ -1954,7 +2046,7 @@ async def update_my_branding(request: Request, current_user: User = Depends(get_
 async def my_storefront_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the creator storefront management page."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_manager and not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Only managers can manage storefronts")
 
@@ -2172,7 +2264,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     try:
@@ -2188,7 +2280,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     exp = payload.get("exp")
@@ -2203,7 +2295,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     expires_in = int(exp) - int(time.time())
@@ -2218,7 +2310,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     user_info = payload.get("user_info")
@@ -2233,7 +2325,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     used_magic_link = user_info.get("used_magic_link", False)
@@ -2252,7 +2344,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                     "brand_color_secondary": '#10B981'
                 }
             })
-            response.delete_cookie(key="session", path="/")
+            response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
             return response
 
         magic_link_expires_in = int((magic_link_expires_at - datetime.now()).total_seconds())
@@ -2267,7 +2359,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                     "brand_color_secondary": '#10B981'
                 }
             })
-            response.delete_cookie(key="session", path="/")
+            response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
             return response
 
     # Session is valid - build session data
@@ -2359,7 +2451,7 @@ async def get_user_theme_config(request: Request, current_user: User = Depends(g
 async def manager_landing_analytics_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the landing page analytics dashboard."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_manager and not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Only managers can access analytics")
@@ -2460,7 +2552,8 @@ async def track_landing_visit(request: Request):
             value=visitor_id,
             max_age=365 * 24 * 60 * 60,
             httponly=True,
-            samesite='lax'
+            samesite='lax',
+            secure=SECURE_COOKIES
         )
 
     return response
@@ -2867,7 +2960,7 @@ async def get_pack_analytics_detail(pack_id: int, current_user: User = Depends(g
 async def my_earnings_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the creator earnings dashboard page."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     # Only managers and admins can access (they are the ones who can create prompts)
     if not await current_user.is_manager and not await current_user.is_admin:
@@ -3833,7 +3926,7 @@ async def edit_profile(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     user_id = current_user.id
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
@@ -4491,38 +4584,38 @@ async def check_allow_image_generation(user_id: int) -> bool:
 async def check_session(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
         response = JSONResponse(content={"expired": True, "reason": "unauthenticated"})
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     token = request.cookies.get("session")
     if not token:
         response = JSONResponse(content={"expired": True, "reason": "missing_token"})
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     try:
         payload = decode_jwt_cached(token, SECRET_KEY)
     except JWTError:
         response = JSONResponse(content={"expired": True, "reason": "invalid_token"})
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     exp = payload.get("exp")
     if exp is None:
         response = JSONResponse(content={"expired": True, "reason": "missing_expiration"})
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     expires_in = int(exp) - int(time.time())
     if expires_in <= 0:
         response = JSONResponse(content={"expired": True, "reason": "token_expired"})
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     user_info = payload.get("user_info")
     if not isinstance(user_info, dict):
         response = JSONResponse(content={"expired": True, "reason": "invalid_payload"})
-        response.delete_cookie(key="session", path="/")
+        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     used_magic_link = user_info.get("used_magic_link", False)
@@ -4532,13 +4625,13 @@ async def check_session(request: Request, current_user: User = Depends(get_curre
         magic_link_expires_at = await current_user.get_magic_link_expiration()
         if magic_link_expires_at is None:
             response = JSONResponse(content={"expired": True, "reason": "magic_link_missing"})
-            response.delete_cookie(key="session", path="/")
+            response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
             return response
 
         magic_link_expires_in = int((magic_link_expires_at - datetime.now()).total_seconds())
         if magic_link_expires_in <= 0:
             response = JSONResponse(content={"expired": True, "reason": "magic_link_expired"})
-            response.delete_cookie(key="session", path="/")
+            response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
             return response
 
     return JSONResponse(content={
@@ -4588,8 +4681,12 @@ async def sitemap_xml():
 
     urls: list[dict] = []
 
-    # -- Static pages --
+    # -- Static marketing pages --
     urls.append({"loc": f"{base_url}/", "priority": "1.0", "changefreq": "daily"})
+    urls.append({"loc": f"{base_url}/for-creators", "priority": "0.8", "changefreq": "monthly"})
+    urls.append({"loc": f"{base_url}/for-teams", "priority": "0.8", "changefreq": "monthly"})
+    urls.append({"loc": f"{base_url}/for-agencies", "priority": "0.8", "changefreq": "monthly"})
+    urls.append({"loc": f"{base_url}/explore-landing.html", "priority": "0.8", "changefreq": "weekly"})
 
     try:
         async with get_db_connection(readonly=True) as conn:
@@ -4618,10 +4715,10 @@ async def sitemap_xml():
 
                 slug = slugify(name) if name else ""
 
-                if custom_domain:
-                    loc = f"https://{custom_domain}/"
-                else:
-                    loc = f"{base_url}/p/{public_id}/{slug}/"
+                # Always use the main domain for the sitemap.
+                # Custom domains should have their own sitemaps or be
+                # configured separately in Google Search Console.
+                loc = f"{base_url}/p/{public_id}/{slug}/"
 
                 entry = {"loc": loc, "priority": "0.7", "changefreq": "weekly"}
                 if created_at:
@@ -4674,15 +4771,17 @@ async def sitemap_xml():
         urls = [{"loc": f"{base_url}/", "priority": "1.0", "changefreq": "daily"}]
 
     # Build XML
+    from xml.sax.saxutils import escape as xml_escape
+
     xml_parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
     ]
     for url_entry in urls:
         xml_parts.append("  <url>")
-        xml_parts.append(f"    <loc>{url_entry['loc']}</loc>")
+        xml_parts.append(f"    <loc>{xml_escape(url_entry['loc'])}</loc>")
         if "lastmod" in url_entry:
-            xml_parts.append(f"    <lastmod>{url_entry['lastmod']}</lastmod>")
+            xml_parts.append(f"    <lastmod>{xml_escape(url_entry['lastmod'])}</lastmod>")
         if "changefreq" in url_entry:
             xml_parts.append(f"    <changefreq>{url_entry['changefreq']}</changefreq>")
         if "priority" in url_entry:
@@ -4751,6 +4850,10 @@ async def home(request: Request, current_user: User = Depends(get_current_user))
         return _landing_404_response()
 
     if current_user is None:
+        # Fallback: serve static landing if request reaches FastAPI without auth
+        landing_path = Path("data/index.html")
+        if landing_path.is_file():
+            return HTMLResponse(content=landing_path.read_text(encoding='utf-8'))
         return RedirectResponse(url="/login", status_code=302)
 
     return RedirectResponse(url="/home", status_code=302)
@@ -4789,7 +4892,7 @@ async def dashboard(request: Request, current_user: User = Depends(get_current_u
 @app.get("/api/get-ip-info")
 async def get_ip_info(current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     async with httpx.AsyncClient() as client:
         response = await client.get("https://ipinfo.io/json")
@@ -4838,7 +4941,8 @@ async def _handle_login_request(
         "login_url": login_url,
         "register_url": register_url,
         "get_static_url": lambda x: x,
-        "captcha": get_captcha_config()
+        "captcha": get_captcha_config(),
+        "google_oauth_available": bool(GOOGLE_CLIENT_ID)
     }
 
     if request.method == "POST":
@@ -4951,12 +5055,19 @@ async def _handle_login_request(
 @app.route("/login", methods=["GET", "POST"])
 async def login(request: Request):
     """Login page for managers/admins - from Aurvek main site."""
-    return await _handle_login_request(
+    # If already authenticated, redirect to home
+    if request.method == "GET":
+        current_user = await get_current_user(request)
+        if current_user is not None:
+            return RedirectResponse(url="/home", status_code=302)
+    response = await _handle_login_request(
         request,
         prompt_context=None,
         login_url="/login",
         register_url="/register"
     )
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response
 
 @app.route("/magic-link-recovery", methods=["GET", "POST"])
 async def magic_link_recovery(request: Request):
@@ -5067,16 +5178,17 @@ def logout(request: Request):
         "request": request,
         "message": "You have successfully logged out.",
         "captcha": get_captcha_config(),
-        "get_static_url": lambda x: x
+        "get_static_url": lambda x: x,
+        "google_oauth_available": bool(GOOGLE_CLIENT_ID)
     })
-    response.delete_cookie(key="session", path="/")
+    response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
 
     return response
 
 @app.get("/create-user", response_class=HTMLResponse)
 async def create_user(request: Request, current_user: User = Depends(get_current_user), selected_prompt_id: int = None, selected_machine: str = None):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin and not await current_user.is_manager:
         return handle_error(request, 403, "You do not have permission to access this page.")
@@ -5143,7 +5255,7 @@ async def create_user_post(
     billing_max_limit: float = Form(default=None)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin and not await current_user.is_manager:
         raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
@@ -5328,7 +5440,7 @@ async def edit_user_form(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin and not await current_user.is_manager:
         raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
@@ -5361,7 +5473,7 @@ async def edit_user_form(
                        ud.can_change_password, u.email, ud.api_key_mode, ud.user_api_keys,
                        ud.category_access, ud.billing_account_id, ud.billing_limit,
                        ud.billing_limit_action, ur.role_name, ud.billing_auto_refill_amount,
-                       ud.billing_max_limit, ud.authentication_mode
+                       ud.billing_max_limit, ud.authentication_mode, u.auth_provider
                 FROM USERS u
                 JOIN USER_DETAILS ud ON u.id = ud.user_id
                 JOIN USER_ROLES ur ON u.role_id = ur.id
@@ -5394,7 +5506,8 @@ async def edit_user_form(
                 'role_name': user_row[19],
                 'billing_auto_refill_amount': user_row[20] or 10.0,
                 'billing_max_limit': user_row[21],
-                'authentication_mode': user_row[22] or 'magic_link_only'
+                'authentication_mode': user_row[22] or 'magic_link_only',
+                'auth_provider': user_row[23]
             }
         else:
             user_data = None
@@ -5444,7 +5557,7 @@ async def update_user(
     authentication_mode: str = Form(default="magic_link_only")
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin and not await current_user.is_manager:
         raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
@@ -5623,7 +5736,7 @@ async def update_user(
 @app.get("/users-list", response_class=HTMLResponse)
 async def users_list(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not (await current_user.is_admin or await current_user.is_manager):
         raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
@@ -5645,7 +5758,8 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
                 ll.model AS llm_model,
                 ud.balance,
                 u.phone_number,
-                ur.role_name
+                ur.role_name,
+                u.auth_provider
             FROM USERS u
             JOIN USER_DETAILS ud ON u.id = ud.user_id
             LEFT JOIN (
@@ -5657,7 +5771,7 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
             LEFT JOIN PROMPTS p ON ud.current_prompt_id = p.id
             LEFT JOIN LLM ll ON ud.llm_id = ll.id
             JOIN USER_ROLES ur ON u.role_id = ur.id
-            GROUP BY u.id, u.username, ud.tokens_spent, ud.total_cost, m.token, m.expires_at, p.name, ll.model, ur.role_name
+            GROUP BY u.id, u.username, ud.tokens_spent, ud.total_cost, m.token, m.expires_at, p.name, ll.model, ur.role_name, u.auth_provider
             ''')
         else:
             await cursor.execute('''
@@ -5673,7 +5787,8 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
                 ll.model AS llm_model,
                 ud.balance,
                 u.phone_number,
-                ur.role_name
+                ur.role_name,
+                u.auth_provider
             FROM USERS u
             JOIN USER_DETAILS ud ON u.id = ud.user_id
             LEFT JOIN (
@@ -5688,7 +5803,7 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
             JOIN USER_CREATOR_RELATIONSHIPS ucr ON u.id = ucr.user_id
             WHERE ucr.creator_id = ?
               AND ucr.relationship_type = 'assigned_by'
-            GROUP BY u.id, u.username, ud.tokens_spent, ud.total_cost, m.token, m.expires_at, p.name, ll.model, ur.role_name
+            GROUP BY u.id, u.username, ud.tokens_spent, ud.total_cost, m.token, m.expires_at, p.name, ll.model, ur.role_name, u.auth_provider
             ''', (current_user.id,))
         
         url_path = 'login?token='
@@ -5714,6 +5829,7 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
             balance_formatted = f"${balance:.4f}"
             phone = row[10]
             role_name = row[11]
+            auth_provider = row[12]
             users.append({
                 'user_id': user_id,
                 'username': username,
@@ -5728,6 +5844,7 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
                 'balance': balance_formatted,
                 'phone': phone,
                 'role': role_name,
+                'auth_provider': auth_provider,
                 "is_admin": await current_user.is_admin
             })
         await conn.close()
@@ -5752,7 +5869,7 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
 @app.post("/admin/renew-token/{username}")
 async def renew_token(request: Request, username: str, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not (await current_user.is_admin or await current_user.is_manager):
         return JSONResponse(content={"error": "You do not have permission to access this action."}, status_code=403)
@@ -5828,7 +5945,8 @@ async def refresh_session(request: Request, current_user: User = Depends(get_cur
             value=token,
             max_age=max_age,
             httponly=True,
-            samesite='lax'
+            samesite='lax',
+            secure=SECURE_COOKIES
         )
         
         return response
@@ -6126,7 +6244,7 @@ async def ultra_admin_status(request: Request, current_user: User = Depends(get_
 @app.post("/admin/delete-users")
 async def delete_users(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not (await current_user.is_admin or await current_user.is_manager):
         raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
@@ -6189,7 +6307,7 @@ async def chat(request: Request, current_user: Optional[User] = Depends(get_curr
 @app.post("/chat")
 async def chat_post(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     data = await request.json()
     form_type = data.get('form_type')
@@ -6577,7 +6695,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
 @app.get("/admin/chat", response_class=HTMLResponse)
 async def admin_conversations(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -6612,7 +6730,7 @@ async def serve_elevenlabs_alias_map():
 @app.get("/admin/elevenlabs-agents", response_class=HTMLResponse)
 async def admin_elevenlabs_agents(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -6655,7 +6773,7 @@ async def create_or_update_elevenlabs_agent(
     make_default: Optional[str] = Form(None),
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -6714,7 +6832,7 @@ async def create_or_update_elevenlabs_agent(
 @app.post("/admin/elevenlabs-agents/{agent_id}/set-default")
 async def set_default_elevenlabs_agent(request: Request, agent_id: str, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -6746,7 +6864,7 @@ async def set_default_elevenlabs_agent(request: Request, agent_id: str, current_
 @app.post("/admin/elevenlabs-agents/{agent_id}/delete")
 async def delete_elevenlabs_agent(request: Request, agent_id: str, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -6784,7 +6902,7 @@ async def update_elevenlabs_mapping(
     voice_id: str = Form(""),
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -7083,7 +7201,7 @@ async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_mod
 @app.get("/admin/llms", response_class=HTMLResponse)
 async def llm_list(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7114,7 +7232,7 @@ async def api_llms_list(current_user: User = Depends(get_current_user)):
 @app.get("/admin/llm/new", response_class=HTMLResponse)
 async def create_llm(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7132,7 +7250,7 @@ async def create_llm_post(
     vision: bool = Form(False)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7149,7 +7267,7 @@ async def create_llm_post(
 @app.get("/admin/llm/edit/{llm_id}", response_class=HTMLResponse)
 async def edit_llm(request: Request, llm_id: int, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7176,7 +7294,7 @@ async def edit_llm(request: Request, llm_id: int, current_user: User = Depends(g
 @app.post("/admin/llm/update/{llm_id}")
 async def update_llm(request: Request, llm_id: int, current_user: User = Depends(get_current_user), machine: str = Form(...), model: str = Form(...), input_token_cost: float = Form(...), output_token_cost: float = Form(...), vision: bool = Form(False)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7294,7 +7412,7 @@ async def bulk_delete_llms(request: Request, current_user: User = Depends(get_cu
 async def admin_security_guard(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for configuring Security Guard LLM."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7401,7 +7519,7 @@ async def get_security_guard_status(current_user: User = Depends(get_current_use
 async def admin_openrouter(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for managing OpenRouter models."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7601,7 +7719,7 @@ async def sync_openrouter_models(request: Request, current_user: User = Depends(
 async def admin_elevenlabs_voices(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for managing ElevenLabs voices."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7774,7 +7892,7 @@ async def sync_elevenlabs_voices(request: Request, current_user: User = Depends(
 @app.get("/admin/services", response_class=HTMLResponse)
 async def service_list(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7792,7 +7910,7 @@ async def service_list(request: Request, current_user: User = Depends(get_curren
 @app.get("/admin/services/new", response_class=HTMLResponse)
 async def create_service(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7804,7 +7922,7 @@ async def create_service(request: Request, current_user: User = Depends(get_curr
 @app.post("/admin/services/new")
 async def create_service_post(request: Request, current_user: User = Depends(get_current_user), name: str = Form(...), unit: str = Form(...), cost_per_unit: float = Form(...), type: str = Form(...)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7819,7 +7937,7 @@ async def create_service_post(request: Request, current_user: User = Depends(get
 @app.get("/admin/services/edit/{service_id}", response_class=HTMLResponse)
 async def edit_service(request: Request, service_id: int, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7846,7 +7964,7 @@ async def edit_service(request: Request, service_id: int, current_user: User = D
 @app.post("/admin/services/update/{service_id}")
 async def update_service(request: Request, service_id: int, current_user: User = Depends(get_current_user), name: str = Form(...), unit: str = Form(...), cost_per_unit: float = Form(...), type: str = Form(...)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7895,7 +8013,7 @@ async def get_voices(current_user: User = Depends(get_current_user)):
 @app.get("/admin/voices", response_class=HTMLResponse)
 async def list_voices(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7916,7 +8034,7 @@ async def list_voices(request: Request, current_user: User = Depends(get_current
 @app.get("/admin/voices/new", response_class=HTMLResponse)
 async def create_voice(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7927,7 +8045,7 @@ async def create_voice(request: Request, current_user: User = Depends(get_curren
 @app.post("/admin/voices/new")
 async def create_voice_post(request: Request, current_user: User = Depends(get_current_user), name: str = Form(...), voice_code: str = Form(...), tts_service: str = Form(...)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -7941,7 +8059,7 @@ async def create_voice_post(request: Request, current_user: User = Depends(get_c
 @app.get("/admin/voices/edit/{voice_id}", response_class=HTMLResponse)
 async def edit_voice(request: Request, voice_id: int, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -7965,7 +8083,7 @@ async def edit_voice(request: Request, voice_id: int, current_user: User = Depen
 @app.post("/admin/voices/update/{voice_id}")
 async def update_voice(request: Request, voice_id: int, current_user: User = Depends(get_current_user), name: str = Form(...), voice_code: str = Form(...), tts_service: str = Form(...)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
         
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -8107,7 +8225,7 @@ async def get_conversations(
     folder_id: Optional[int] = None
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if current_user.id != user_id and not await is_admin(current_user.id):
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -8217,7 +8335,7 @@ async def get_conversations(
 @app.get("/api/admin/conversations")
 async def get_all_conversations(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -8774,7 +8892,7 @@ async def update_external_platform(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     platform = data.get('platform')
     action = data.get('action')
@@ -8957,7 +9075,7 @@ async def start_new_conversation(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     logger.info(f"[NEW] CREATING NEW CONVERSATION - User: {current_user.username}, folder_id: {request.folder_id}, prompt_id: {request.prompt_id}")
     
@@ -9244,7 +9362,7 @@ async def get_bookmarked_messages(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -9675,7 +9793,7 @@ async def download_pdf(
 
     if current_user is None:
         logger.warning("User not authenticated attempted to access /download-pdf")
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     # Wait for async is_admin property
     try:
@@ -10312,7 +10430,7 @@ async def get_voice_sample(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     logger.info(f"Entering get_voice_sample, sample_voice_id: {sample_voice_id}, category: {category}")
 
@@ -11536,7 +11654,7 @@ async def stripe_webhook(request: Request):
                     await conn.commit()
                     logger.info(f"Restored ${amount:.2f} to user {user_id} pending earnings after failed transfer")
 
-    # Handle chargebacks on pack purchases
+    # Handle chargebacks (pack purchases, prompt purchases, balance top-ups)
     elif event['type'] == 'charge.dispute.created':
         dispute = event['data']['object']
         payment_intent_id = dispute.get('payment_intent')
@@ -11619,6 +11737,8 @@ async def stripe_webhook(request: Request):
 
                                 # Reverse creator earnings: deduct creator_net (not creator_share)
                                 creator_net = creator_share - initial_balance_cost
+                                if creator_net < 0:
+                                    creator_net = 0
                                 if creator_id and creator_net > 0:
                                     await conn.execute(
                                         "UPDATE USER_DETAILS SET pending_earnings = MAX(0, COALESCE(pending_earnings, 0) - ?) WHERE user_id = ?",
@@ -11630,6 +11750,168 @@ async def stripe_webhook(request: Request):
                             except Exception as txn_err:
                                 await conn.rollback()
                                 raise txn_err
+
+                    elif sess_metadata.get('type') == 'prompt_purchase':
+                        prompt_id = int(sess_metadata['prompt_id'])
+                        buyer_user_id = int(sess_metadata['buyer_user_id'])
+                        final_amount = float(sess_metadata.get('final_amount', 0))
+                        discount_value = float(sess_metadata.get('discount_value', 0))
+
+                        async with get_db_connection() as conn:
+                            await conn.execute('BEGIN IMMEDIATE')
+
+                            # Idempotency check inside transaction (prevents TOCTOU race)
+                            check_cursor = await conn.execute(
+                                "SELECT id, status FROM PROMPT_PURCHASES WHERE payment_reference = ?",
+                                (sess.id,)
+                            )
+                            purchase_check = await check_cursor.fetchone()
+                            if purchase_check and purchase_check[1] == 'refunded':
+                                await conn.execute('ROLLBACK')
+                                logger.info(f"Prompt chargeback already processed for payment_intent={payment_intent_id}")
+                                return JSONResponse(content={"status": "already_processed"})
+
+                            purchase_id = purchase_check[0] if purchase_check else None
+
+                            try:
+                                # Revoke prompt access
+                                await conn.execute(
+                                    "DELETE FROM PROMPT_PERMISSIONS WHERE user_id = ? AND prompt_id = ?",
+                                    (buyer_user_id, prompt_id)
+                                )
+                                # Mark purchase as refunded
+                                if purchase_id:
+                                    await conn.execute(
+                                        "UPDATE PROMPT_PURCHASES SET status = 'refunded' WHERE id = ?",
+                                        (purchase_id,)
+                                    )
+
+                                # Calculate initial_balance_cost and creator earnings to reverse
+                                from common import get_pricing_config
+                                pricing = await get_pricing_config()
+                                commission_rate = pricing.get("commission", 0.30)
+                                creator_share = final_amount * (1 - commission_rate)
+
+                                initial_balance_cost = 0
+                                prompt_cursor = await conn.execute(
+                                    "SELECT created_by_user_id, landing_registration_config FROM PROMPTS WHERE id = ?",
+                                    (prompt_id,)
+                                )
+                                prompt_data = await prompt_cursor.fetchone()
+                                creator_id = prompt_data[0] if prompt_data else None
+
+                                if prompt_data and prompt_data[1]:
+                                    import json as _json
+                                    try:
+                                        lrc = _json.loads(prompt_data[1]) if isinstance(prompt_data[1], str) else prompt_data[1]
+                                        ib = float(lrc.get("initial_balance", 0))
+                                        if ib > 0:
+                                            scale = (1 - discount_value / 100) if discount_value > 0 else 1
+                                            scaled_ib = ib * scale
+                                            if scaled_ib > 0:
+                                                initial_balance_cost = scaled_ib
+                                    except Exception:
+                                        pass
+
+                                # Revert buyer's initial_balance credit
+                                if initial_balance_cost > 0:
+                                    await conn.execute(
+                                        "UPDATE USER_DETAILS SET balance = MAX(0, balance - ?) WHERE user_id = ?",
+                                        (initial_balance_cost, buyer_user_id)
+                                    )
+
+                                # Reverse creator earnings
+                                creator_net = creator_share - initial_balance_cost
+                                if creator_net < 0:
+                                    creator_net = 0
+                                if creator_id and creator_net > 0:
+                                    await conn.execute(
+                                        "UPDATE USER_DETAILS SET pending_earnings = MAX(0, COALESCE(pending_earnings, 0) - ?) WHERE user_id = ?",
+                                        (creator_net, creator_id)
+                                    )
+
+                                await conn.commit()
+                                logger.warning(f"Prompt chargeback processed: revoked access for user={buyer_user_id}, prompt={prompt_id}, reverted ib=${initial_balance_cost:.2f}, creator_net=${creator_net:.2f}")
+                            except Exception as txn_err:
+                                await conn.rollback()
+                                raise txn_err
+
+                    else:
+                        # Balance top-up chargeback (default case - no 'type' in metadata)
+                        user_id = int(sess_metadata.get('user_id', 0))
+                        if user_id:
+                            async with get_db_connection() as conn:
+                                await conn.execute('BEGIN IMMEDIATE')
+
+                                # Idempotency check: skip if reversal already recorded
+                                check_cursor = await conn.execute(
+                                    "SELECT id FROM TRANSACTIONS WHERE reference_id = ? AND type = 'chargeback_reversal'",
+                                    (sess.id,)
+                                )
+                                if await check_cursor.fetchone():
+                                    await conn.execute('ROLLBACK')
+                                    logger.info(f"Balance chargeback already processed for payment_intent={payment_intent_id}")
+                                    return JSONResponse(content={"status": "already_processed"})
+
+                                try:
+                                    # Find the original top-up transaction
+                                    txn_cursor = await conn.execute(
+                                        "SELECT amount FROM TRANSACTIONS WHERE reference_id = ? AND type = 'payment'",
+                                        (sess.id,)
+                                    )
+                                    txn_row = await txn_cursor.fetchone()
+                                    if not txn_row:
+                                        await conn.execute('ROLLBACK')
+                                        logger.warning(f"No original payment transaction found for session={sess.id}")
+                                        return JSONResponse(content={"status": "no_original_transaction"})
+
+                                    topup_amount = txn_row[0]
+
+                                    # Get current balance before deduction
+                                    bal_cursor = await conn.execute(
+                                        "SELECT balance FROM USER_DETAILS WHERE user_id = ?",
+                                        (user_id,)
+                                    )
+                                    bal_row = await bal_cursor.fetchone()
+                                    balance_before = bal_row[0] if bal_row else 0
+                                    balance_after = max(0, balance_before - topup_amount)
+
+                                    # Deduct the top-up amount from user's balance
+                                    await conn.execute(
+                                        "UPDATE USER_DETAILS SET balance = MAX(0, balance - ?) WHERE user_id = ?",
+                                        (topup_amount, user_id)
+                                    )
+
+                                    # Record chargeback reversal transaction
+                                    await conn.execute("""
+                                        INSERT INTO TRANSACTIONS
+                                        (user_id, type, amount, balance_before, balance_after,
+                                         description, reference_id)
+                                        VALUES (?, 'chargeback_reversal', ?, ?, ?, 'Chargeback reversal for payment', ?)
+                                    """, (
+                                        user_id,
+                                        topup_amount,
+                                        balance_before,
+                                        balance_after,
+                                        sess.id
+                                    ))
+
+                                    # Disable user if balance was wiped out by a large chargeback
+                                    if balance_after == 0 and topup_amount > 0:
+                                        await conn.execute(
+                                            "UPDATE USERS SET is_enabled = 0 WHERE id = ?",
+                                            (user_id,)
+                                        )
+                                        logger.warning(f"User {user_id} disabled after balance chargeback (balance zeroed)")
+
+                                    await conn.commit()
+                                    logger.warning(f"Balance chargeback processed: user={user_id}, amount=${topup_amount:.2f}, balance ${balance_before:.2f} -> ${balance_after:.2f}")
+                                except Exception as txn_err:
+                                    await conn.rollback()
+                                    raise txn_err
+                        else:
+                            logger.warning(f"Balance chargeback skipped: no user_id in session metadata for payment_intent={payment_intent_id}")
+
             except Exception as e:
                 logger.error(f"Error processing chargeback: {e}")
 
@@ -12076,7 +12358,7 @@ async def payment_success_simulated(request: Request, current_user: dict = Depen
 @app.get("/admin/create-discount", response_class=HTMLResponse)
 async def create_discount(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -12158,7 +12440,7 @@ async def apply_discount(
 @app.get("/admin/discount-list", response_class=HTMLResponse)
 async def discount_list(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
@@ -12448,7 +12730,7 @@ async def clear_dramatiq(current_user: User = Depends(get_current_user)):
 async def admin_security_page(request: Request, current_user: User = Depends(get_current_user)):
     """Admin security operations panel."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Only administrators can access this function")
@@ -12685,7 +12967,7 @@ async def admin_security_reputation_reset_score(
 async def admin_watchdog_events(request: Request, current_user: User = Depends(get_current_user)):
     """Admin panel to inspect watchdog evaluation events."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -12813,7 +13095,7 @@ async def admin_watchdog_events(request: Request, current_user: User = Depends(g
 @app.get("/admin/whatsapp", response_class=HTMLResponse)
 async def admin_whatsapp(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -13777,7 +14059,7 @@ async def select_prompt(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
 
     async with get_db_connection() as conn:
@@ -14165,14 +14447,17 @@ async def register_page_user(
     # Build URLs for this prompt context
     base_url = f"/p/{public_id}/{canonical_slug}"
 
-    return templates.TemplateResponse("register_public.html", {
+    response = templates.TemplateResponse("register_public.html", {
         "request": request,
         "target_role": "user",
         "prompt": prompt,
         "login_url": f"{base_url}/login",
         "get_static_url": lambda x: x,
-        "captcha": get_captcha_config()
+        "captcha": get_captcha_config(),
+        "google_oauth_available": bool(GOOGLE_CLIENT_ID)
     })
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response
 
 
 @app.api_route("/p/{public_id}/{slug}/login", methods=["GET", "POST"])
@@ -14210,12 +14495,14 @@ async def login_page_user(
     # Build URLs for this prompt context
     base_url = f"/p/{public_id}/{canonical_slug}"
 
-    return await _handle_login_request(
+    response = await _handle_login_request(
         request,
         prompt_context=prompt,
         login_url=f"{base_url}/login",
         register_url=f"{base_url}/register"
     )
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response
 
 
 @app.get("/p/{public_id}/{slug}/")
@@ -14416,14 +14703,17 @@ async def custom_domain_register(request: Request):
     # Check if this is a custom domain request
     if not getattr(request.state, 'custom_domain', False):
         # Not a custom domain - use manager registration
-        return templates.TemplateResponse("register_public.html", {
+        response = templates.TemplateResponse("register_public.html", {
             "request": request,
             "target_role": "manager",
             "prompt": None,
             "login_url": "/login",
             "get_static_url": lambda x: x,
-            "captcha": get_captcha_config()
+            "captcha": get_captcha_config(),
+            "google_oauth_available": bool(GOOGLE_CLIENT_ID)
         })
+        response.headers["X-Robots-Tag"] = "noindex"
+        return response
 
     # Custom domain - register for this specific prompt
     try:
@@ -14435,14 +14725,17 @@ async def custom_domain_register(request: Request):
         if not prompt:
             raise HTTPException(status_code=404, detail="Prompt not found")
 
-        return templates.TemplateResponse("register_public.html", {
+        response = templates.TemplateResponse("register_public.html", {
             "request": request,
             "target_role": "user",
             "prompt": prompt,
             "login_url": "/login",
             "get_static_url": lambda x: x,
-            "captcha": get_captcha_config()
+            "captcha": get_captcha_config(),
+            "google_oauth_available": bool(GOOGLE_CLIENT_ID)
         })
+        response.headers["X-Robots-Tag"] = "noindex"
+        return response
 
     except HTTPException:
         raise
@@ -14477,12 +14770,15 @@ async def custom_domain_login(request: Request):
         if request.method == "POST":
             return await login_submit(request)
 
-        return templates.TemplateResponse("login.html", {
+        response = templates.TemplateResponse("login.html", {
             "request": request,
             "prompt": prompt,
             "register_url": "/register",
-            "get_static_url": lambda x: x
+            "get_static_url": lambda x: x,
+            "google_oauth_available": bool(GOOGLE_CLIENT_ID)
         })
+        response.headers["X-Robots-Tag"] = "noindex"
+        return response
 
     except HTTPException:
         raise
@@ -14513,8 +14809,18 @@ def _get_google_flow(redirect_uri: str) -> Flow:
 
 def _build_redirect_uri(request: Request) -> str:
     """Build OAuth redirect URI from current request."""
-    scheme = request.url.scheme
-    host = request.url.hostname
+    # Cloudflare Tunnel terminates HTTPS but connects to origin via HTTP,
+    # and nginx overwrites X-Forwarded-Proto with $scheme (http).
+    # If behind Cloudflare, scheme is always https.
+    if request.headers.get("cf-connecting-ip"):
+        scheme = "https"
+    else:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host", request.url.hostname)
+    # Behind reverse proxy: host header is authoritative, ignore port
+    if "x-forwarded-proto" in request.headers or "cf-connecting-ip" in request.headers:
+        return f"{scheme}://{host}/auth/google/callback"
+    # Local dev: include port if non-standard
     port = request.url.port
     if port and port not in [80, 443]:
         return f"{scheme}://{host}:{port}/auth/google/callback"
@@ -14693,6 +14999,14 @@ async def auth_google_callback(request: Request, code: str = None, state: str = 
     - oauth_failed: Generic OAuth error
     - rate_limited: Too many attempts
     """
+    try:
+        return await _auth_google_callback_inner(request, code, state, error)
+    except Exception as e:
+        logger.error(f"[OAUTH CALLBACK] Unhandled exception: {type(e).__name__}: {e}", exc_info=True)
+        return RedirectResponse(url="/login?error=oauth_failed")
+
+
+async def _auth_google_callback_inner(request: Request, code: str, state: str, error: str):
     # Rate limiting for callback
     rate_error = check_rate_limits(
         request,
@@ -14871,7 +15185,7 @@ async def auth_google_callback(request: Request, code: str = None, state: str = 
                 balance=landing_config.get("initial_balance", 0.0),
                 phone=None,
                 role_name=target_role,
-                authentication_mode="magic_link_only",
+                authentication_mode="magic_link_password",
                 initial_password=None,
                 can_change_password=True,
                 email=email,
@@ -14897,7 +15211,7 @@ async def auth_google_callback(request: Request, code: str = None, state: str = 
                 balance=0.0,
                 phone=None,
                 role_name=target_role,
-                authentication_mode="magic_link_only",  # OAuth users use magic link as fallback
+                authentication_mode="magic_link_password",
                 initial_password=None,
                 can_change_password=True,
                 email=email,
@@ -15363,7 +15677,8 @@ async def verify_email(request: Request, token: str):
                 value=access_token,
                 httponly=True,
                 max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                samesite="lax"
+                samesite="lax",
+                secure=SECURE_COOKIES
             )
 
             logger.info(f"User {pending['email']} registered successfully as {pending['target_role']}")
@@ -15582,7 +15897,7 @@ async def landing_config(
             (original creator IF no explicit owner assigned)
     """
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     try:
         # Verify user can manage this prompt
@@ -17161,7 +17476,7 @@ async def edit_landing_page(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     try:
         # Validate section name (alphanumeric, underscores, hyphens only)
@@ -17242,7 +17557,7 @@ async def save_landing_page(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     try:
         # Validate section name (alphanumeric, underscores, hyphens only)
@@ -17302,7 +17617,7 @@ async def save_landing_page(
 @app.get("/api/public-prompts")
 async def get_public_prompts(current_user: User = Depends(get_current_user)) -> List[dict]:
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     async with get_db_connection(readonly=True) as conn:
         async with conn.cursor() as cursor:
@@ -17351,7 +17666,7 @@ async def creator_storefront(request: Request, slug: str, current_user: User = D
 async def explore_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the Prompt Explorer page."""
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("explore.html", context)
@@ -17645,7 +17960,7 @@ async def edit_component(
 ):
     # Require authentication
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if component_type not in ALLOWED_COMPONENT_TYPES:
         raise HTTPException(status_code=400, detail="Invalid component type")
@@ -18887,7 +19202,7 @@ async def scan_audio_directory(base_path: Path, conversation_id: int) -> List[Di
 @app.get("/media-gallery", response_class=HTMLResponse)
 async def media_gallery(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     images = []
     conversations = []
@@ -19188,7 +19503,7 @@ async def download_mp3(path: str, current_user: User = Depends(get_current_user)
 @app.get("/list-files")
 async def list_files(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x})
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     
     user_base_path = Path(get_user_directory(current_user.username))
     files_path = user_base_path / "files"
@@ -21317,8 +21632,9 @@ if __name__ == '__main__':
     # Check SSL certificates if needed
     ssl_available = False
     if use_ssl or dual_mode:
-        ssl_keyfile = os.path.join(static_directory, 'sec', 'privkey.pem')
-        ssl_certfile = os.path.join(static_directory, 'sec', 'cert.pem')
+        _project_root = os.path.dirname(__file__)
+        ssl_keyfile = os.path.join(_project_root, 'certs', 'privkey.pem')
+        ssl_certfile = os.path.join(_project_root, 'certs', 'cert.pem')
         
         if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
             ssl_available = True

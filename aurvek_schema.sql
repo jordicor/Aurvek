@@ -36,8 +36,12 @@ CREATE TABLE USERS (
     phone_verified BOOLEAN DEFAULT FALSE,
     role_id INTEGER,
     is_enabled BOOLEAN, user_info TEXT, profile_picture TEXT, email TEXT,
+    google_id TEXT,
+    auth_provider TEXT DEFAULT 'local',
     FOREIGN KEY (role_id) REFERENCES USER_ROLES(id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON USERS(google_id);
 
 CREATE TABLE PROMPTS (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +128,7 @@ CREATE TABLE MESSAGES (
     input_tokens_used INTEGER DEFAULT 0,
     output_tokens_used INTEGER DEFAULT 0, is_bookmarked INTEGER DEFAULT (0),
     llm_id INTEGER DEFAULT NULL REFERENCES LLM(id),
+    citations_json TEXT,
     FOREIGN KEY (conversation_id) REFERENCES CONVERSATIONS(id),
     FOREIGN KEY (user_id) REFERENCES USERS(id)
 );
@@ -266,6 +271,15 @@ CREATE TABLE USER_DETAILS (
     billing_max_limit DECIMAL DEFAULT NULL,
     billing_auto_refill_count INTEGER DEFAULT 0,
     home_preferences TEXT DEFAULT NULL,
+    stripe_connect_account_id TEXT,
+    stripe_connect_onboarding_complete INTEGER DEFAULT 0,
+    stripe_connect_charges_enabled INTEGER DEFAULT 0,
+    stripe_connect_payouts_enabled INTEGER DEFAULT 0,
+    web_search_enabled BOOLEAN DEFAULT 1,
+    web_search_mode TEXT DEFAULT 'native',
+    web_search_show_sources BOOLEAN DEFAULT 1,
+    web_search_inline_citations BOOLEAN DEFAULT 0,
+    domain_slots_purchased INTEGER DEFAULT 0,
     CONSTRAINT USER_DETAILS_PK PRIMARY KEY (user_id),
     CONSTRAINT FK_USER_DETAILS_LLM FOREIGN KEY (llm_id) REFERENCES LLM(id),
     CONSTRAINT FK_USER_DETAILS_PROMPTS_2 FOREIGN KEY (current_prompt_id) REFERENCES PROMPTS(id),
@@ -278,6 +292,7 @@ CREATE TABLE USER_DETAILS (
 CREATE INDEX idx_user_details_category_access ON USER_DETAILS(category_access);
 CREATE INDEX idx_user_details_created_by ON USER_DETAILS(created_by);
 CREATE INDEX idx_user_details_billing_account ON USER_DETAILS(billing_account_id);
+CREATE INDEX IF NOT EXISTS idx_user_details_stripe_connect ON USER_DETAILS(stripe_connect_account_id) WHERE stripe_connect_account_id IS NOT NULL;
 
 CREATE TABLE FAVORITE_PROMPTS (
     user_id INTEGER NOT NULL,

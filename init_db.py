@@ -2,10 +2,10 @@ import sqlite3
 import os
 
 def init_db():
-    db_path = 'data/Aurvek.db'
+    db_path = 'db/Aurvek.db'
     schema_path = 'aurvek_schema.sql'
 
-    # Create data directory if it doesn't exist
+    # Create db directory if it doesn't exist
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     try:

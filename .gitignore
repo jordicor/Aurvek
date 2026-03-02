@@ -1,4 +1,5 @@
 AURVEK.git/
+SPARK.git/
 data/cache/
 data/users/
 __pycache__/
@@ -22,7 +23,13 @@ tst/
 *.key
 *.crt
 
-# Database files
+# SSL certificates directory (moved out of web root)
+certs/
+
+# Database directory (moved out of web root for security)
+db/
+
+# Database files (catch-all for any stray .db files)
 *.db
 *.db-shm
 *.db-wal

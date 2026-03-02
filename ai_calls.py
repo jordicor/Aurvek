@@ -78,7 +78,7 @@ from tasks import generate_pdf_task, generate_mp3_task
 
 # aiohttp logging for HTTP calls
 aiohttp_logger = logging.getLogger('aiohttp')
-aiohttp_logger.setLevel(logging.DEBUG)
+aiohttp_logger.setLevel(logging.DEBUG if os.getenv("APP_DEBUG", "false").lower() == "true" else logging.WARNING)
 
 # API client configuration
 openai = OpenAI(api_key=openai_key)
@@ -3667,7 +3667,7 @@ async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, 
 
     # OpenRouter recommended headers for tracking
     extra_headers = {
-        "HTTP-Referer": "https://aurvek.com",
+        "HTTP-Referer": f"https://{os.getenv('PRIMARY_APP_DOMAIN', 'localhost')}",
         "X-Title": "AURVEK AI Chat"
     }
 

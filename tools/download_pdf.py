@@ -46,9 +46,9 @@ from common import generate_user_hash
 # =============================
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setLevel(logging.DEBUG)
+stream_handler.setLevel(logging.INFO)
 if hasattr(stream_handler, 'setEncoding'):
     stream_handler.setEncoding('utf-8')
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')

@@ -1,6 +1,7 @@
 # log_config.py
 
 import logging
+import os
 import sys
 from uvicorn.logging import ColourizedFormatter
 import time
@@ -15,7 +16,8 @@ class CustomColourizedFormatter(ColourizedFormatter):
 def setup_logging():
     # Main application logger configuration
     logger = logging.getLogger("app")
-    logger.setLevel(logging.DEBUG)
+    _app_debug = os.getenv("APP_DEBUG", "false").lower() == "true"
+    logger.setLevel(logging.DEBUG if _app_debug else logging.INFO)
     logger.propagate = False  # Prevent log propagation to root logger
 
     # Uvicorn loggers configuration

@@ -41,7 +41,7 @@ async def ensure_wal_mode():
     global _wal_initialized
     if _wal_initialized:
         return
-    conn = await aiosqlite.connect(f"file:data/{dbname}?mode=rw", uri=True, timeout=DEFAULT_DB_TIMEOUT)
+    conn = await aiosqlite.connect(f"file:db/{dbname}?mode=rw", uri=True, timeout=DEFAULT_DB_TIMEOUT)
     try:
         await conn.execute("PRAGMA journal_mode=WAL")
     finally:
@@ -53,7 +53,7 @@ async def ensure_wal_mode():
 async def get_db_connection(readonly=False):
     mode = 'ro' if readonly else 'rw'
     conn = await aiosqlite.connect(
-        f"file:data/{dbname}?mode={mode}",
+        f"file:db/{dbname}?mode={mode}",
         uri=True,
         timeout=DEFAULT_DB_TIMEOUT,
     )

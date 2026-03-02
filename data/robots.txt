@@ -61,6 +61,11 @@ Disallow: /healthz
 Disallow: /metrics
 Disallow: /whatsapp
 Disallow: /users/
+# Allow crawling of public static assets (CSS, JS, fonts, images)
+Allow: /static/css/
+Allow: /static/js/
+Allow: /static/fonts/
+Allow: /static/img/
 Disallow: /static/
 
 # Block AI training crawlers explicitly
@@ -92,4 +97,4 @@ User-agent: FacebookBot
 Disallow: /
 
 # Update the domain below to match your production domain
-Sitemap: https://aurvek.com/sitemap.xml
+Sitemap: https://example.com/sitemap.xml

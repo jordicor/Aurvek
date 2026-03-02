@@ -220,6 +220,9 @@
                             <span class="username-link" onclick="showMagicLink('{{ user.magic_link or '' }}', '{{ user.username }}', {{ 'true' if user.is_expired == 'Expired' else 'false' }}, {{ 'true' if user.is_expired == 'N/A' else 'false' }})" title="Click to view magic link">
                                 <i class="fas fa-user me-1"></i>{{ user.username }}
                             </span>
+                            {% if user.auth_provider in ('google', 'google_linked') %}
+                            <img src="/static/img/providers/google.svg" width="14" height="14" alt="Google" title="Google OAuth{% if user.auth_provider == 'google_linked' %} (linked){% endif %}" style="vertical-align: -1px; margin-left: 4px; opacity: 0.7;">
+                            {% endif %}
                         </td>
                         <td class="role-cell" title="{{ user.role|capitalize }}">
                             {% if user.role == 'admin' %}

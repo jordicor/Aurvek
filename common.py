@@ -46,14 +46,15 @@ gemini_key = os.getenv('GEMINI_KEY')
 xai_key =  os.getenv('XAI_KEY')
 openrouter_key = os.getenv('OPENROUTER_API_KEY')
 
+# Security: cookie secure flag (requires HTTPS in production)
+SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
+
 # Google OAuth configuration
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
-GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:7789/auth/google/callback')
 
 # Stripe configuration
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
-STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
 
 tts_engine = os.getenv('TTS_ENGINE')
@@ -1108,7 +1109,7 @@ def get_public_profile_url(
         Full URL string
 
     Example:
-        https://aurvek.com/p/k9F3aZ2p/ava/
+        https://example.com/p/k9F3aZ2p/ava/
     """
     domain = PUBLIC_PROFILE_DOMAIN
     protocol = "http" if "localhost" in domain else "https"
