@@ -113,10 +113,13 @@ CREATE TABLE CONVERSATIONS (
     start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, chat_name TEXT, stats TEXT, last_analyzed TIMESTAMP, folder_id INTEGER
                 REFERENCES CHAT_FOLDERS(id),
     active_extension_id INTEGER DEFAULT NULL,
+    branched_from_id INTEGER DEFAULT NULL,
+    branched_at_message_id INTEGER DEFAULT NULL,
     FOREIGN KEY (user_id) REFERENCES USERS(id),
     FOREIGN KEY (role_id) REFERENCES PROMPTS(id),
     FOREIGN KEY (llm_id) REFERENCES LLM(id),
-    FOREIGN KEY (active_extension_id) REFERENCES PROMPT_EXTENSIONS(id)
+    FOREIGN KEY (active_extension_id) REFERENCES PROMPT_EXTENSIONS(id),
+    FOREIGN KEY (branched_from_id) REFERENCES CONVERSATIONS(id) ON DELETE SET NULL
 );
 
 CREATE TABLE MESSAGES (

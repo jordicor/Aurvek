@@ -94,12 +94,14 @@ from tools import dramatiq_tasks
 from database import get_db_connection, DB_MAX_RETRIES, DB_RETRY_DELAY_BASE, is_lock_error, grant_pack_access, check_pack_access
 from models import User, ConnectionManager
 from whatsapp import is_whatsapp_conversation
+from telegram import is_telegram_conversation
 from tasks import generate_pdf_task, generate_mp3_task, download_elevenlabs_audio_task
 from rediscfg import broker, redis_client, add_revoked_user, RedisManager, get_metrics, get_active_users_count
 from save_images import save_image_locally, generate_img_token, resize_image, get_or_generate_img_token
 from auth import hash_password, verify_password, get_user_by_username, get_current_user, create_access_token, get_user_by_id, get_user_from_phone_number
 from auth import get_current_user_from_websocket, get_user_id_from_conversation, get_user_by_token, create_user_info, create_login_response, generate_magic_link
-from auth import get_user_by_google_id, get_user_by_email, update_user_google_id
+from auth import get_user_by_google_id, get_user_by_email, update_user_google_id, get_user_from_telegram_chat_id
+from common import TELEGRAM_WEBHOOK_SECRET, TELEGRAM_RATE_LIMIT_PER_USER, TELEGRAM_RATE_LIMIT_GLOBAL
 from auth import ACCESS_TOKEN_EXPIRE_MINUTES, unauthenticated_response
 from email_service import email_service
 from email_validation import validate_email_robust
@@ -115,12 +117,13 @@ from common import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 from common import encrypt_api_key, decrypt_api_key, mask_api_key
 from common import CDN_FILES_URL, ENABLE_CDN
 from common import SECURE_COOKIES
+from common import READONLY_MODE
 import nh3
 from elevenlabs_service import service as elevenlabs_service
 from message_search import build_fts_query, execute_search
 from elevenlabs_sdk_proxy import ElevenLabsSDKProxy
 from welcome_service import build_world, user_has_pack_access, user_has_prompt_access, serve_welcome_world
-from tools.tts import process_plain_text, insert_tts_break, process_text_for_tts, get_voice_code_from_prompt, get_voice_code_from_conversation, get_tts_generator, send_cached_audio, get_file_path, handle_tts_request, elevenlabs_generator, handle_openai_tts_request
+from tools.tts import process_plain_text, insert_tts_break, process_text_for_tts, get_voice_code_from_prompt, get_voice_code_from_conversation, get_tts_generator, send_cached_audio, get_file_path, handle_tts_request
 from tools.tts_load_balancer import get_elevenlabs_key
 
 from ai_calls import router as ai_router
@@ -361,6 +364,7 @@ default_lang = "es"
 # NOTE: OpenAI/Anthropic/Gemini clients are initialized in ai_calls.py.
 from clients import (
     async_twilio, twilio_validator,
+    async_telegram,
     deepgram, stt_engine, stt_fallback_enabled,
 )
 
@@ -406,6 +410,35 @@ app.add_middleware(SecurityMiddleware)
 # internal routes so search engines only index public-facing pages.
 _PUBLIC_EXACT_PATHS = frozenset(("/", "/sitemap.xml", "/robots.txt", "/favicon.ico"))
 _PUBLIC_PREFIXES = ("/p/", "/store/", "/pack/", "/static/", "/.well-known/")
+
+# ---------------------------------------------------------------------------
+# Read-only mode: blocks write operations for failover instances
+# ---------------------------------------------------------------------------
+if READONLY_MODE:
+    _READONLY_WHITELIST = frozenset((
+        "/magic-link-recovery",
+        "/api/verify-code",
+        "/api/send-verification-code",
+        "/api/refresh-session",
+        "/api/ultra-admin/request-code",
+        "/api/ultra-admin/verify",
+    ))
+
+    @app.middleware("http")
+    async def readonly_middleware(request: Request, call_next):
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return await call_next(request)
+        if request.url.path in _READONLY_WHITELIST:
+            return await call_next(request)
+        if request.url.path.endswith("/login"):
+            return await call_next(request)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "readonly",
+                "message": "Service is in read-only mode. Normal service will resume shortly."
+            }
+        )
 
 
 @app.middleware("http")
@@ -910,6 +943,12 @@ async def can_user_access_pack(user: User, pack_id: int, cursor) -> bool:
         (pack_id, user.id)
     )
     return await cursor.fetchone() is not None
+
+
+@app.get("/health")
+async def public_health_check():
+    """Public health check for Cloudflare Load Balancing."""
+    return JSONResponse(content={"status": "ok", "readonly": READONLY_MODE})
 
 
 # Health check endpoint for monitoring (admin only)
@@ -6665,27 +6704,68 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
         ]
 
         # Get initial conversations for embedding in HTML (saves 1 HTTP request)
+        # First, look up external platform conversation IDs to fetch them separately
+        initial_ext_conversations = []
+        initial_ext_exclude = ""
+        initial_ext_exclude_params = []
+
         await cursor.execute('''
+            SELECT json_extract(u.external_platforms, '$.whatsapp.conversation_id') as whatsapp_conv_id,
+                   json_extract(u.external_platforms, '$.telegram.conversation_id') as telegram_conv_id
+            FROM user_details u
+            WHERE u.user_id = ?
+        ''', (effective_user_id,))
+        init_ext_row = await cursor.fetchone()
+
+        init_ext_ids = []
+        if init_ext_row:
+            for platform, key in [('whatsapp', 'whatsapp_conv_id'), ('telegram', 'telegram_conv_id')]:
+                conv_id = init_ext_row[key]
+                if conv_id is not None:
+                    init_ext_ids.append((platform, conv_id))
+
+        if init_ext_ids:
+            placeholders = ','.join(['?' for _ in init_ext_ids])
+            initial_ext_exclude = f" AND c.id NOT IN ({placeholders})"
+            initial_ext_exclude_params = [eid for _, eid in init_ext_ids]
+
+            for platform, conv_id in init_ext_ids:
+                await cursor.execute('''
+                    SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
+                           c.locked, l.model as llm_model,
+                           COALESCE(p.disable_web_search, 0) as web_search_disabled,
+                           COALESCE(p.force_web_search, 0) as web_search_forced,
+                           p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+                           COALESCE(p.is_paid, 0) as is_paid
+                    FROM conversations c
+                    JOIN llm l ON c.llm_id = l.id
+                    LEFT JOIN prompts p ON c.role_id = p.id
+                    WHERE c.id = ? AND (c.folder_id IS NULL OR c.folder_id = 0)
+                ''', (platform, conv_id))
+                ext_conv = await cursor.fetchone()
+                if ext_conv:
+                    initial_ext_conversations.append(ext_conv)
+
+        init_normal_limit = 25 - len(initial_ext_conversations)
+
+        await cursor.execute(f'''
             SELECT c.id, c.user_id, c.start_date, c.chat_name,
-                   CASE
-                     WHEN json_extract(u.external_platforms, '$.telegram.conversation_id') = c.id THEN 'telegram'
-                     WHEN json_extract(u.external_platforms, '$.whatsapp.conversation_id') = c.id THEN 'whatsapp'
-                     ELSE NULL
-                   END as external_platform,
+                   NULL as external_platform,
                    c.locked, l.model as llm_model,
                    COALESCE(p.disable_web_search, 0) as web_search_disabled,
                    COALESCE(p.force_web_search, 0) as web_search_forced,
                    p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                    COALESCE(p.is_paid, 0) as is_paid
             FROM conversations c
-            JOIN user_details u ON c.user_id = u.user_id
             JOIN llm l ON c.llm_id = l.id
             LEFT JOIN prompts p ON c.role_id = p.id
-            WHERE c.user_id = ? AND (c.folder_id IS NULL OR c.folder_id = 0)
+            WHERE c.user_id = ? AND (c.folder_id IS NULL OR c.folder_id = 0){initial_ext_exclude}
             ORDER BY c.id DESC
-            LIMIT 25
-        ''', (effective_user_id,))
+            LIMIT ?
+        ''', [effective_user_id] + initial_ext_exclude_params + [init_normal_limit])
         conversations_rows = await cursor.fetchall()
+
+        all_init_conversations = list(initial_ext_conversations) + list(conversations_rows)
         initial_conversations = [
             {
                 "id": row[0],
@@ -6702,7 +6782,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 "allowed_llms": orjson.loads(row[11]) if row[11] else None,
                 "is_paid": bool(row[12])
             }
-            for row in conversations_rows
+            for row in all_init_conversations
         ]
 
         context = {
@@ -6739,6 +6819,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             "chat_folders": chat_folders,
             "initial_conversations": initial_conversations,
             "web_search_enabled": bool(full_data['web_search_enabled']),
+            "readonly_mode": READONLY_MODE,
         }
     # print("Debug - Prompt Description:", full_data['prompt_description'])
     # print("Debug - Context:", {
@@ -8075,7 +8156,7 @@ async def list_voices(request: Request, current_user: User = Depends(get_current
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
         await cursor.execute("""
-            SELECT V.id, V.name, V.voice_code, S.name as tts_service_name
+            SELECT V.id, V.name, V.voice_code, S.name as tts_service_name, V.is_default, V.deprecated
             FROM VOICES V
             JOIN SERVICES S ON V.tts_service = S.id
             ORDER BY S.name, V.name
@@ -8168,6 +8249,19 @@ async def delete_voice(voice_id: int, current_user: User = Depends(get_current_u
             await conn.close()
 
         return JSONResponse(content={"success": True}, status_code=200)
+
+
+@app.post("/admin/voices/set-default/{voice_id}")
+async def set_default_voice(voice_id: int, current_user: User = Depends(get_current_user)):
+    if current_user is None:
+        return unauthenticated_response()
+    if not await current_user.is_admin:
+        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+    async with get_db_connection() as conn:
+        await conn.execute("UPDATE VOICES SET is_default = 0 WHERE is_default = 1")
+        await conn.execute("UPDATE VOICES SET is_default = 1 WHERE id = ?", (voice_id,))
+        await conn.commit()
+    return JSONResponse(content={"success": True})
 
 
 @app.get("/get-image/{path:path}")
@@ -8282,9 +8376,12 @@ async def get_conversations(
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
+    if user_id is None:
+        return JSONResponse(content={"error": "user_id is required"}, status_code=400)
+
     if current_user.id != user_id and not await is_admin(current_user.id):
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
-    
+
     async with get_db_connection(readonly=True) as conn:
         async with conn.cursor() as cursor:
             # Filter by folder first
@@ -8299,64 +8396,71 @@ async def get_conversations(
                 # Get conversations not in any folder (loose conversations)
                 folder_condition = " AND (c.folder_id IS NULL OR c.folder_id = 0)"
             
-            # Always look up the WhatsApp conversation ID so we can exclude
-            # it from the normal query on ALL pages (first and load-more).
-            # Only prepend the full WhatsApp conversation data on the first page.
-            whatsapp_conversation = None
-            whatsapp_exclude = ""
-            whatsapp_exclude_params = []
+            # Look up ALL external platform conversation IDs so we can exclude
+            # them from the normal query on ALL pages (first and load-more).
+            # Only prepend the full external conversation data on the first page.
+            external_conversations = []
+            external_exclude = ""
+            external_exclude_params = []
 
-            whatsapp_id_query = '''
-                SELECT json_extract(u.external_platforms, '$.whatsapp.conversation_id') as whatsapp_conv_id
+            ext_id_query = '''
+                SELECT json_extract(u.external_platforms, '$.whatsapp.conversation_id') as whatsapp_conv_id,
+                       json_extract(u.external_platforms, '$.telegram.conversation_id') as telegram_conv_id
                 FROM user_details u
-                WHERE u.user_id = ? AND json_extract(u.external_platforms, '$.whatsapp.conversation_id') IS NOT NULL
+                WHERE u.user_id = ?
             '''
-            await cursor.execute(whatsapp_id_query, [user_id])
-            whatsapp_id_row = await cursor.fetchone()
+            await cursor.execute(ext_id_query, [user_id])
+            ext_id_row = await cursor.fetchone()
 
-            if whatsapp_id_row:
-                whatsapp_id = whatsapp_id_row['whatsapp_conv_id']
-                whatsapp_exclude = " AND c.id != ?"
-                whatsapp_exclude_params = [whatsapp_id]
+            external_ids = []
+            if ext_id_row:
+                for platform, key in [('whatsapp', 'whatsapp_conv_id'), ('telegram', 'telegram_conv_id')]:
+                    conv_id = ext_id_row[key]
+                    if conv_id is not None:
+                        external_ids.append((platform, conv_id))
 
-                # On first page, fetch full WhatsApp conversation data to prepend
+            if external_ids:
+                placeholders = ','.join(['?' for _ in external_ids])
+                external_exclude = f" AND c.id NOT IN ({placeholders})"
+                external_exclude_params = [eid for _, eid in external_ids]
+
+                # On first page, fetch full external conversation data to prepend
                 if max_id is None:
-                    whatsapp_query = f'''
-                        SELECT c.id, c.user_id, c.start_date, c.chat_name, 'whatsapp' as external_platform,
-                               c.locked, l.model as llm_model, COALESCE(p.disable_web_search, 0) as web_search_disabled,
-                               COALESCE(p.force_web_search, 0) as web_search_forced,
-                               p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                               COALESCE(p.is_paid, 0) as is_paid
-                        FROM conversations c
-                        JOIN llm l ON c.llm_id = l.id
-                        LEFT JOIN prompts p ON c.role_id = p.id
-                        WHERE c.id = ?{folder_condition}
-                    '''
-                    whatsapp_params = [whatsapp_id] + folder_params
-                    await cursor.execute(whatsapp_query, whatsapp_params)
-                    whatsapp_conversation = await cursor.fetchone()
+                    for platform, conv_id in external_ids:
+                        ext_query = f'''
+                            SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
+                                   c.locked, l.model as llm_model, COALESCE(p.disable_web_search, 0) as web_search_disabled,
+                                   COALESCE(p.force_web_search, 0) as web_search_forced,
+                                   p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+                                   COALESCE(p.is_paid, 0) as is_paid
+                            FROM conversations c
+                            JOIN llm l ON c.llm_id = l.id
+                            LEFT JOIN prompts p ON c.role_id = p.id
+                            WHERE c.id = ?{folder_condition}
+                        '''
+                        ext_params = [platform, conv_id] + folder_params
+                        await cursor.execute(ext_query, ext_params)
+                        ext_conv = await cursor.fetchone()
+                        if ext_conv:
+                            external_conversations.append(ext_conv)
 
-            # Adjust limit: reserve one slot for WhatsApp on first page
-            normal_limit = limit - 1 if whatsapp_conversation else limit
+            # Adjust limit: reserve slots for external conversations on first page
+            normal_limit = limit - len(external_conversations)
 
             # Get normal conversations
             query = f'''
                 SELECT c.id, c.user_id, c.start_date, c.chat_name,
-                       CASE
-                         WHEN json_extract(u.external_platforms, '$.telegram.conversation_id') = c.id THEN 'telegram'
-                         ELSE NULL
-                       END as external_platform,
+                       NULL as external_platform,
                        c.locked, l.model as llm_model, COALESCE(p.disable_web_search, 0) as web_search_disabled,
                        COALESCE(p.force_web_search, 0) as web_search_forced,
                        p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                        COALESCE(p.is_paid, 0) as is_paid
                 FROM conversations c
-                JOIN user_details u ON c.user_id = u.user_id
                 JOIN llm l ON c.llm_id = l.id
                 LEFT JOIN prompts p ON c.role_id = p.id
-                WHERE c.user_id = ?{folder_condition}{whatsapp_exclude}
+                WHERE c.user_id = ?{folder_condition}{external_exclude}
             '''
-            params = [user_id] + folder_params + whatsapp_exclude_params
+            params = [user_id] + folder_params + external_exclude_params
 
             if max_id is not None:
                 query += ' AND c.id <= ?'
@@ -8368,10 +8472,9 @@ async def get_conversations(
             await cursor.execute(query, params)
             conversations = await cursor.fetchall()
 
-            # Combine: WhatsApp first (only on first page), then normal
+            # Combine: external first (only on first page), then normal
             all_conversations = []
-            if whatsapp_conversation:
-                all_conversations.append(whatsapp_conversation)
+            all_conversations.extend(external_conversations)
             all_conversations.extend(conversations)
 
             return JSONResponse(content=[
@@ -8966,6 +9069,24 @@ async def update_external_platform(
     if action == 'add' and platform not in ['whatsapp', 'telegram']:
         raise HTTPException(status_code=400, detail="Invalid platform")
 
+    # Check that user has a phone number before assigning to any platform
+    if action == 'add':
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                'SELECT phone_number FROM USERS WHERE id = ?', (current_user.id,)
+            )
+            phone_row = await cursor.fetchone()
+            if not phone_row or not phone_row[0]:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "error": "no_phone_number",
+                        "message": "You need to set your phone number in Settings before assigning a conversation to a messaging platform.",
+                    },
+                )
+
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         
@@ -9023,15 +9144,16 @@ async def update_external_platform(
         ''', (current_user.id, min(max(1, int(data.get('visible_count', 10))), 50)))
         visible_conversations = await cursor.fetchall()
 
-        # Get WhatsApp conversation if not in visible ones
-        whatsapp_conversation = None
-        if platform == 'whatsapp' and action == 'add':
+        # Get platform conversation if not in visible ones
+        platform_conversation = None
+        if action == 'add':
+            platform_label = platform
             await cursor.execute('''
-                SELECT c.id, c.user_id, c.start_date, c.chat_name, 'whatsapp' as external_platform
+                SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform
                 FROM conversations c
                 WHERE c.id = ?
-            ''', (conversation_id,))
-            whatsapp_conversation = await cursor.fetchone()
+            ''', (platform_label, conversation_id))
+            platform_conversation = await cursor.fetchone()
 
     updated_conversations = [
         {
@@ -9043,13 +9165,13 @@ async def update_external_platform(
         } for conv in visible_conversations
     ]
 
-    if whatsapp_conversation and whatsapp_conversation[0] not in [conv['id'] for conv in updated_conversations]:
+    if platform_conversation and platform_conversation[0] not in [conv['id'] for conv in updated_conversations]:
         updated_conversations.append({
-            "id": whatsapp_conversation[0],
-            "user_id": whatsapp_conversation[1],
-            "start_date": whatsapp_conversation[2],
-            "chat_name": whatsapp_conversation[3],
-            "external_platform": whatsapp_conversation[4]
+            "id": platform_conversation[0],
+            "user_id": platform_conversation[1],
+            "start_date": platform_conversation[2],
+            "chat_name": platform_conversation[3],
+            "external_platform": platform_conversation[4]
         })
 
     return JSONResponse(content={
@@ -9057,78 +9179,120 @@ async def update_external_platform(
         "updatedConversations": updated_conversations
     })
 
-@app.get("/api/whatsapp-mode/{conversation_id}")
-async def get_whatsapp_mode(
+@app.get("/api/platform-mode/{platform}/{conversation_id}")
+async def get_platform_mode(
+    platform: str,
     conversation_id: int,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
-    """Get the current WhatsApp response mode for a conversation"""
+    """Get the current response mode for a platform-assigned conversation."""
     if current_user is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Verify conversation belongs to user and is assigned to WhatsApp
-    if not await is_whatsapp_conversation(conversation_id):
-        raise HTTPException(status_code=400, detail="Conversation is not assigned to WhatsApp")
+    if platform not in ('whatsapp', 'telegram'):
+        raise HTTPException(status_code=400, detail="Invalid platform")
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
-        await cursor.execute('SELECT user_id FROM conversations WHERE id = ?', (conversation_id,))
+        await cursor.execute(
+            'SELECT user_id FROM conversations WHERE id = ?', (conversation_id,)
+        )
         result = await cursor.fetchone()
-        
         if not result or result[0] != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
 
-        # Get current WhatsApp mode
-        await cursor.execute('SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?', (current_user.id,))
+        await cursor.execute(
+            'SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?',
+            (current_user.id,),
+        )
         result = await cursor.fetchone()
         external_platforms = orjson.loads(result[0]) if result and result[0] else {}
-        
-        whatsapp_data = external_platforms.get('whatsapp', {})
-        current_mode = whatsapp_data.get('answer', 'text')  # Default to text mode
-        
-        return JSONResponse(content={
-            "mode": current_mode
-        })
+        platform_data = external_platforms.get(platform, {})
 
-@app.post("/api/whatsapp-mode/{conversation_id}")
-async def set_whatsapp_mode(
+        if platform_data.get('conversation_id') != conversation_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Conversation is not assigned to {platform}",
+            )
+
+        current_mode = platform_data.get('answer', 'text')
+        return JSONResponse(content={"mode": current_mode})
+
+
+@app.post("/api/platform-mode/{platform}/{conversation_id}")
+async def set_platform_mode(
+    platform: str,
     conversation_id: int,
     request: Request,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
-    """Set the WhatsApp response mode for a conversation"""
+    """Set the response mode for a platform-assigned conversation."""
     if current_user is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
+    if platform not in ('whatsapp', 'telegram'):
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
     data = await request.json()
     new_mode = data.get('mode')
-    
-    if new_mode not in ['voice', 'text']:
-        raise HTTPException(status_code=400, detail="Invalid mode. Must be 'voice' or 'text'")
-
-    # Verify conversation belongs to user and is assigned to WhatsApp
-    if not await is_whatsapp_conversation(conversation_id):
-        raise HTTPException(status_code=400, detail="Conversation is not assigned to WhatsApp")
+    if new_mode not in ('voice', 'text'):
+        raise HTTPException(
+            status_code=400, detail="Invalid mode. Must be 'voice' or 'text'"
+        )
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
-        await cursor.execute('SELECT user_id FROM conversations WHERE id = ?', (conversation_id,))
+
+        await cursor.execute(
+            'SELECT user_id FROM conversations WHERE id = ?', (conversation_id,)
+        )
         result = await cursor.fetchone()
-        
         if not result or result[0] != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
 
-        # Update WhatsApp mode using existing function
-        confirmation_message = await change_response_mode(current_user.id, new_mode, conn)
-        
+        await cursor.execute(
+            'SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?',
+            (current_user.id,),
+        )
+        result = await cursor.fetchone()
+        external_platforms = orjson.loads(result[0]) if result and result[0] else {}
+
+        platform_data = external_platforms.get(platform, {})
+        if platform_data.get('conversation_id') != conversation_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Conversation is not assigned to {platform}",
+            )
+
+        await cursor.execute(
+            """UPDATE USER_DETAILS SET external_platforms =
+               json_set(COALESCE(NULLIF(external_platforms, ''), '{}'), ?, ?)
+               WHERE user_id = ?""",
+            (f'$.{platform}.answer', new_mode, current_user.id),
+        )
+        await conn.commit()
+
         return JSONResponse(content={
             "success": True,
-            "message": confirmation_message,
-            "mode": new_mode
+            "message": f"Response mode changed to {new_mode}",
+            "mode": new_mode,
         })
 
 
-    
+# Legacy aliases for backward compatibility during frontend cache transition
+@app.get("/api/whatsapp-mode/{conversation_id}")
+async def get_whatsapp_mode_legacy(conversation_id: int, current_user: User = Depends(get_current_user)):
+    return await get_platform_mode('whatsapp', conversation_id, current_user)
+
+@app.post("/api/whatsapp-mode/{conversation_id}")
+async def set_whatsapp_mode_legacy(conversation_id: int, request: Request, current_user: User = Depends(get_current_user)):
+    return await set_platform_mode('whatsapp', conversation_id, request, current_user)
+
+
+class BranchConversationRequest(BaseModel):
+    message_id: int
+    folder_id: Optional[int] = None
+
 class NewConversationRequest(BaseModel):
     prompt_id: Optional[int] = None
     folder_id: Optional[int] = None
@@ -10136,7 +10300,217 @@ async def rollback_conversation(
     return JSONResponse(content={'success': True, 'new_last_message_id': new_last_message_id})
 
 
+@app.post("/api/conversations/{conversation_id}/branch")
+async def branch_conversation(
+    conversation_id: int,
+    request: BranchConversationRequest,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        logger.info("User not authenticated. Redirecting to /login")
+        return RedirectResponse(url="/login")
 
+    async with get_db_connection() as conn:
+        cursor = await conn.cursor()
+
+        # 1. Verify conversation belongs to user, get metadata
+        await cursor.execute('''
+            SELECT id, role_id, llm_id, active_extension_id, chat_name
+            FROM CONVERSATIONS WHERE id = ? AND user_id = ?
+        ''', (conversation_id, current_user.id))
+        source_conv = await cursor.fetchone()
+        if not source_conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        source_role_id = source_conv['role_id']
+        source_llm_id = source_conv['llm_id']
+        source_extension_id = source_conv['active_extension_id']
+        source_chat_name = source_conv['chat_name']
+
+        # 2. Block branching for external platform conversations
+        await cursor.execute(
+            "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
+            (current_user.id,)
+        )
+        ud_row = await cursor.fetchone()
+        if ud_row and ud_row[0]:
+            ext_platforms = orjson.loads(ud_row[0])
+            for platform_data in ext_platforms.values():
+                if isinstance(platform_data, dict) and platform_data.get('conversation_id') == conversation_id:
+                    raise HTTPException(status_code=400, detail="Cannot branch external platform conversations")
+
+        # 3. Verify message_id belongs to this conversation
+        await cursor.execute(
+            "SELECT id FROM MESSAGES WHERE id = ? AND conversation_id = ?",
+            (request.message_id, conversation_id)
+        )
+        if not await cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Message not found in this conversation")
+
+        # 4. Count messages to copy
+        await cursor.execute(
+            "SELECT COUNT(*) FROM MESSAGES WHERE conversation_id = ? AND id <= ?",
+            (conversation_id, request.message_id)
+        )
+        messages_count = (await cursor.fetchone())[0]
+
+        # 5. Validate folder_id if provided
+        folder_id = request.folder_id
+        if folder_id is not None:
+            await cursor.execute(
+                "SELECT id FROM CHAT_FOLDERS WHERE id = ? AND user_id = ?",
+                (folder_id, current_user.id)
+            )
+            if not await cursor.fetchone():
+                raise HTTPException(status_code=400, detail="Invalid folder_id")
+
+        # 6. Build branch name
+        branch_name = f"{source_chat_name} (branch)" if source_chat_name else None
+
+        # 7. Create new conversation
+        await cursor.execute('''
+            INSERT INTO CONVERSATIONS (user_id, role_id, llm_id, folder_id, active_extension_id,
+                                       branched_from_id, branched_at_message_id, chat_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+        ''', (current_user.id, source_role_id, source_llm_id, folder_id,
+              source_extension_id, conversation_id, request.message_id, branch_name))
+        new_conv_id = (await cursor.fetchone())[0]
+
+        # 8. Copy messages up to and including message_id
+        #    Bookmarks reset to 0, user_id set to current_user.id (defensive)
+        await cursor.execute('''
+            INSERT INTO MESSAGES (conversation_id, user_id, message, type, date,
+                                  input_tokens_used, output_tokens_used, is_bookmarked, llm_id, citations_json)
+            SELECT ?, ?, message, type, date,
+                   input_tokens_used, output_tokens_used, 0, llm_id, citations_json
+            FROM MESSAGES
+            WHERE conversation_id = ? AND id <= ?
+            ORDER BY id ASC
+        ''', (new_conv_id, current_user.id, conversation_id, request.message_id))
+
+        # 9. Copy media files + rewrite URLs
+        hash_prefix1, hash_prefix2, user_hash = generate_user_hash(current_user.username)
+        old_conv_str = f"{conversation_id:07d}"
+        new_conv_str = f"{new_conv_id:07d}"
+
+        src_dir = os.path.join(users_directory, hash_prefix1, hash_prefix2, user_hash,
+                               "files", old_conv_str[:3], old_conv_str[3:])
+        dst_dir = os.path.join(users_directory, hash_prefix1, hash_prefix2, user_hash,
+                               "files", new_conv_str[:3], new_conv_str[3:])
+
+        try:
+            if os.path.exists(src_dir):
+                shutil.copytree(src_dir, dst_dir)
+
+                old_path_segment = f"files/{old_conv_str[:3]}/{old_conv_str[3:]}"
+                new_path_segment = f"files/{new_conv_str[:3]}/{new_conv_str[3:]}"
+                await cursor.execute('''
+                    UPDATE MESSAGES
+                    SET message = REPLACE(message, ?, ?)
+                    WHERE conversation_id = ? AND message LIKE ?
+                ''', (old_path_segment, new_path_segment, new_conv_id, f'%{old_path_segment}%'))
+
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            if os.path.exists(dst_dir):
+                shutil.rmtree(dst_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail="Failed to branch conversation")
+
+        # 10. Build response (matches /api/conversations/new format + branch fields)
+        try:
+            await cursor.execute('''
+                SELECT
+                    (SELECT l.machine FROM LLM l WHERE l.id = ?) AS machine,
+                    (SELECT l.model FROM LLM l WHERE l.id = ?) AS llm_model,
+                    (SELECT p.name FROM PROMPTS p WHERE p.id = ?) AS prompt_name
+            ''', (source_llm_id, source_llm_id, source_role_id))
+            machine, llm_model, prompt_name = await cursor.fetchone()
+
+            forced_llm_id_value = None
+            allowed_llms_value = None
+            hide_llm_name_value = None
+            extensions_enabled_value = False
+            is_paid_value = False
+            disable_web_search_value = False
+            force_web_search_value = False
+
+            if source_role_id:
+                await cursor.execute('''
+                    SELECT forced_llm_id, allowed_llms, hide_llm_name, extensions_enabled,
+                           COALESCE(is_paid, 0), COALESCE(disable_web_search, 0), COALESCE(force_web_search, 0)
+                    FROM PROMPTS WHERE id = ?
+                ''', (source_role_id,))
+                prompt_config = await cursor.fetchone()
+                if prompt_config:
+                    forced_llm_id_value = prompt_config[0]
+                    allowed_llms_value = prompt_config[1]
+                    hide_llm_name_value = prompt_config[2]
+                    extensions_enabled_value = bool(prompt_config[3])
+                    is_paid_value = bool(prompt_config[4])
+                    disable_web_search_value = bool(prompt_config[5])
+                    force_web_search_value = bool(prompt_config[6])
+
+            response_data = {
+                'id': new_conv_id,
+                'name': branch_name or "New Chat",
+                'machine': machine,
+                'prompt_name': prompt_name,
+                'locked': False,
+                'llm_model': llm_model,
+                'forced_llm_id': forced_llm_id_value,
+                'hide_llm_name': bool(hide_llm_name_value) if hide_llm_name_value else False,
+                'allowed_llms': orjson.loads(allowed_llms_value) if allowed_llms_value else None,
+                'extensions_enabled': extensions_enabled_value,
+                'is_paid': is_paid_value,
+                'web_search_allowed': not disable_web_search_value,
+                'web_search_forced': force_web_search_value,
+                'messages_copied': messages_count,
+                'branched_from_id': conversation_id,
+            }
+
+            if extensions_enabled_value and source_role_id:
+                if source_extension_id:
+                    await cursor.execute('''
+                        SELECT id, name, slug, description FROM PROMPT_EXTENSIONS WHERE id = ?
+                    ''', (source_extension_id,))
+                    ext_row = await cursor.fetchone()
+                    if ext_row:
+                        response_data['active_extension'] = {
+                            "id": ext_row[0], "name": ext_row[1],
+                            "slug": ext_row[2], "description": ext_row[3] or ""
+                        }
+
+                await cursor.execute('''
+                    SELECT id, name, slug, description FROM PROMPT_EXTENSIONS
+                    WHERE prompt_id = ? ORDER BY display_order
+                ''', (source_role_id,))
+                ext_rows = await cursor.fetchall()
+                response_data['extensions'] = [
+                    {"id": r[0], "name": r[1], "slug": r[2], "description": r[3] or ""}
+                    for r in ext_rows
+                ]
+
+                await cursor.execute(
+                    "SELECT extensions_free_selection FROM PROMPTS WHERE id = ?", (source_role_id,)
+                )
+                fs_row = await cursor.fetchone()
+                response_data['extensions_free_selection'] = bool(fs_row[0]) if fs_row else True
+
+            return JSONResponse(content=response_data, status_code=201)
+        except Exception as e:
+            logger.error(f"Branch created (id={new_conv_id}) but response building failed: {e}")
+            return JSONResponse(content={
+                'id': new_conv_id,
+                'name': branch_name or "New Chat",
+                'machine': None,
+                'llm_model': None,
+                'prompt_name': None,
+                'locked': False,
+                'messages_copied': messages_count,
+                'branched_from_id': conversation_id,
+            }, status_code=201)
 
 
 @app.websocket("/ws")
@@ -10146,6 +10520,10 @@ async def websocket_endpoint(websocket: WebSocket):
         current_user = await get_current_user_from_websocket(websocket)
         if current_user is None:
             await websocket.close(code=4401, reason="Session expired")
+            return
+
+        if READONLY_MODE:
+            await websocket.close(code=1013, reason="Read-only mode active")
             return
 
         while True:
@@ -10160,6 +10538,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 task = asyncio.create_task(handle_tts_request(websocket, data, current_user))
                 manager.active_connections[websocket]["task"] = task
 
+            elif action == 'start_tts_ws':
+                if manager.active_connections[websocket]["task"]:
+                    manager.active_connections[websocket]["task"].cancel()
+                task = asyncio.create_task(
+                    handle_tts_request(websocket, data, current_user, ws_mode=True)
+                )
+                manager.active_connections[websocket]["task"] = task
+
             elif action == 'stop':
                 if manager.active_connections[websocket]["task"]:
                     manager.active_connections[websocket]["task"].cancel()
@@ -10171,12 +10557,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.post('/api/get-tts-audio')
-async def get_tts_audio_endpoint(request: Request):
+async def get_tts_audio_endpoint(request: Request, current_user: User = Depends(get_current_user)):
     data = await request.json()
     text = data.get('text')
     conversationId = data.get('conversationId')
     author = data.get('author', 'bot')
-    current_user = await get_current_user(request)
 
     if conversationId is None:
         return JSONResponse(status_code=400, content={'error': 'conversationId not provided'})
@@ -10198,6 +10583,9 @@ async def get_tts_audio_endpoint(request: Request):
             return FileResponse(full_path_opus, media_type='audio/ogg')
         else:
             return Response(status_code=204)
+    except ValueError as ve:
+        logger.warning(f"TTS audio lookup failed: {ve}")
+        return Response(status_code=204)
     except Exception as e:
         logger.error(f"Error in get_tts_audio_endpoint: {e}")
         return JSONResponse(status_code=500, content={'error': 'Internal server error'})
@@ -13379,6 +13767,202 @@ async def admin_whatsapp_save(request: Request, current_user: User = Depends(get
     return RedirectResponse(url="/admin/whatsapp", status_code=303)
 
 
+# ============================================================================
+# Telegram Admin
+# ============================================================================
+
+@app.get("/admin/telegram", response_class=HTMLResponse)
+async def admin_telegram(request: Request, current_user: User = Depends(get_current_user)):
+    """Admin dashboard for Telegram configuration."""
+    if current_user is None:
+        return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
+    if not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    message = request.query_params.get("message")
+    error = request.query_params.get("error")
+
+    bot_info = None
+    webhook_info = None
+    expected_webhook_url = f"https://{PRIMARY_APP_DOMAIN}/telegram"
+    if async_telegram:
+        try:
+            bot_info = await async_telegram.get_me()
+            raw_wh = await async_telegram.get_webhook_info()
+            current_url = raw_wh.get("url", "")
+            webhook_info = {
+                "current_url": current_url,
+                "expected_url": expected_webhook_url,
+                "match": current_url == expected_webhook_url,
+            }
+        except Exception as e:
+            logger.error(f"Failed to get Telegram bot info: {e}")
+            webhook_info = {"error": str(e)}
+
+    # Get configurable messages from SYSTEM_CONFIG
+    unknown_user_message = ""
+    welcome_message = ""
+    require_phone_verification = False
+    try:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                "SELECT key, value FROM SYSTEM_CONFIG WHERE key LIKE 'telegram_%'"
+            )
+            rows = await cursor.fetchall()
+            config = {row[0]: row[1] for row in rows}
+            unknown_user_message = config.get('telegram_unknown_user_message', '')
+            welcome_message = config.get('telegram_welcome_message', '')
+            require_phone_verification = config.get('telegram_require_phone_verification', '0') == '1'
+    except Exception:
+        pass
+
+    # Get active Telegram users
+    telegram_users = []
+    try:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute('''
+                SELECT u.username, u.telegram_chat_id, ud.external_platforms
+                FROM USERS u
+                JOIN USER_DETAILS ud ON u.id = ud.user_id
+                WHERE u.telegram_chat_id IS NOT NULL
+            ''')
+            rows = await cursor.fetchall()
+            for row in rows:
+                try:
+                    platforms = orjson.loads(row[2]) if row[2] else {}
+                    tg = platforms.get('telegram')
+                    if tg:
+                        chat_id_str = str(row[1]) if row[1] else ""
+                        if len(chat_id_str) > 5:
+                            chat_id_display = chat_id_str[:3] + "***" + chat_id_str[-2:]
+                        else:
+                            chat_id_display = chat_id_str
+
+                        last_msg_cursor = await conn.execute(
+                            "SELECT MAX(timestamp) FROM TELEGRAM_LOG WHERE chat_id = ?",
+                            (row[1],)
+                        )
+                        last_msg_row = await last_msg_cursor.fetchone()
+                        last_message = last_msg_row[0] if last_msg_row and last_msg_row[0] else None
+
+                        telegram_users.append({
+                            "username": row[0],
+                            "chat_id_display": chat_id_display,
+                            "conversation_id": tg.get("conversation_id", "N/A"),
+                            "answer_mode": tg.get("answer", "text"),
+                            "last_message": last_message
+                        })
+                except (orjson.JSONDecodeError, TypeError):
+                    continue
+    except Exception:
+        pass
+
+    # Get today's stats
+    stats = {"messages_today": 0, "active_users_today": 0, "text_count": 0, "voice_count": 0}
+    try:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM TELEGRAM_LOG WHERE timestamp >= date('now')"
+            )
+            row = await cursor.fetchone()
+            stats["messages_today"] = row[0] if row else 0
+
+            cursor = await conn.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM TELEGRAM_LOG WHERE timestamp >= date('now')"
+            )
+            row = await cursor.fetchone()
+            stats["active_users_today"] = row[0] if row else 0
+
+            cursor = await conn.execute(
+                "SELECT response_mode, COUNT(*) FROM TELEGRAM_LOG WHERE timestamp >= date('now') AND direction = 'in' GROUP BY response_mode"
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                if row[0] == 'text':
+                    stats["text_count"] = row[1]
+                elif row[0] == 'voice':
+                    stats["voice_count"] = row[1]
+    except Exception:
+        pass
+
+    context = await get_template_context(request, current_user)
+    context.update({
+        "message": message,
+        "error": error,
+        "telegram_configured": async_telegram is not None,
+        "bot_info": bot_info,
+        "webhook_info": webhook_info,
+        "expected_webhook_url": expected_webhook_url,
+        "telegram_users": telegram_users,
+        "unknown_user_message": unknown_user_message,
+        "welcome_message": welcome_message,
+        "require_phone_verification": require_phone_verification,
+        "stats": stats,
+    })
+    return templates.TemplateResponse("admin_telegram.html", context)
+
+
+@app.post("/admin/telegram", response_class=HTMLResponse)
+async def admin_telegram_save(request: Request, current_user: User = Depends(get_current_user)):
+    """Save Telegram admin configuration."""
+    if current_user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if async_telegram is None:
+        return RedirectResponse(url="/admin/telegram?error=Telegram bot not configured. Set TELEGRAM_BOT_TOKEN in .env", status_code=303)
+
+    form = await request.form()
+    action = form.get("action")
+
+    if action == "save_config":
+        unknown_msg = form.get("unknown_user_message", "").strip()
+        welcome_msg = form.get("welcome_message", "").strip()
+        require_verification = "1" if form.get("require_phone_verification") else "0"
+
+        try:
+            async with get_db_connection() as conn:
+                await conn.execute("""
+                    INSERT INTO SYSTEM_CONFIG (key, value, description, updated_at)
+                    VALUES ('telegram_unknown_user_message', ?, 'Message sent to unregistered Telegram users', CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """, (unknown_msg,))
+                await conn.execute("""
+                    INSERT INTO SYSTEM_CONFIG (key, value, description, updated_at)
+                    VALUES ('telegram_welcome_message', ?, 'Welcome message for new Telegram conversations', CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """, (welcome_msg,))
+                await conn.execute("""
+                    INSERT INTO SYSTEM_CONFIG (key, value, description, updated_at)
+                    VALUES ('telegram_require_phone_verification', ?, 'Require phone verification for Telegram', CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """, (require_verification,))
+                await conn.commit()
+
+            return RedirectResponse(url="/admin/telegram?message=Configuration saved successfully", status_code=303)
+        except Exception as e:
+            logger.error(f"Error saving Telegram config: {e}")
+            return RedirectResponse(url="/admin/telegram?error=Failed to save configuration", status_code=303)
+
+    if action == "fix_webhook":
+        webhook_url = f"https://{PRIMARY_APP_DOMAIN}/telegram"
+        try:
+            await async_telegram.set_webhook(webhook_url, TELEGRAM_WEBHOOK_SECRET)
+            return RedirectResponse(
+                url=f"/admin/telegram?message=Webhook URL updated to {webhook_url}",
+                status_code=303
+            )
+        except Exception as e:
+            logger.error(f"Failed to update Telegram webhook: {e}")
+            return RedirectResponse(
+                url=f"/admin/telegram?error=Failed to update webhook: {e}",
+                status_code=303
+            )
+
+    return RedirectResponse(url="/admin/telegram", status_code=303)
+
+
 # Whatsapp
 
 phone_user_not_found = os.getenv(
@@ -13386,20 +13970,19 @@ phone_user_not_found = os.getenv(
     "This phone number is not registered on the platform. Please contact the administrator or sign up to get started."
 )
 
-async def change_response_mode(user_id, new_mode, conn):
-    async with conn.cursor() as cursor:
-        await cursor.execute('SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?', (user_id,))
-        result = await cursor.fetchone()
-        external_platforms = orjson.loads(result[0]) if result and result[0] else {}
+async def change_response_mode(user_id, new_mode, conn, platform="whatsapp"):
+    """Change response mode for a platform. Used by webhook command handlers.
 
-        whatsapp_data = external_platforms.get('whatsapp', {})
-        whatsapp_data["answer"] = new_mode
-        external_platforms['whatsapp'] = whatsapp_data
-
-        await cursor.execute('UPDATE USER_DETAILS SET external_platforms = ? WHERE user_id = ?', 
-                             (orjson.dumps(external_platforms).decode('utf-8'), user_id))
-        await conn.commit()
-
+    Connection is always required. Commits internally.
+    Uses json_set for atomic JSON update.
+    """
+    await conn.execute(
+        """UPDATE USER_DETAILS SET external_platforms =
+           json_set(COALESCE(NULLIF(external_platforms, ''), '{}'), ?, ?)
+           WHERE user_id = ?""",
+        (f'$.{platform}.answer', new_mode, user_id),
+    )
+    await conn.commit()
     return f"Changed to {'voice' if new_mode == 'voice' else 'text'} mode"
 
 
@@ -13409,6 +13992,11 @@ _whatsapp_rate_limit_notices = {}  # {phone_number: last_notice_timestamp}
 WHATSAPP_RATE_LIMIT_PER_USER = int(os.getenv("WHATSAPP_RATE_LIMIT_PER_USER", "20"))  # messages per minute
 WHATSAPP_RATE_LIMIT_GLOBAL = int(os.getenv("WHATSAPP_RATE_LIMIT_GLOBAL", "200"))  # messages per minute
 _whatsapp_global_timestamps = []
+
+# Telegram rate limiting (in-memory)
+_telegram_rate_limits: dict[str, list[float]] = {}
+_telegram_rate_limit_notices: dict[str, float] = {}
+_telegram_global_timestamps: list[float] = []
 
 
 @app.post("/whatsapp")
@@ -14007,6 +14595,608 @@ async def whatsapp_webhook(request: Request):
         return JSONResponse(content={"status": "error"}, status_code=200)
 
     return {"status": "success"}
+
+
+# ============================================================================
+# Telegram Webhook
+# ============================================================================
+
+async def _log_telegram(
+    direction: str, user_id: int, chat_id: int, message_type: str, response_mode: str
+):
+    """Insert a row into TELEGRAM_LOG and clean up old entries."""
+    try:
+        async with get_db_connection() as conn:
+            await conn.execute(
+                '''INSERT INTO TELEGRAM_LOG (user_id, chat_id, direction, message_type, response_mode)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (user_id, chat_id, direction, message_type, response_mode),
+            )
+            # Retention cleanup: delete entries older than 90 days
+            await conn.execute(
+                "DELETE FROM TELEGRAM_LOG WHERE timestamp < datetime('now', '-90 days')"
+            )
+            await conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to log Telegram message: {e}")
+
+
+def _chunk_telegram_response(text: str, max_len: int = 3800) -> list[str]:
+    """Split text into chunks at sentence boundaries, respecting Telegram's 4096 char limit."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        split_at = max_len
+        for sep in ['\n\n', '\n', '. ', '! ', '? ']:
+            idx = text.rfind(sep, 0, max_len)
+            if idx > max_len // 2:
+                split_at = idx + len(sep)
+                break
+        chunks.append(text[:split_at])
+        text = text[split_at:]
+    return chunks
+
+
+@app.post("/telegram")
+async def telegram_webhook(request: Request):
+    """Handle incoming Telegram Bot API updates."""
+    if async_telegram is None:
+        logger.warning("Telegram webhook called but bot is not configured")
+        return JSONResponse(content={"ok": True})
+
+    # Validate secret token
+    received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if received_secret != TELEGRAM_WEBHOOK_SECRET:
+        logger.warning(f"Invalid Telegram webhook secret from {request.client.host}")
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+    try:
+        update = await request.json()
+    except Exception:
+        return JSONResponse(content={"ok": True})
+
+    # Only process message updates
+    message = update.get("message")
+    if not message:
+        return JSONResponse(content={"ok": True})
+
+    update_id = update.get("update_id")
+    chat_id = message.get("chat", {}).get("id")
+    text = (message.get("text") or "").strip()
+
+    if not chat_id:
+        return JSONResponse(content={"ok": True})
+
+    # --- Idempotency: deduplicate by update_id ---
+    if update_id:
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "DELETE FROM TELEGRAM_PROCESSED_UPDATES WHERE created_at < datetime('now', '-1 day')"
+            )
+            cursor = await conn.execute(
+                "INSERT OR IGNORE INTO TELEGRAM_PROCESSED_UPDATES (update_id) VALUES (?)",
+                (update_id,),
+            )
+            await conn.commit()
+            if cursor.rowcount == 0:
+                return JSONResponse(content={"ok": True})
+
+    # --- Rate limiting ---
+    now = time.time()
+
+    # Global
+    _telegram_global_timestamps[:] = [
+        t for t in _telegram_global_timestamps if now - t < 60
+    ]
+    if len(_telegram_global_timestamps) >= TELEGRAM_RATE_LIMIT_GLOBAL:
+        logger.warning("Telegram global rate limit exceeded")
+        return JSONResponse(content={"ok": True})
+    _telegram_global_timestamps.append(now)
+
+    # Per-user
+    user_key = str(chat_id)
+    user_timestamps = _telegram_rate_limits.get(user_key, [])
+    user_timestamps = [t for t in user_timestamps if now - t < 60]
+    _telegram_rate_limits[user_key] = user_timestamps
+
+    if len(user_timestamps) >= TELEGRAM_RATE_LIMIT_PER_USER:
+        last_notice = _telegram_rate_limit_notices.get(user_key, 0)
+        if now - last_notice > 300:
+            _telegram_rate_limit_notices[user_key] = now
+            try:
+                await async_telegram.send_message(
+                    chat_id,
+                    "You're sending too many messages. Please wait a moment.",
+                )
+            except Exception:
+                pass
+        return JSONResponse(content={"ok": True})
+
+    user_timestamps.append(now)
+    _telegram_rate_limits[user_key] = user_timestamps
+
+    # --- User lookup ---
+    try:
+        current_user = await get_user_from_telegram_chat_id(chat_id)
+
+        # If not linked, check if this is a contact-sharing message
+        if current_user is None:
+            contact = message.get("contact")
+            if contact:
+                # Validate that the contact belongs to the sender
+                sender_id = message.get("from", {}).get("id")
+                contact_user_id = contact.get("user_id")
+                if not contact_user_id or contact_user_id != sender_id:
+                    await async_telegram.send_message(
+                        chat_id,
+                        "Please share YOUR OWN phone number using the button below, "
+                        "not someone else's contact.",
+                        reply_markup={
+                            "keyboard": [
+                                [{"text": "Share my phone number", "request_contact": True}]
+                            ],
+                            "one_time_keyboard": True,
+                            "resize_keyboard": True,
+                        },
+                    )
+                    return JSONResponse(content={"ok": True})
+
+                # Normalize phone number
+                import re
+                phone = re.sub(r'[\s\-\(\)]', '', contact.get("phone_number", ""))
+                if not phone.startswith("+"):
+                    phone = f"+{phone}"
+
+                linked_user = await get_user_from_phone_number(phone)
+                if linked_user:
+                    # Check if account is enabled before linking
+                    if not linked_user.is_enabled:
+                        await async_telegram.send_message(
+                            chat_id,
+                            "Your account is currently disabled. Contact support.",
+                        )
+                        return JSONResponse(content={"ok": True})
+
+                    # Handle IntegrityError from unique constraint
+                    try:
+                        async with get_db_connection() as conn:
+                            await conn.execute(
+                                "UPDATE USERS SET telegram_chat_id = ? WHERE id = ?",
+                                (chat_id, linked_user.id),
+                            )
+                            await conn.commit()
+                    except Exception as link_err:
+                        if "UNIQUE" in str(link_err).upper():
+                            await async_telegram.send_message(
+                                chat_id,
+                                "This Telegram account is already linked to another user.",
+                            )
+                        else:
+                            await async_telegram.send_message(
+                                chat_id,
+                                "An error occurred linking your account. Please try again.",
+                            )
+                            logger.error(f"Telegram link error: {link_err}")
+                        return JSONResponse(content={"ok": True})
+
+                    # Send welcome message
+                    try:
+                        async with get_db_connection(readonly=True) as conn:
+                            cursor = await conn.execute(
+                                "SELECT value FROM SYSTEM_CONFIG WHERE key = 'telegram_welcome_message'"
+                            )
+                            row = await cursor.fetchone()
+                        welcome = (row[0] if row and row[0] else "").replace(
+                            "{username}", linked_user.username
+                        )
+                        if not welcome:
+                            welcome = (
+                                f"Account linked! Welcome, {linked_user.username}.\n\n"
+                                "You can now send messages and I'll respond with AI. "
+                                "Type !help to see available commands."
+                            )
+                        await async_telegram.send_message(chat_id, welcome)
+                    except Exception as e:
+                        logger.error(f"Failed to send Telegram welcome: {e}")
+
+                    await _log_telegram('in', linked_user.id, chat_id, 'contact', 'text')
+                    return JSONResponse(content={"ok": True})
+                else:
+                    # Phone not found in our system
+                    try:
+                        async with get_db_connection(readonly=True) as conn:
+                            cursor = await conn.execute(
+                                "SELECT value FROM SYSTEM_CONFIG WHERE key = 'telegram_unknown_user_message'"
+                            )
+                            row = await cursor.fetchone()
+                        msg = row[0] if row and row[0] else "This phone number is not registered on the platform."
+                        await async_telegram.send_message(chat_id, msg)
+                    except Exception:
+                        pass
+                    return JSONResponse(content={"ok": True})
+            else:
+                # Not linked and didn't share contact -- ask them to share
+                await async_telegram.send_message(
+                    chat_id,
+                    "Welcome! Please share your phone number to link your account.",
+                    reply_markup={
+                        "keyboard": [
+                            [{"text": "Share my phone number", "request_contact": True}]
+                        ],
+                        "one_time_keyboard": True,
+                        "resize_keyboard": True,
+                    },
+                )
+                return JSONResponse(content={"ok": True})
+
+        # --- Phone verification check (if enabled) ---
+        try:
+            async with get_db_connection(readonly=True) as conn:
+                cfg_cursor = await conn.execute(
+                    "SELECT value FROM SYSTEM_CONFIG WHERE key = 'telegram_require_phone_verification'"
+                )
+                cfg_row = await cfg_cursor.fetchone()
+            if cfg_row and cfg_row[0] == '1':
+                async with get_db_connection(readonly=True) as conn:
+                    v_cursor = await conn.execute(
+                        "SELECT phone_verified FROM USERS WHERE id = ?",
+                        (current_user.id,),
+                    )
+                    v_row = await v_cursor.fetchone()
+                if not v_row or not v_row[0]:
+                    await async_telegram.send_message(
+                        chat_id,
+                        "Your phone number must be verified before using Telegram. "
+                        "Please verify it in your account settings.",
+                    )
+                    return JSONResponse(content={"ok": True})
+        except Exception:
+            pass  # Fail open for backward compatibility
+
+        # --- Get or create conversation ---
+        async with get_db_connection() as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                'SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?',
+                (current_user.id,),
+            )
+            result = await cursor.fetchone()
+            platforms = orjson.loads(result[0]) if result and result[0] else {}
+            telegram_data = platforms.get('telegram', {})
+
+            if not telegram_data or not telegram_data.get('conversation_id'):
+                conversation_response = await start_new_conversation(
+                    NewConversationRequest(), current_user=current_user
+                )
+                conversation_content = orjson.loads(
+                    conversation_response.body.decode('utf-8')
+                )
+                new_conv_id = conversation_content['id']
+
+                await cursor.execute(
+                    """UPDATE USER_DETAILS SET external_platforms =
+                       json_set(COALESCE(NULLIF(external_platforms, ''), '{}'),
+                                '$.telegram.conversation_id', ?,
+                                '$.telegram.answer', 'text')
+                       WHERE user_id = ?""",
+                    (new_conv_id, current_user.id),
+                )
+                await conn.commit()
+                telegram_data = {"conversation_id": new_conv_id, "answer": "text"}
+
+            conversation_id = telegram_data["conversation_id"]
+            answer_mode = telegram_data.get("answer", "text")
+
+        # --- Command handling ---
+        if text.lower() == "!help":
+            help_text = (
+                "*Available commands:*\n\n"
+                "!help - Show this help message\n"
+                "!text - Switch to text responses\n"
+                "!voice - Switch to voice responses\n"
+                "!prompt list - List available prompts\n"
+                "!prompt <name|id> - Switch prompt\n"
+                "!new - Start a new conversation\n"
+                "!unlink - Unlink Telegram from your account"
+            )
+            await async_telegram.send_message(chat_id, help_text, parse_mode="Markdown")
+            return JSONResponse(content={"ok": True})
+
+        if text.lower() in ("!text", "text_mode"):
+            async with get_db_connection() as conn:
+                await change_response_mode(current_user.id, "text", conn, platform="telegram")
+            await async_telegram.send_message(chat_id, "Switched to text mode.")
+            return JSONResponse(content={"ok": True})
+
+        if text.lower() in ("!voice", "voice_mode"):
+            async with get_db_connection() as conn:
+                await change_response_mode(current_user.id, "voice", conn, platform="telegram")
+            await async_telegram.send_message(chat_id, "Switched to voice mode.")
+            return JSONResponse(content={"ok": True})
+
+        if text.lower() == "!unlink":
+            async with get_db_connection() as conn:
+                await conn.execute(
+                    "UPDATE USERS SET telegram_chat_id = NULL WHERE id = ?",
+                    (current_user.id,),
+                )
+                await conn.execute(
+                    "UPDATE USER_DETAILS SET external_platforms = json_remove(COALESCE(NULLIF(external_platforms, ''), '{}'), '$.telegram') WHERE user_id = ?",
+                    (current_user.id,),
+                )
+                await conn.commit()
+            await async_telegram.send_message(
+                chat_id, "Your Telegram has been unlinked from your account."
+            )
+            return JSONResponse(content={"ok": True})
+
+        # !prompt list
+        if text.lower() == "!prompt list":
+            async with get_db_connection() as conn:
+                cursor = await conn.cursor()
+                ud_cursor = await conn.execute(
+                    "SELECT all_prompts_access, public_prompts_access, category_access FROM USER_DETAILS WHERE user_id = ?",
+                    (current_user.id,)
+                )
+                ud_row = await ud_cursor.fetchone()
+                prompts_list = await get_user_accessible_prompts(
+                    current_user, cursor,
+                    all_prompts_access=ud_row[0] if ud_row else False,
+                    public_prompts_access=ud_row[1] if ud_row else False,
+                    category_access=ud_row[2] if ud_row else None
+                )
+
+                if not prompts_list:
+                    await async_telegram.send_message(chat_id, "No prompts available.")
+                    return JSONResponse(content={"ok": True})
+
+                prompt_lines = []
+                for p in prompts_list[:20]:
+                    prompt_lines.append(f"*{p['id']}* - {p['name']}")
+
+                msg = "*Available prompts:*\n\n" + "\n".join(prompt_lines)
+                if len(prompts_list) > 20:
+                    msg += f"\n\n_...and {len(prompts_list) - 20} more_"
+                msg += "\n\nUse *!prompt <id or name>* to switch."
+
+                await async_telegram.send_message(chat_id, msg, parse_mode="Markdown")
+            return JSONResponse(content={"ok": True})
+
+        # !prompt <name or id>
+        if text.lower().startswith("!prompt ") and text.lower() != "!prompt list":
+            prompt_query = text[8:].strip()
+
+            async with get_db_connection() as conn:
+                cursor = await conn.cursor()
+                target_prompt = None
+                if prompt_query.isdigit():
+                    p_cursor = await conn.execute("SELECT id, name FROM PROMPTS WHERE id = ?", (int(prompt_query),))
+                    target_prompt = await p_cursor.fetchone()
+
+                if not target_prompt:
+                    p_cursor = await conn.execute("SELECT id, name FROM PROMPTS WHERE LOWER(name) = LOWER(?)", (prompt_query,))
+                    target_prompt = await p_cursor.fetchone()
+
+                if not target_prompt:
+                    p_cursor = await conn.execute("SELECT id, name FROM PROMPTS WHERE LOWER(name) LIKE LOWER(?)", (f"%{prompt_query}%",))
+                    target_prompt = await p_cursor.fetchone()
+
+                if not target_prompt:
+                    await async_telegram.send_message(
+                        chat_id,
+                        f"Prompt not found: '{prompt_query}'. Use *!prompt list* to see available prompts.",
+                        parse_mode="Markdown"
+                    )
+                    return JSONResponse(content={"ok": True})
+
+                if not await can_user_access_prompt(current_user, target_prompt[0], cursor):
+                    await async_telegram.send_message(chat_id, "You don't have access to this prompt.")
+                    return JSONResponse(content={"ok": True})
+
+                await cursor.execute(
+                    "UPDATE CONVERSATIONS SET role_id = ? WHERE id = ?",
+                    (target_prompt[0], conversation_id)
+                )
+                await conn.commit()
+
+                await async_telegram.send_message(
+                    chat_id,
+                    f"Switched to prompt: *{target_prompt[1]}*",
+                    parse_mode="Markdown"
+                )
+            return JSONResponse(content={"ok": True})
+
+        # !new - Start a new conversation
+        if text.lower() == "!new":
+            conversation_response = await start_new_conversation(NewConversationRequest(), current_user=current_user)
+            conversation_content = orjson.loads(conversation_response.body.decode('utf-8'))
+            new_conv_id = conversation_content['id']
+
+            async with get_db_connection() as conn:
+                await conn.execute(
+                    """UPDATE USER_DETAILS SET external_platforms =
+                       json_set(COALESCE(NULLIF(external_platforms, ''), '{}'),
+                                '$.telegram.conversation_id', ?)
+                       WHERE user_id = ?""",
+                    (new_conv_id, current_user.id),
+                )
+                await conn.commit()
+
+            await async_telegram.send_message(
+                chat_id,
+                "New conversation started. Previous conversation saved and accessible from the web."
+            )
+            return JSONResponse(content={"ok": True})
+
+        # --- Check conversation lock ---
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                'SELECT locked FROM CONVERSATIONS WHERE id = ?', (conversation_id,)
+            )
+            lock_row = await cursor.fetchone()
+            if lock_row and lock_row[0]:
+                await async_telegram.send_message(
+                    chat_id,
+                    "This conversation is locked. Send !new to start a fresh one.",
+                )
+                await _log_telegram('in', current_user.id, chat_id, 'text', answer_mode)
+                return JSONResponse(content={"ok": True})
+
+        # --- Media processing ---
+        transcribed_text = ""
+        files_list = []
+
+        # Voice message
+        voice = message.get("voice")
+        if voice:
+            try:
+                file_info = await async_telegram.get_file(voice["file_id"])
+                media_bytes = await async_telegram.download_file(file_info["file_path"])
+                # Transcribe via STT (use media_url=None, pass audio bytes directly)
+                transcribed_text = await transcribe(request=request, audio=None, user_id=current_user.id, media_url=None)
+                # Note: transcribe() currently needs either audio UploadFile or media_url.
+                # For Telegram voice, we have raw bytes. We'll save to temp file and pass.
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+                    tmp.write(media_bytes)
+                    tmp_path = tmp.name
+                try:
+                    # Use the transcription engine directly
+                    if stt_engine == "elevenlabs":
+                        transcribed_text = await transcribe_with_elevenlabs(audio_content=media_bytes)
+                    else:
+                        transcribed_text = await transcribe_with_deepgram(audio_content=media_bytes)
+                finally:
+                    import os as _os
+                    try:
+                        _os.unlink(tmp_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"Error transcribing Telegram voice: {e}")
+                await async_telegram.send_message(
+                    chat_id,
+                    "Sorry, there was a problem processing the audio. Please try sending your message as text.",
+                )
+                return JSONResponse(content={"ok": True})
+
+        # Photo (get largest size)
+        photos = message.get("photo")
+        if photos:
+            try:
+                largest = photos[-1]  # Telegram sends sizes in ascending order
+                file_info = await async_telegram.get_file(largest["file_id"])
+                media_bytes = await async_telegram.download_file(file_info["file_path"])
+                files_list.append({
+                    'data': media_bytes,
+                    'content_type': "image/jpeg",
+                    'filename': "telegram_photo.jpg"
+                })
+            except Exception as e:
+                logger.error(f"Error downloading Telegram photo: {e}")
+
+        user_message = transcribed_text if transcribed_text else text
+        if not user_message and not files_list:
+            return JSONResponse(content={"ok": True})
+
+        # Log incoming message
+        msg_type = "audio" if transcribed_text else ("image" if files_list else "text")
+        await _log_telegram('in', current_user.id, chat_id, msg_type, answer_mode)
+
+        # --- Process message through AI ---
+        files = files_list if files_list else None
+        response = await process_save_message(
+            request=request,
+            conversation_id=conversation_id,
+            current_user=current_user,
+            text_plain=user_message,
+            files=files,
+            full_response=False,
+            is_whatsapp=True,  # Same non-streaming behavior as WhatsApp
+            thinking_budget_tokens=None
+        )
+
+        if isinstance(response, StreamingResponse):
+            accumulated_text = ""
+            async for chunk in response.body_iterator:
+                chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
+
+                for line in chunk_str.split('\n'):
+                    if line[:5] == 'data:':
+                        try:
+                            data = orjson.loads(line[5:].strip())
+                            content = data.get('content', '')
+
+                            if isinstance(content, list):
+                                # Image/audio content - skip for now in Telegram
+                                pass
+                            else:
+                                accumulated_text += content
+                        except orjson.JSONDecodeError:
+                            pass
+
+            # Send the accumulated response
+            if accumulated_text.strip():
+                if answer_mode == "voice":
+                    try:
+                        audio_path, error = await handle_tts_request(
+                            None,
+                            {"text": accumulated_text, "author": "bot", "conversationId": conversation_id},
+                            current_user,
+                            is_whatsapp=True
+                        )
+                        if error:
+                            # Fallback to text
+                            for chunk in _chunk_telegram_response(accumulated_text):
+                                await async_telegram.send_message(chat_id, chunk)
+                        else:
+                            # Read the audio file and send as voice
+                            from pathlib import Path
+                            audio_file_path = Path(audio_path)
+                            if audio_file_path.exists():
+                                voice_bytes = audio_file_path.read_bytes()
+                                await async_telegram.send_voice(chat_id, voice_bytes)
+                            else:
+                                for chunk in _chunk_telegram_response(accumulated_text):
+                                    await async_telegram.send_message(chat_id, chunk)
+                    except Exception as tts_err:
+                        logger.error(f"Telegram TTS error: {tts_err}")
+                        for chunk in _chunk_telegram_response(accumulated_text):
+                            await async_telegram.send_message(chat_id, chunk)
+                else:
+                    for chunk in _chunk_telegram_response(accumulated_text):
+                        await async_telegram.send_message(chat_id, chunk)
+        else:
+            # Handle non-streaming responses (rate limit, insufficient balance, etc.)
+            status_code = response.status_code if hasattr(response, 'status_code') else 500
+            error_messages = {
+                429: "You've sent too many messages. Please wait a moment.",
+                402: "Insufficient balance. Please top up your account.",
+                403: "This conversation is not available.",
+            }
+            user_msg = error_messages.get(status_code, "Sorry, your message could not be processed. Please try again.")
+            await async_telegram.send_message(chat_id, user_msg)
+
+        # Log outgoing response
+        await _log_telegram('out', current_user.id, chat_id, 'text', answer_mode)
+
+        return JSONResponse(content={"ok": True})
+
+    except Exception as e:
+        logger.error(f"Telegram webhook error: {e}", exc_info=True)
+        try:
+            await async_telegram.send_message(
+                chat_id,
+                "An error occurred processing your message. Please try again.",
+            )
+        except Exception:
+            pass
+        return JSONResponse(content={"ok": True})
 
 
 @app.get("/get-audio/{path:path}")
@@ -22360,6 +23550,7 @@ if __name__ == '__main__':
     dual_mode = False
     use_ssl = True
     host = '0.0.0.0'
+    worker_count = int(os.getenv("UVICORN_WORKERS", "3"))
     
     if 'dev' in sys.argv:
         # Development mode: HTTP only
@@ -22419,7 +23610,7 @@ if __name__ == '__main__':
                 log_level="debug",
                 log_config=None,
                 http="httptools",
-                workers=1  # Reduce workers for dual mode
+                workers=worker_count
             )
         
         def start_http():
@@ -22430,7 +23621,7 @@ if __name__ == '__main__':
                 log_level="debug",
                 log_config=None,
                 http="httptools",
-                workers=2  # Reduce workers for dual mode
+                workers=worker_count
             )
         
         # Start both servers in parallel
@@ -22461,17 +23652,17 @@ if __name__ == '__main__':
             log_level="debug",
             log_config=None,
             http="httptools",
-            workers=3
+            workers=worker_count
         )
     else:
         # HTTP only configuration
         print(f"HTTP Server starting on {host}:7789")
         uvicorn.run(
             "app:app",  # Use import string for multi-worker support
-            host=host, 
+            host=host,
             port=7789,
             log_level="debug",
             log_config=None,
             http="httptools",
-            workers=3  # Back to 3 workers with proper import string
+            workers=worker_count
         )

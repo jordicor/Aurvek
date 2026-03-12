@@ -4,10 +4,18 @@
 
 {% block styles %}
 <style>
-    /* Page-specific styles that override or extend admin CSS */
     .voice-code {
         font-family: monospace;
         font-size: 0.85rem;
+    }
+    .btn-default-star {
+        visibility: hidden;
+    }
+    .btn-default-star.is-default {
+        visibility: visible;
+    }
+    .voice-row:hover .btn-default-star {
+        visibility: visible;
     }
 </style>
 {% endblock %}
@@ -53,18 +61,29 @@
                     <th>Voice Name</th>
                     <th>Voice Code</th>
                     <th>TTS Service</th>
+                    <th>Status</th>
                     <th class="text-end">Actions</th>
                 </tr>
             </thead>
             <tbody id="voicesTableBody">
                 {% for voice in voices %}
-                <tr class="voice-row" data-voice-id="{{ voice[0] }}">
+                <tr class="voice-row" data-voice-id="{{ voice[0] }}" {% if voice[5] %}style="opacity: 0.5"{% endif %}>
                     <td><strong>{{ voice[1] }}</strong></td>
                     <td><code class="voice-code">{{ voice[2] }}</code></td>
                     <td>
                         <span class="badge provider-badge provider-{{ voice[3] }}">{{ voice[3] }}</span>
                     </td>
+                    <td>
+                        {% if voice[5] %}
+                        <span class="badge bg-danger" title="Voice no longer available in provider">Deprecated</span>
+                        {% elif voice[4] %}
+                        <span class="badge bg-success">Default</span>
+                        {% endif %}
+                    </td>
                     <td class="text-end table-actions">
+                        <button onclick="setDefault({{ voice[0] }})" class="btn btn-sm btn-default-star {% if voice[4] %}btn-warning is-default{% else %}btn-outline-secondary{% endif %}" title="{% if voice[4] %}Current default{% else %}Set as default{% endif %}" data-bs-toggle="tooltip" {% if voice[5] %}disabled{% endif %}>
+                            <i class="fas fa-star"></i>
+                        </button>
                         {% if voice[3] != 'TTS-ELEVENLABS' %}
                         <a href="/admin/voices/edit/{{ voice[0] }}" class="btn btn-sm btn-outline-primary" title="Edit" data-bs-toggle="tooltip">
                             <i class="fas fa-edit"></i>
@@ -88,6 +107,15 @@
 
 {% block scripts_inline %}
 <script>
+    function setDefault(voiceId) {
+        fetch(`/admin/voices/set-default/${voiceId}`, { method: 'POST' })
+            .then(r => {
+                if (r.ok) location.reload();
+                else NotificationModal.error('Error', 'Failed to set default voice.');
+            })
+            .catch(e => console.error('Error:', e));
+    }
+
     function deleteVoice(voiceId) {
         NotificationModal.confirm(
             'Delete Voice',

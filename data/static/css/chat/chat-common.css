@@ -1441,3 +1441,32 @@ pre.code-block-collapsed {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
 }
+
+/* =============================================
+   Thinking Block (Extended Thinking)
+   ============================================= */
+.thinking-block {
+    margin-bottom: 0.75rem;
+    border-left: 3px solid var(--border-color);
+    padding-left: 0.75rem;
+}
+.thinking-block summary {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    user-select: none;
+}
+.thinking-content {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 400px;
+    overflow-y: auto;
+    margin-top: 0.5rem;
+    margin-bottom: 0;
+    font-family: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+}

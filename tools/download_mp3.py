@@ -76,8 +76,9 @@ async def generate_and_save_mp3(conversation_id: int, user_id: int, is_admin: bo
         voice_id = bot_voice_id if message['type'] == 'bot' else user_voice_id
 
         audio_generator = get_tts_generator(tts_engine, voice_id, chunks)
+        audio_input_format = 'ogg' if tts_engine == 'elevenlabs' else 'mp3'
         async for audio_chunk in audio_generator:
-            audio_segment = AudioSegment.from_mp3(BytesIO(audio_chunk))
+            audio_segment = AudioSegment.from_file(BytesIO(audio_chunk), format=audio_input_format)
             audio_segments.append(audio_segment)
 
     if audio_segments:

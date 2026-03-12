@@ -58,6 +58,15 @@ function connect() {
         }
     };
 
+    ws.onerror = function(event) {
+        console.error('WebSocket connection error', event);
+        isPlaying = false;
+        isWaiting = false;
+        if (Config.currentAudioIcon) {
+            toggleIcons(Config.currentAudioIcon, 'stopped');
+        }
+    };
+
     ws.onclose = function() {
         if (audioQueue.length > 0 && !isPlaying) {
             playNextInQueue();
@@ -83,7 +92,9 @@ function handleFinishedMessage() {
 }
 
 function initAudio() {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (!audioContext || audioContext.state === 'closed') {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
 }
 
 function queueAudioChunk(arrayBuffer) {
@@ -147,9 +158,18 @@ function playNextInQueue() {
 
 function ensureWebSocketConnection() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                if (ws) ws.close();
+                reject(new Error('WebSocket connection timeout'));
+            }, 10000);
+
             connect();
-            ws.onopen = resolve;
+
+            ws.onopen = () => {
+                clearTimeout(timeout);
+                resolve();
+            };
         });
     }
     return Promise.resolve();
@@ -161,15 +181,19 @@ function start_tts(text, audioIcon, author, conversationId) {
         isFinished = false;
         isWaiting = true;
         toggleIcons(audioIcon, 'waiting');
-        
-        ws.send(JSON.stringify({ 
-            action: 'start_tts', 
+
+        ws.send(JSON.stringify({
+            action: 'start_tts_ws',
             text: text,
             author: author,
-            conversationId: conversationId 
+            conversationId: conversationId,
         }));
-        
+
         Config.currentAudioIcon = audioIcon;
+    }).catch((error) => {
+        console.error('TTS connection failed:', error);
+        toggleIcons(audioIcon, 'stopped');
+        isWaiting = false;
     });
 }
 
@@ -227,78 +251,89 @@ function stopAudioAndCloseWebSocket() {
     }
 }
 
-function toggleAudio(text, audioIcon, stopIcon, waitingIcon) {
-    if (isPlaying || isWaiting) {
-        stopAudio(audioIcon);
-    } else {
-        start_tts(text, audioIcon, stopIcon, waitingIcon);
+function stopAllAudio() {
+    // Stop cached Audio element (if playing from cache hit)
+    if (Config.currentAudio) {
+        Config.currentAudio.pause();
+        Config.currentAudio.currentTime = 0;
+        Config.currentAudio = null;
+    }
+
+    // Stop WebSocket streaming (if playing from generator)
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: 'stop' }));
+    }
+    if (sourceNode) {
+        try { sourceNode.stop(); } catch (e) { /* may already be stopped */ }
+    }
+
+    // Reset state
+    isPlaying = false;
+    isWaiting = false;
+    isBuffering = false;
+    audioQueue = [];
+
+    // Reset icon of whichever button was active
+    if (Config.currentAudioIcon) {
+        toggleIcons(Config.currentAudioIcon, 'stopped');
+    }
+
+    if (stopTimer) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
     }
 }
 
 function textToSpeech(text, userId, conversationId, audioIcon, author) {
     if (isPlaying || isWaiting) {
-        stopAudio(audioIcon);
+        stopAllAudio();
         return;
     }
-    if (Config.currentAudio) {
-        Config.currentAudio.pause();
-        Config.currentAudio.currentTime = 0;
-        toggleIcons(Config.currentAudioIcon, 'stopped');
-    }
+    stopAllAudio();  // Clean any residual state
 
-    const selectedConversation = document.querySelector('.list-group-item-action.active-chat');
-    const selectedConversationId = selectedConversation ? selectedConversation.dataset.conversationId : null;
+    const selectedConversation = document.querySelector(
+        '.list-group-item-action.active-chat'
+    );
+    const finalConversationId =
+        (selectedConversation ? selectedConversation.dataset.conversationId : null)
+        || conversationId;
 
-    const finalConversationId = selectedConversationId || conversationId;
+    toggleIcons(audioIcon, 'waiting');
 
-    // Try to get cached audio
-    const playIcon = audioIcon; // Assuming this is the icon element
-    toggleIcons(playIcon, 'waiting');
-
+    // Same cache check as existing button (shared cache)
     fetch('/api/get-tts-audio', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             text: text,
             conversationId: finalConversationId,
-            author: author
-        })
+            author: author,
+        }),
     })
     .then(response => {
-        if (response.ok && response.status !== 204) {
-            return response.blob();
-        } else if (response.status === 204) {
-            throw new Error('Audio not found in cache');
-        } else {
-            throw new Error('Server error');
-        }
+        if (response.ok && response.status !== 204) return response.blob();
+        if (response.status === 204) throw new Error('Audio not found in cache');
+        throw new Error('Server error');
     })
     .then(blob => {
-        // Play cached audio
         const url = URL.createObjectURL(blob);
         Config.currentAudio = new Audio(url);
         Config.currentAudio.play();
-        isPlaying = true; // Set isPlaying to true
-        toggleIcons(playIcon, 'playing');
-
-        // Assign current icon for future reference
-        Config.currentAudioIcon = playIcon;
-
+        isPlaying = true;
+        toggleIcons(audioIcon, 'playing');
+        Config.currentAudioIcon = audioIcon;
         Config.currentAudio.onended = function() {
-            toggleIcons(playIcon, 'stopped');
+            toggleIcons(audioIcon, 'stopped');
             Config.currentAudio = null;
-            isPlaying = false; // Reset isPlaying to false
+            isPlaying = false;
         };
     })
     .catch(error => {
         if (error.message === 'Audio not found in cache') {
-            // If audio is not in cache, proceed to generate via WebSocket
             start_tts(text, audioIcon, author, finalConversationId);
         } else {
             console.error('Error fetching audio:', error);
-            toggleIcons(playIcon, 'stopped');
+            toggleIcons(audioIcon, 'stopped');
         }
     });
 }
@@ -307,19 +342,20 @@ function toggleIcons(audioIcon, state) {
     if (!audioIcon) {
         return;
     }
+    const baseIcon = audioIcon.dataset.baseIcon || 'fa-volume-up';
 
     switch (state) {
         case 'waiting':
-            audioIcon.classList.remove('fa-volume-up', 'fa-stop');
+            audioIcon.classList.remove(baseIcon, 'fa-stop');
             audioIcon.classList.add('fa-hourglass-half');
             break;
         case 'playing':
-            audioIcon.classList.remove('fa-volume-up', 'fa-hourglass-half');
+            audioIcon.classList.remove(baseIcon, 'fa-hourglass-half');
             audioIcon.classList.add('fa-stop');
             break;
         case 'stopped':
             audioIcon.classList.remove('fa-stop', 'fa-hourglass-half');
-            audioIcon.classList.add('fa-volume-up');
+            audioIcon.classList.add(baseIcon);
             break;
         default:
             break;

@@ -1557,12 +1557,12 @@ textarea {
    Components and Additional Styles (re-styled)
    ========================================================== */
    
-#dynamic-chats-container .list-group-item { padding: 8px 10px; margin-bottom: 2px; background-color: transparent; border-radius: 4px; cursor: pointer; transition: background-color 0.3s ease; font-size: 14px; }
-#dynamic-chats-container .list-group-item .chat-name { display: block; white-space: nowrap; overflow: hidden; }
-#dynamic-chats-container .list-group-item:hover { background-color: rgba(191, 161, 106, 0.15); }
-#dynamic-chats-container .list-group-item.active-chat { background-color: var(--ks-gold-muted); color: var(--ks-navy-deep) !important; }
-#dynamic-chats-container .list-group-item i { margin-left: 10px; color: var(--sidebar-text-color); cursor: pointer; transition: color 0.3s ease; }
-#dynamic-chats-container .list-group-item i:hover { color: var(--ks-white); }
+#dynamic-chats-container .list-group-item, #external-chats-container .list-group-item { padding: 8px 10px; margin-bottom: 2px; background-color: transparent; border-radius: 4px; cursor: pointer; transition: background-color 0.3s ease; font-size: 14px; }
+#dynamic-chats-container .list-group-item .chat-name, #external-chats-container .list-group-item .chat-name { display: block; white-space: nowrap; overflow: hidden; }
+#dynamic-chats-container .list-group-item:hover, #external-chats-container .list-group-item:hover { background-color: rgba(191, 161, 106, 0.15); }
+#dynamic-chats-container .list-group-item.active-chat, #external-chats-container .list-group-item.active-chat { background-color: var(--ks-gold-muted); color: var(--ks-navy-deep) !important; }
+#dynamic-chats-container .list-group-item i, #external-chats-container .list-group-item i { margin-left: 10px; color: var(--sidebar-text-color); cursor: pointer; transition: color 0.3s ease; }
+#dynamic-chats-container .list-group-item i:hover, #external-chats-container .list-group-item i:hover { color: var(--ks-white); }
 #load-more-button { background-color: transparent; color: var(--sidebar-text-color); border: none; padding: 10px; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; margin: 10px 0; transition: color 0.3s ease; }
 #load-more-button:hover { color: var(--ks-white); }
 #load-more-button .dots { margin-right: 5px; font-size: 18px; line-height: 0; }

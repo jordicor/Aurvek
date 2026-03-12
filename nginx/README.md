@@ -79,7 +79,10 @@ sudo mkdir -p /etc/nginx/snippets
 sudo cp nginx/snippets/*.conf /etc/nginx/snippets/
 
 # Windows (Laragon)
-copy nginx\*.conf C:\laragon\etc\nginx\sites-enabled\
+# IMPORTANT: Do NOT use 00-default.conf — Laragon auto-regenerates that file
+# from its template on reload/restart, overwriting any custom config.
+# Use 01-aurvek.conf (or any name other than 00-default.conf).
+copy nginx\aurvek-main.conf C:\laragon\etc\nginx\sites-enabled\01-aurvek.conf
 copy nginx\snippets\*.conf C:\laragon\etc\nginx\snippets\
 ```
 

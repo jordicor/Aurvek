@@ -247,13 +247,9 @@
             };
             _ungrouped.push(entry);
 
-            // Auto-attach submit handler for form POST (setTimeout(0) pattern)
-            form.addEventListener('submit', function(e) {
-                setTimeout(function() {
-                    if (!e.defaultPrevented) {
-                        entry._fgSubmitting = true;
-                    }
-                }, 0);
+            // Auto-attach submit handler for form POST
+            form.addEventListener('submit', function() {
+                entry._fgSubmitting = true;
             });
 
             return entry;

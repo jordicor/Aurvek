@@ -3755,7 +3755,16 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     }
 
     # Determine provider cap, then respect caller-provided max_tokens
-    provider_max_tokens = 32768 if "3.7" in model else 8192
+    model_lower = model.lower()
+    # Update when new Claude models are released with different output limits
+    if "opus-4-6" in model_lower:
+        provider_max_tokens = 128000
+    elif any(x in model_lower for x in ["sonnet-4-6", "sonnet-4-5", "opus-4-5", "sonnet-4-0", "sonnet-4"]):
+        provider_max_tokens = 64000
+    elif any(x in model_lower for x in ["3.7", "3-7", "opus-4-0", "opus-4-1", "opus-4"]):
+        provider_max_tokens = 32768
+    else:
+        provider_max_tokens = 8192
     requested_max_tokens = int(max_tokens) if isinstance(max_tokens, (int, float)) else provider_max_tokens
     if requested_max_tokens < 1:
         requested_max_tokens = 1
@@ -3792,18 +3801,33 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     if thinking_budget_tokens:
         thinking_models = [
             "claude-3.7", "claude-3-7",
-            "claude-4", "claude-sonnet-4", "claude-opus-4",
-            "claude-3-7-sonnet", "claude-4-sonnet", "claude-4-opus"
+            "claude-4", "claude-sonnet-4", "claude-opus-4"
         ]
-        
-        if any(model_part in model.lower() for model_part in thinking_models):
-            data["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget_tokens
-            }
-            # Claude requires temperature = 1.0 when thinking is enabled
-            data["temperature"] = 1.0
-            logger.info(f"Using thinking mode with budget tokens: {thinking_budget_tokens} for model {model}")
+
+        if any(model_part in model_lower for model_part in thinking_models):
+            adaptive_models = ["opus-4-6", "sonnet-4-6"]
+            is_adaptive = any(m in model_lower for m in adaptive_models)
+
+            if is_adaptive and thinking_budget_tokens == -1:
+                # -1 = "Auto" mode -> adaptive thinking (Claude decides budget)
+                data["thinking"] = {"type": "adaptive"}
+            elif thinking_budget_tokens > 0:
+                # Manual budget: all models support this, explicit override on 4.6
+                # Ensure max_tokens > budget_tokens (API requirement)
+                if thinking_budget_tokens >= data["max_tokens"]:
+                    data["max_tokens"] = min(thinking_budget_tokens + 16384, provider_max_tokens)
+                # Final safety: if budget still >= max_tokens after cap, clamp budget
+                actual_budget = min(thinking_budget_tokens, data["max_tokens"] - 1)
+                data["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": actual_budget
+                }
+            # else: -1 on non-adaptive model = no thinking (skip silently)
+
+            if "thinking" in data:
+                data["temperature"] = 1.0
+                mode_label = 'adaptive' if data["thinking"].get("type") == "adaptive" else f'manual ({data["thinking"].get("budget_tokens")})'
+                logger.info(f"Thinking mode: {mode_label} for {model}")
 
     #logger.debug(f"data: {data}")
 

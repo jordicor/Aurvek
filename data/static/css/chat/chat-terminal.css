@@ -534,7 +534,8 @@ body {
     text-transform: uppercase;
 }
 
-#dynamic-chats-container .list-group-item {
+#dynamic-chats-container .list-group-item,
+#external-chats-container .list-group-item {
     padding: 8px 45px 8px 10px;
     margin-bottom: 2px;
     background-color: transparent;
@@ -546,29 +547,34 @@ body {
     overflow: hidden;
 }
 
-#dynamic-chats-container .list-group-item .chat-name {
+#dynamic-chats-container .list-group-item .chat-name,
+#external-chats-container .list-group-item .chat-name {
     display: block;
     white-space: nowrap;
     overflow: hidden;
 }
 
-#dynamic-chats-container .list-group-item:hover {
+#dynamic-chats-container .list-group-item:hover,
+#external-chats-container .list-group-item:hover {
     background-color: var(--irc-hover-color);
 }
 
-#dynamic-chats-container .list-group-item.active-chat {
+#dynamic-chats-container .list-group-item.active-chat,
+#external-chats-container .list-group-item.active-chat {
     background-color: var(--irc-text-color);
     color: var(--irc-bg-color);
 }
 
-#dynamic-chats-container .list-group-item i {
+#dynamic-chats-container .list-group-item i,
+#external-chats-container .list-group-item i {
     margin-left: 10px;
     color: var(--irc-text-color);
     cursor: pointer;
     transition: color 0.3s ease;
 }
 
-#dynamic-chats-container .list-group-item i:hover {
+#dynamic-chats-container .list-group-item i:hover,
+#external-chats-container .list-group-item i:hover {
     color: var(--irc-hover-color);
 }
 
@@ -890,7 +896,8 @@ body {
     transition: opacity 0.3s ease;
 }
 
-#dynamic-chats-container .list-group-item.active-chat .chat-menu .fa-ellipsis-h {
+#dynamic-chats-container .list-group-item.active-chat .chat-menu .fa-ellipsis-h,
+#external-chats-container .list-group-item.active-chat .chat-menu .fa-ellipsis-h {
     color: var(--irc-bg-color) !important;
 }
 
@@ -1277,7 +1284,8 @@ body {
         font-size: 10px;
     }
 
-    #dynamic-chats-container .list-group-item {
+    #dynamic-chats-container .list-group-item,
+    #external-chats-container .list-group-item {
         font-size: 12px;
     }
 

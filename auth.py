@@ -213,6 +213,28 @@ async def get_user_from_phone_number(phone_number: str) -> Optional[User]:
             row = await cursor.fetchone()
     return create_user_from_row(row) if row else None
 
+async def get_user_from_telegram_chat_id(chat_id: int) -> Optional[User]:
+    """Look up user by telegram_chat_id. Same query pattern as get_user_from_phone_number."""
+    async with get_db_connection(readonly=True) as conn:
+        query = '''
+        SELECT
+            u.id, u.username, u.password, u.role_id, u.is_enabled, u.phone_number,
+            u.google_id, u.auth_provider,
+            ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
+            ud.all_prompts_access, ud.public_prompts_access,
+            ud.authentication_mode, ud.can_change_password,
+            v.id AS voice_id, v.voice_code,
+            (SELECT COUNT(*) FROM magic_links
+             WHERE user_id = u.id AND expires_at > CURRENT_TIMESTAMP) AS magic_link_count
+        FROM USERS u
+        LEFT JOIN USER_DETAILS ud ON u.id = ud.user_id
+        LEFT JOIN VOICES v ON ud.voice_id = v.id
+        WHERE u.telegram_chat_id = ?
+        '''
+        async with conn.execute(query, (chat_id,)) as cursor:
+            row = await cursor.fetchone()
+    return create_user_from_row(row) if row else None
+
 async def get_current_user_from_websocket(websocket: WebSocket) -> Optional[User]:
     token = websocket.cookies.get("session")
     if not token:

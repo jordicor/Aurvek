@@ -77,6 +77,11 @@
 
     <!-- Real Content (hidden until ready) -->
     <div id="page-content" style="display: none;">
+        {% if readonly_mode %}
+        <div style="background: #f0ad4e; color: #000; text-align: center; padding: 8px; position: sticky; top: 0; z-index: 9999; font-weight: 500;">
+            Read-only mode — You can browse but cannot send messages or make changes. Normal service will resume shortly.
+        </div>
+        {% endif %}
         {% block navbar %}{% include 'navbar.html' %}{% endblock %}
 
         <!-- Main Content -->

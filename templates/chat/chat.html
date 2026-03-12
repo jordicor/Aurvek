@@ -42,10 +42,16 @@
         /* Page content wrapper inherits body layout styles for skeleton system */
         #page-content {
             display: flex;
-            flex-direction: row;
+            flex-direction: column;
             height: 100svh;
             width: 100%;
             box-sizing: border-box;
+        }
+        #chat-layout-wrapper {
+            display: flex;
+            flex-direction: row;
+            flex: 1;
+            overflow: hidden;
         }
     </style>
     <link rel="stylesheet" href="{{ get_static_url('/static/css/style.css') }}">
@@ -155,6 +161,12 @@
 
     <!-- Page content - hidden until loaded -->
     <div id="page-content" style="display: none;">
+    {% if readonly_mode %}
+    <div style="background: #f0ad4e; color: #000; text-align: center; padding: 8px; position: sticky; top: 0; z-index: 9999; font-weight: 500;">
+        Read-only mode — You can browse but cannot send messages or make changes. Normal service will resume shortly.
+    </div>
+    {% endif %}
+    <div id="chat-layout-wrapper">
     <div class="overlay" id="drop-zone-overlay"></div>
     <div id="sidebar">
         <div class="sidebar-collapse-row">
@@ -674,6 +686,7 @@
             </div>
         </div>
     </div>
+    </div><!-- End chat-layout-wrapper -->
     </div><!-- End page-content -->
 
     <!-- Skeleton to content swap script -->

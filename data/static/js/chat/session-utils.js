@@ -7,6 +7,7 @@ const SessionManager = {
     _lastCheckResult: null,
     _checkCacheTimeout: 30000, // 30 seconds cache
     _sessionValid: true,
+    _pendingValidation: null, // Promise deduplication for concurrent validateSession calls
     
     // User activity tracking
     _userActive: false,
@@ -188,6 +189,28 @@ const SessionManager = {
             return this._lastCheckResult;
         }
 
+        // Deduplicate concurrent non-force checks: piggyback on in-flight validation.
+        // Force-check calls (mutating requests) always get their own execution to preserve
+        // their stricter error-handling semantics (hard failure instead of grace fallback).
+        if (!forceCheck && this._pendingValidation) {
+            return this._pendingValidation;
+        }
+
+        const validationPromise = this._executeValidation(forceCheck);
+        if (!forceCheck) {
+            this._pendingValidation = validationPromise;
+        }
+        try {
+            return await validationPromise;
+        } finally {
+            if (this._pendingValidation === validationPromise) {
+                this._pendingValidation = null;
+            }
+        }
+    },
+
+    async _executeValidation(forceCheck) {
+        let now;
         try {
             let data;
 
@@ -223,7 +246,7 @@ const SessionManager = {
 
                 if (!response.ok) {
                     if (response.status === 401 || response.status === 302) {
-                        this._lastCheckTime = now;
+                        this._lastCheckTime = Date.now();
                         this._lastCheckResult = false;
                         this._sessionValid = false;
                         this.clearExpirationTracking();
@@ -235,7 +258,7 @@ const SessionManager = {
 
                 const contentType = response.headers.get('content-type');
                 if (!contentType || !contentType.includes('application/json')) {
-                    this._lastCheckTime = now;
+                    this._lastCheckTime = Date.now();
                     this._lastCheckResult = false;
                     this._sessionValid = false;
                     this.clearExpirationTracking();
@@ -246,6 +269,9 @@ const SessionManager = {
                 data = await response.json();
             }
 
+            // Capture timestamp after network call resolves, not at function entry,
+            // so the 30s cache window starts from when we actually got fresh data
+            now = Date.now();
             this._lastCheckTime = now;
             this._lastCheckResult = !data.expired;
             this._sessionValid = this._lastCheckResult;
@@ -266,7 +292,7 @@ const SessionManager = {
             console.error('Error checking session:', error);
 
             if (error instanceof SyntaxError && error.message.includes('JSON')) {
-                this._lastCheckTime = now;
+                this._lastCheckTime = Date.now();
                 this._lastCheckResult = false;
                 this._sessionValid = false;
                 this.clearExpirationTracking();
@@ -274,7 +300,7 @@ const SessionManager = {
                 return false;
             }
 
-            const timeSinceLastCheck = now - this._lastCheckTime;
+            const timeSinceLastCheck = Date.now() - this._lastCheckTime;
             if (!forceCheck && this._lastCheckResult !== null && timeSinceLastCheck < 60000) {
                 return this._lastCheckResult;
             }
@@ -386,7 +412,9 @@ const SessionManager = {
      * @returns {Promise<Response>} Fetch response
      */
     async secureFetch(url, options = {}) {
-        const isValid = await this.validateSession(true); // Always force check for API calls
+        const method = (options.method || 'GET').toUpperCase();
+        const isMutating = method !== 'GET' && method !== 'HEAD';
+        const isValid = await this.validateSession(isMutating);
         if (!isValid) {
             throw new Error('Session expired');
         }

@@ -46,8 +46,11 @@ class NginxBlocklistManager:
     # ------------------------------------------------------------------
 
     def add_ip(self, ip: str) -> None:
-        """Add IP to blocklist. Marks dirty."""
+        """Add IP to blocklist. Marks dirty. Skips admin IPs."""
         if not ENABLED:
+            return
+        from middleware.security import SecurityConfig
+        if ip in SecurityConfig.get_admin_ips():
             return
         if ip not in self._blocked_ips:
             self._blocked_ips.add(ip)

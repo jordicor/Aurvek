@@ -49,6 +49,9 @@ openrouter_key = os.getenv('OPENROUTER_API_KEY')
 # Security: cookie secure flag (requires HTTPS in production)
 SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
 
+# Failover read-only mode: blocks all write operations (POST/PUT/DELETE/PATCH)
+READONLY_MODE = os.getenv("READONLY_MODE", "false").lower() == "true"
+
 # Google OAuth configuration
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
@@ -105,6 +108,18 @@ def validate_twilio_media_url(url: str) -> bool:
     except Exception as e:
         logger.error(f"Error validating media URL: {e}")
         return False
+
+# Telegram Bot API
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_WEBHOOK_SECRET = os.getenv('TELEGRAM_WEBHOOK_SECRET')
+if TELEGRAM_BOT_TOKEN and not TELEGRAM_WEBHOOK_SECRET:
+    raise RuntimeError(
+        "CRITICAL: TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_BOT_TOKEN is set. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\" "
+        "and add it to .env"
+    )
+TELEGRAM_RATE_LIMIT_PER_USER = int(os.getenv('TELEGRAM_RATE_LIMIT_PER_USER', '20'))
+TELEGRAM_RATE_LIMIT_GLOBAL = int(os.getenv('TELEGRAM_RATE_LIMIT_GLOBAL', '200'))
 
 # ============================================================================
 # Packs System Constants
@@ -261,7 +276,8 @@ async def get_template_context(request, current_user, branding_context=None):
         "get_static_url": get_static_url,
         "navbar_avatar_url": navbar_avatar_url,
         "navbar_initials": navbar_initials,
-        "branding": branding
+        "branding": branding,
+        "readonly_mode": READONLY_MODE
     }
 
 # Get the absolute path of the current script
@@ -328,82 +344,179 @@ async def has_sufficient_balance(user_id: int, amount: float) -> bool:
             logger.error(f"Error checking balance: {e}")
             return False
 
-async def cost_tts(user_id: int, tts_cost: float, characters_used: int):
+async def cost_tts(user_id: int, characters_used: int) -> bool:
+    """Charge user for TTS usage in a single atomic transaction.
+    Returns True on success, False on failure (insufficient balance or DB error)."""
     total_tts_cost = Cost.TTS_COST_PER_CHARACTER * characters_used
-    if await deduct_balance(user_id, total_tts_cost):
-        last_lock_error = None
-        for attempt in range(DB_MAX_RETRIES):
-            retry_needed = False
-            wait_time = 0.0
-            async with get_db_connection() as conn:
-                transaction_started = False
-                try:
-                    await conn.execute('BEGIN IMMEDIATE')
-                    transaction_started = True
+    last_lock_error = None
+    for attempt in range(DB_MAX_RETRIES):
+        retry_needed = False
+        wait_time = 0.0
+        async with get_db_connection() as conn:
+            transaction_started = False
+            try:
+                await conn.execute('BEGIN IMMEDIATE')
+                transaction_started = True
 
-                    await conn.execute('''
-                        INSERT INTO SERVICE_USAGE (user_id, service_id, usage_quantity, cost)
-                        VALUES (?, ?, ?, ?)
-                    ''', (user_id, Cost.TTS_SERVICE_ID, characters_used, total_tts_cost))
+                # Atomic balance check + deduction (replaces separate deduct_balance call)
+                result = await conn.execute('''
+                    UPDATE USER_DETAILS
+                    SET balance = balance - ?
+                    WHERE user_id = ? AND balance >= ?
+                    RETURNING balance
+                ''', (total_tts_cost, user_id, total_tts_cost))
+                new_balance = await result.fetchone()
 
-                    await conn.execute('''
-                        UPDATE USER_DETAILS
-                        SET total_cost = total_cost + ?, total_tts_cost = total_tts_cost + ?
-                        WHERE user_id = ?
-                    ''', (total_tts_cost, total_tts_cost, user_id))
+                if new_balance is None:
+                    await conn.rollback()
+                    return False  # Insufficient balance
 
-                    # Record daily usage summary
-                    await record_daily_usage(
-                        user_id=user_id,
-                        usage_type='tts',
-                        cost=total_tts_cost,
-                        units=characters_used,
-                        conn=conn
+                await conn.execute('''
+                    INSERT INTO SERVICE_USAGE (user_id, service_id, usage_quantity, cost)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, Cost.TTS_SERVICE_ID, characters_used, total_tts_cost))
+
+                await conn.execute('''
+                    UPDATE USER_DETAILS
+                    SET total_cost = total_cost + ?, total_tts_cost = total_tts_cost + ?
+                    WHERE user_id = ?
+                ''', (total_tts_cost, total_tts_cost, user_id))
+
+                daily_ok = await record_daily_usage(
+                    user_id=user_id,
+                    usage_type='tts',
+                    cost=total_tts_cost,
+                    units=characters_used,
+                    conn=conn
+                )
+                if not daily_ok:
+                    logger.warning("Daily usage record failed for cost_tts user_id=%s, proceeding with commit", user_id)
+
+                await conn.commit()
+                return True
+            except sqlite3.OperationalError as exc:
+                if transaction_started:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                if is_lock_error(exc) and attempt < DB_MAX_RETRIES - 1:
+                    wait_time = DB_RETRY_DELAY_BASE * (attempt + 1)
+                    logger.warning(
+                        "Lock detected in cost_tts for user_id=%s (retry %s/%s, wait %.2fs)",
+                        user_id,
+                        attempt + 1,
+                        DB_MAX_RETRIES,
+                        wait_time,
                     )
+                    last_lock_error = exc
+                    retry_needed = True
+                else:
+                    logger.error(f"Error in cost_tts: {exc}")
+                    return False
+            except Exception as e:
+                if transaction_started:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                logger.error(f"Error in cost_tts: {e}")
+                return False
 
-                    await conn.commit()
-                    return
-                except sqlite3.OperationalError as exc:
-                    if transaction_started:
-                        try:
-                            await conn.rollback()
-                        except Exception:
-                            pass
-                    if is_lock_error(exc) and attempt < DB_MAX_RETRIES - 1:
-                        wait_time = DB_RETRY_DELAY_BASE * (attempt + 1)
-                        logger.warning(
-                            "Lock detected when registering TTS cost for user_id=%s (retry %s/%s, wait %.2fs)",
-                            user_id,
-                            attempt + 1,
-                            DB_MAX_RETRIES,
-                            wait_time,
-                        )
-                        last_lock_error = exc
-                        retry_needed = True
-                    else:
-                        logger.error(f"Error executing TTS cost query: {exc}")
-                        return
-                except Exception as e:
-                    if transaction_started:
-                        try:
-                            await conn.rollback()
-                        except Exception:
-                            pass
-                    logger.error(f"Error executing TTS cost query: {e}")
-                    return
+        if retry_needed:
+            await asyncio.sleep(wait_time)
+            continue
+        break
 
-            if retry_needed:
-                await asyncio.sleep(wait_time)
-                continue
-            break
+    if last_lock_error:
+        logger.error(
+            "Failed cost_tts for user_id=%s after %s retries: %s",
+            user_id,
+            DB_MAX_RETRIES,
+            last_lock_error,
+        )
+    return False
 
-        if last_lock_error:
-            logger.error(
-                "Failed to register TTS cost for user_id=%s after %s retries: %s",
-                user_id,
-                DB_MAX_RETRIES,
-                last_lock_error,
-            )
+
+async def refund_tts(user_id: int, characters_used: int) -> bool:
+    """Reverse a cost_tts charge when TTS generation fails after billing.
+    Returns True on success, False on failure."""
+    total_tts_cost = Cost.TTS_COST_PER_CHARACTER * characters_used
+    last_lock_error = None
+    for attempt in range(DB_MAX_RETRIES):
+        retry_needed = False
+        wait_time = 0.0
+        async with get_db_connection() as conn:
+            transaction_started = False
+            try:
+                await conn.execute('BEGIN IMMEDIATE')
+                transaction_started = True
+
+                # Restore balance
+                await conn.execute('''
+                    UPDATE USER_DETAILS SET balance = balance + ? WHERE user_id = ?
+                ''', (total_tts_cost, user_id))
+
+                # Compensating usage record (negative cost for audit trail)
+                await conn.execute('''
+                    INSERT INTO SERVICE_USAGE (user_id, service_id, usage_quantity, cost)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, Cost.TTS_SERVICE_ID, -characters_used, -total_tts_cost))
+
+                # Reverse totals with floor guard (never go negative)
+                await conn.execute('''
+                    UPDATE USER_DETAILS
+                    SET total_cost = MAX(0, total_cost - ?),
+                        total_tts_cost = MAX(0, total_tts_cost - ?)
+                    WHERE user_id = ?
+                ''', (total_tts_cost, total_tts_cost, user_id))
+
+                await conn.commit()
+                logger.info("TTS refund for user_id=%s: %.6f (%d chars)",
+                            user_id, total_tts_cost, characters_used)
+                return True
+            except sqlite3.OperationalError as exc:
+                if transaction_started:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                if is_lock_error(exc) and attempt < DB_MAX_RETRIES - 1:
+                    wait_time = DB_RETRY_DELAY_BASE * (attempt + 1)
+                    logger.warning(
+                        "Lock detected in TTS refund for user_id=%s (retry %s/%s, wait %.2fs)",
+                        user_id,
+                        attempt + 1,
+                        DB_MAX_RETRIES,
+                        wait_time,
+                    )
+                    last_lock_error = exc
+                    retry_needed = True
+                else:
+                    logger.error(f"Error in TTS refund: {exc}")
+                    return False
+            except Exception as e:
+                if transaction_started:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                logger.error(f"Error in TTS refund: {e}")
+                return False
+
+        if retry_needed:
+            await asyncio.sleep(wait_time)
+            continue
+        break
+
+    if last_lock_error:
+        logger.error(
+            "Failed TTS refund for user_id=%s after %s retries: %s",
+            user_id,
+            DB_MAX_RETRIES,
+            last_lock_error,
+        )
+    return False
 
 async def get_balance(user_id: int) -> float:
     async with get_db_connection(readonly=True) as conn:

@@ -1,5 +1,6 @@
 AURVEK.git/
 SPARK.git/
+CLAUDE.md
 data/cache/
 # User data (runtime-generated, not tracked)
 data/users/

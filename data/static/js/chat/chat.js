@@ -620,6 +620,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
     
         const audioIcon = document.createElement('i');
         audioIcon.classList.add('fa', 'fa-volume-up');
+        audioIcon.dataset.baseIcon = 'fa-volume-up';
         audioIcon.style.cursor = 'pointer';
         audioIcon.style.display = 'inline';
 
@@ -630,12 +631,12 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             }
             return messageText;
         };
-    
+
         audioIcon.dataset.id = currentConversationId;
         audioIcon.onclick = function() {
             textToSpeech(resolveMessageText(), user_id, currentConversationId, audioIcon, author);
         };
-    
+
         const bookmarkIcon = document.createElement('i');
         bookmarkIcon.classList.add('fas', 'fa-bookmark', 'bookmark-icon');
         bookmarkIcon.style.cursor = 'pointer';
@@ -670,7 +671,24 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         iconContainer.appendChild(audioIcon);
         iconContainer.appendChild(bookmarkIcon);
         iconContainer.appendChild(copyIcon);
-    
+
+        // Branch icon - appears on all messages (user and bot), hidden in Bookmarks view
+        const chatTitleForBranch = document.querySelector('.chatbot-info h4').textContent;
+        if (chatTitleForBranch !== "My Bookmarks") {
+            const branchIcon = document.createElement('i');
+            branchIcon.classList.add('fas', 'fa-code-branch', 'branch-icon');
+            branchIcon.style.cursor = 'pointer';
+            branchIcon.style.display = 'none';
+            branchIcon.title = 'Branch from here';
+            if (messageId) {
+                branchIcon.setAttribute('data-message-id', messageId);
+            }
+            branchIcon.onclick = function() {
+                branchConversation(this.getAttribute('data-message-id'), currentConversationId);
+            };
+            iconContainer.appendChild(branchIcon);
+        }
+
         if (author === 'bot') {
             const rollbackIcon = document.createElement('i');
             rollbackIcon.classList.add('fas', 'fa-undo', 'rollback-icon');
@@ -780,7 +798,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
 
     divMessage.addEventListener('mouseover', function() {
         const messageId = this.dataset.messageId;
-        this.querySelectorAll('.fa-bookmark, .fa-copy, .fa-undo, .fa-arrow-right').forEach(icon => {
+        this.querySelectorAll('.fa-bookmark, .fa-copy, .fa-code-branch, .fa-undo, .fa-arrow-right').forEach(icon => {
             if (!icon.classList.contains('bookmarked')) {
                 if (icon.classList.contains('fa-bookmark') && !messageId) {
                     icon.style.display = 'none';
@@ -792,7 +810,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
     });
 
     divMessage.addEventListener('mouseout', function() {
-        this.querySelectorAll('.fa-bookmark, .fa-copy, .fa-undo, .fa-arrow-right').forEach(icon => {
+        this.querySelectorAll('.fa-bookmark, .fa-copy, .fa-code-branch, .fa-undo, .fa-arrow-right').forEach(icon => {
             if (!icon.classList.contains('bookmarked')) {
                 icon.style.display = 'none';
             }
@@ -860,6 +878,46 @@ function rollbackConversation(messageId, conversationId) {
         },
         null,
         { confirmText: 'Roll Back', cancelText: 'Cancel' }
+    );
+}
+
+function branchConversation(messageId, conversationId) {
+    if (!messageId) {
+        console.error('No messageId provided for branch');
+        return;
+    }
+
+    NotificationModal.confirm(
+        'Branch Conversation',
+        'Create a new conversation branching from this message? All messages up to this point will be copied.',
+        () => {
+            secureFetch(`/api/conversations/${conversationId}/branch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message_id: parseInt(messageId) })
+            })
+            .then(response => {
+                if (!response) return;
+                return response.json();
+            })
+            .then(data => {
+                if (!data) return;
+                if (data.id) {
+                    addConversationElement(data, data.name, null, true);
+                    continueConversation(data.id, data.name, data.machine, false, null, data);
+                    NotificationModal.success('Branch Created',
+                        `New conversation created with ${data.messages_copied} messages.`);
+                } else {
+                    NotificationModal.error('Branch Failed', data.detail || data.error || 'Could not branch conversation.');
+                }
+            })
+            .catch(error => {
+                console.error('Error branching conversation:', error);
+                NotificationModal.error('Branch Failed', 'An unexpected error occurred.');
+            });
+        },
+        null,
+        { confirmText: 'Branch', cancelText: 'Cancel' }
     );
 }
 
@@ -967,8 +1025,8 @@ function sendMessage(messageText) {
     formData.append('text_compressed', new Blob([compressedMessage], { type: 'application/octet-stream' }));
     formData.append('is_compressed', 'true'); // Indicate that message is compressed
     
-    // Add thinking budget tokens if set
-    if (currentThinkingBudget > 0) {
+    // Add thinking budget tokens if set (-1 = auto, > 0 = manual)
+    if (currentThinkingBudget !== 0) {
         formData.append('thinking_budget_tokens', currentThinkingBudget);
     }
 
@@ -1158,6 +1216,7 @@ function sendMessage(messageText) {
         };
 
         const audioIcon = createIcon('fa-volume-up', 'inline', () => textToSpeech(getCurrentBotText(), user_id, currentConversationId, audioIcon, 'bot'));
+        audioIcon.dataset.baseIcon = 'fa-volume-up';
         const bookmarkIcon = createIcon('fa-bookmark', 'none', function() {
             const messageElement = this.closest('.message');
             const messageId = messageElement ? messageElement.dataset.messageId : null;
@@ -1168,11 +1227,13 @@ function sendMessage(messageText) {
             }
         });
         const copyIcon = createIcon('fa-copy', 'none', () => copyToClipboard(getCurrentBotText(), copyIcon));
-        const rollbackIcon = createIcon('fa-undo', 'none', () => rollbackConversation(newMessageId, currentConversationId));            
+        const branchIcon = createIcon('fa-code-branch', 'none', () => branchConversation(newMessageId, currentConversationId));
+        const rollbackIcon = createIcon('fa-undo', 'none', () => rollbackConversation(newMessageId, currentConversationId));
 
         iconContainer.appendChild(audioIcon);
         iconContainer.appendChild(bookmarkIcon);
         iconContainer.appendChild(copyIcon);
+        iconContainer.appendChild(branchIcon);
         iconContainer.appendChild(rollbackIcon);
 
         const timeSpan = document.createElement('span');
@@ -1185,11 +1246,17 @@ function sendMessage(messageText) {
             icon.classList.add('fas', iconClass);
             icon.style.cursor = 'pointer';
             icon.style.display = styleDisplay;
-            if (messageId && iconClass === 'fa-undo') {
+            if (messageId && (iconClass === 'fa-undo' || iconClass === 'fa-code-branch')) {
                 icon.setAttribute('data-message-id', messageId);
-                icon.onclick = function() {
-                    rollbackConversation(this.getAttribute('data-message-id'), currentConversationId);
-                };
+                if (iconClass === 'fa-undo') {
+                    icon.onclick = function() {
+                        rollbackConversation(this.getAttribute('data-message-id'), currentConversationId);
+                    };
+                } else {
+                    icon.onclick = function() {
+                        branchConversation(this.getAttribute('data-message-id'), currentConversationId);
+                    };
+                }
             } else {
                 icon.onclick = onClickFunction;
             }
@@ -1252,7 +1319,35 @@ function sendMessage(messageText) {
                             // Note: pass_turn action sends '🚩' as content, which displays
                             // as a normal bot message. No special handling needed.
 
-                            if (parsedData.updated_chat_name) {
+                            // Handle thinking tokens streaming
+                            if (parsedData.type === 'thinking_start') {
+                                if (messageContent && botMessageParagraph) {
+                                    const details = document.createElement('details');
+                                    details.className = 'thinking-block';
+                                    details.open = true;
+                                    const summary = document.createElement('summary');
+                                    summary.textContent = 'Thinking...';
+                                    const content = document.createElement('pre');
+                                    content.className = 'thinking-content';
+                                    details.appendChild(summary);
+                                    details.appendChild(content);
+                                    messageContent.insertBefore(details, botMessageParagraph);
+                                }
+                            } else if (parsedData.type === 'thinking') {
+                                const thinkingContent = messageContent?.querySelector('.thinking-content');
+                                if (thinkingContent && parsedData.thinking) {
+                                    thinkingContent.textContent += parsedData.thinking;
+                                    thinkingContent.scrollTop = thinkingContent.scrollHeight;
+                                    scrollToBottomIfNeeded();
+                                }
+                            } else if (parsedData.type === 'thinking_end') {
+                                const thinkingBlock = messageContent?.querySelector('.thinking-block');
+                                if (thinkingBlock) {
+                                    thinkingBlock.open = false;
+                                    const summary = thinkingBlock.querySelector('summary');
+                                    if (summary) summary.textContent = 'Thought process (not saved)';
+                                }
+                            } else if (parsedData.updated_chat_name) {
                                 updateActiveChatName(parsedData.updated_chat_name);
                             } else if (parsedData.multi_ai && multiAiCarousel?._multiAiApi) {
                                 multiAiCarousel._multiAiApi.appendChunk(parsedData.llm_id, parsedData.content || '');
@@ -1414,7 +1509,7 @@ function sendMessage(messageText) {
             // Add event listeners to show/hide icons
             botMessageElement.addEventListener('mouseover', function() {
                 const messageId = this.dataset.messageId;
-                this.querySelectorAll('.fa-volume-up, .fa-bookmark, .fa-copy, .fa-undo').forEach(icon => {
+                this.querySelectorAll('.fa-volume-up, .fa-bookmark, .fa-copy, .fa-code-branch, .fa-undo').forEach(icon => {
                     if (!icon.classList.contains('bookmarked')) {
                         if (icon.classList.contains('fa-bookmark') && !messageId) {
                             icon.style.display = 'none';
@@ -1426,7 +1521,7 @@ function sendMessage(messageText) {
             });
 
             botMessageElement.addEventListener('mouseout', function() {
-                this.querySelectorAll('.fa-volume-up, .fa-bookmark, .fa-copy, .fa-undo').forEach(icon => {
+                this.querySelectorAll('.fa-volume-up, .fa-bookmark, .fa-copy, .fa-code-branch, .fa-undo').forEach(icon => {
                     if (!icon.classList.contains('bookmarked')) {
                         icon.style.display = 'none';
                     }
@@ -1459,6 +1554,13 @@ function updateMessageId(messageId, element) {
                 rollbackConversation(messageId, currentConversationId);
             };
         } else if (isBotMessage) {
+        }
+        const branchIcon = element.querySelector('.fa-code-branch');
+        if (branchIcon) {
+            branchIcon.setAttribute('data-message-id', messageId);
+            branchIcon.onclick = function() {
+                branchConversation(messageId, currentConversationId);
+            };
         }
     } else {
     }
@@ -1628,18 +1730,13 @@ function addConversationElement(conversation, chatName, currentConversationId, i
 
     // Handle conversation addition
     if (conversation.external_platform) {
-        //console.log(`External conversation detected: ${conversation.external_platform}`);
-        // Move current external chat (if exists) to dynamic container
-        const currentExternalChat = externalChatsContainer.firstElementChild;
-        if (currentExternalChat) {
-            currentExternalChat.classList.remove('active-chat');
-            dynamicChatsContainer.insertBefore(currentExternalChat, dynamicChatsContainer.firstChild);
+        // Remove any existing entry for the same platform to avoid duplicates
+        const existing = externalChatsContainer.querySelector(`[data-external-platform="${conversation.external_platform}"]`);
+        if (existing) {
+            existing.remove();
         }
 
-        // Clear external container
-        externalChatsContainer.innerHTML = '';
-        
-        // Add new conversation element to externalChatsContainer
+        // Add conversation to external section
         externalChatsContainer.appendChild(conversationElement);
         document.querySelector('.external-section').style.display = 'block';
     } else {
@@ -1721,6 +1818,10 @@ function createChatMenu(conversation) {
     const whatsappLink = createPlatformLink('whatsapp', conversation);
     chatMenuContent.appendChild(whatsappLink);
 
+    // Telegram option
+    const telegramLink = createPlatformLink('telegram', conversation);
+    chatMenuContent.appendChild(telegramLink);
+
     // Click handler for the chat-menu-content div
     chatMenu.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1742,6 +1843,17 @@ function createChatMenu(conversation) {
             chatMenuContent.style.top = (buttonRect.bottom + 2) + 'px';
             chatMenuContent.style.zIndex = '9999';
             chatMenuContent.style.display = 'block';
+
+            // Lazy-load platform mode checkmarks on first menu open
+            chatMenuContent.querySelectorAll('.platform-menu-container').forEach(container => {
+                if (container._platformLazyLoad && !container._platformLazyLoad.loaded) {
+                    const { conversationId, platform, voiceModeLink, textModeLink } = container._platformLazyLoad;
+                    loadCurrentPlatformMode(conversationId, platform, voiceModeLink, textModeLink)
+                        .then(success => {
+                            if (success) container._platformLazyLoad.loaded = true;
+                        });
+                }
+            });
 
             const parentItem = chatMenu.closest('.list-group-item');
             if (parentItem) parentItem.style.zIndex = '10';
@@ -1894,66 +2006,84 @@ function getExternalPlatformIcon(platform) {
 
 function createPlatformLink(platform, conversation) {
     const isAssigned = conversation.external_platform === platform;
-    
-    if (platform === 'whatsapp' && isAssigned) {
-        // Create WhatsApp submenu container
+    const icon = platform === 'whatsapp' ? 'fa-whatsapp' : 'fa-telegram';
+    const platformName = platform.charAt(0).toUpperCase() + platform.slice(1);
+
+    if (isAssigned) {
+        // Create platform submenu container (works for both WhatsApp and Telegram)
         const container = document.createElement('div');
-        container.className = 'whatsapp-menu-container';
-        
-        // Main WhatsApp option
+        container.className = 'platform-menu-container';
+
+        // Main platform option (remove)
         const mainLink = document.createElement('a');
         mainLink.href = '#';
         mainLink.classList.add('platform-link');
-        mainLink.innerHTML = `<i class="fab fa-whatsapp"></i> Remove from WhatsApp`;
+        mainLink.innerHTML = `<i class="fab ${icon}"></i> Remove from ${platformName}`;
         mainLink.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
             toggleExternalPlatform(conversation.id, platform, isAssigned);
         });
-        
+
         // Mode separator
         const modeSeparator = document.createElement('div');
         modeSeparator.classList.add('menu-separator');
-        
+
         // Voice mode option
         const voiceModeLink = document.createElement('a');
         voiceModeLink.href = '#';
-        voiceModeLink.classList.add('platform-link', 'whatsapp-mode-option');
+        voiceModeLink.classList.add('platform-link', 'platform-mode-option');
         voiceModeLink.innerHTML = `<i class="fas fa-microphone"></i> <span class="mode-text">Voice Mode</span> <span class="mode-check" style="display: none;">✓</span>`;
         voiceModeLink.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
-            changeWhatsAppMode(conversation.id, 'voice');
+            changePlatformMode(conversation.id, platform, 'voice');
         });
-        
+
         // Text mode option
         const textModeLink = document.createElement('a');
         textModeLink.href = '#';
-        textModeLink.classList.add('platform-link', 'whatsapp-mode-option');
+        textModeLink.classList.add('platform-link', 'platform-mode-option');
         textModeLink.innerHTML = `<i class="fas fa-keyboard"></i> <span class="mode-text">Text Mode</span> <span class="mode-check" style="display: none;">✓</span>`;
         textModeLink.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
-            changeWhatsAppMode(conversation.id, 'text');
+            changePlatformMode(conversation.id, platform, 'text');
         });
-        
+
         container.appendChild(mainLink);
         container.appendChild(modeSeparator);
         container.appendChild(voiceModeLink);
         container.appendChild(textModeLink);
-        
-        // Load current mode and update checkmarks
-        loadCurrentWhatsAppMode(conversation.id, voiceModeLink, textModeLink);
-        
+
+        // Store references for lazy loading when menu opens
+        container._platformLazyLoad = {
+            conversationId: conversation.id,
+            platform: platform,
+            voiceModeLink: voiceModeLink,
+            textModeLink: textModeLink,
+            loaded: false
+        };
+
         return container;
     } else {
-        // Regular platform link for other cases
+        // Unassigned — check if conversation is already assigned to another platform
+        const otherPlatform = conversation.external_platform;
+        if (otherPlatform && otherPlatform !== platform) {
+            const link = document.createElement('a');
+            link.href = '#';
+            link.classList.add('platform-link', 'disabled');
+            link.innerHTML = `<i class="fab ${icon}"></i> Use for ${platformName}`;
+            link.title = `Already assigned to ${otherPlatform}`;
+            link.style.opacity = '0.5';
+            link.style.pointerEvents = 'none';
+            return link;
+        }
+
         const link = document.createElement('a');
         link.href = '#';
         link.classList.add('platform-link');
-        const icon = platform === 'whatsapp' ? 'fa-whatsapp' : 'fa-telegram';
-        const action = isAssigned ? 'Remove from' : 'Use for';
-        link.innerHTML = `<i class="fab ${icon}"></i> ${action} ${platform.charAt(0).toUpperCase() + platform.slice(1)}`;
+        link.innerHTML = `<i class="fab ${icon}"></i> Use for ${platformName}`;
         link.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
@@ -1977,6 +2107,8 @@ const toggleExternalPlatform = withSession(function(conversationId, platform, is
     .then(data => {
         if (data.success) {
             updateConversationElement(conversationId, data.updatedConversations.find(conv => conv.id === parseInt(conversationId)), data.updatedConversations);
+        } else if (data.error === 'no_phone_number') {
+            showPhoneRequiredModal(platform);
         } else {
             console.error('Error updating external platform:', data.error);
         }
@@ -2011,8 +2143,7 @@ function updateConversationElement(conversationId, updatedConversation, allConve
     });
 
     if (updatedConversation.external_platform) {
-        // Move to external section
-        externalChatsContainer.innerHTML = '';
+        // Move to external section (without clearing other platform conversations)
         externalChatsContainer.appendChild(element);
         document.querySelector('.external-section').style.display = 'block';
     } else {
@@ -3996,35 +4127,34 @@ document.addEventListener('DOMContentLoaded', function() {
     window.multiAiManager = new MultiAiManager();
 });
 
-// WhatsApp Mode Management Functions
-async function loadCurrentWhatsAppMode(conversationId, voiceModeLink, textModeLink) {
+// Platform Mode Management Functions (generalized for WhatsApp and Telegram)
+async function loadCurrentPlatformMode(conversationId, platform, voiceModeLink, textModeLink) {
     try {
-        const response = await secureFetch(`/api/whatsapp-mode/${conversationId}`, {
+        const response = await secureFetch(`/api/platform-mode/${platform}/${conversationId}`, {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
             }
         });
-        
+
         if (response && response.ok) {
             const data = await response.json();
-            const currentMode = data.mode || 'text'; // Default to text mode
-            
-            // Update checkmarks
+            const currentMode = data.mode || 'text';
             updateModeCheckmarks(voiceModeLink, textModeLink, currentMode);
+            return true;
         }
+        return false;
     } catch (error) {
-        console.error('Error loading WhatsApp mode:', error);
-        // Default to text mode if error
+        console.error(`Error loading ${platform} mode:`, error);
         updateModeCheckmarks(voiceModeLink, textModeLink, 'text');
+        return false;
     }
 }
 
 function updateModeCheckmarks(voiceModeLink, textModeLink, currentMode) {
     const voiceCheck = voiceModeLink.querySelector('.mode-check');
     const textCheck = textModeLink.querySelector('.mode-check');
-    
-    
+
     if (currentMode === 'voice') {
         if (voiceCheck) voiceCheck.style.display = 'inline';
         if (textCheck) textCheck.style.display = 'none';
@@ -4034,7 +4164,7 @@ function updateModeCheckmarks(voiceModeLink, textModeLink, currentMode) {
     }
 }
 
-const changeWhatsAppMode = withSession(async function(conversationId, newMode) {
+const changePlatformMode = withSession(async function(conversationId, platform, newMode) {
     const modeText = newMode === 'voice' ? 'Voice Mode' : 'Text Mode';
 
     NotificationModal.confirm(
@@ -4042,7 +4172,7 @@ const changeWhatsAppMode = withSession(async function(conversationId, newMode) {
         `Are you sure you want to switch to ${modeText}?`,
         async function() {
             try {
-                const response = await secureFetch(`/api/whatsapp-mode/${conversationId}`, {
+                const response = await secureFetch(`/api/platform-mode/${platform}/${conversationId}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -4051,38 +4181,30 @@ const changeWhatsAppMode = withSession(async function(conversationId, newMode) {
                 });
 
                 if (response && response.ok) {
-                    const data = await response.json();
-
                     NotificationModal.success('Mode Changed', `The mode has been changed to ${modeText} successfully.`);
-
-                    // Update all WhatsApp menus for this conversation
-                    updateWhatsAppModeInAllMenus(conversationId, newMode);
+                    updatePlatformModeInAllMenus(conversationId, newMode);
                 } else {
                     const errorData = await response.json();
                     throw new Error(errorData.error || 'Error changing mode');
                 }
             } catch (error) {
-                console.error('Error changing WhatsApp mode:', error);
+                console.error(`Error changing ${platform} mode:`, error);
                 NotificationModal.error('Error', `Could not change mode: ${error.message}`);
             }
         }
     );
 });
 
-function updateWhatsAppModeInAllMenus(conversationId, newMode) {
-    // Find all WhatsApp menu containers for this conversation
+function updatePlatformModeInAllMenus(conversationId, newMode) {
     const chatElements = document.querySelectorAll(`[data-conversation-id="${conversationId}"]`);
-    
-    
+
     chatElements.forEach(chatElement => {
-        const whatsappContainer = chatElement.querySelector('.whatsapp-menu-container');
-        if (whatsappContainer) {
-            const allModeOptions = whatsappContainer.querySelectorAll('.whatsapp-mode-option');
-            
-            // More specific selection: find by icon
+        const container = chatElement.querySelector('.platform-menu-container');
+        if (container) {
+            const allModeOptions = container.querySelectorAll('.platform-mode-option');
             let voiceModeLink = null;
             let textModeLink = null;
-            
+
             allModeOptions.forEach(option => {
                 const icon = option.querySelector('i');
                 if (icon && icon.classList.contains('fa-microphone')) {
@@ -4091,14 +4213,39 @@ function updateWhatsAppModeInAllMenus(conversationId, newMode) {
                     textModeLink = option;
                 }
             });
-            
+
             if (voiceModeLink && textModeLink) {
                 updateModeCheckmarks(voiceModeLink, textModeLink, newMode);
-            } else {
             }
-        } else {
         }
     });
+}
+
+function showPhoneRequiredModal(platform) {
+    const platformName = platform.charAt(0).toUpperCase() + platform.slice(1);
+
+    const existing = document.getElementById('phoneRequiredModal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'phoneRequiredModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5>Phone Number Required</h5>
+                <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>To use ${platformName}, you need to set your phone number in your profile settings first.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Close</button>
+                <a href="/settings" class="btn btn-primary">Go to Settings</a>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
 }
 
 // =============================================
@@ -4185,7 +4332,7 @@ function updateAiSectionVisibility() {
 function updatePlusMenuIndicator() {
     const btn = document.getElementById('plus-menu-btn');
     if (!btn) return;
-    const hasActive = currentThinkingBudget > 0 || webSearchEnabled || (window.multiAiManager?.enabled === true);
+    const hasActive = currentThinkingBudget !== 0 || webSearchEnabled || (window.multiAiManager?.enabled === true);
     btn.classList.toggle('has-active', hasActive);
 }
 
@@ -4205,6 +4352,11 @@ function initializeThinkingTokensControl() {
     const presetBtns = document.querySelectorAll('.preset-btn');
     const badge = document.getElementById('thinking-tokens-badge');
 
+    function isAdaptiveModel() {
+        const model = (document.getElementById('chat-model')?.textContent || '').toLowerCase();
+        return model.includes('4-6') || model.includes('4.6');
+    }
+
     function updateThinkingTokensVisibility() {
         const currentModel = document.getElementById('chat-model')?.textContent || '';
         const modelLower = currentModel.toLowerCase();
@@ -4217,7 +4369,34 @@ function initializeThinkingTokensControl() {
             (modelLower.includes('claude') && modelLower.includes('sonnet') && modelLower.includes('4'));
 
         menuItem.style.display = isSupported ? '' : 'none';
-        if (!isSupported) currentThinkingBudget = 0;
+        if (!isSupported) {
+            currentThinkingBudget = 0;
+        } else {
+            // Update first preset button based on adaptive capability
+            const firstPreset = presetBtns[0];
+            if (firstPreset) {
+                if (isAdaptiveModel()) {
+                    firstPreset.textContent = 'Auto';
+                    firstPreset.dataset.value = '-1';
+                    // If was Off (0), auto-set to Auto (-1) for adaptive models
+                    if (currentThinkingBudget === 0) {
+                        currentThinkingBudget = -1;
+                        slider.disabled = true;
+                        input.disabled = true;
+                    }
+                } else {
+                    firstPreset.textContent = 'Off';
+                    firstPreset.dataset.value = '0';
+                    // If was Auto (-1), reset to Off (0) for non-adaptive models
+                    if (currentThinkingBudget === -1) {
+                        currentThinkingBudget = 0;
+                        slider.disabled = false;
+                        input.disabled = false;
+                    }
+                }
+            }
+            updateDisplay(currentThinkingBudget);
+        }
         updateAiSectionVisibility();
         updatePlusMenuIndicator();
     }
@@ -4243,11 +4422,11 @@ function initializeThinkingTokensControl() {
 
     function updateDisplay(value) {
         value = parseInt(value);
-        const label = value === 0 ? 'Off' : value.toLocaleString();
+        const label = value === -1 ? 'Auto' : value === 0 ? 'Off' : value.toLocaleString();
         if (display) display.textContent = label;
         if (badge) {
             badge.textContent = label;
-            badge.classList.toggle('active', value > 0);
+            badge.classList.toggle('active', value !== 0);
         }
         presetBtns.forEach(btn => {
             btn.classList.toggle('active', parseInt(btn.dataset.value) === value);
@@ -4271,16 +4450,26 @@ function initializeThinkingTokensControl() {
     presetBtns.forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.preventDefault();
-            const value = btn.dataset.value;
-            input.value = value;
-            if (value <= 20000) slider.value = value;
+            const value = parseInt(btn.dataset.value);
+            if (value === -1) {
+                currentThinkingBudget = -1;
+                slider.disabled = true;
+                input.disabled = true;
+            } else {
+                slider.disabled = false;
+                input.disabled = false;
+                input.value = value;
+                if (value <= 20000) slider.value = value;
+            }
             updateDisplay(value);
         });
     });
 
     applyBtn.addEventListener('click', (e) => {
         e.preventDefault();
-        currentThinkingBudget = parseInt(input.value) || 0;
+        if (currentThinkingBudget !== -1) {
+            currentThinkingBudget = parseInt(input.value) || 0;
+        }
         popup.style.display = 'none';
         updateDisplay(currentThinkingBudget);
         const originalText = applyBtn.textContent;

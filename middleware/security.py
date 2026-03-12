@@ -291,6 +291,32 @@ class SecurityConfig:
     NORMAL_THRESHOLD: Tuple[int, int] = (10, 3)   # 10 404s in 3 min
     BOT_THRESHOLD: Tuple[int, int] = (50, 3)      # 50 404s in 3 min for known bots
 
+    # Admin IPs - resolved dynamically from DDNS hostnames, never blocked
+    # Updated by tools/cf_whitelist_admin_ips.py
+    ADMIN_DDNS_HOSTS: List[str] = [
+        "your-ddns-1.example.com",   # Location 1
+        "your-ddns-2.example.com",  # Location 2
+    ]
+    _admin_ips: Set[str] = set()
+    _admin_ips_last_resolved: float = 0.0
+    _ADMIN_RESOLVE_INTERVAL: int = 300  # Re-resolve every 5 minutes
+
+    @classmethod
+    def get_admin_ips(cls) -> Set[str]:
+        now = time.time()
+        if now - cls._admin_ips_last_resolved > cls._ADMIN_RESOLVE_INTERVAL:
+            import socket
+            new_ips: Set[str] = set()
+            for host in cls.ADMIN_DDNS_HOSTS:
+                try:
+                    new_ips.add(socket.gethostbyname(host))
+                except socket.gaierror:
+                    pass
+            if new_ips:
+                cls._admin_ips = new_ips
+            cls._admin_ips_last_resolved = now
+        return cls._admin_ips
+
     # Block duration
     BLOCK_DURATION_HOURS: int = 24
 
@@ -1529,6 +1555,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         ip = get_client_ip(request)
         path = request.url.path
+
+        # 0. Admin IP bypass - never block admin IPs
+        if ip in SecurityConfig.get_admin_ips():
+            return await call_next(request)
 
         # 0.5. Check reputation ban (persistent layer)
         reputation_ban = reputation_manager.check_reputation_ban(ip)

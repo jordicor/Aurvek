@@ -201,7 +201,8 @@ body {
     gap: 0;
 }
 
-#dynamic-chats-container .list-group-item .chat-name {
+#dynamic-chats-container .list-group-item .chat-name,
+#external-chats-container .list-group-item .chat-name {
     display: block;
     white-space: nowrap;
     overflow: hidden;
@@ -209,10 +210,14 @@ body {
 }
 
 /* Capsule shape: first item opens, last item closes */
-#dynamic-chats-container .list-group-item { border-radius: 0; margin-bottom: 0; }
-#dynamic-chats-container .list-group-item:first-child { border-radius: 12px 12px 0 0; }
-#dynamic-chats-container .list-group-item:last-child { border-radius: 0 0 12px 12px; }
-#dynamic-chats-container .list-group-item:only-child { border-radius: 12px; }
+#dynamic-chats-container .list-group-item,
+#external-chats-container .list-group-item { border-radius: 0; margin-bottom: 0; }
+#dynamic-chats-container .list-group-item:first-child,
+#external-chats-container .list-group-item:first-child { border-radius: 12px 12px 0 0; }
+#dynamic-chats-container .list-group-item:last-child,
+#external-chats-container .list-group-item:last-child { border-radius: 0 0 12px 12px; }
+#dynamic-chats-container .list-group-item:only-child,
+#external-chats-container .list-group-item:only-child { border-radius: 12px; }
 
 /* Dropdown Menus (General) */
 .dropdown-menu {

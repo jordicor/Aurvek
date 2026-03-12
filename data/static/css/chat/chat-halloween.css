@@ -574,7 +574,8 @@ textarea {
     text-transform: uppercase;
 }
 
-#dynamic-chats-container .list-group-item {
+#dynamic-chats-container .list-group-item,
+#external-chats-container .list-group-item {
     padding: 8px 10px;
     margin-bottom: 2px;
     background-color: transparent;
@@ -584,29 +585,34 @@ textarea {
     font-size: 14px;
 }
 
-#dynamic-chats-container .list-group-item .chat-name {
+#dynamic-chats-container .list-group-item .chat-name,
+#external-chats-container .list-group-item .chat-name {
     display: block;
     white-space: nowrap;
     overflow: hidden;
 }
 
-#dynamic-chats-container .list-group-item:hover {
+#dynamic-chats-container .list-group-item:hover,
+#external-chats-container .list-group-item:hover {
     background-color: #4d2600;
 }
 
-#dynamic-chats-container .list-group-item.active-chat {
+#dynamic-chats-container .list-group-item.active-chat,
+#external-chats-container .list-group-item.active-chat {
     background-color: #ff6600;
     color: #1a0d00;
 }
 
-#dynamic-chats-container .list-group-item i {
+#dynamic-chats-container .list-group-item i,
+#external-chats-container .list-group-item i {
     margin-left: 10px;
     color: #ff9966;
     cursor: pointer;
     transition: color 0.3s ease;
 }
 
-#dynamic-chats-container .list-group-item i:hover {
+#dynamic-chats-container .list-group-item i:hover,
+#external-chats-container .list-group-item i:hover {
     color: #ff6600;
 }
 

@@ -536,7 +536,11 @@ function createChatMenuForFolder(conversation) {
     // WhatsApp option
     const whatsappLink = createPlatformLink('whatsapp', conversation);
     chatMenuContent.appendChild(whatsappLink);
-    
+
+    // Telegram option
+    const telegramLink = createPlatformLink('telegram', conversation);
+    chatMenuContent.appendChild(telegramLink);
+
     // Add folder options section
     addFolderOptionsToMenu(chatMenuContent, conversation.id, true);
 

@@ -1,0 +1,164 @@
+{% extends 'base_admin.html' %}
+{% block title %}Telegram - AURVEK{% endblock %}
+{% block page_title %}Telegram{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">Manage Telegram integration and monitor usage</p>{% endblock %}
+
+{% block alerts %}
+{% if message %}
+<div class="alert alert-success alert-dismissible fade show" role="alert">
+    <i class="fas fa-check-circle me-2"></i>{{ message }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-danger alert-dismissible fade show" role="alert">
+    <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="stats-row">
+    <span class="stat-badge">
+        {% if telegram_configured %}
+        <i class="fas fa-check-circle" style="color: var(--success)"></i> Bot <strong>Connected</strong>
+        {% if bot_info %}(@{{ bot_info.username }}){% endif %}
+        {% else %}
+        <i class="fas fa-times-circle" style="color: var(--danger)"></i> Bot <strong>Not Configured</strong>
+        {% endif %}
+    </span>
+    <span class="stat-badge">
+        <i class="fab fa-telegram"></i> <strong>{{ stats.messages_today }}</strong> Messages Today
+    </span>
+    <span class="stat-badge">
+        <i class="fas fa-users"></i> <strong>{{ stats.active_users_today }}</strong> Active Users
+    </span>
+    <span class="stat-badge">
+        <i class="fas fa-font"></i> <strong>{{ stats.text_count }}</strong> Text
+    </span>
+    <span class="stat-badge">
+        <i class="fas fa-microphone"></i> <strong>{{ stats.voice_count }}</strong> Voice
+    </span>
+</div>
+
+<!-- Webhook Status Section -->
+{% if webhook_info %}
+<div class="section-container">
+    <div class="section-title">
+        <i class="fas fa-link"></i> Webhook Configuration
+    </div>
+    {% if webhook_info.error %}
+    <div class="alert alert-warning mb-0">
+        <i class="fas fa-exclamation-triangle me-2"></i>
+        Could not check Telegram Bot webhook: {{ webhook_info.error }}
+    </div>
+    {% else %}
+    <div class="mb-3">
+        <div class="d-flex align-items-center gap-2 mb-2">
+            {% if webhook_info.match %}
+            <span class="badge bg-success"><i class="fas fa-check me-1"></i>OK</span>
+            {% else %}
+            <span class="badge bg-danger"><i class="fas fa-times me-1"></i>Mismatch</span>
+            {% endif %}
+            <strong>Telegram Bot Webhook</strong>
+        </div>
+        <table class="table table-sm mb-0">
+            <tbody>
+                <tr>
+                    <td class="text-muted" style="width: 140px;">Current URL</td>
+                    <td><code>{{ webhook_info.current_url or '(empty)' }}</code></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Expected URL</td>
+                    <td><code>{{ expected_webhook_url }}</code></td>
+                </tr>
+            </tbody>
+        </table>
+        {% if not webhook_info.match %}
+        <form method="post" action="/admin/telegram" class="mt-3">
+            <input type="hidden" name="action" value="fix_webhook">
+            <button type="submit" class="btn btn-warning btn-sm">
+                <i class="fas fa-wrench me-1"></i> Fix Webhook URL
+            </button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Configuration Section -->
+<div class="section-container">
+    <div class="section-title">
+        <i class="fas fa-cog"></i> Configuration
+    </div>
+    <form method="post" action="/admin/telegram" data-form-guard>
+        <input type="hidden" name="action" value="save_config">
+        <div class="mb-3">
+            <label class="form-label" for="unknown_user_message">Unknown User Message</label>
+            <p class="text-muted small mb-1">Sent when a Telegram message comes from an unregistered chat ID.</p>
+            <textarea class="form-control" id="unknown_user_message" name="unknown_user_message" rows="3">{{ unknown_user_message }}</textarea>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="welcome_message">Welcome Message</label>
+            <p class="text-muted small mb-1">Sent when a user starts their first Telegram conversation. Supports <code>{username}</code> placeholder. Leave empty to disable.</p>
+            <textarea class="form-control" id="welcome_message" name="welcome_message" rows="3">{{ welcome_message }}</textarea>
+        </div>
+        <div class="mb-3">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="require_phone_verification" name="require_phone_verification" value="1" {% if require_phone_verification %}checked{% endif %}>
+                <label class="form-check-label" for="require_phone_verification">Require phone verification for Telegram access</label>
+            </div>
+            <p class="text-muted small mt-1">When enabled, only users who have verified their phone number via SMS can use Telegram.</p>
+        </div>
+        <button type="submit" class="btn btn-primary">
+            <i class="fas fa-save me-1"></i> Save Configuration
+        </button>
+    </form>
+</div>
+
+<!-- Active Users Section -->
+<div class="section-container">
+    <div class="section-title">
+        <i class="fas fa-users"></i> Active Telegram Users
+    </div>
+    <div class="table-wrapper">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Chat ID</th>
+                    <th>Conversation</th>
+                    <th>Mode</th>
+                    <th>Last Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in telegram_users %}
+                <tr>
+                    <td><strong>{{ user.username }}</strong></td>
+                    <td><code>{{ user.chat_id_display }}</code></td>
+                    <td><code>#{{ user.conversation_id }}</code></td>
+                    <td>
+                        {% if user.answer_mode == 'voice' %}
+                        <span class="badge bg-info">Voice</span>
+                        {% else %}
+                        <span class="badge bg-secondary">Text</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ user.last_message or 'Never' }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="text-center text-muted py-4">
+                        <i class="fab fa-telegram fa-2x mb-2 d-block opacity-50"></i>
+                        No users have Telegram configured.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

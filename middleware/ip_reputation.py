@@ -190,6 +190,11 @@ class IPReputationManager:
         """
         now = time.time()
 
+        # Skip tracking for admin IPs
+        from middleware.security import SecurityConfig
+        if ip in SecurityConfig.get_admin_ips():
+            return None
+
         # Get or create pending delta
         delta = self._pending.get(ip)
         if delta is None:

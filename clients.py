@@ -41,6 +41,19 @@ else:
     )
 
 # ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+from telegram_async import AsyncTelegramClient
+from common import TELEGRAM_BOT_TOKEN
+
+if TELEGRAM_BOT_TOKEN:
+    async_telegram = AsyncTelegramClient(TELEGRAM_BOT_TOKEN)
+    logger.info("Telegram client initialized successfully")
+else:
+    async_telegram = None
+    logger.warning("Telegram bot token not configured - Telegram integration disabled")
+
+# ---------------------------------------------------------------------------
 # Deepgram (STT)
 # ---------------------------------------------------------------------------
 _deepgram_key = os.getenv("DEEPGRAM_KEY")
