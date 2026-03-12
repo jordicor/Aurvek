@@ -698,6 +698,8 @@ async def _force_lock_conversation(conversation_id: int, reason: str):
                        VALUES (?, ?, ?, 'bot')""",
                     (conversation_id, user_id, lock_message),
                 )
+            # Update conversation last_activity for sort ordering
+            await conn.execute("UPDATE CONVERSATIONS SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
             await conn.commit()
         logger.info("watchdog: force-locked conv=%d reason=%s", conversation_id, reason)
     except Exception:

@@ -255,7 +255,7 @@
 
                     // Reload to show the new cover image if one was uploaded
                     if (coverUploaded) {
-                        setTimeout(function() { location.reload(); }, 1000);
+                        setTimeout(function() { FormGuard.reloadIfClean(); }, 1000);
                         return;
                     }
 

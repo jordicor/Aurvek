@@ -383,6 +383,11 @@
 
         anyDirty: function() {
             return shouldWarn();
+        },
+
+        // Disable all guards until the page unloads (use on form POST submit)
+        disableUntilUnload: function() {
+            _guardDisabled = true;
         }
     };
 

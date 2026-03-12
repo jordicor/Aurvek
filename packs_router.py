@@ -326,6 +326,7 @@ async def admin_pack_new(request: Request, current_user: User = Depends(get_curr
     context["commission_rate"] = pricing_config["commission"]
     context["max_free_initial_balance"] = MAX_FREE_INITIAL_BALANCE
     context["max_initial_balance"] = MAX_FREE_INITIAL_BALANCE
+    context["welcome_message_content"] = ""
     return templates.TemplateResponse("admin_packs_edit.html", context)
 
 
@@ -339,6 +340,14 @@ async def admin_pack_edit(request: Request, pack_id: int, current_user: User = D
         pack_row = await get_pack(conn, pack_id)
         await _require_pack_owner(pack_row, current_user)
         items = await get_pack_items(conn, pack_id)
+
+        # Get welcome message content (avoids a separate HTTP request from the frontend)
+        async with conn.execute(
+            "SELECT content FROM WELCOME_MESSAGES WHERE entity_type = 'pack' AND entity_id = ? AND is_active = 1",
+            (pack_id,)
+        ) as cursor:
+            wm_row = await cursor.fetchone()
+            welcome_message_content = wm_row[0] if wm_row else ""
 
     context = await get_template_context(request, current_user)
     pack_dict = dict(pack_row)
@@ -365,6 +374,7 @@ async def admin_pack_edit(request: Request, pack_id: int, current_user: User = D
     else:
         context["max_initial_balance"] = MAX_FREE_INITIAL_BALANCE
 
+    context["welcome_message_content"] = welcome_message_content
     return templates.TemplateResponse("admin_packs_edit.html", context)
 
 

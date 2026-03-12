@@ -7,7 +7,8 @@ let isLoading = false;
 let isLoadingConversations = false;
 let allMessagesLoaded = false;
 let allConversationsLoaded = false;
-let lowestLoadedId = Infinity;
+let oldestLoadedActivity = null;
+let oldestLoadedId = null;
 let currentAbortController = null;
 let currentTimer = null;
 let lastSelectedConversationId = null;
@@ -1506,6 +1507,9 @@ function sendMessage(messageText) {
                 window.multiAiManager.afterMessageSent();
             }
 
+            // Move this conversation to the top of the sidebar
+            moveConversationToTop(currentConversationId);
+
             // Add event listeners to show/hide icons
             botMessageElement.addEventListener('mouseover', function() {
                 const messageId = this.dataset.messageId;
@@ -1701,6 +1705,7 @@ function addConversationElement(conversation, chatName, currentConversationId, i
         conversationElement.dataset.allowedLlms = JSON.stringify(conversation.allowed_llms);
     }
     conversationElement.dataset.isPaid = conversation.is_paid ? '1' : '0';
+    conversationElement.dataset.lastActivity = conversation.last_activity || '';
     if (conversation.locked) {
         conversationElement.classList.add('conversation-locked');
     }
@@ -2151,7 +2156,7 @@ function updateConversationElement(conversationId, updatedConversation, allConve
         dynamicChatsContainer.appendChild(element);
     }
     // Sort conversations in dynamic container
-    sortDynamicChats(dynamicChatsContainer);
+    sortDynamicChats();
 
     // Hide external section if empty
     if (externalChatsContainer.children.length === 0) {
@@ -2167,15 +2172,16 @@ function getVisibleConversationsCount() {
     return externalCount + dynamicCount;
 }
 
-function sortDynamicChats(dynamicChatsContainer) {
-    const chats = Array.from(dynamicChatsContainer.children);
-    chats.sort((a, b) => {
-        const idA = parseInt(a.dataset.conversationId);
-        const idB = parseInt(b.dataset.conversationId);
-        return idB - idA; // Descending order, change to idA - idB for ascending order
+function sortDynamicChats() {
+    const container = document.getElementById('dynamic-chats-container');
+    const elements = Array.from(container.children);
+    elements.sort((a, b) => {
+        const actA = a.dataset.lastActivity || '';
+        const actB = b.dataset.lastActivity || '';
+        if (actA !== actB) return actB.localeCompare(actA);
+        return parseInt(b.dataset.conversationId) - parseInt(a.dataset.conversationId);
     });
-    
-    chats.forEach(chat => dynamicChatsContainer.appendChild(chat));
+    elements.forEach(el => container.appendChild(el));
 }
 
 function updateSingleConversation(element, conversationData, externalContainer, dynamicContainer) {
@@ -2200,6 +2206,7 @@ function updateSingleConversation(element, conversationData, externalContainer, 
         element.classList.add('active-chat');
     }
     element.dataset.conversationId = conversationData.id;
+    element.dataset.lastActivity = conversationData.last_activity || '';
     element.dataset.machine = conversationData.machine || 'undefined';
 
     // Wrap name in .chat-name span (matches addConversationElement structure)
@@ -2310,6 +2317,17 @@ function removeConversationElement(conversationId) {
     }
 }
 
+function moveConversationToTop(conversationId) {
+    const element = document.querySelector(`[data-conversation-id="${conversationId}"]`);
+    if (!element) return;
+    const container = element.parentElement;
+    if (container && container.firstChild !== element) {
+        container.insertBefore(element, container.firstChild);
+        // Update the data attribute to current time
+        element.dataset.lastActivity = new Date().toISOString();
+    }
+}
+
 function loadConversations(loadMore = false, isInit = false) {
     if (allConversationsLoaded && !isInit) return Promise.resolve();
     if (isLoadingConversations && !isInit) return Promise.resolve();
@@ -2324,8 +2342,8 @@ function loadConversations(loadMore = false, isInit = false) {
     }
 
     var url = `/api/conversations?user_id=${user_id}&limit=${limit}`;
-    if (lowestLoadedId !== Infinity) {
-        url += `&max_id=${lowestLoadedId - 1}`;
+    if (oldestLoadedActivity !== null && oldestLoadedId !== null) {
+        url += `&before_activity=${encodeURIComponent(oldestLoadedActivity)}&before_id=${oldestLoadedId}`;
     }
 
     // By default, only load conversations not in folders (loose conversations)
@@ -2355,12 +2373,18 @@ function processConversations(conversations, loadMore, isInit) {
 
     conversations.forEach(conversation => {
         addConversationElement(conversation, conversation.chat_name, currentConversationId);
-        // Exclude external platform conversations (WhatsApp, Telegram, etc.) from
-        // pagination cursor — their low IDs would skip normal conversations
-        if (!conversation.external_platform) {
-            lowestLoadedId = Math.min(lowestLoadedId, conversation.id);
-        }
     });
+
+    // Update pagination cursor from the last non-external conversation in this batch
+    // (the oldest by activity, since the API returns newest-first)
+    for (let i = conversations.length - 1; i >= 0; i--) {
+        const conv = conversations[i];
+        if (!conv.external_platform) {
+            oldestLoadedActivity = conv.last_activity || null;
+            oldestLoadedId = conv.id;
+            break;
+        }
+    }
 
     if (conversations.length < limit) {
         allConversationsLoaded = true;

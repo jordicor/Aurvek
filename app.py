@@ -6621,7 +6621,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             LEFT JOIN Prompts p2 ON ud.current_prompt_id = p2.id  -- Add join with current prompt
             LEFT JOIN USER_ALTER_EGOS ae ON ud.current_alter_ego_id = ae.id
             WHERE u.id = ? AND (ep.value IS NULL OR ep.value = '')
-            ORDER BY c.start_date DESC
+            ORDER BY c.last_activity DESC, c.id DESC
             LIMIT 1
         ''', (effective_user_id, effective_user_id))
 
@@ -6736,7 +6736,8 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                            COALESCE(p.disable_web_search, 0) as web_search_disabled,
                            COALESCE(p.force_web_search, 0) as web_search_forced,
                            p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                           COALESCE(p.is_paid, 0) as is_paid
+                           COALESCE(p.is_paid, 0) as is_paid,
+                           c.last_activity
                     FROM conversations c
                     JOIN llm l ON c.llm_id = l.id
                     LEFT JOIN prompts p ON c.role_id = p.id
@@ -6755,12 +6756,13 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                    COALESCE(p.disable_web_search, 0) as web_search_disabled,
                    COALESCE(p.force_web_search, 0) as web_search_forced,
                    p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                   COALESCE(p.is_paid, 0) as is_paid
+                   COALESCE(p.is_paid, 0) as is_paid,
+                   c.last_activity
             FROM conversations c
             JOIN llm l ON c.llm_id = l.id
             LEFT JOIN prompts p ON c.role_id = p.id
             WHERE c.user_id = ? AND (c.folder_id IS NULL OR c.folder_id = 0){initial_ext_exclude}
-            ORDER BY c.id DESC
+            ORDER BY c.last_activity DESC, c.id DESC
             LIMIT ?
         ''', [effective_user_id] + initial_ext_exclude_params + [init_normal_limit])
         conversations_rows = await cursor.fetchall()
@@ -6780,7 +6782,8 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 "forced_llm_id": row[9],
                 "hide_llm_name": bool(row[10]) if row[10] else False,
                 "allowed_llms": orjson.loads(row[11]) if row[11] else None,
-                "is_paid": bool(row[12])
+                "is_paid": bool(row[12]),
+                "last_activity": row[13]
             }
             for row in all_init_conversations
         ]
@@ -8369,10 +8372,15 @@ async def get_conversations(
     request: Request,
     current_user: User = Depends(get_current_user),
     user_id: Optional[int] = None,
-    max_id: Optional[int] = None,
+    before_activity: Optional[str] = Query(None),
+    before_id: Optional[int] = Query(None),
     limit: int = Query(25, ge=1, le=50),
     folder_id: Optional[int] = None
 ):
+    # Both cursor params must be provided together or not at all
+    if (before_activity is None) != (before_id is None):
+        return JSONResponse(content={"error": "before_activity and before_id must both be provided or both omitted"}, status_code=400)
+
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "get_static_url": lambda x: x, "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
@@ -8425,14 +8433,15 @@ async def get_conversations(
                 external_exclude_params = [eid for _, eid in external_ids]
 
                 # On first page, fetch full external conversation data to prepend
-                if max_id is None:
+                if before_activity is None:
                     for platform, conv_id in external_ids:
                         ext_query = f'''
                             SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
                                    c.locked, l.model as llm_model, COALESCE(p.disable_web_search, 0) as web_search_disabled,
                                    COALESCE(p.force_web_search, 0) as web_search_forced,
                                    p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                                   COALESCE(p.is_paid, 0) as is_paid
+                                   COALESCE(p.is_paid, 0) as is_paid,
+                                   c.last_activity
                             FROM conversations c
                             JOIN llm l ON c.llm_id = l.id
                             LEFT JOIN prompts p ON c.role_id = p.id
@@ -8454,7 +8463,8 @@ async def get_conversations(
                        c.locked, l.model as llm_model, COALESCE(p.disable_web_search, 0) as web_search_disabled,
                        COALESCE(p.force_web_search, 0) as web_search_forced,
                        p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                       COALESCE(p.is_paid, 0) as is_paid
+                       COALESCE(p.is_paid, 0) as is_paid,
+                       c.last_activity
                 FROM conversations c
                 JOIN llm l ON c.llm_id = l.id
                 LEFT JOIN prompts p ON c.role_id = p.id
@@ -8462,11 +8472,11 @@ async def get_conversations(
             '''
             params = [user_id] + folder_params + external_exclude_params
 
-            if max_id is not None:
-                query += ' AND c.id <= ?'
-                params.append(max_id)
+            if before_activity is not None:
+                query += ' AND (c.last_activity < ? OR (c.last_activity = ? AND c.id < ?))'
+                params.extend([before_activity, before_activity, before_id])
 
-            query += ' ORDER BY c.id DESC LIMIT ?'
+            query += ' ORDER BY c.last_activity DESC, c.id DESC LIMIT ?'
             params.append(normal_limit)
 
             await cursor.execute(query, params)
@@ -8491,7 +8501,8 @@ async def get_conversations(
                     "forced_llm_id": conv[9],
                     "hide_llm_name": bool(conv[10]) if conv[10] else False,
                     "allowed_llms": orjson.loads(conv[11]) if conv[11] else None,
-                    "is_paid": bool(conv[12])
+                    "is_paid": bool(conv[12]),
+                    "last_activity": conv[13]
                 }
                 for conv in all_conversations
             ])
@@ -8516,12 +8527,13 @@ async def get_all_conversations(request: Request, current_user: User = Depends(g
     async with get_db_connection(readonly=True) as conn:
         query = '''
             SELECT c.id, u.username, c.start_date, u.id as user_id,
-                COALESCE(SUM(m.input_tokens_used + m.output_tokens_used), 0) as total_tokens_used
+                COALESCE(SUM(m.input_tokens_used + m.output_tokens_used), 0) as total_tokens_used,
+                c.last_activity
             FROM conversations c
             JOIN users u ON c.user_id = u.id
             LEFT JOIN messages m ON c.id = m.conversation_id
             GROUP BY c.id
-            ORDER BY c.start_date DESC
+            ORDER BY c.last_activity DESC
         '''
         conversations = await conn.execute_fetchall(query)
         return JSONResponse(content=[
@@ -8530,7 +8542,8 @@ async def get_all_conversations(request: Request, current_user: User = Depends(g
                 "username": conv[1],
                 "start_date": conv[2],
                 "user_id": conv[3],
-                "total_tokens_used": conv[4]
+                "total_tokens_used": conv[4],
+                "last_activity": conv[5]
             }
             for conv in conversations
         ])
@@ -9131,15 +9144,16 @@ async def update_external_platform(
         # Get only currently visible conversations
         await cursor.execute('''
             SELECT c.id, c.user_id, c.start_date, c.chat_name,
-                   CASE 
+                   CASE
                      WHEN json_extract(u.external_platforms, '$.whatsapp.conversation_id') = c.id THEN 'whatsapp'
                      WHEN json_extract(u.external_platforms, '$.telegram.conversation_id') = c.id THEN 'telegram'
-                     ELSE NULL 
-                   END as external_platform
+                     ELSE NULL
+                   END as external_platform,
+                   c.last_activity
             FROM conversations c
             JOIN user_details u ON c.user_id = u.user_id
             WHERE c.user_id = ?
-            ORDER BY c.id DESC
+            ORDER BY c.last_activity DESC, c.id DESC
             LIMIT ?
         ''', (current_user.id, min(max(1, int(data.get('visible_count', 10))), 50)))
         visible_conversations = await cursor.fetchall()
@@ -9149,7 +9163,8 @@ async def update_external_platform(
         if action == 'add':
             platform_label = platform
             await cursor.execute('''
-                SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform
+                SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
+                       c.last_activity
                 FROM conversations c
                 WHERE c.id = ?
             ''', (platform_label, conversation_id))
@@ -9161,7 +9176,8 @@ async def update_external_platform(
             "user_id": conv[1],
             "start_date": conv[2],
             "chat_name": conv[3],
-            "external_platform": conv[4]
+            "external_platform": conv[4],
+            "last_activity": conv[5]
         } for conv in visible_conversations
     ]
 
@@ -9171,7 +9187,8 @@ async def update_external_platform(
             "user_id": platform_conversation[1],
             "start_date": platform_conversation[2],
             "chat_name": platform_conversation[3],
-            "external_platform": platform_conversation[4]
+            "external_platform": platform_conversation[4],
+            "last_activity": platform_conversation[5]
         })
 
     return JSONResponse(content={
@@ -9392,17 +9409,18 @@ async def start_new_conversation(
 
         # Insert new conversation
         await cursor.execute('''
-            INSERT INTO CONVERSATIONS (user_id, llm_id, role_id, folder_id, active_extension_id)
-            VALUES (?, ?, ?, ?, ?)
-            RETURNING id
+            INSERT INTO CONVERSATIONS (user_id, llm_id, role_id, folder_id, active_extension_id, last_activity)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            RETURNING id, last_activity
         ''', (current_user.id, llm_id, prompt_id, request.folder_id, default_extension_id))
 
-        conversation_id = await cursor.fetchone()
+        new_conv_row = await cursor.fetchone()
 
-        if not conversation_id:
+        if not new_conv_row:
             raise HTTPException(status_code=500, detail='Failed to create conversation')
 
-        conversation_id = conversation_id[0]
+        conversation_id = new_conv_row[0]
+        conversation_last_activity = new_conv_row[1]
         logger.info(f"[SUCCESS] NEW CONVERSATION CREATED - ID: {conversation_id}, folder_id: {request.folder_id}")
         
         # Get additional information
@@ -9463,6 +9481,7 @@ async def start_new_conversation(
             'is_paid': is_paid_value,
             'web_search_allowed': not disable_web_search_value,
             'web_search_forced': force_web_search_value,
+            'last_activity': conversation_last_activity,
         }
         if extensions_enabled_value:
             response_data['active_extension'] = active_extension_data
@@ -10370,8 +10389,8 @@ async def branch_conversation(
         # 7. Create new conversation
         await cursor.execute('''
             INSERT INTO CONVERSATIONS (user_id, role_id, llm_id, folder_id, active_extension_id,
-                                       branched_from_id, branched_at_message_id, chat_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                       branched_from_id, branched_at_message_id, chat_name, last_activity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             RETURNING id
         ''', (current_user.id, source_role_id, source_llm_id, folder_id,
               source_extension_id, conversation_id, request.message_id, branch_name))
@@ -22711,7 +22730,7 @@ async def get_home_pack(pack_id: int, request: Request, current_user: User = Dep
             LEFT JOIN PROMPTS pr ON c.role_id = pr.id
             LEFT JOIN PROMPT_EXTENSIONS pe ON c.active_extension_id = pe.id
             WHERE c.user_id = ? AND pi.is_active = 1
-            ORDER BY c.start_date DESC
+            ORDER BY c.last_activity DESC
             LIMIT 10
         ''', (pack_id, current_user.id))
         recent_chats = [dict(row) for row in await cursor.fetchall()]
@@ -22799,7 +22818,7 @@ async def get_home_prompt(prompt_id: int, request: Request, current_user: User =
             FROM CONVERSATIONS c
             LEFT JOIN PROMPT_EXTENSIONS pe ON c.active_extension_id = pe.id
             WHERE c.user_id = ? AND c.role_id = ?
-            ORDER BY c.start_date DESC
+            ORDER BY c.last_activity DESC
             LIMIT 10
         ''', (current_user.id, prompt_id))
         recent_chats = [dict(row) for row in await cursor.fetchall()]

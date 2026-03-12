@@ -5,7 +5,7 @@ let currentEditingFolderId = null;
 let currentMovingConversationId = null;
 let currentSelectedFolderId = null; // Track currently selected folder for new chat creation
 
-// Per-folder cursor pagination state: { lowestLoadedId: number, allLoaded: boolean, loading: boolean }
+// Per-folder cursor pagination state: { lastActivity: string|null, lastId: number|null, allLoaded: boolean, loading: boolean }
 const folderPaginationState = new Map();
 const FOLDER_CHATS_PAGE_SIZE = 5;
 
@@ -360,8 +360,8 @@ async function updateFolderConversationCount(folderId) {
     }
 }
 
-// Load chats for a specific folder with cursor pagination
-async function loadFolderChats(folderId, onComplete = null, maxId = null) {
+// Load chats for a specific folder with cursor pagination (sorted by last_activity)
+async function loadFolderChats(folderId, onComplete = null, cursorParams = null) {
     const container = document.getElementById(`folder-chats-${folderId}`);
     if (!container) return;
 
@@ -369,11 +369,11 @@ async function loadFolderChats(folderId, onComplete = null, maxId = null) {
     let state = folderPaginationState.get(folderId);
     if (state && state.loading) return;
 
-    const isFirstPage = (maxId === null);
+    const isFirstPage = (cursorParams === null);
 
     if (isFirstPage) {
         // Reset state and clear container for fresh load
-        state = { lowestLoadedId: Infinity, allLoaded: false, loading: true };
+        state = { lastActivity: null, lastId: null, allLoaded: false, loading: true };
         folderPaginationState.set(folderId, state);
         container.innerHTML = '';
     } else {
@@ -386,7 +386,10 @@ async function loadFolderChats(folderId, onComplete = null, maxId = null) {
 
     try {
         let url = `/api/conversations?user_id=${user_id}&folder_id=${folderId}&limit=${FOLDER_CHATS_PAGE_SIZE}`;
-        if (maxId !== null) url += `&max_id=${maxId}`;
+        if (cursorParams) {
+            if (cursorParams.beforeActivity) url += `&before_activity=${encodeURIComponent(cursorParams.beforeActivity)}`;
+            if (cursorParams.beforeId) url += `&before_id=${cursorParams.beforeId}`;
+        }
 
         const response = await secureFetch(url);
         if (!response) return; // secureFetch returned null (session expired)
@@ -402,13 +405,14 @@ async function loadFolderChats(folderId, onComplete = null, maxId = null) {
             conversations.forEach(conversation => {
                 const chatElement = createFolderChatElement(conversation);
                 container.appendChild(chatElement);
-
-                // Track lowest loaded ID for cursor
-                const convId = Number(conversation.id);
-                if (convId < state.lowestLoadedId) {
-                    state.lowestLoadedId = convId;
-                }
             });
+
+            // Update compound cursor from the last (oldest) conversation in the batch
+            if (conversations.length > 0) {
+                const lastConv = conversations[conversations.length - 1];
+                state.lastActivity = lastConv.last_activity || null;
+                state.lastId = Number(lastConv.id);
+            }
 
             // Determine if all items have been loaded
             if (conversations.length < FOLDER_CHATS_PAGE_SIZE) {
@@ -442,7 +446,7 @@ async function loadFolderChats(folderId, onComplete = null, maxId = null) {
 function loadMoreFolderChats(folderId) {
     const state = folderPaginationState.get(folderId);
     if (!state || state.allLoaded || state.loading) return;
-    loadFolderChats(folderId, null, state.lowestLoadedId - 1);
+    loadFolderChats(folderId, null, { beforeActivity: state.lastActivity, beforeId: state.lastId });
 }
 
 // Create chat element for folder
@@ -451,7 +455,8 @@ function createFolderChatElement(conversation) {
     chatElement.href = '#';
     chatElement.className = 'list-group-item list-group-item-action folder-chat-item';
     chatElement.dataset.conversationId = conversation.id;
-    
+    chatElement.dataset.lastActivity = conversation.last_activity || '';
+
     const chatName = conversation.chat_name || `Chat ${conversation.id}`;
     
     // Create the chat content
@@ -695,7 +700,8 @@ const moveChatToFolder = withSession(async function(conversationId, folderId) {
                 // Removing FROM a folder: refresh folders and reload main conversation list
                 await reloadFoldersPreservingState();
                 allConversationsLoaded = false;
-                lowestLoadedId = Infinity;
+                oldestLoadedActivity = null;
+                oldestLoadedId = null;
                 document.getElementById('dynamic-chats-container').innerHTML = '';
                 loadedConversationIds.clear();
                 loadConversations(false, true);
@@ -1017,7 +1023,8 @@ const moveChatToFolderDragDrop = withSession(async function(conversationId, fold
                 // Removing FROM a folder: refresh folders and reload main conversation list
                 await reloadFoldersPreservingState();
                 allConversationsLoaded = false;
-                lowestLoadedId = Infinity;
+                oldestLoadedActivity = null;
+                oldestLoadedId = null;
                 document.getElementById('dynamic-chats-container').innerHTML = '';
                 loadedConversationIds.clear();
                 loadConversations(false, true);

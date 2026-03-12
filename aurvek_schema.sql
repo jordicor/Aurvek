@@ -110,7 +110,8 @@ CREATE TABLE CONVERSATIONS (
     role_id INTEGER,
     llm_id INTEGER,
     locked BOOLEAN,
-    start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, chat_name TEXT, stats TEXT, last_analyzed TIMESTAMP, folder_id INTEGER
+    start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP, chat_name TEXT, stats TEXT, last_analyzed TIMESTAMP, folder_id INTEGER
                 REFERENCES CHAT_FOLDERS(id),
     active_extension_id INTEGER DEFAULT NULL,
     branched_from_id INTEGER DEFAULT NULL,
@@ -887,5 +888,6 @@ CREATE INDEX idx_users_phone_number ON USERS(phone_number);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON USERS(phone_number) WHERE phone_number IS NOT NULL;
 CREATE INDEX idx_conversations_user_id ON CONVERSATIONS(user_id);
 CREATE INDEX idx_conversations_role_id ON CONVERSATIONS(role_id);
+CREATE INDEX idx_conversations_last_activity ON CONVERSATIONS(user_id, last_activity DESC);
 CREATE INDEX idx_prompts_public_feed ON PROMPTS(public, is_unlisted, created_at DESC);
 CREATE INDEX idx_prompts_landing_candidates ON PROMPTS(public, is_unlisted, has_landing_page);

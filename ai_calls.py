@@ -1230,6 +1230,9 @@ async def process_save_message(
                             (conversation_id, current_user.id, rejection_message, 'bot', current_time)
                         )
 
+                        # Update conversation last_activity for sort ordering
+                        await conn.execute("UPDATE CONVERSATIONS SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
+
                         await conn.commit()
                     except Exception as e:
                         if transaction_started:
@@ -5032,6 +5035,9 @@ async def save_content_to_db(content, input_tokens, output_tokens, total_tokens,
                         byok=byok,
                     )
 
+                    # Update conversation last_activity for sort ordering
+                    await conn.execute("UPDATE CONVERSATIONS SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
+
                     await conn.commit()
 
                     # --- Hint consumption: post-commit, best-effort, fail-open ---
@@ -5288,6 +5294,9 @@ async def save_multi_ai_to_db(
                             raise MultiAiBillingError(
                                 f"Billing failed for user={user_id} model={model_name}"
                             )
+
+                    # Update conversation last_activity for sort ordering
+                    await conn.execute("UPDATE CONVERSATIONS SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
 
                     await conn.commit()
 

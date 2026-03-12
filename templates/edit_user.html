@@ -504,6 +504,7 @@
                 submitBtn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
                 submitBtn.classList.remove('btn-primary');
                 submitBtn.classList.add('btn-success');
+                FormGuard.markClean(document.getElementById('editUserForm'));
                 setTimeout(() => window.location.reload(), 1000);
             } else {
                 NotificationModal.error('Update Failed', result.error || 'Error updating user');

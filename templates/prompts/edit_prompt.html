@@ -237,7 +237,7 @@
     <div class="section-container">
         <div class="section-title"><i class="fas fa-hand-wave me-2"></i>Welcome Message</div>
         <p class="text-muted small mb-2">Welcome Message (shown on Home page to users who have access)</p>
-        <textarea id="prompt-welcome-editor" class="form-control" rows="6" placeholder="Write HTML content for your welcome message..."></textarea>
+        <textarea id="prompt-welcome-editor" class="form-control" rows="6" placeholder="Write HTML content for your welcome message...">{{ welcome_message_content }}</textarea>
         <div class="mt-2 d-flex gap-2">
             <button type="button" class="btn btn-sm btn-primary" onclick="savePromptWelcome()">
                 <i class="fas fa-save me-1"></i> Save Welcome
@@ -2035,6 +2035,12 @@
     });
 
     document.addEventListener('DOMContentLoaded', function() {
+        // Show save confirmation if redirected after successful save
+        if (new URLSearchParams(window.location.search).has('saved')) {
+            NotificationModal.success('Saved', 'Prompt updated successfully.');
+            history.replaceState(null, '', window.location.pathname);
+        }
+
         // FormGuard: 3 guard groups
         var promptMainGroup = FormGuard.createGroup('prompt-main');
         var promptWelcomeGroup = FormGuard.createGroup('prompt-welcome');
@@ -2090,11 +2096,9 @@
             });
         }
 
-        // FormGuard: suspend on form POST submit
-        document.getElementById('editPromptForm').addEventListener('submit', function(e) {
-            setTimeout(function() {
-                if (!e.defaultPrevented) promptMainGroup.suspend();
-            }, 0);
+        // FormGuard: disable all guards synchronously on form POST (prevents native "Leave page?" dialog during 303 redirect)
+        document.getElementById('editPromptForm').addEventListener('submit', function() {
+            FormGuard.disableUntilUnload();
         });
 
         // FormGuard: welcome group - watch welcome editor container
@@ -2146,20 +2150,8 @@
         // Initialize extensions panel
         toggleExtensionsPanel();
 
-        // Load welcome message (DB-backed endpoint)
-        if (promptId) {
-            fetch(`/api/home/prompt/${promptId}/welcome-message`)
-                .then(r => r.ok ? r.json() : null)
-                .then(data => {
-                    const editor = document.getElementById('prompt-welcome-editor');
-                    if (editor && data && data.message) editor.value = data.message;
-                    // Mark welcome group clean after initial content load
-                    if (window._promptWelcomeGroup) window._promptWelcomeGroup.markClean();
-                })
-                .catch(() => {
-                    if (window._promptWelcomeGroup) window._promptWelcomeGroup.markClean();
-                });
-        }
+        // Welcome message is pre-loaded server-side in the textarea
+        if (window._promptWelcomeGroup) window._promptWelcomeGroup.markClean();
 
         // Initialize welcome page wizard
         if (promptId) {

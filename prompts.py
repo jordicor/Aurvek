@@ -480,6 +480,14 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
         
         editor_ids = [editor[0] for editor in editors]
 
+        # Get welcome message content (avoids a separate HTTP request from the frontend)
+        async with conn.execute(
+            "SELECT content FROM WELCOME_MESSAGES WHERE entity_type = 'prompt' AND entity_id = ? AND is_active = 1",
+            (prompt_id,)
+        ) as cursor:
+            wm_row = await cursor.fetchone()
+            welcome_message_content = wm_row[0] if wm_row else ""
+
     # Generate prompt image URL
     prompt_image_url = None
     if prompt[4]:  # prompt[4] is the 'image' column in the Prompts table
@@ -529,6 +537,8 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
         "extensions_free_selection": bool(prompt[20]) if prompt[20] is not None else True,
         # Purchase price
         "purchase_price": prompt[21],
+        # Welcome message (pre-loaded, no extra HTTP request)
+        "welcome_message_content": welcome_message_content,
     })
     return templates.TemplateResponse("prompts/edit_prompt.html", context)
 
@@ -816,7 +826,7 @@ async def update_prompt(
         from app import invalidate_landing_cache
         invalidate_landing_cache(prompt_public_id)
 
-    return RedirectResponse(url=f"/prompts/edit/{prompt_id}", status_code=303)
+    return RedirectResponse(url=f"/prompts/edit/{prompt_id}?saved=1", status_code=303)
 
 
 @router.delete("/prompts/delete/{prompt_id}")

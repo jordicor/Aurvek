@@ -88,7 +88,8 @@
                     </th>
                     <th>ID</th>
                     <th>User</th>
-                    <th>Date</th>
+                    <th>Created</th>
+                    <th>Last Active</th>
                     <th>Tokens Used</th>
                     <th class="text-end">Actions</th>
                 </tr>
@@ -156,7 +157,7 @@
     function fetchConversations() {
         currentView = 'conversations';
         const tbody = document.getElementById('conversations-list');
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4"><i class="fas fa-spinner fa-spin"></i> Loading conversations...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4"><i class="fas fa-spinner fa-spin"></i> Loading conversations...</td></tr>';
 
         fetch('/api/admin/conversations')
             .then(response => response.json())
@@ -164,7 +165,7 @@
                 tbody.innerHTML = '';
 
                 if (conversations.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">No conversations found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">No conversations found</td></tr>';
                     document.getElementById('conversationCount').textContent = '0';
                     return;
                 }
@@ -184,6 +185,7 @@
                             </a>
                         </td>
                         <td>${conv.start_date}</td>
+                        <td>${conv.last_activity || '-'}</td>
                         <td><span class="tokens-badge"><i class="fas fa-coins me-1"></i>${conv.total_tokens_used.toLocaleString()}</span></td>
                         <td class="text-end table-actions">
                             <button onclick="viewConversation(${conv.id}, event)" class="btn btn-sm btn-outline-primary" title="View" data-bs-toggle="tooltip">
@@ -209,7 +211,7 @@
             })
             .catch(error => {
                 console.error('Error loading conversations:', error);
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-danger"><i class="fas fa-exclamation-triangle me-2"></i>Error loading conversations. Please try again.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-danger"><i class="fas fa-exclamation-triangle me-2"></i>Error loading conversations. Please try again.</td></tr>';
             });
     }
 

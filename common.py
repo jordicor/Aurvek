@@ -2162,7 +2162,13 @@ def fix_landing_seo_tags(html: str, canonical_url: str, static_base_url: str) ->
         return html
 
     def _make_absolute(url):
-        if not url or url.startswith(('https://', 'http://')):
+        if not url:
+            return url
+        # Resolve template placeholders left by landing page generator
+        url = url.replace('{{LANDING_BASE_URL}}/', '').replace('{{LANDING_BASE_URL}}', '')
+        # Clean double slashes (preserve ://)
+        url = re.sub(r'(?<!:)//', '/', url)
+        if url.startswith(('https://', 'http://')):
             return url
         base = static_base_url.rstrip('/') + '/'
         # Strip leading ./ or ../ prefixes without being greedy

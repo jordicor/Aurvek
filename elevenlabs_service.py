@@ -321,6 +321,8 @@ class ElevenLabsService:
                         """,
                         (session_id, conversation_id),
                     )
+                    # Update conversation last_activity for sort ordering
+                    await conn.execute("UPDATE CONVERSATIONS SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
                     await conn.commit()
 
                     logger.info(

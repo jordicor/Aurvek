@@ -368,7 +368,7 @@
     <div class="section-container" style="margin-top: 1.5rem;">
         <div class="section-title"><i class="fas fa-hand-wave"></i> Welcome Message</div>
         <p class="text-muted small mb-2">Welcome Message (shown on Home page to users who have access)</p>
-        <textarea id="pack-welcome-editor" class="form-control" rows="8" placeholder="Write HTML content for your welcome message..."></textarea>
+        <textarea id="pack-welcome-editor" class="form-control" rows="8" placeholder="Write HTML content for your welcome message...">{{ welcome_message_content }}</textarea>
         <div class="mt-2 d-flex gap-2">
             <button type="button" class="btn btn-sm btn-primary" onclick="savePackWelcome()">
                 <i class="fas fa-save me-1"></i> Save Welcome
@@ -705,24 +705,8 @@
     })();
 </script>
 <script>
-    // Welcome Message Editor (DB-backed endpoint)
-    (function() {
-        const packId = document.getElementById('packId')?.value;
-        if (!packId) return;
-
-        // Load existing welcome message from DB
-        fetch(`/api/home/pack/${packId}/welcome-message`)
-            .then(r => r.ok ? r.json() : null)
-            .then(data => {
-                const editor = document.getElementById('pack-welcome-editor');
-                if (editor && data && data.message) editor.value = data.message;
-                // Mark welcome group clean after initial content load
-                if (typeof packWelcomeGroup !== 'undefined') packWelcomeGroup.markClean();
-            })
-            .catch(() => {
-                if (typeof packWelcomeGroup !== 'undefined') packWelcomeGroup.markClean();
-            });
-    })();
+    // Welcome message is pre-loaded server-side in the textarea
+    if (typeof packWelcomeGroup !== 'undefined') packWelcomeGroup.markClean();
 
     async function savePackWelcome() {
         const packId = document.getElementById('packId')?.value;
