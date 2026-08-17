@@ -1,16 +1,20 @@
+import asyncio
 import base64
 import io
 import json
 import os
 import re
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from importlib import import_module
 from pathlib import Path
 from typing import List
 from unicodedata import normalize
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
+from filelock import FileLock, Timeout as FileLockTimeout
 from PIL import Image as PilImage, UnidentifiedImageError
 
 from auth import get_current_user, unauthenticated_response
@@ -38,7 +42,9 @@ from database import get_db_connection
 from llm_catalog import get_selector_llms
 from log_config import logger
 from marketplace.config import require_creator_tools_enabled
+from marketplace.landing.cache import invalidate_landing_cache
 from marketplace.landing.jobs import (
+    JOBS_DIR,
     get_active_job_for_prompt,
     get_active_welcome_job_for_prompt,
     get_job,
@@ -71,6 +77,185 @@ router = APIRouter()
 
 ALLOWED_COMPONENT_TYPES = {"html", "css", "js"}
 ALLOWED_EXTENSIONS = {"webp", "jpg", "jpeg", "png", "gif", "ico"}
+PUBLICATION_VERIFICATION_UNAVAILABLE = "Publication verification is unavailable."
+_PROMPT_PIPELINE_DIR = Path(__file__).resolve().parents[2] / "tools" / "prompt_pipeline"
+_LANDING_SAVE_LOCK_DIR = JOBS_DIR / "save-locks"
+_LANDING_SAVE_LOCK_TIMEOUT_SECONDS = 30
+
+
+def _run_landing_publication_check(prompt_id: int, content: str) -> List[str]:
+    """Run the private verifier synchronously, failing closed on any gap."""
+    if not _PROMPT_PIPELINE_DIR.is_dir():
+        return [PUBLICATION_VERIFICATION_UNAVAILABLE]
+
+    try:
+        truth_sheet = import_module("tools.prompt_pipeline.truth_sheet")
+        verifier = import_module("tools.prompt_pipeline.verifier")
+        truth = truth_sheet.load_truth_sheet(prompt_id)
+        if truth is None:
+            return [PUBLICATION_VERIFICATION_UNAVAILABLE]
+        return verifier.check_publication_readiness(content, truth) or []
+    except Exception:
+        logger.exception(
+            "Landing publication verification failed for prompt %s",
+            prompt_id,
+        )
+        return [PUBLICATION_VERIFICATION_UNAVAILABLE]
+
+
+async def _get_landing_publication_errors(prompt_id: int, content: str) -> List[str]:
+    """Offload publication verification so its SQLite work cannot block async I/O."""
+    return await asyncio.to_thread(
+        _run_landing_publication_check,
+        prompt_id,
+        content,
+    )
+
+
+async def _revoke_landing_publication(prompt_id: int) -> None:
+    """Fail closed before checking freshly written landing content."""
+    async with get_db_connection() as conn:
+        await conn.execute(
+            "UPDATE PROMPTS SET has_landing_page = 0, landing_trusted = 0 WHERE id = ?",
+            (prompt_id,),
+        )
+        cursor = await conn.execute(
+            "SELECT public_id FROM PROMPTS WHERE id = ?",
+            (prompt_id,),
+        )
+        row = await cursor.fetchone()
+        await conn.commit()
+
+    if row and row[0]:
+        invalidate_landing_cache(row[0])
+
+
+@asynccontextmanager
+async def _landing_save_lock(prompt_id: int):
+    """Serialize a prompt's revoke/write/verify/publish sequence across workers."""
+    _LANDING_SAVE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(_LANDING_SAVE_LOCK_DIR / f"prompt-{prompt_id}.lock"))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _LANDING_SAVE_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            lock.acquire(timeout=0)
+            break
+        except FileLockTimeout:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise
+            await asyncio.sleep(min(0.05, remaining))
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+async def _persist_landing_page(
+    *,
+    prompt_id: int,
+    section: str,
+    content: str,
+    use_default_template: bool,
+    prompt_info: dict,
+    is_admin: bool,
+) -> JSONResponse:
+    """Persist one landing section while the prompt-level save lock is held."""
+    prompt_dir = create_prompt_directory(
+        prompt_info["created_by_username"],
+        prompt_id,
+        prompt_info["name"],
+    )
+
+    prompt_base = Path(prompt_dir)
+    validated_path = validate_path_within_directory(f"{section}.html", prompt_base)
+    file_path = str(validated_path)
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    if section == "home" and PRIMARY_APP_DOMAIN:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                "SELECT public_id FROM PROMPTS WHERE id = ?",
+                (prompt_id,),
+            )
+            row = await cursor.fetchone()
+        if row and row[0]:
+            prompt_slug = slugify(prompt_info["name"])
+            canonical = f"https://{PRIMARY_APP_DOMAIN}/p/{row[0]}/{prompt_slug}/"
+            content = fix_landing_seo_tags(content, canonical, canonical)
+
+    if section == "home":
+        # Revoke before replacing the file. The prompt-level file lock keeps a
+        # second worker from publishing content verified by a different save.
+        await _revoke_landing_publication(prompt_id)
+
+    with open(file_path, "w", encoding="utf-8") as file:
+        file.write(content)
+
+    async with get_db_connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO PROMPT_SECTION_CONFIGS (prompt_id, section, use_default)
+            VALUES (?, ?, ?)
+            ON CONFLICT(prompt_id, section) DO UPDATE SET use_default = ?
+            """,
+            (prompt_id, section, use_default_template, use_default_template),
+        )
+        await conn.commit()
+
+    if section == "home":
+        publication_errors = await _get_landing_publication_errors(
+            prompt_id,
+            content,
+        )
+        if publication_errors:
+            logger.warning(
+                "Landing for prompt %s saved but NOT published (%s blocking issue(s)): %s",
+                prompt_id,
+                len(publication_errors),
+                publication_errors,
+            )
+            return JSONResponse(
+                {
+                    "success": True,
+                    "published": False,
+                    "publication_errors": publication_errors,
+                    "message": "Changes saved, but the landing was NOT published: fix the listed issues first.",
+                }
+            )
+
+        # Platform/admin-authored landings are trusted and served directly
+        # from the primary domain. Third-party creator landings are NOT: they
+        # fail closed (503) until a sanitized-HTML path or a custom domain is
+        # configured. A non-admin re-saving an existing landing revokes trust,
+        # since the content is now (partly) creator-authored.
+        landing_trusted = 1 if is_admin else 0
+        async with get_db_connection() as conn2:
+            await conn2.execute(
+                "UPDATE PROMPTS SET has_landing_page = 1, landing_trusted = ? WHERE id = ?",
+                (landing_trusted, prompt_id),
+            )
+            await conn2.commit()
+            cursor = await conn2.execute(
+                "SELECT public_id FROM PROMPTS WHERE id = ?",
+                (prompt_id,),
+            )
+            row = await cursor.fetchone()
+
+        # Refresh the cached resolution so the new publication and trust flags
+        # are visible immediately.
+        if row and row[0]:
+            invalidate_landing_cache(row[0])
+
+    return JSONResponse(
+        {
+            "success": True,
+            "published": True,
+            "message": "Changes saved and section configuration updated!",
+        }
+    )
 
 
 def _login_template(request: Request):
@@ -96,20 +281,62 @@ def ensure_directories(prompt_id, prompt_info):
         os.makedirs(directory, exist_ok=True)
 
 
-def convert_image_to_webp(image, file_path):
-    img = PilImage.open(image.file)
-    webp_path = f"{os.path.splitext(file_path)[0]}.webp"
-    img.save(webp_path, "webp")
-    return webp_path
+class _LandingImageValidationError(ValueError):
+    """A client-visible validation failure while decoding a landing image."""
 
 
-def is_image(file):
+def _save_prompt_landing_image(
+    content: bytes,
+    *,
+    original_filename: str,
+    requested_name: str,
+    img_dir: Path,
+) -> tuple[str, str]:
+    """Validate and persist one prompt landing image off the event loop."""
+    filename = secure_filename(requested_name)
+    ext = Path(original_filename).suffix.lower()
+    if not filename.lower().endswith(tuple(ALLOWED_EXTENSIONS)):
+        filename += ext
+
+    img_dir.mkdir(parents=True, exist_ok=True)
+    file_path = validate_path_within_directory(filename, img_dir)
+
     try:
-        img = PilImage.open(file)
-        img.verify()
-        return True
-    except (UnidentifiedImageError, IOError):
-        return False
+        with PilImage.open(io.BytesIO(content)) as verified_image:
+            verified_image.verify()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise _LandingImageValidationError(
+            f"Invalid image file: {original_filename}"
+        ) from exc
+
+    try:
+        with PilImage.open(io.BytesIO(content)) as decoded_image:
+            width, height = decoded_image.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise _LandingImageValidationError(
+                    f"Image {original_filename} dimensions too large. Maximum is "
+                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                )
+            decoded_image.load()
+            converted_image = (
+                decoded_image.copy()
+                if ext in {".jpg", ".jpeg", ".png"}
+                else None
+            )
+    except _LandingImageValidationError:
+        raise
+    except Exception as exc:
+        raise _LandingImageValidationError(
+            f"Could not process image: {original_filename}"
+        ) from exc
+
+    if converted_image is not None:
+        webp_path = file_path.with_suffix(".webp")
+        converted_image.save(str(webp_path), "WEBP")
+        return filename, webp_path.name
+
+    file_path.write_bytes(content)
+    return filename, file_path.name
 
 
 def secure_filename(filename: str) -> str:
@@ -400,6 +627,9 @@ async def get_landing_config_endpoint(
                 preserved_llm_ids.append(config.get(key))
 
         async with get_db_connection(readonly=True) as conn:
+            # A prompt/landing default LLM is not a per-user personal subscription;
+            # GPTSub (ChatGPT subscription) must never be selectable here. Hide it,
+            # including an already-stored GPTSub default (fail closed).
             llm_rows = await get_selector_llms(conn, preserve_ids=preserved_llm_ids)
             llms = [{"id": row["id"], "name": f"{row['machine']} - {row['model']}"} for row in llm_rows]
 
@@ -1073,8 +1303,21 @@ async def delete_landing_files(prompt_id: int, current_user: User = Depends(get_
         if result["success"]:
             logger.info(f"Deleted {result.get('deleted_count', 0)} files for prompt {prompt_id}")
             async with get_db_connection() as conn:
-                await conn.execute("UPDATE PROMPTS SET has_landing_page = 0 WHERE id = ?", (prompt_id,))
+                cursor = await conn.execute("SELECT public_id FROM PROMPTS WHERE id = ?", (prompt_id,))
+                row = await cursor.fetchone()
+                # Retire the landing and drop its trust flag so it cannot keep a
+                # dangling trusted state if it is later re-created by a non-admin.
+                await conn.execute(
+                    "UPDATE PROMPTS SET has_landing_page = 0, landing_trusted = 0 WHERE id = ?",
+                    (prompt_id,),
+                )
                 await conn.commit()
+
+            # Drop the cached resolution so the new has_landing_page=0 /
+            # landing_trusted=0 policy takes effect immediately (a stale entry
+            # would keep serving it).
+            if row and row[0]:
+                invalidate_landing_cache(row[0])
 
             return JSONResponse(
                 {
@@ -1637,56 +1880,28 @@ async def save_landing_page(
         content = re.sub(r"\n\s*\n", "\n", content.strip())
         content = re.sub(r"\r\n", "\n", content)
 
-        prompt_dir = create_prompt_directory(
-            prompt_info["created_by_username"],
-            prompt_id,
-            prompt_info["name"],
-        )
-
-        prompt_base = Path(prompt_dir)
-        validated_path = validate_path_within_directory(f"{section}.html", prompt_base)
-        file_path = str(validated_path)
-
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-        if section == "home" and PRIMARY_APP_DOMAIN:
-            async with get_db_connection(readonly=True) as conn:
-                cursor = await conn.execute(
-                    "SELECT public_id FROM PROMPTS WHERE id = ?",
-                    (prompt_id,),
-                )
-                row = await cursor.fetchone()
-            if row and row[0]:
-                prompt_slug = slugify(prompt_info["name"])
-                canonical = f"https://{PRIMARY_APP_DOMAIN}/p/{row[0]}/{prompt_slug}/"
-                content = fix_landing_seo_tags(content, canonical, canonical)
-
-        with open(file_path, "w", encoding="utf-8") as file:
-            file.write(content)
-
-        async with get_db_connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO PROMPT_SECTION_CONFIGS (prompt_id, section, use_default)
-                VALUES (?, ?, ?)
-                ON CONFLICT(prompt_id, section) DO UPDATE SET use_default = ?
-                """,
-                (prompt_id, section, use_default_template, use_default_template),
+        async with _landing_save_lock(prompt_id):
+            return await _persist_landing_page(
+                prompt_id=prompt_id,
+                section=section,
+                content=content,
+                use_default_template=use_default_template,
+                prompt_info=prompt_info,
+                is_admin=is_admin,
             )
-            await conn.commit()
 
-        if section == "home":
-            async with get_db_connection() as conn2:
-                await conn2.execute(
-                    "UPDATE PROMPTS SET has_landing_page = 1 WHERE id = ?",
-                    (prompt_id,),
-                )
-                await conn2.commit()
-
-        return JSONResponse({"success": True, "message": "Changes saved and section configuration updated!"})
-
+    except FileLockTimeout:
+        logger.warning("Timed out waiting to save landing for prompt %s", prompt_id)
+        return JSONResponse(
+            {
+                "success": False,
+                "message": "Another landing save is still in progress; try again.",
+            },
+            status_code=503,
+        )
     except Exception as e:
-        return JSONResponse({"success": False, "message": f"Error saving: {str(e)}"}, status_code=500)
+        logger.exception(f"Error saving landing page for prompt {prompt_id}: {e}")
+        return JSONResponse({"success": False, "message": "Error saving changes"}, status_code=500)
 
 
 @router.get("/landing/{prompt_id}/components", response_class=HTMLResponse)
@@ -2002,15 +2217,10 @@ async def upload_images(
     prompt_info = await get_prompt_info(prompt_id)
     base_dir = get_prompt_path(prompt_id, prompt_info)
     img_dir = Path(base_dir) / "static" / "img"
-    os.makedirs(str(img_dir), exist_ok=True)
 
     uploaded_files = []
     for image, name in zip(images, names):
         if image and allowed_file(image.filename):
-            if not is_image(image.file):
-                return {"message": f"Invalid image file: {image.filename}", "images": 0}
-
-            image.file.seek(0)
             content = await image.read()
             if len(content) > MAX_IMAGE_UPLOAD_SIZE:
                 return {
@@ -2019,34 +2229,17 @@ async def upload_images(
                 }
 
             try:
-                pil_img = PilImage.open(io.BytesIO(content))
-                width, height = pil_img.size
-                if width * height > MAX_IMAGE_PIXELS:
-                    return {
-                        "message": f"Image {image.filename} dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels",
-                        "images": 0,
-                    }
-            except Exception:
-                return {"message": f"Could not process image: {image.filename}", "images": 0}
+                filename, stored_filename = await asyncio.to_thread(
+                    _save_prompt_landing_image,
+                    content,
+                    original_filename=image.filename,
+                    requested_name=name,
+                    img_dir=img_dir,
+                )
+            except _LandingImageValidationError as exc:
+                return {"message": str(exc), "images": 0}
 
-            image.file = io.BytesIO(content)
-
-            filename = secure_filename(name)
-            ext = Path(image.filename).suffix.lower()
-
-            if not filename.lower().endswith(tuple(ALLOWED_EXTENSIONS)):
-                filename += ext
-
-            validated_path = validate_path_within_directory(filename, img_dir)
-            file_path = str(validated_path)
-
-            if ext in {".jpg", ".jpeg", ".png"}:
-                webp_path = convert_image_to_webp(image, file_path)
-                image_url = f"/web/{prompt_id}/static/img/{Path(webp_path).name}"
-            else:
-                with open(file_path, "wb") as buffer:
-                    buffer.write(await image.read())
-                image_url = f"/web/{prompt_id}/static/img/{filename}"
+            image_url = f"/web/{prompt_id}/static/img/{stored_filename}"
 
             uploaded_files.append({"id": filename, "name": filename, "url": image_url})
         else:

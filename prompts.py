@@ -49,6 +49,76 @@ from marketplace.services.entitlements import user_has_prompt_access as user_has
 
 router = APIRouter()
 
+_PERSONAL_SUBSCRIPTION_MACHINE = "GPTSub"
+
+
+async def _validate_prompt_llm_selection(
+    llm_mode: str,
+    forced_llm_id: Optional[int],
+    allowed_llms: Optional[str],
+) -> None:
+    """Reject per-user subscription rows in shared prompt configuration."""
+    selected_ids: list[int] = []
+    if llm_mode == "restricted":
+        if not allowed_llms:
+            raise HTTPException(
+                status_code=400,
+                detail="Restricted mode requires at least one model selected",
+            )
+        try:
+            parsed = orjson.loads(allowed_llms)
+        except orjson.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid allowed_llms format"
+            ) from exc
+        if (
+            not isinstance(parsed, list)
+            or not parsed
+            or not all(isinstance(value, int) and not isinstance(value, bool) for value in parsed)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Restricted mode requires valid model IDs",
+            )
+        selected_ids = list(dict.fromkeys(parsed))
+    elif llm_mode == "forced" and forced_llm_id is not None:
+        selected_ids = [int(forced_llm_id)]
+
+    if not selected_ids:
+        return
+    placeholders = ",".join("?" for _ in selected_ids)
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            f"SELECT id, machine FROM LLM WHERE id IN ({placeholders})",
+            tuple(selected_ids),
+        )
+        rows = await cursor.fetchall()
+    found_ids = {int(row["id"]) for row in rows}
+    if found_ids != set(selected_ids):
+        raise HTTPException(status_code=400, detail="One or more selected LLMs do not exist")
+    if any(row["machine"] == _PERSONAL_SUBSCRIPTION_MACHINE for row in rows):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Personal ChatGPT subscription models cannot be forced or shared "
+                "through a prompt. Each user selects them after connecting their account."
+            ),
+        )
+
+
+async def _watchdog_llm_machine(llm_id: int) -> str:
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute("SELECT machine FROM LLM WHERE id = ?", (llm_id,))
+        row = await cursor.fetchone()
+    if not row:
+        raise ValueError(f"LLM with id {llm_id} does not exist")
+    machine = str(row["machine"] or "")
+    if machine == _PERSONAL_SUBSCRIPTION_MACHINE:
+        raise ValueError(
+            "Personal ChatGPT subscription models cannot run as a shared watchdog"
+        )
+    return machine
+
 
 async def can_user_access_prompt(user: User, prompt_id: int, cursor) -> bool:
     """
@@ -203,6 +273,39 @@ async def list_prompts(request: Request, current_user: User = Depends(get_curren
         return templates.TemplateResponse("prompts/prompt_list.html", context)
 
         
+def _save_prompt_image_variants(
+    content: bytes,
+    *,
+    prompt_dir: str,
+    prompt_id: int,
+    sanitized_prompt_name: str,
+) -> None:
+    """Decode, validate, resize, and save all prompt image variants."""
+    with PilImage.open(io.BytesIO(content)) as image:
+        width, height = image.size
+        if width * height > MAX_IMAGE_PIXELS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Image dimensions too large. Maximum is "
+                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                ),
+            )
+
+        image.load()
+        os.makedirs(prompt_dir, exist_ok=True)
+        for size in (32, 64, 128, "fullsize"):
+            if size == "fullsize":
+                resized_image = image
+                filename = f"{prompt_id}_{sanitized_prompt_name}_fullsize.webp"
+            else:
+                resized_image = resize_image(image, size)
+                filename = f"{prompt_id}_{sanitized_prompt_name}_{size}.webp"
+
+            file_path = os.path.join(prompt_dir, filename)
+            resized_image.save(file_path, "WEBP")
+
+
 async def process_prompt_image_upload(
     prompt_id: int,
     file: UploadFile,
@@ -254,9 +357,6 @@ async def process_prompt_image_upload(
         "img"
     )
 
-    # Create directory if it does not exist
-    os.makedirs(prompt_dir, exist_ok=True)
-
     try:
         # Process the new image
         content = await file.read()
@@ -265,27 +365,13 @@ async def process_prompt_image_upload(
         if len(content) > MAX_IMAGE_UPLOAD_SIZE:
             raise HTTPException(status_code=400, detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024*1024)}MB")
 
-        image = PilImage.open(io.BytesIO(content))
-
-        # Security: Check for decompression bombs (excessive pixel count)
-        width, height = image.size
-        if width * height > MAX_IMAGE_PIXELS:
-            raise HTTPException(status_code=400, detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels")
-
-        sizes = [32, 64, 128, 'fullsize']
-        ext = 'webp'
-
-        # Create the new image versions
-        for size in sizes:
-            if size == 'fullsize':
-                resized_image = image
-                filename = f"{prompt_id}_{sanitized_prompt_name}_fullsize.{ext}"
-            else:
-                resized_image = resize_image(image, size)
-                filename = f"{prompt_id}_{sanitized_prompt_name}_{size}.{ext}"
-
-            file_path = os.path.join(prompt_dir, filename)
-            resized_image.save(file_path, ext.upper())
+        await asyncio.to_thread(
+            _save_prompt_image_variants,
+            content,
+            prompt_dir=prompt_dir,
+            prompt_id=prompt_id,
+            sanitized_prompt_name=sanitized_prompt_name,
+        )
 
         # Build the base_image_url (without timestamp)
         base_image_url = f"users/{hash_prefix1}/{hash_prefix2}/{user_hash}/prompts/{padded_id[:3]}/{padded_id[3:]}_{sanitized_prompt_name}/static/img/{prompt_id}_{sanitized_prompt_name}"
@@ -364,6 +450,8 @@ async def create_prompt_post(
     if is_forbidden_prompt_name(name) or is_forbidden_prompt_name(slugify(name)):
         raise HTTPException(status_code=400, detail="This name is not available. Please choose a different name.")
 
+    await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms)
+
     # Parse and validate watchdog_config
     watchdog_config_json = None
     if watchdog_config and watchdog_config.strip():
@@ -374,10 +462,10 @@ async def create_prompt_post(
             for sub_key in ("pre_watchdog", "post_watchdog"):
                 sub_cfg = sanitized_wd.get(sub_key, {})
                 if sub_cfg.get("llm_id") is not None:
-                    async with get_db_connection(readonly=True) as conn_check:
-                        cursor_check = await conn_check.execute("SELECT id FROM LLM WHERE id = ?", (sub_cfg["llm_id"],))
-                        if not await cursor_check.fetchone():
-                            raise ValueError(f"LLM with id {sub_cfg['llm_id']} does not exist ({sub_key})")
+                    try:
+                        await _watchdog_llm_machine(sub_cfg["llm_id"])
+                    except ValueError as exc:
+                        raise ValueError(f"{exc} ({sub_key})") from exc
             watchdog_config_json = orjson.dumps(sanitized_wd).decode("utf-8")
         except orjson.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON in watchdog configuration")
@@ -743,6 +831,8 @@ async def update_prompt(
         if is_forbidden_prompt_name(name) or is_forbidden_prompt_name(slugify(name)):
             raise HTTPException(status_code=400, detail="This name is not available. Please choose a different name.")
 
+    await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms)
+
     # Parse and validate watchdog_config
     watchdog_config_json = None
     if watchdog_config and watchdog_config.strip():
@@ -753,10 +843,10 @@ async def update_prompt(
             for sub_key in ("pre_watchdog", "post_watchdog"):
                 sub_cfg = sanitized_wd.get(sub_key, {})
                 if sub_cfg.get("llm_id") is not None:
-                    async with get_db_connection(readonly=True) as conn_check:
-                        cursor_check = await conn_check.execute("SELECT id FROM LLM WHERE id = ?", (sub_cfg["llm_id"],))
-                        if not await cursor_check.fetchone():
-                            raise ValueError(f"LLM with id {sub_cfg['llm_id']} does not exist ({sub_key})")
+                    try:
+                        await _watchdog_llm_machine(sub_cfg["llm_id"])
+                    except ValueError as exc:
+                        raise ValueError(f"{exc} ({sub_key})") from exc
             watchdog_config_json = orjson.dumps(sanitized_wd).decode("utf-8")
         except orjson.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON in watchdog configuration")
@@ -1501,24 +1591,29 @@ def get_user_prompts_directory(username: str) -> str:
     return os.path.join(user_dir, "prompts")
 
 
-def _create_entity_directory(
+def _get_entity_directory_path(
     entity_type: str, username: str, entity_id: Union[int, str], entity_name: str
 ) -> str:
-    """
-    Create a directory for a prompt or pack entity.
-    entity_type must be 'prompts' or 'packs'.
-    ID is 7-digit zero-padded, split into prefix (3) and suffix (4).
-    """
+    """Calculate an entity directory path without mutating the filesystem."""
     user_dir = get_user_directory(username)
     sanitized_name = sanitize_name(entity_name)
     padded_id = f"{int(entity_id):07d}"
-    entity_dir = os.path.join(
+    return os.path.join(
         user_dir, entity_type, padded_id[:3], f"{padded_id[3:]}_{sanitized_name}"
     )
 
-    if not os.path.exists(entity_dir):
-        os.makedirs(entity_dir)
 
+def _create_entity_directory(
+    entity_type: str, username: str, entity_id: Union[int, str], entity_name: str
+) -> str:
+    """Create and return a prompt or pack directory."""
+    entity_dir = _get_entity_directory_path(
+        entity_type,
+        username,
+        entity_id,
+        entity_name,
+    )
+    os.makedirs(entity_dir, exist_ok=True)
     return entity_dir
 
 
@@ -1556,8 +1651,8 @@ async def get_prompt_info(prompt_id: int) -> dict:
 def _get_entity_path(
     entity_type: str, entity_id: int, entity_info: dict
 ) -> str:
-    """Get (and create if needed) directory for a prompt or pack."""
-    return _create_entity_directory(
+    """Calculate a prompt or pack path without creating it."""
+    return _get_entity_directory_path(
         entity_type, entity_info['created_by_username'], entity_id, entity_info['name']
     )
 
@@ -1942,11 +2037,10 @@ async def set_watchdog_config(prompt_id: int, config: dict) -> bool:
     for sub_key in ("pre_watchdog", "post_watchdog"):
         sub_cfg = sanitized.get(sub_key, {})
         if sub_cfg.get("llm_id") is not None:
-            async with get_db_connection(readonly=True) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute("SELECT id FROM LLM WHERE id = ?", (sub_cfg["llm_id"],))
-                    if not await cursor.fetchone():
-                        raise ValueError(f"LLM with id {sub_cfg['llm_id']} does not exist ({sub_key})")
+            try:
+                await _watchdog_llm_machine(sub_cfg["llm_id"])
+            except ValueError as exc:
+                raise ValueError(f"{exc} ({sub_key})") from exc
 
     config_json = orjson.dumps(sanitized).decode("utf-8")
 

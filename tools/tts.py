@@ -578,6 +578,24 @@ def _cleanup_sync() -> int:
     return deleted
 
 
+def _decode_and_export_audio_chunks(
+    audio_chunks: tuple[bytes, ...],
+    audio_input_format: str,
+) -> bytes:
+    """Decode, combine, and encode generated chunks outside the event loop."""
+    audio_segments = [
+        AudioSegment.from_file(io.BytesIO(chunk), format=audio_input_format)
+        for chunk in audio_chunks
+    ]
+    combined_audio = audio_segments[0]
+    for segment in audio_segments[1:]:
+        combined_audio += segment
+
+    encoded_audio = io.BytesIO()
+    combined_audio.export(encoded_audio, format="ogg", codec="libopus")
+    return encoded_audio.getvalue()
+
+
 async def handle_tts_request(websocket: WebSocket, data: dict, current_user: User, is_whatsapp=False, sample_voice_id=None, ws_mode=False, tts_context: str = "webchat"):
     _cancelled = False
     try:
@@ -702,20 +720,21 @@ async def handle_tts_request(websocket: WebSocket, data: dict, current_user: Use
             else:
                 audio_generator = get_tts_generator(tts_engine, voice_id, chunks, profile=profile)
                 audio_input_format = format_to_pydub(profile.output_format) if tts_engine == 'elevenlabs' else 'mp3'
-            audio_segments = []
+            audio_chunks = []
 
             async for audio_chunk in audio_generator:
                 if websocket and not is_whatsapp:
                     await manager.send_bytes(websocket, audio_chunk)
-                audio_segment = AudioSegment.from_file(io.BytesIO(audio_chunk), format=audio_input_format)
-                audio_segments.append(audio_segment)
+                audio_chunks.append(audio_chunk)
 
-            if audio_segments:
-                combined_audio = audio_segments[0]
-                for segment in audio_segments[1:]:
-                    combined_audio += segment
-
-                combined_audio.export(full_path_opus, format="ogg", codec="libopus")
+            if audio_chunks:
+                encoded_audio = await asyncio.to_thread(
+                    _decode_and_export_audio_chunks,
+                    tuple(audio_chunks),
+                    audio_input_format,
+                )
+                async with aiofiles.open(full_path_opus, "wb") as audio_file:
+                    await audio_file.write(encoded_audio)
                 logger.debug(f"Audio opus cached at: {full_path_opus}")
 
                 if is_whatsapp or not websocket:

@@ -16,7 +16,7 @@ from prompts import can_user_access_prompt
 from storage_quota import StorageQuotaExceededError, ensure_known_growth_fits
 
 from chat.schemas import BranchConversationRequest
-from chat.services.privacy import ensure_conversation_privacy_schema
+from chat.services.privacy import delete_message_rows, ensure_conversation_privacy_schema
 
 router = APIRouter()
 
@@ -53,9 +53,21 @@ async def rollback_conversation(
         if not conversation:
             return JSONResponse(content={"success": False, "error": "Conversation not found or access denied"}, status_code=404)
 
-        await conn.execute(
-            "DELETE FROM messages WHERE conversation_id = ? AND id > ?",
+        cursor = await conn.execute(
+            "SELECT id FROM messages WHERE conversation_id = ? AND id > ?",
             (conversation_id, message_id),
+        )
+        rolled_back_ids = [int(row[0]) for row in await cursor.fetchall()]
+
+        # Route the deletion through the shared domain helper so memory-provider
+        # links, watchdog rows, and sync watermarks are cleaned up in the correct
+        # order instead of hitting the enforced FK on MESSAGES. Atagia exposes no
+        # per-message remote delete endpoint, so the rolled-back messages remain in
+        # remote memory until the conversation is deleted; local state is coherent.
+        await delete_message_rows(
+            conn,
+            conversation_id=conversation_id,
+            message_ids=rolled_back_ids,
         )
         await conn.commit()
         await prune_unreferenced_blobs()
@@ -105,6 +117,26 @@ async def branch_conversation(
 
         if source_role_id and not await can_user_access_prompt(current_user, source_role_id, cursor):
             raise HTTPException(status_code=403, detail="Access denied to this prompt")
+
+        # A branch inherits the parent's llm_id. Do not resurrect a GPTSub (ChatGPT
+        # subscription) model for a user without an active link. The authoritative
+        # fail-closed gate runs at inference; this is a UX write-gate.
+        await cursor.execute(
+            "SELECT machine, model FROM LLM WHERE id = ?", (source_llm_id,)
+        )
+        source_llm_row = await cursor.fetchone()
+        if source_llm_row and source_llm_row[0] == "GPTSub":
+            try:
+                from subscription_auth import gptsub_allowed
+            except ImportError:
+                gptsub_allowed = None
+            if gptsub_allowed is None or not await gptsub_allowed(
+                current_user, model=source_llm_row[1]
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="This conversation uses a ChatGPT subscription model. Connect your ChatGPT subscription to branch it.",
+                )
 
         await cursor.execute(
             "SELECT id FROM MESSAGES WHERE id = ? AND conversation_id = ?",
@@ -246,7 +278,7 @@ async def branch_conversation(
 
         try:
             if os.path.exists(src_dir):
-                shutil.copytree(src_dir, dst_dir)
+                await asyncio.to_thread(shutil.copytree, src_dir, dst_dir)
                 old_path_segment = f"files/{old_conv_str[:3]}/{old_conv_str[3:]}"
                 new_path_segment = f"files/{new_conv_str[:3]}/{new_conv_str[3:]}"
                 await cursor.execute(
@@ -325,6 +357,7 @@ async def branch_conversation(
                 "machine": machine,
                 "prompt_name": prompt_name,
                 "locked": False,
+                "llm_id": source_llm_id,
                 "llm_model": llm_model,
                 "forced_llm_id": forced_llm_id_value,
                 "hide_llm_name": bool(hide_llm_name_value) if hide_llm_name_value else False,
@@ -380,6 +413,7 @@ async def branch_conversation(
                     "id": new_conv_id,
                     "name": branch_name or "New Chat",
                     "machine": None,
+                    "llm_id": source_llm_id,
                     "llm_model": None,
                     "prompt_name": None,
                     "locked": False,

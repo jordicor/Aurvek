@@ -216,18 +216,89 @@ async function refreshMemoryHealthBanner() {
 // =============================================
 // API Key Mode Manager
 // =============================================
+function getCurrentConversationLlmIdForUi() {
+    const selectorLlmId = parseInt(window.modelSelector?.currentLlmId, 10);
+    if (Number.isInteger(selectorLlmId) && selectorLlmId > 0) {
+        return selectorLlmId;
+    }
+    const selected = window.selectedChat &&
+        conversationIdsMatch(
+            window.selectedChat.dataset?.conversationId,
+            typeof currentConversationId !== 'undefined' ? currentConversationId : null
+        )
+        ? window.selectedChat
+        : null;
+    const selectedLlmId = parseInt(
+        selected?.dataset?.llmId || selected?._conversationData?.llm_id,
+        10
+    );
+    if (Number.isInteger(selectedLlmId) && selectedLlmId > 0) {
+        return selectedLlmId;
+    }
+    const embedded = typeof embeddedInitialConversations !== 'undefined' &&
+        Array.isArray(embeddedInitialConversations)
+        ? embeddedInitialConversations.find(conversation =>
+            conversationIdsMatch(
+                conversation.id,
+                typeof currentConversationId !== 'undefined'
+                    ? currentConversationId
+                    : null
+            ))
+        : null;
+    const embeddedLlmId = parseInt(embedded?.llm_id, 10);
+    return Number.isInteger(embeddedLlmId) && embeddedLlmId > 0
+        ? embeddedLlmId
+        : null;
+}
+
+function currentConversationUsesChatGptSubscription() {
+    const llmId = getCurrentConversationLlmIdForUi();
+    if (!llmId || typeof availableModels === 'undefined' ||
+        !Array.isArray(availableModels)) {
+        return false;
+    }
+    return availableModels.some(model =>
+        Number(model.id) === llmId && model.machine === 'GPTSub'
+    );
+}
+
+window.currentConversationUsesChatGptSubscription =
+    currentConversationUsesChatGptSubscription;
+
 const ApiKeyManager = {
-    mode: typeof apiKeyMode !== 'undefined' ? apiKeyMode : 'both_prefer_own',
-    canSend: typeof canSendMessages !== 'undefined' ? canSendMessages : true,
-    requiresOwn: typeof requiresOwnKeys !== 'undefined' ? requiresOwnKeys : false,
-    hasOwn: typeof hasOwnKeys !== 'undefined' ? hasOwnKeys : false,
+    mode: 'both_prefer_own',
+    canSend: false,
+    requiresOwn: true,
+    hasOwn: false,
+    initialized: false,
+
+    initializeFromPage() {
+        if (this.initialized) return;
+        this.mode = typeof globalThis.apiKeyMode !== 'undefined'
+            ? globalThis.apiKeyMode
+            : 'both_prefer_own';
+        this.canSend = typeof globalThis.canSendMessages !== 'undefined'
+            ? globalThis.canSendMessages === true
+            : false;
+        this.requiresOwn = typeof globalThis.requiresOwnKeys !== 'undefined'
+            ? globalThis.requiresOwnKeys === true
+            : true;
+        this.hasOwn = typeof globalThis.hasOwnKeys !== 'undefined'
+            ? globalThis.hasOwnKeys === true
+            : false;
+        this.initialized = true;
+    },
 
     /**
      * Check if user can send messages based on API key configuration
      * @returns {boolean}
      */
     canSendMessages: function() {
-        return this.canSend;
+        // chat.js loads before the template's inline page context. Hydrate on
+        // first use (after DOMContentLoaded) instead of caching permissive
+        // defaults while those globals are still undefined.
+        this.initializeFromPage();
+        return this.canSend || currentConversationUsesChatGptSubscription();
     },
 
     /**
@@ -243,6 +314,7 @@ const ApiKeyManager = {
                 this.canSend = data.can_send_messages;
                 this.requiresOwn = data.requires_own_keys;
                 this.hasOwn = data.has_own_keys;
+                this.initialized = true;
 
                 // Update UI based on new status
                 this.updateUI();
@@ -259,7 +331,7 @@ const ApiKeyManager = {
         const banner = document.getElementById('api-keys-required-banner');
         const inputContainer = document.getElementById('message-input-container');
 
-        if (this.canSend) {
+        if (this.canSendMessages()) {
             // Hide banner and enable input
             if (banner) banner.style.display = 'none';
             if (inputContainer) inputContainer.removeAttribute('data-disabled');
@@ -267,6 +339,9 @@ const ApiKeyManager = {
             // Show banner and disable input
             if (banner) banner.style.display = 'block';
             if (inputContainer) inputContainer.setAttribute('data-disabled', 'true');
+        }
+        if (typeof window.updateConversationBalanceAvailability === 'function') {
+            window.updateConversationBalanceAvailability();
         }
     },
 
@@ -1217,6 +1292,21 @@ function showNoChatTemplate() {
 }
 
 function sendMessage(messageText, options = {}) {
+    if (window.conversationModelIdentityUnknown) {
+        NotificationModal.warning(
+            'Model identity needs refresh',
+            'Reload this conversation before sending so Aurvek can confirm the selected AI model.'
+        );
+        return false;
+    }
+    if (window.conversationModelMutationPending) {
+        NotificationModal.warning(
+            'Model update in progress',
+            'Wait for the selected AI model to finish updating before sending.'
+        );
+        return false;
+    }
+
     // Check if user can send messages based on API key configuration
     if (!ApiKeyManager.canSendMessages()) {
         ApiKeyManager.handleApiKeyError({ error: 'api_keys_required', action: 'configure_api_keys' });
@@ -1228,6 +1318,15 @@ function sendMessage(messageText, options = {}) {
         return false;
     }
     const sendConversationId = currentConversationId;
+    const expectedLlmId = Number.parseInt(window.modelSelector?.currentLlmId, 10);
+    if (!Number.isInteger(expectedLlmId) || expectedLlmId <= 0) {
+        window.conversationModelIdentityUnknown = true;
+        NotificationModal.warning(
+            'Model identity needs refresh',
+            'Reload this conversation before sending so Aurvek can confirm the selected AI model.'
+        );
+        return false;
+    }
 
     // Block send while images are being compressed
     if (compressionInProgress > 0) {
@@ -1281,6 +1380,7 @@ function sendMessage(messageText, options = {}) {
     addLoadingIndicator(multiAiLoadingText);
 
     var formData = new FormData();
+    formData.append('expected_llm_id', String(expectedLlmId));
 
     // Compress message with pako (maximum compression level)
     const compressedMessage = pako.deflate(messageText_raw, { level: 9 });
@@ -1335,6 +1435,7 @@ function sendMessage(messageText, options = {}) {
     let botMessageParagraph = null;
     let streamContentReceived = false;
     let streamErrorOccurred = false;
+    let persistenceErrorOccurred = false;
     let streamSucceeded = false;
     let pdfTooLargeError = null;
     let pdfRangeRetryStarted = false;
@@ -1744,6 +1845,39 @@ function sendMessage(messageText, options = {}) {
                         showPdfRangeRetryModal(body);
                         return null;
                     }
+                    if (body && (
+                        body.error_code === 'conversation_model_changed' ||
+                        body.error_code === 'expected_llm_id_required'
+                    )) {
+                        discardUploadedRefs();
+                        removeRetryEcho();
+                        if (conversationIdsMatch(
+                            currentConversationId,
+                            sendConversationId
+                        )) {
+                            document.getElementById('message-text').value = messageText_raw;
+                        }
+                        if (conversationIdsMatch(
+                            currentConversationId,
+                            sendConversationId
+                        )) {
+                            window.conversationModelIdentityUnknown = true;
+                        }
+                        if (window.modelSelector) {
+                            window.modelSelector.invalidateCachedModel(sendConversationId);
+                            void window.modelSelector.reconcileConversationModelIdentity(
+                                sendConversationId
+                            );
+                        }
+                        NotificationModal.warning(
+                            'AI model changed',
+                            (body.message || 'Review the selected AI model and send again.') +
+                            (hadOutgoingAttachments
+                                ? ' Re-attach the files before sending again.'
+                                : '')
+                        );
+                        return null;
+                    }
                     discardUploadedRefs();
                     cleanupFailedStream(userMessageElement, botMessageElement, true);
                     const msg = body?.error || body?.message || body?.detail || `Request failed (${response.status})`;
@@ -1969,42 +2103,47 @@ function sendMessage(messageText, options = {}) {
                 if (currentConversationId !== sendConversationId) {
                     return abandonStreamRender();
                 }
-					if (done) {
-                        finishChatPerf();
-                        refreshMemoryHealthBanner();
-						if (userStopped && !streamContentReceived) {
-							if (botMessageElement?.parentNode) botMessageElement.remove();
-							toggleSendButton('Send');
-							return;
-						}
-						if (pdfTooLargeError && !pdfRangeRetryStarted) {
-							showPdfRangeRetryModal(pdfTooLargeError);
-							return;
-						}
-						if (!streamContentReceived && !streamErrorOccurred) {
-							cleanupFailedStream(userMessageElement, botMessageElement, true);
-                            const hadAttachments = hadOutgoingAttachments;
-						if (hadAttachments) {
-							NotificationModal.error('Empty response',
-								'The AI returned an empty response. Files were uploaded but the response failed. Please re-attach your files and try again.');
-						} else {
-							NotificationModal.error('Empty response',
-								'The AI returned an empty response. Your message has been restored. Please try again.');
-						}
-						return;
-					}
-					if (streamErrorOccurred && !streamContentReceived) {
-						cleanupFailedStream(userMessageElement, botMessageElement, true);
-						return;
-					}
-					streamSucceeded = true;
-					toggleSendButton('Send');
-					initializeNewImages(botMessageElement);
-					if (updatedChatName) {
-						updateActiveChatName(updatedChatName);
-					}
-					return;
-				}
+                if (done) {
+                    finishChatPerf();
+                    refreshMemoryHealthBanner();
+                    if (userStopped && !streamContentReceived) {
+                        if (botMessageElement?.parentNode) botMessageElement.remove();
+                        toggleSendButton('Send');
+                        return;
+                    }
+                    if (pdfTooLargeError && !pdfRangeRetryStarted) {
+                        showPdfRangeRetryModal(pdfTooLargeError);
+                        return;
+                    }
+                    if (persistenceErrorOccurred) {
+                        toggleSendButton('Send');
+                        initializeNewImages(botMessageElement);
+                        return;
+                    }
+                    if (!streamContentReceived && !streamErrorOccurred) {
+                        cleanupFailedStream(userMessageElement, botMessageElement, true);
+                        const hadAttachments = hadOutgoingAttachments;
+                        if (hadAttachments) {
+                            NotificationModal.error('Empty response',
+                                'The AI returned an empty response. Files were uploaded but the response failed. Please re-attach your files and try again.');
+                        } else {
+                            NotificationModal.error('Empty response',
+                                'The AI returned an empty response. Your message has been restored. Please try again.');
+                        }
+                        return;
+                    }
+                    if (streamErrorOccurred && !streamContentReceived) {
+                        cleanupFailedStream(userMessageElement, botMessageElement, true);
+                        return;
+                    }
+                    streamSucceeded = true;
+                    toggleSendButton('Send');
+                    initializeNewImages(botMessageElement);
+                    if (updatedChatName) {
+                        updateActiveChatName(updatedChatName);
+                    }
+                    return;
+                }
                 if (chatPerfTrace && !chatPerfTrace.firstStreamByteSeen) {
                     chatPerfTrace.firstStreamByteSeen = true;
                     markChatPerf('client_first_stream_byte', { bytes: value ? value.byteLength : 0 });
@@ -2014,21 +2153,26 @@ function sendMessage(messageText, options = {}) {
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         const data = line.slice(6).trim();
-						
-	                        if (data === '[DONE]') {
-                                finishChatPerf();
-                                refreshMemoryHealthBanner();
-	                            if (userStopped && !streamContentReceived) {
-	                                if (botMessageElement?.parentNode) botMessageElement.remove();
-	                                toggleSendButton('Send');
-	                                return;
-	                            }
-	                            if (pdfTooLargeError && !pdfRangeRetryStarted) {
-	                                showPdfRangeRetryModal(pdfTooLargeError);
-	                                return;
-	                            }
-	                            if (!streamContentReceived && !streamErrorOccurred) {
-	                                cleanupFailedStream(userMessageElement, botMessageElement, true);
+
+                        if (data === '[DONE]') {
+                            finishChatPerf();
+                            refreshMemoryHealthBanner();
+                            if (userStopped && !streamContentReceived) {
+                                if (botMessageElement?.parentNode) botMessageElement.remove();
+                                toggleSendButton('Send');
+                                return;
+                            }
+                            if (pdfTooLargeError && !pdfRangeRetryStarted) {
+                                showPdfRangeRetryModal(pdfTooLargeError);
+                                return;
+                            }
+                            if (persistenceErrorOccurred) {
+                                toggleSendButton('Send');
+                                initializeNewImages(botMessageElement);
+                                return;
+                            }
+                            if (!streamContentReceived && !streamErrorOccurred) {
+                                cleanupFailedStream(userMessageElement, botMessageElement, true);
                                 const hadAttachments = hadOutgoingAttachments;
                                 if (hadAttachments) {
                                     NotificationModal.error('Empty response',
@@ -2140,12 +2284,32 @@ function sendMessage(messageText, options = {}) {
                                 scrollToBottomIfNeeded();
                             } else if (parsedData.multi_ai_done && multiAiCarousel?._multiAiApi) {
                                 multiAiCarousel._multiAiApi.markSlideDone(parsedData.llm_id);
-	                            } else if (parsedData.multi_ai_error && multiAiCarousel?._multiAiApi) {
-                                    if (parsedData.provider_health) {
-                                        setCurrentProviderHealth(parsedData.provider_health);
-                                    }
-	                                multiAiCarousel._multiAiApi.setSlideError(parsedData.llm_id, parsedData.error || 'Unknown error');
-	                                scrollToBottomIfNeeded();
+                            } else if (parsedData.multi_ai_error && multiAiCarousel?._multiAiApi) {
+                                if (parsedData.provider_health) {
+                                    setCurrentProviderHealth(parsedData.provider_health);
+                                }
+                                multiAiCarousel._multiAiApi.setSlideError(parsedData.llm_id, parsedData.error || 'Unknown error');
+                                scrollToBottomIfNeeded();
+                            } else if (parsedData.persistence_error === true) {
+                                const warningText = parsedData.error || 'The response was generated but could not be saved. Copy it before retrying.';
+                                console.error('Response persistence error:', warningText);
+                                streamErrorOccurred = true;
+                                persistenceErrorOccurred = true;
+                                copyIcon.style.display = 'inline';
+                                if (parsedData.provider_health) {
+                                    setCurrentProviderHealth(parsedData.provider_health);
+                                }
+                                if (multiAiCarousel?._multiAiApi) {
+                                    multiAiCarousel._multiAiApi.setGlobalError(warningText);
+                                } else if (botMessageParagraph && !botMessageParagraph.querySelector('.message-persistence-warning')) {
+                                    const warningEl = document.createElement('span');
+                                    warningEl.className = 'message-persistence-warning text-warning d-block mt-2';
+                                    warningEl.setAttribute('role', 'alert');
+                                    warningEl.textContent = warningText;
+                                    botMessageParagraph.appendChild(warningEl);
+                                }
+                                NotificationModal.warning('Response not saved', warningText);
+                                scrollToBottomIfNeeded();
 	                            } else if (parsedData.error && !parsedData.multi_ai_error) {
 	                                console.error('SSE error:', parsedData.error);
 	                                streamErrorOccurred = true;
@@ -2596,6 +2760,12 @@ function addConversationElement(conversation, chatName, currentConversationId, i
     conversationElement.dataset.conversationId = conversation.id;
     conversationElement.dataset.machine = conversation.machine;
     conversationElement.dataset.llmModel = conversation.llm_model || '';
+    if (conversation.llm_id) {
+        conversationElement.dataset.llmId = String(conversation.llm_id);
+    }
+    if (conversation.prompt_id) {
+        conversationElement.dataset.promptId = String(conversation.prompt_id);
+    }
     conversationElement.dataset.locked = conversation.locked ? 'true' : 'false';
     conversationElement.dataset.webSearchAllowed = conversation.web_search_allowed !== false ? 'true' : 'false';
     conversationElement.dataset.webSearchForced = conversation.web_search_forced === true ? 'true' : 'false';
@@ -2688,6 +2858,13 @@ function closeAllChatMenus() {
         }
     });
 }
+
+// One delegated outside-click listener covers every current and future menu.
+document.addEventListener('click', (event) => {
+    if (!event.target.closest?.('.chat-menu, .chat-menu-content')) {
+        closeAllChatMenus();
+    }
+});
 
 function createChatMenu(conversation) {
     const chatMenu = document.createElement('div');
@@ -2794,13 +2971,6 @@ function createChatMenu(conversation) {
             if (listGroup) {
                 listGroup.addEventListener('scroll', closeAllChatMenus, { once: true });
             }
-        }
-    });
-
-    // Close menu when clicking outside
-    document.addEventListener('click', (e) => {
-        if (!chatMenu.contains(e.target) && !chatMenuContent.contains(e.target) && chatMenuContent.style.display === 'block') {
-            closeAllChatMenus();
         }
     });
 
@@ -3525,6 +3695,16 @@ function updateSingleConversation(element, conversationData, externalContainer, 
     element.dataset.lastActivity = conversationData.last_activity || '';
     element.dataset.machine = conversationData.machine || 'undefined';
     element.dataset.llmModel = conversationData.llm_model || '';
+    if (conversationData.llm_id) {
+        element.dataset.llmId = String(conversationData.llm_id);
+    } else {
+        delete element.dataset.llmId;
+    }
+    if (conversationData.prompt_id) {
+        element.dataset.promptId = String(conversationData.prompt_id);
+    } else {
+        delete element.dataset.promptId;
+    }
     element.dataset.locked = conversationData.locked ? 'true' : 'false';
     element.dataset.webSearchAllowed = conversationData.web_search_allowed !== false ? 'true' : 'false';
     element.dataset.webSearchForced = conversationData.web_search_forced === true ? 'true' : 'false';
@@ -3566,6 +3746,7 @@ function updateSingleConversation(element, conversationData, externalContainer, 
     } else {
         nameSpan.textContent = chatName;
     }
+    delete element.dataset.folderMenuEnhanced;
     element.innerHTML = '';
     element.appendChild(nameSpan);
 
@@ -3846,7 +4027,12 @@ function continueConversation(
         return loadMessages(conversationId, false, targetMessageId, 0, viewGeneration);
     }
 
-    const selectedChat = document.querySelector(`[data-conversation-id="${conversationId}"]`);   
+    const selectedChat = conversationIdsMatch(
+        window.selectedChat?.dataset?.conversationId,
+        conversationId
+    )
+        ? window.selectedChat
+        : document.querySelector(`[data-conversation-id="${conversationId}"]`);
 
     hideScrollNavButtons();
     oldestLoadedMessageId = null;
@@ -3914,7 +4100,9 @@ function continueConversation(
 
             // Get llm_model from conversation element or passed data
             const llmModel = selectedChat?.dataset?.llmModel || conversationData?.llm_model || null;
-            updateChatHeader(conversationId, chatTitleText, llmModel, viewGeneration);
+            const rawLlmId = selectedChat?.dataset?.llmId || conversationData?.llm_id || null;
+            const llmId = rawLlmId ? parseInt(rawLlmId, 10) : null;
+            updateChatHeader(conversationId, chatTitleText, llmModel, llmId, viewGeneration);
 
             // Apply model restrictions from conversation data
             const forcedLlmId = selectedChat?.dataset?.forcedLlmId || conversationData?.forced_llm_id || null;
@@ -3969,29 +4157,15 @@ function continueConversation(
                 messageText.disabled = false;
             }
 
-            // Balance-based input visibility (runs after locked check)
-            if (!isCurrentConversationLocked) {
+            // Balance-based input visibility (runs after locked check). A linked
+            // GPTSub model is an owned credential, like BYOK, but paid prompt
+            // creator markup still requires the minimum Aurvek balance.
+            if (!isCurrentConversationLocked &&
+                typeof window.updateConversationBalanceAvailability === 'function') {
                 const isPaid = conversationData != null
                     ? !!conversationData.is_paid
                     : (selectedChat?.dataset?.isPaid === '1');
-                const hasByok = typeof hasOwnKeys !== 'undefined' && hasOwnKeys && apiKeyMode !== 'system_only';
-                const userBal = parseFloat(document.getElementById('user-balance')?.getAttribute('data-balance') || '0');
-                const formMessageEl = document.getElementById('form-message');
-                const insufficientEl = document.getElementById('insufficient-balance-message');
-
-                if (userBal === 0 && !hasByok) {
-                    // Non-BYOK user with zero balance - always hide input
-                    formMessageEl.style.display = 'none';
-                    insufficientEl.style.display = 'block';
-                } else if (hasByok && isPaid && userBal < 0.10) {
-                    // BYOK user on paid prompt with insufficient balance for creator markup
-                    formMessageEl.style.display = 'none';
-                    insufficientEl.style.display = 'block';
-                } else {
-                    // Sufficient balance or free prompt - ensure input visible
-                    formMessageEl.style.display = 'flex';
-                    insufficientEl.style.display = 'none';
-                }
+                window.updateConversationBalanceAvailability(isPaid);
             }
 
             showPromptInfo();
@@ -4024,6 +4198,7 @@ function updateChatHeader(
     conversationId,
     chatName,
     llmModel = null,
+    llmId = null,
     viewGeneration = conversationViewGeneration
 ) {
     if (!isCurrentConversationView(conversationId, viewGeneration)) {
@@ -4050,13 +4225,22 @@ function updateChatHeader(
     chatTitle.title = `Created: ${formattedStartDate}`; // Show date on hover
 
     // Use provided model or fetch from API as fallback
-    if (llmModel) {
-        chatModel.textContent = (window.modelSelector && window.modelSelector.hideLlmName) ? 'AI' : llmModel;
+    const parsedHeaderLlmId = parseInt(llmId, 10);
+    if (llmModel && Number.isInteger(parsedHeaderLlmId) && parsedHeaderLlmId > 0) {
+        const modelData = (window.availableModels || []).find(
+            model => Number(model.id) === Number(llmId)
+        );
+        const displayName = modelData?.display_name || llmModel;
+        chatModel.textContent = (window.modelSelector && window.modelSelector.hideLlmName) ? 'AI' : displayName;
         if (window.modelSelector) {
-            window.modelSelector.updateCurrentModel(llmModel);
+            window.modelSelector.updateCurrentModel(llmModel, llmId);
         }
     } else {
         // Fallback: fetch from API (for new conversations without cached data)
+        window.conversationModelIdentityUnknown = true;
+        const detailsIdentityRevision = window.modelSelector?.identityRevision || 0;
+        const detailsConversationRevision = window.modelSelector
+            ?.getConversationIdentityRevision(conversationId) || 0;
         if (conversationDetailsController) {
             conversationDetailsController.abort();
         }
@@ -4076,11 +4260,24 @@ function updateChatHeader(
                     return;
                 }
                 const modelInfo = data.model || 'Unknown Model';
-                chatModel.textContent = modelInfo;
+                const modelData = (window.availableModels || []).find(
+                    model => Number(model.id) === Number(data.llm_id)
+                );
+                const modelIdentityStillCurrent = !window.modelSelector ||
+                    ((window.modelSelector.identityRevision || 0) ===
+                        detailsIdentityRevision &&
+                    window.modelSelector.getConversationIdentityRevision(
+                        conversationId
+                    ) === detailsConversationRevision);
 
-                // Update model selector state if it exists
-                if (window.modelSelector) {
-                    window.modelSelector.updateCurrentModel(modelInfo);
+                // A model PATCH may have committed while this GET was in
+                // flight. Apply restrictions from the response below, but
+                // never let its older identity overwrite the committed model.
+                if (modelIdentityStillCurrent) {
+                    chatModel.textContent = modelData?.display_name || modelInfo;
+                }
+                if (window.modelSelector && modelIdentityStillCurrent) {
+                    window.modelSelector.updateCurrentModel(modelInfo, data.llm_id);
                 }
 
                 // Apply restrictions from conversation details
@@ -4650,14 +4847,94 @@ function getSelectedNewChatLlmId(options = {}) {
 
 window.getSelectedNewChatLlmId = getSelectedNewChatLlmId;
 
+function activeConversationHasExternalAccess() {
+    const selected = window.selectedChat &&
+        conversationIdsMatch(
+            window.selectedChat.dataset?.conversationId,
+            currentConversationId
+        )
+        ? window.selectedChat
+        : document.querySelector(
+            `.active-chat[data-conversation-id="${currentConversationId}"]`
+        );
+    if (!selected) return false;
+    const data = selected._conversationData || {};
+    const bindingCount = parseInt(data.external_bindings?.effective_count || 0, 10);
+    return Boolean(
+        selected.dataset?.externalPlatform ||
+        data.external_platform ||
+        (Number.isInteger(bindingCount) && bindingCount > 0) ||
+        selected.classList?.contains('external-device-row')
+    );
+}
+
+window.activeConversationHasExternalAccess = activeConversationHasExternalAccess;
+
+function getActiveConversationPromptId() {
+    const selected = window.selectedChat &&
+        conversationIdsMatch(
+            window.selectedChat.dataset?.conversationId,
+            currentConversationId
+        )
+        ? window.selectedChat
+        : document.querySelector(
+            `.active-chat[data-conversation-id="${currentConversationId}"]`
+        );
+    const rawPromptId = selected?.dataset?.promptId ||
+        selected?._conversationData?.prompt_id;
+    const parsedPromptId = parseInt(rawPromptId, 10);
+    return Number.isInteger(parsedPromptId) && parsedPromptId > 0
+        ? parsedPromptId
+        : null;
+}
+
+window.getActiveConversationPromptId = getActiveConversationPromptId;
+
 function startNewConversation(promptId = null, options = {}) {
     if (admin_view) {
         return Promise.resolve();
     }
     const incognito = options && options.incognito === true;
+    const forceCreate = options && options.__forceCreate === true;
+    const activeFolderId = typeof window.getActiveConversationFolderId === 'function'
+        ? window.getActiveConversationFolderId()
+        : null;
+    const reuseLocationMatches = activeFolderId === null;
+    const selectedPromptId = parseInt(
+        document.getElementById('promptDropdown')?.value,
+        10
+    );
+    const reuseContextMatches = promptId === null &&
+        Number.isInteger(selectedPromptId) &&
+        selectedPromptId === getActiveConversationPromptId() &&
+        !currentConversationIncognito &&
+        !activeConversationHasExternalAccess();
 
-    if (!incognito && !isFirstCall && isCurrentConversationEmpty) {
-        return Promise.resolve();
+    if (!forceCreate && reuseLocationMatches && reuseContextMatches &&
+        !incognito && !isFirstCall && isCurrentConversationEmpty) {
+        if (window.modelSelector?.reconcileDefaultForEmptyConversation &&
+            currentConversationId) {
+            const reuseConversationId = currentConversationId;
+            const reuseViewGeneration = conversationViewGeneration;
+            return window.modelSelector.reconcileDefaultForEmptyConversation(
+                reuseConversationId,
+                reuseViewGeneration
+            ).then(reused => {
+                if (reused) return true;
+                if (!isCurrentConversationView(
+                    reuseConversationId,
+                    reuseViewGeneration
+                )) return false;
+                return startNewConversation(promptId, {
+                    ...options,
+                    __forceCreate: true
+                });
+            });
+        }
+        return startNewConversation(promptId, {
+            ...options,
+            __forceCreate: true
+        });
     }
 
     hideScrollNavButtons();
@@ -5130,8 +5407,9 @@ class ModelSelector {
         this.forcedLlmId = null;
         this.hideLlmName = false;
         this.allowedLlms = null;
-        this.requestController = null;
         this.requestGeneration = 0;
+        this.identityRevision = 0;
+        this.conversationIdentityRevisions = new Map();
 
 
         if (this.dropdownMenu) {
@@ -5229,19 +5507,34 @@ class ModelSelector {
         });
     }
     
-    updateCurrentModel(modelName) {
+    updateCurrentModel(modelName, llmId = null) {
+        this.identityRevision = (Number.isInteger(this.identityRevision)
+            ? this.identityRevision
+            : 0) + 1;
         this.currentModel = modelName;
-        
-        // Find the llm_id for this model
-        if (window.availableModels) {
-            const modelData = window.availableModels.find(m => m.model === modelName);
-            if (modelData) {
-                this.currentLlmId = modelData.id;
-            }
+
+        const parsedLlmId = parseInt(llmId, 10);
+        if (Number.isInteger(parsedLlmId) && parsedLlmId > 0) {
+            // Preserve the backend identity even if the row is no longer in the
+            // user's current selector (for example after unlink). That lets a
+            // legacy conversation switch away from a now-hidden GPTSub row.
+            this.currentLlmId = parsedLlmId;
+            window.conversationModelIdentityUnknown = false;
+        } else {
+            // Provider identity cannot be reconstructed from a model string.
+            // Keep this view fail-closed until /details supplies the exact id.
+            this.currentLlmId = null;
+            window.conversationModelIdentityUnknown = true;
         }
         
         // Update UI to show current model
         this.updateModelDisplay();
+        if (typeof ApiKeyManager !== 'undefined') {
+            ApiKeyManager.updateUI();
+        }
+        if (typeof window.updateConversationBalanceAvailability === 'function') {
+            window.updateConversationBalanceAvailability();
+        }
         
         // Update thinking tokens visibility
         if (window.updateThinkingTokensVisibility) {
@@ -5255,7 +5548,8 @@ class ModelSelector {
         // Update current model highlighting in dropdown
         this.dropdownContent.querySelectorAll('.model-item').forEach(item => {
             item.classList.remove('current');
-            if (item.dataset.model === this.currentModel) {
+            if (this.currentLlmId !== null &&
+                Number(item.dataset.llmId) === Number(this.currentLlmId)) {
                 item.classList.add('current');
             }
         });
@@ -5263,104 +5557,280 @@ class ModelSelector {
 
     cancelPendingRequest() {
         this.requestGeneration += 1;
-        if (this.requestController) {
-            this.requestController.abort();
-            this.requestController = null;
+        if (typeof window.invalidateConversationModelMutations === 'function') {
+            window.invalidateConversationModelMutations();
         }
     }
 
     isRequestCurrent(state) {
         return this.requestGeneration === state.requestGeneration &&
-            this.requestController === state.controller &&
-            !state.controller.signal.aborted &&
             isCurrentConversationView(state.conversationId, state.viewGeneration);
     }
-    
-    async selectModel(llmId, modelName) {
-        if (!currentConversationId || llmId === this.currentLlmId) {
-            this.closeDropdown();
-            return;
+
+    scheduleMutation(task) {
+        if (typeof window.enqueueConversationModelMutation === 'function') {
+            return window.enqueueConversationModelMutation(task);
+        }
+        return Promise.resolve().then(task).then(
+            value => ({ value, error: null, isLatest: true }),
+            error => ({ value: null, error, isLatest: true })
+        );
+    }
+
+    async requestModelUpdate(state, onlyIfEmpty = false) {
+        const response = await fetch(`/api/conversations/${state.conversationId}/model`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                llm_id: state.llmId,
+                only_if_empty: onlyIfEmpty
+            })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(result.detail || 'Failed to update model');
+        }
+        if (!result.success) {
+            throw new Error('Failed to update model');
+        }
+        return result;
+    }
+
+    applyCommittedModel(
+        llmId,
+        modelName,
+        conversationId = currentConversationId,
+        viewGeneration = conversationViewGeneration
+    ) {
+        const parsedLlmId = parseInt(llmId, 10);
+        if (!Number.isInteger(parsedLlmId) || parsedLlmId <= 0) {
+            return false;
         }
 
-        if (this.requestController) {
-            this.requestController.abort();
+        this.cacheCommittedModel(conversationId, parsedLlmId, modelName);
+        if (!isCurrentConversationView(conversationId, viewGeneration)) {
+            return false;
         }
+
+        this.currentModel = modelName;
+        this.currentLlmId = parsedLlmId;
+        this.identityRevision = (Number.isInteger(this.identityRevision)
+            ? this.identityRevision
+            : 0) + 1;
+        window.conversationModelIdentityUnknown = false;
+
+        const modelData = (window.availableModels || []).find(
+            model => Number(model.id) === parsedLlmId
+        );
+        this.chatModel.textContent = this.hideLlmName
+            ? 'AI'
+            : (modelData?.display_name || modelName);
+        this.updateModelDisplay();
+        if (typeof ApiKeyManager !== 'undefined') {
+            ApiKeyManager.updateUI();
+        }
+        if (typeof window.updateConversationBalanceAvailability === 'function') {
+            window.updateConversationBalanceAvailability();
+        }
+        if (window.updateThinkingTokensVisibility) {
+            window.updateThinkingTokensVisibility();
+        }
+        return true;
+    }
+
+    cacheCommittedModel(conversationId, llmId, modelName) {
+        this.bumpConversationIdentityRevision(conversationId);
+        document.querySelectorAll(
+            `[data-conversation-id="${conversationId}"]`
+        ).forEach(element => {
+            element.dataset.llmId = String(llmId);
+            element.dataset.llmModel = modelName;
+            if (element._conversationData) {
+                element._conversationData.llm_id = Number(llmId);
+                element._conversationData.llm_model = modelName;
+            }
+        });
+    }
+
+    invalidateCachedModel(conversationId) {
+        this.bumpConversationIdentityRevision(conversationId);
+        document.querySelectorAll(
+            `[data-conversation-id="${conversationId}"]`
+        ).forEach(element => {
+            delete element.dataset.llmId;
+            delete element.dataset.llmModel;
+            if (element._conversationData) {
+                delete element._conversationData.llm_id;
+                delete element._conversationData.llm_model;
+            }
+        });
+    }
+
+    async reconcileConversationModelIdentity(conversationId) {
+        const identityRevision = this.getConversationIdentityRevision(
+            conversationId
+        );
+        try {
+            const response = await fetch(
+                `/api/conversations/${conversationId}/details`,
+                { credentials: 'include' }
+            );
+            if (!response.ok) throw new Error('model identity refresh failed');
+            const details = await response.json();
+            const parsedLlmId = parseInt(details.llm_id, 10);
+            if (!Number.isInteger(parsedLlmId) || parsedLlmId <= 0 ||
+                typeof details.model !== 'string' || !details.model) {
+                throw new Error('model identity refresh was malformed');
+            }
+            if (this.getConversationIdentityRevision(conversationId) !==
+                identityRevision) {
+                return false;
+            }
+            this.cacheCommittedModel(conversationId, parsedLlmId, details.model);
+            if (conversationIdsMatch(currentConversationId, conversationId)) {
+                this.applyCommittedModel(
+                    parsedLlmId,
+                    details.model,
+                    conversationId,
+                    conversationViewGeneration
+                );
+            }
+            return true;
+        } catch (_error) {
+            if (conversationIdsMatch(currentConversationId, conversationId)) {
+                window.conversationModelIdentityUnknown = true;
+            }
+            return false;
+        }
+    }
+
+    getConversationIdentityRevision(conversationId) {
+        if (!this.conversationIdentityRevisions ||
+            typeof this.conversationIdentityRevisions.get !== 'function') {
+            this.conversationIdentityRevisions = new Map();
+        }
+        return this.conversationIdentityRevisions.get(String(conversationId)) || 0;
+    }
+
+    bumpConversationIdentityRevision(conversationId) {
+        const key = String(conversationId);
+        const next = this.getConversationIdentityRevision(key) + 1;
+        this.conversationIdentityRevisions.set(key, next);
+        return next;
+    }
+
+    async requestAndCacheModelUpdate(state, onlyIfEmpty = false) {
+        try {
+            const result = await this.requestModelUpdate(state, onlyIfEmpty);
+            if (result?.updated) {
+                const committedLlmId = result.llm_id || state.llmId;
+                const committedModel = result.model || state.modelName;
+                this.cacheCommittedModel(
+                    state.conversationId,
+                    committedLlmId,
+                    committedModel
+                );
+                if (conversationIdsMatch(
+                    currentConversationId,
+                    state.conversationId
+                )) {
+                    this.applyCommittedModel(
+                        committedLlmId,
+                        committedModel,
+                        state.conversationId,
+                        conversationViewGeneration
+                    );
+                }
+            }
+            return result;
+        } catch (error) {
+            // A transport error may arrive after the server committed. Keep the
+            // send barrier until /details either restores an exact identity or
+            // latches this view fail-closed.
+            this.invalidateCachedModel(state.conversationId);
+            await this.reconcileConversationModelIdentity(state.conversationId);
+            throw error;
+        }
+    }
+
+    selectModel(llmId, modelName, options = {}) {
+        const parsedLlmId = parseInt(llmId, 10);
+        if (!currentConversationId || !Number.isInteger(parsedLlmId) || parsedLlmId <= 0) {
+            this.closeDropdown();
+            return Promise.resolve(false);
+        }
+        if (document.getElementById('send-button')?.innerText === 'Stop') {
+            NotificationModal.warning(
+                'Message in progress',
+                'Wait for the current message to finish before changing the AI model.'
+            );
+            this.closeDropdown();
+            return Promise.resolve(false);
+        }
+
         const state = {
             conversationId: currentConversationId,
             viewGeneration: conversationViewGeneration,
             requestGeneration: ++this.requestGeneration,
-            controller: new AbortController(),
-            previousModel: this.currentModel
+            llmId: parsedLlmId,
+            modelName,
+            previousModel: this.currentModel,
+            previousLlmId: this.currentLlmId
         };
-        this.requestController = state.controller;
+        this.chatModel.textContent = 'Updating...';
 
-        try {
-            // Show loading state
-            this.chatModel.textContent = 'Updating...';
-            
-            const response = await fetch(`/api/conversations/${state.conversationId}/model`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                credentials: 'include',
-                signal: state.controller.signal,
-                body: JSON.stringify({
-                    llm_id: llmId
-                })
-            });
+        return this.scheduleMutation(() => this.requestAndCacheModelUpdate(
+            state,
+            options.onlyIfEmpty === true
+        )).then(async ({ value, error, isLatest }) => {
+            if (error) {
+                if (!isLatest || !this.isRequestCurrent(state)) return false;
+                console.error('Error updating model:', error);
+                this.showError(error.message);
+                this.closeDropdown();
+                return false;
+            }
+            if (!isLatest || !this.isRequestCurrent(state)) {
+                return false;
+            }
+            if (!value?.updated) {
+                this.closeDropdown();
+                return false;
+            }
 
-            if (!this.isRequestCurrent(state)) return;
-            
-            if (!response.ok) {
-                const errBody = await response.json().catch(() => ({}));
-                if (!this.isRequestCurrent(state)) return;
-                throw new Error(errBody.detail || `Failed to update model`);
-            }
-            
-            const result = await response.json();
-            if (!this.isRequestCurrent(state)) return;
-            
-            if (result.success) {
-                // Update local state
-                this.currentModel = result.model;
-                this.currentLlmId = llmId;
-                
-                // Update UI
-                this.chatModel.textContent = result.model;
-                this.updateModelDisplay();
-                
-                // Update thinking tokens visibility for new model
-                if (window.updateThinkingTokensVisibility) {
-                    window.updateThinkingTokensVisibility();
-                }
-                
-                // Show success feedback
-                this.showSuccess();
-                
-            } else {
-                throw new Error('Failed to update model');
-            }
-            
-        } catch (error) {
-            if (error.name === 'AbortError' || !this.isRequestCurrent(state)) {
-                return;
-            }
-            console.error('Error updating model:', error);
+            const applied = this.applyCommittedModel(
+                value.llm_id || parsedLlmId,
+                value.model || modelName,
+                state.conversationId,
+                state.viewGeneration
+            );
+            if (applied) this.showSuccess();
+            this.closeDropdown();
+            return applied;
+        });
+    }
 
-            // Restore original model name
-            this.chatModel.textContent = state.previousModel || 'Unknown Model';
-
-            // Show error feedback with message
-            this.showError(error.message);
-        } finally {
-            if (this.requestController === state.controller) {
-                this.requestController = null;
-                if (isCurrentConversationView(state.conversationId, state.viewGeneration)) {
-                    this.closeDropdown();
-                }
-            }
+    reconcileDefaultForEmptyConversation(conversationId, viewGeneration) {
+        if (typeof isCurrentConversationEmpty === 'undefined' ||
+            isCurrentConversationEmpty !== true ||
+            !isCurrentConversationView(conversationId, viewGeneration) ||
+            this.forcedLlmId) {
+            return Promise.resolve(false);
         }
+        const defaultDropdown = document.getElementById('llmDropdown');
+        const defaultLlmId = parseInt(defaultDropdown?.value, 10);
+        if (!Number.isInteger(defaultLlmId) || defaultLlmId <= 0 ||
+            (this.allowedLlms && !this.allowedLlms.map(Number).includes(defaultLlmId))) {
+            return Promise.resolve(false);
+        }
+        const model = (window.availableModels || []).find(
+            item => Number(item.id) === defaultLlmId
+        );
+        if (!model) return Promise.resolve(false);
+        return this.selectModel(defaultLlmId, model.model, { onlyIfEmpty: true });
     }
     
     showSuccess() {

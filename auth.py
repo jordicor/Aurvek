@@ -17,6 +17,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from urllib.parse import urlencode
 
 # Own libraries
+from auth_constants import SESSION_COOKIE_NAME
 from log_config import logger
 from rediscfg import is_user_revoked
 from common import (
@@ -90,7 +91,7 @@ async def is_user_enabled_in_db(user_id: int) -> bool:
 # Dependency to get the current user
 async def get_current_user(request: Request) -> Optional[User]:
     logger.info("enters get_current_user")
-    token = request.cookies.get("session")
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         logger.info("Session token not found")
         return None
@@ -257,7 +258,7 @@ async def get_user_from_telegram_chat_id(chat_id: int) -> Optional[User]:
     return create_user_from_row(row) if row else None
 
 async def get_current_user_from_websocket(websocket: WebSocket) -> Optional[User]:
-    token = websocket.cookies.get("session")
+    token = websocket.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return None
 
@@ -404,7 +405,7 @@ def create_login_response(user_info, redirect_url=None, default_redirect="/home"
     else:
         max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # convert to seconds
     response.set_cookie(
-        key="session",
+        key=SESSION_COOKIE_NAME,
         value=token,
         max_age=max_age,
         httponly=True,
@@ -421,7 +422,12 @@ def unauthenticated_response():
         content={"error": "unauthenticated", "redirect": "/login"},
         status_code=401
     )
-    response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        secure=SECURE_COOKIES,
+    )
     return response
 
 

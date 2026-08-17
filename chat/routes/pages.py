@@ -87,6 +87,33 @@ async def chat_post(request: Request, current_user: User = Depends(get_current_u
             )
         elif form_type == "llm":
             logger.info("[DEBUG] Updating llm_id to %s for user_id %s", type_of_model, current_user.id)
+            # Validate the target model exists and is enabled. This path previously
+            # wrote llm_id with no validation at all (pre-existing gap, fixed here).
+            await cursor.execute(
+                "SELECT COALESCE(enabled, 1), machine, model FROM LLM WHERE id = ?",
+                (type_of_model,),
+            )
+            llm_row = await cursor.fetchone()
+            if not llm_row:
+                await conn.close()
+                raise HTTPException(status_code=404, detail="LLM model not found")
+            if not bool(llm_row[0]):
+                await conn.close()
+                raise HTTPException(status_code=400, detail="This LLM model is disabled")
+            # GPTSub (ChatGPT subscription) models need an active per-user link.
+            if llm_row[1] == "GPTSub":
+                try:
+                    from subscription_auth import gptsub_allowed
+                except ImportError:
+                    gptsub_allowed = None
+                if gptsub_allowed is None or not await gptsub_allowed(
+                    current_user, model=llm_row[2]
+                ):
+                    await conn.close()
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This model requires connecting your ChatGPT subscription",
+                    )
             await cursor.execute(
                 "UPDATE USER_DETAILS SET llm_id = ? WHERE user_id = ?",
                 (type_of_model, current_user.id),
@@ -155,7 +182,9 @@ async def get_conversation_details(
 
     return JSONResponse(
         content={
+            "llm_id": llm_id,
             "model": model,
+            "prompt_id": prompt_id,
             "prompt_name": prompt_name,
             "forced_llm_id": forced_llm_id,
             "hide_llm_name": bool(hide_llm_name) if hide_llm_name else False,
@@ -177,6 +206,7 @@ async def update_conversation_model(
     try:
         data = await request.json()
         new_llm_id = data.get("llm_id")
+        only_if_empty = data.get("only_if_empty") is True
         if not new_llm_id:
             raise HTTPException(status_code=400, detail="llm_id is required")
 
@@ -196,6 +226,14 @@ async def update_conversation_model(
 
             prompt_id = conv_data[1]
             current_llm_id = conv_data[2]
+            if only_if_empty:
+                await cursor.execute(
+                    "SELECT 1 FROM MESSAGES WHERE conversation_id = ? LIMIT 1",
+                    (conversation_id,),
+                )
+                if await cursor.fetchone():
+                    return JSONResponse(content={"success": True, "updated": False})
+
             if prompt_id:
                 await cursor.execute(
                     """
@@ -208,6 +246,10 @@ async def update_conversation_model(
                     forced_llm_id = prompt_data[0]
                     prompt_name = prompt_data[1]
                     if int(new_llm_id) != forced_llm_id:
+                        if only_if_empty:
+                            return JSONResponse(
+                                content={"success": True, "updated": False}
+                            )
                         raise HTTPException(
                             status_code=403,
                             detail=f"This prompt '{prompt_name}' requires a specific AI model and cannot be changed",
@@ -217,6 +259,10 @@ async def update_conversation_model(
                     allowed_ids = orjson.loads(prompt_data[2])
                     prompt_name = prompt_data[1]
                     if int(new_llm_id) not in allowed_ids:
+                        if only_if_empty:
+                            return JSONResponse(
+                                content={"success": True, "updated": False}
+                            )
                         raise HTTPException(
                             status_code=403,
                             detail=f"This prompt '{prompt_name}' only allows specific AI models",
@@ -233,22 +279,62 @@ async def update_conversation_model(
             llm_data = await cursor.fetchone()
             if not llm_data:
                 raise HTTPException(status_code=404, detail="LLM model not found")
-            if not bool(llm_data[3]) and int(new_llm_id) != int(current_llm_id or 0):
+            if not bool(llm_data[3]) and (
+                llm_data[1] == "GPTSub"
+                or int(new_llm_id) != int(current_llm_id or 0)
+            ):
                 raise HTTPException(status_code=400, detail="This LLM model is disabled")
+            # GPTSub (ChatGPT subscription) models need an active per-user link.
+            # Even a no-op selection is denied after unlink: preserving an inert
+            # personal model would make subsequent sends fail unexpectedly.
+            if llm_data[1] == "GPTSub":
+                try:
+                    from subscription_auth import gptsub_allowed
+                except ImportError:
+                    gptsub_allowed = None
+                if gptsub_allowed is None or not await gptsub_allowed(
+                    current_user, model=llm_data[2]
+                ):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This model requires connecting your ChatGPT subscription",
+                    )
 
-            await cursor.execute(
-                """
-                UPDATE CONVERSATIONS
-                SET llm_id = ?
-                WHERE id = ? AND user_id = ?
-                """,
-                (new_llm_id, conversation_id, current_user.id),
-            )
+            if only_if_empty:
+                await cursor.execute(
+                    """
+                    UPDATE CONVERSATIONS
+                    SET llm_id = ?
+                    WHERE id = ? AND user_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM MESSAGES
+                          WHERE conversation_id = CONVERSATIONS.id
+                      )
+                    """,
+                    (new_llm_id, conversation_id, current_user.id),
+                )
+            else:
+                await cursor.execute(
+                    """
+                    UPDATE CONVERSATIONS
+                    SET llm_id = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (new_llm_id, conversation_id, current_user.id),
+                )
+            updated = cursor.rowcount > 0
 
             await conn.commit()
             await conn.close()
 
-            return JSONResponse(content={"success": True, "model": llm_data[2]})
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "updated": updated,
+                    "llm_id": llm_data[0],
+                    "model": llm_data[2],
+                }
+            )
     except HTTPException:
         raise
     except Exception as exc:

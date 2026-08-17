@@ -1,7 +1,10 @@
+import asyncio
 import json
 import os
 from html import escape
+from pathlib import Path
 
+from cachetools import TTLCache
 from fastapi.responses import HTMLResponse, FileResponse
 
 from common import slugify
@@ -11,6 +14,15 @@ from marketplace.landing.isolation import primary_app_url
 
 LANDING_RELATED_LINKS_ENABLED = os.getenv("LANDING_RELATED_LINKS_ENABLED", "1") == "1"
 LANDING_RELATED_LINKS_MAX = int(os.getenv("LANDING_RELATED_LINKS_MAX", "4"))
+LANDING_RENDER_CACHE_SIZE = int(os.getenv("LANDING_RENDER_CACHE_SIZE", "1000"))
+LANDING_RENDER_CACHE_TTL_SECONDS = int(
+    os.getenv("LANDING_RENDER_CACHE_TTL_SECONDS", "60")
+)
+
+_landing_render_cache: TTLCache = TTLCache(
+    maxsize=LANDING_RENDER_CACHE_SIZE,
+    ttl=LANDING_RENDER_CACHE_TTL_SECONDS,
+)
 
 LANDING_MEDIA_TYPES = {
     ".css": "text/css",
@@ -202,6 +214,79 @@ window.AurvekPurchase = function(promptId) {{
     else:
         html_content += tracking_script
     return html_content
+
+
+async def render_prompt_landing_html(
+    html_path: Path,
+    prompt_id: int,
+    *,
+    page: str,
+    is_preview: bool,
+    is_unlisted: bool,
+) -> str:
+    """Read and decorate landing HTML with a short, file-aware TTL cache."""
+    html_path = Path(html_path)
+    stat = await asyncio.to_thread(html_path.stat)
+    cache_key = (
+        "primary",
+        str(html_path.resolve()),
+        stat.st_mtime_ns,
+        stat.st_size,
+        int(prompt_id),
+        page,
+        bool(is_preview),
+        bool(is_unlisted),
+    )
+    try:
+        return _landing_render_cache[cache_key]
+    except KeyError:
+        pass
+
+    html_content = await asyncio.to_thread(html_path.read_text, encoding="utf-8")
+    html_content = await inject_related_links(
+        html_content,
+        prompt_id,
+        page=page,
+        is_preview=is_preview,
+        is_unlisted=is_unlisted,
+    )
+    html_content = inject_prompt_landing_analytics(
+        html_content,
+        prompt_id,
+        is_preview=is_preview,
+    )
+    _landing_render_cache[cache_key] = html_content
+    return html_content
+
+
+async def render_custom_domain_landing_html(
+    html_path: Path,
+    prompt_id: int,
+) -> str:
+    """Read and decorate custom-domain HTML through the shared file-aware cache."""
+    html_path = Path(html_path)
+    stat = await asyncio.to_thread(html_path.stat)
+    cache_key = (
+        "custom-domain",
+        str(html_path.resolve()),
+        stat.st_mtime_ns,
+        stat.st_size,
+        int(prompt_id),
+    )
+    try:
+        return _landing_render_cache[cache_key]
+    except KeyError:
+        pass
+
+    html_content = await asyncio.to_thread(html_path.read_text, encoding="utf-8")
+    html_content = inject_custom_domain_analytics(html_content, prompt_id)
+    _landing_render_cache[cache_key] = html_content
+    return html_content
+
+
+def clear_landing_render_cache() -> None:
+    """Clear rendered HTML entries after tests or explicit bulk maintenance."""
+    _landing_render_cache.clear()
 
 
 def inject_custom_domain_analytics(html_content: str, prompt_id: int) -> str:

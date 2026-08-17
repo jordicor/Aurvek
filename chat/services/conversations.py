@@ -92,14 +92,30 @@ async def create_conversation_core(
                     default_extension_id = ext[0]
 
     await cursor.execute(
-        "SELECT COALESCE(enabled, 1) FROM LLM WHERE id = ?",
+        "SELECT COALESCE(enabled, 1), machine, model FROM LLM WHERE id = ?",
         (effective_llm_id,),
     )
     llm_row = await cursor.fetchone()
     if not llm_row:
         raise ValueError("LLM model not found")
-    if not bool(llm_row[0]) and int(effective_llm_id) != int(user_details[0] or 0):
+    if not bool(llm_row[0]) and (
+        llm_row[1] == "GPTSub"
+        or int(effective_llm_id) != int(user_details[0] or 0)
+    ):
         raise ValueError("This LLM model is disabled")
+    # GPTSub (ChatGPT subscription) models need an active per-user link. This is a
+    # UX write-gate; the authoritative fail-closed gate runs at inference time.
+    # Never preserve an unlinked GPTSub default: no-op/default inheritance is still
+    # a new conversation write and must validate this account's exact model catalog.
+    if llm_row[1] == "GPTSub":
+        try:
+            from subscription_auth import gptsub_allowed
+        except ImportError:
+            gptsub_allowed = None
+        if gptsub_allowed is None or not await gptsub_allowed(
+            current_user, model=llm_row[2]
+        ):
+            raise ValueError("This model requires connecting your ChatGPT subscription")
 
     await cursor.execute(
         """

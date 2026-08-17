@@ -279,7 +279,10 @@ async def transcribe_external_audio(
     if not audio_content:
         raise HTTPException(status_code=400, detail="No audio")
 
-    audio_segment = AudioSegment.from_file(io.BytesIO(audio_content))
+    audio_segment = await asyncio.to_thread(
+        AudioSegment.from_file,
+        io.BytesIO(audio_content),
+    )
     audio_duration = audio_segment.duration_seconds
     if audio_duration <= 0:
         raise HTTPException(status_code=400, detail="No audio")

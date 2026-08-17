@@ -40,6 +40,17 @@ def get_job_path(task_id: str) -> Path:
     return JOBS_DIR / f"{task_id}.json"
 
 
+def _write_job_atomic(job_path: Path, job: dict) -> None:
+    """Replace a job record atomically so readers never see partial JSON."""
+    temp_path = job_path.with_name(f".{job_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(job, f, indent=2)
+        os.replace(temp_path, job_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def create_job(
     task_id: str,
     prompt_id: int,
@@ -83,9 +94,7 @@ def create_job(
         "request": request_data or {}
     }
 
-    job_path = get_job_path(task_id)
-    with open(job_path, 'w', encoding='utf-8') as f:
-        json.dump(job, f, indent=2)
+    _write_job_atomic(get_job_path(task_id), job)
 
     return job
 
@@ -113,8 +122,7 @@ def update_job(task_id: str, **updates) -> Optional[dict]:
         job.update(updates)
         job["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        with open(job_path, 'w', encoding='utf-8') as f:
-            json.dump(job, f, indent=2)
+        _write_job_atomic(job_path, job)
 
         return job
     except Exception:
@@ -188,9 +196,7 @@ def _check_job_timeout(job: dict) -> dict:
                 job["updated_at"] = now.isoformat()
 
                 # Save the updated status
-                job_path = get_job_path(job["task_id"])
-                with open(job_path, 'w', encoding='utf-8') as f:
-                    json.dump(job, f, indent=2)
+                _write_job_atomic(get_job_path(job["task_id"]), job)
     except Exception:
         pass
 

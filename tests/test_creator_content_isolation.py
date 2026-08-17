@@ -48,11 +48,11 @@ def isolated_origin_env(monkeypatch):
 def test_creator_origin_must_be_https_and_on_a_separate_site(monkeypatch):
     from marketplace.landing.isolation import get_creator_content_config
 
-    monkeypatch.setenv("PRIMARY_APP_DOMAIN", "aurvek.com")
+    monkeypatch.setenv("PRIMARY_APP_DOMAIN", "example.com")
     monkeypatch.delenv("CLOUDFLARE_DOMAIN", raising=False)
     monkeypatch.delenv("AURVEK_PRIMARY_DOMAINS", raising=False)
 
-    monkeypatch.setenv("CREATOR_CONTENT_ORIGIN", "https://pages.aurvek.com")
+    monkeypatch.setenv("CREATOR_CONTENT_ORIGIN", "https://pages.example.com")
     assert get_creator_content_config() is None
 
     monkeypatch.setenv("CREATOR_CONTENT_ORIGIN", "http://aurvek-pages.net")
@@ -316,6 +316,9 @@ async def test_prompt_landing_redirects_before_creator_html_and_preview_is_owner
             "prompt_id": 17,
             "prompt_name": "Demo",
             "is_unlisted": 0,
+            "public": 1,
+            "has_landing_page": 1,
+            "landing_trusted": 0,
             "username": "creator",
             "path": tmp_path,
         }

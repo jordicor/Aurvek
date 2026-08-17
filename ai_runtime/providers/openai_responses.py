@@ -1,7 +1,7 @@
 from ai_runtime.dependencies import *
 from ai_runtime.config import _is_gpt5_model, _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
-from ai_runtime.persistence.messages import save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
 
@@ -502,6 +502,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                     yield event
             if user_message_id and bot_message_id:
                 yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
+            else:
+                yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+                return
 
         if perf_trace:
             event = perf_trace.sse("openai_stream_done")

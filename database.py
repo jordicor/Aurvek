@@ -2,6 +2,7 @@
 import aiosqlite
 from contextlib import asynccontextmanager
 import os
+from pathlib import Path
 import sqlite3
 from dotenv import load_dotenv
 
@@ -36,6 +37,11 @@ PRAGMA_STATEMENTS_RO = [
 _wal_initialized = False
 
 
+def get_database_identity() -> str:
+    """Return the resolved path used by the default connection factory."""
+    return str((Path("db") / str(dbname)).resolve())
+
+
 async def ensure_wal_mode():
     """Set WAL journal mode once at startup (persistent across connections)."""
     global _wal_initialized
@@ -57,6 +63,10 @@ async def get_db_connection(readonly=False):
         uri=True,
         timeout=DEFAULT_DB_TIMEOUT,
     )
+    # Schema once-guards can identify normal application connections without
+    # issuing PRAGMA database_list on every hot-path call. Test/custom
+    # connections that lack this marker still fall back to PRAGMA discovery.
+    conn._aurvek_database_identity = get_database_identity()
     conn.row_factory = aiosqlite.Row
 
     # Apply per-connection PRAGMA configurations

@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 
 import stripe
@@ -56,7 +57,8 @@ async def _complete_reserved_payout(
 
     try:
         amount_cents = int(pending * 100)
-        transfer = stripe.Transfer.create(
+        transfer = await asyncio.to_thread(
+            stripe.Transfer.create,
             amount=amount_cents,
             currency="usd",
             destination=connect_account_id,

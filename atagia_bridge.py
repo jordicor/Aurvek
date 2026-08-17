@@ -208,6 +208,15 @@ class AtagiaBridge:
     def enabled(self) -> bool:
         return self.config.enabled
 
+    async def is_enabled(self) -> bool:
+        """Resolve the loader-backed config and report whether the bridge is on.
+
+        The `enabled` property only reflects the constructor/env snapshot; callers
+        gating on bridge availability (deletion guards, remediation) must use this
+        so the answer matches what erase_user will actually see.
+        """
+        return (await self._get_config()).enabled
+
     @property
     def last_error(self) -> Any | None:
         """Structured details for the latest fail-open Atagia operation."""
@@ -546,6 +555,32 @@ class AtagiaBridge:
             )
             return False
 
+    async def erase_user(self, user_id: int | str) -> dict[str, Any]:
+        """Erase all Atagia data for one Aurvek user (fail-closed).
+
+        Unlike the fail-open memory operations, account erasure must be
+        authoritative: the local account cascade cannot proceed unless the remote
+        purge is confirmed. A response of "already erased"/tombstoned/not found is
+        treated as idempotent success; any other failure raises so the caller can
+        abort without losing the references needed to retry.
+        """
+        config = await self._get_config()
+        if not config.enabled:
+            raise RuntimeError("Atagia bridge is disabled; cannot erase user")
+        atagia_user_id = _aurvek_user_id(user_id)
+        try:
+            report = await _erase_user_via_transport(config, atagia_user_id)
+            self._last_error = None
+            return report
+        except Exception as exc:
+            self._last_error = _bridge_exception("erase_user", exc)
+            logger.error(
+                "Atagia erase_user failed for user_id=%s; aborting deletion",
+                user_id,
+                exc_info=True,
+            )
+            raise
+
     async def test_connection(self) -> tuple[bool, str]:
         """Best-effort admin connection check using real Atagia resources."""
         started_at = time.perf_counter()
@@ -729,6 +764,7 @@ class AtagiaBridge:
 
 
 _default_bridge: AtagiaBridge | None = None
+_erasure_bridge: AtagiaBridge | None = None
 
 
 def get_atagia_bridge() -> AtagiaBridge:
@@ -737,6 +773,19 @@ def get_atagia_bridge() -> AtagiaBridge:
     if _default_bridge is None:
         _default_bridge = AtagiaBridge(config_loader=_default_config_loader)
     return _default_bridge
+
+
+def get_atagia_erasure_bridge() -> AtagiaBridge:
+    """Return the bridge used for account-erasure operations.
+
+    Gated on data custody (atagia_enabled) rather than on the active runtime
+    memory provider: erasure must keep working while the provider is switched
+    off but the Atagia store still holds user data.
+    """
+    global _erasure_bridge
+    if _erasure_bridge is None:
+        _erasure_bridge = AtagiaBridge(config_loader=_erasure_config_loader)
+    return _erasure_bridge
 
 
 async def get_context_for_turn(
@@ -831,6 +880,11 @@ async def ingest_message(
     )
 
 
+async def erase_atagia_user(user_id: int | str) -> dict[str, Any]:
+    """Module-level convenience wrapper for account erasure (fail-closed)."""
+    return await get_atagia_bridge().erase_user(user_id)
+
+
 async def flush_atagia_bridge(
     timeout_seconds: float | None = None,
     *,
@@ -866,17 +920,26 @@ async def close_atagia_bridge() -> None:
 
 
 async def reset_atagia_bridge() -> None:
-    """Close and drop the process-wide bridge so fresh config is loaded."""
-    global _default_bridge
+    """Close and drop the process-wide bridges so fresh config is loaded."""
+    global _default_bridge, _erasure_bridge
     if _default_bridge is not None:
         await _default_bridge.close()
     _default_bridge = None
+    if _erasure_bridge is not None:
+        await _erasure_bridge.close()
+    _erasure_bridge = None
 
 
 async def _default_config_loader() -> AtagiaBridgeConfig:
     from atagia_config import get_atagia_bridge_config
 
     return await get_atagia_bridge_config()
+
+
+async def _erasure_config_loader() -> AtagiaBridgeConfig:
+    from atagia_config import get_atagia_erasure_bridge_config
+
+    return await get_atagia_erasure_bridge_config()
 
 
 def _load_sidecar_bridge_classes() -> tuple[Any, Any]:
@@ -1099,6 +1162,65 @@ async def _purge_conversation_via_transport(
         )
         return
     await _with_local_engine(config, _local)
+
+
+ATAGIA_ERASE_CONFIRMATION = "ERASE_ALL_DATA"
+
+
+async def _erase_user_via_transport(
+    config: AtagiaBridgeConfig,
+    atagia_user_id: str,
+) -> dict[str, Any]:
+    async def _local(engine: Any) -> dict[str, Any]:
+        report = await engine.erase_user_data(
+            atagia_user_id,
+            confirmation=ATAGIA_ERASE_CONFIRMATION,
+        )
+        return _normalize_erasure_report(report, atagia_user_id)
+
+    if _resolve_transport(config) == "http":
+        return await _http_erase_user(config, atagia_user_id)
+    return await _with_local_engine(config, _local)
+
+
+async def _http_erase_user(
+    config: AtagiaBridgeConfig,
+    atagia_user_id: str,
+) -> dict[str, Any]:
+    import httpx
+
+    async with httpx.AsyncClient(
+        base_url=(config.base_url or "").rstrip("/"),
+        timeout=config.timeout_seconds,
+    ) as client:
+        response = await client.post(
+            f"/v1/users/{_atagia_path_segment(atagia_user_id)}/erase",
+            json={
+                "user_id": atagia_user_id,
+                "confirmation": ATAGIA_ERASE_CONFIRMATION,
+            },
+            headers=_http_headers(config, atagia_user_id),
+        )
+        # The erase endpoint reports a missing/already-erased user as HTTP 200
+        # with already_erased=true, so any error status (including 404 from a
+        # misrouted base_url) must fail closed rather than fake success.
+        response.raise_for_status()
+        return _normalize_erasure_report(response.json(), atagia_user_id)
+
+
+def _normalize_erasure_report(value: Any, atagia_user_id: str) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        data = value.model_dump()
+    elif isinstance(value, dict):
+        data = dict(value)
+    else:
+        data = {
+            "user_id": getattr(value, "user_id", atagia_user_id),
+            "already_erased": bool(getattr(value, "already_erased", False)),
+        }
+    data.setdefault("user_id", atagia_user_id)
+    data.setdefault("already_erased", False)
+    return data
 
 
 async def _with_local_engine(

@@ -2,8 +2,12 @@ AURVEK.git/
 SPARK.git/
 CLAUDE.md
 data/cache/
+# Runtime landing-generation jobs can contain prompts and generated worker code.
+data/jobs/
 # User data (runtime-generated attachments, prompt exports, and profiles)
 data/users/
+# Local archive of retired/junk data files (mirrors production data/archive/)
+data/archive/
 # Content-addressed blob storage (runtime-generated attachments and variants)
 data/file_blobs/
 __pycache__/
@@ -25,6 +29,7 @@ deploy.sh
 # Environment and secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.crt

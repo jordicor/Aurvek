@@ -17,6 +17,18 @@ AURVEK_ACTION_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+PERSISTENCE_ERROR_MESSAGE = (
+    "The response was generated but could not be saved. Copy it before retrying."
+)
+
+
+def persistence_error_payload() -> dict:
+    """Build the SSE payload used when generation succeeded but persistence failed."""
+    return {
+        "error": PERSISTENCE_ERROR_MESSAGE,
+        "persistence_error": True,
+    }
+
 
 def strip_aurvek_action_blocks(content: str | None) -> str:
     clean = AURVEK_ACTION_BLOCK_RE.sub("", str(content or "")).strip()

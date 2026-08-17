@@ -211,6 +211,13 @@ MAX_COVER_FULLSIZE_WIDTH = 2560  # Cap fullsize cover output to prevent DoS via 
 MODERATION_COST_FIXED = 0.03  # Fixed cost charged to creator per moderation check
 MODERATION_MIN_BALANCE = 0.05  # Minimum balance required to attempt moderation
 BYOK_MIN_BALANCE_PAID_PROMPT = 0.10  # Minimum balance required for BYOK users on paid prompts (creator markup)
+# Minimum prepaid balance required to START an ElevenLabs realtime voice call.
+# ConvAI per-minute billing is not modeled yet (there is no cost/duration column
+# on ELEVENLABS_CALL_SESSIONS), so this is a conservative fail-fast floor: a user
+# with zero/near-zero balance must not be able to start a real-cost voice call on
+# the platform ElevenLabs key. Subscription (text-only) users carry zero balance
+# by design, which is exactly the case this guards.
+VOICE_CALL_MIN_BALANCE_TO_START = 0.10
 
 PACK_STATUSES = ['draft', 'pending_review', 'published', 'rejected', 'suspended']
 VALID_NOTICE_PERIODS = [0, 90, 180, 365, 730]
@@ -1135,6 +1142,7 @@ def validate_path_within_directory(user_path: str, base_directory: Path) -> Path
 # API Key Encryption Functions
 # ============================================================================
 
+@lru_cache(maxsize=1)
 def get_encryption_key():
     """
     Derive an encryption key from SECRET_KEY using PBKDF2.
@@ -1493,7 +1501,7 @@ def get_public_profile_url(
         Full URL string
 
     Example:
-        https://example.com/p/k9F3aZ2p/ava/
+        https://example.com/p/aB3xY9Zk/ava/
     """
     domain = PUBLIC_PROFILE_DOMAIN
     protocol = "http" if "localhost" in domain else "https"
@@ -1601,6 +1609,96 @@ async def get_pricing_config() -> dict:
         return config
 
 
+# ---------------------------------------------------------------------------
+# Subscription-auth kill switch (SYSTEM_CONFIG key 'subscription_auth_enabled')
+# ---------------------------------------------------------------------------
+# Public runtime toggle for the external-subscription-auth feature. Default is
+# DISABLED: an absent row must never make a credential-bearing integration live
+# before its pinned runtime and isolation checks have passed. Read on every
+# subscription inference attempt, so it is cached with a short TTL and the
+# setter invalidates the cache so a toggle takes effect promptly on a
+# single-worker deployment.
+SUBSCRIPTION_AUTH_ENABLED_KEY = "subscription_auth_enabled"
+SUBSCRIPTION_AUTH_ENABLED_DESCRIPTION = (
+    "Master kill switch for the subscription-auth option (true/false)"
+)
+_SUBSCRIPTION_AUTH_TRUE_VALUES = frozenset({"true", "1", "yes", "on"})
+SUBSCRIPTION_AUTH_CACHE_TTL = 30  # seconds -- short, so a toggle takes effect fast
+_subscription_auth_enabled_cache: Optional[bool] = None
+_subscription_auth_enabled_cache_time: float = 0.0
+
+
+async def get_subscription_auth_enabled() -> bool:
+    """Return whether the subscription-auth feature is enabled.
+
+    Backed by SYSTEM_CONFIG key 'subscription_auth_enabled'. Default DISABLED.
+
+    Fail-CLOSED read semantics for this security-relevant kill switch (the
+    downstream gptsub_allowed gate denies on any failure):
+      - key absent / value NULL -> return False (fail-closed; feature off)
+      - value present           -> parse to bool (only true/1/yes/on -> True)
+      - DB read error           -> RAISES (never swallowed-and-defaulted), so
+        the caller's gate can DENY on it. Do NOT wrap the DB read in a
+        swallow-and-default try/except -- that would fail OPEN.
+
+    Cached with a short TTL; set_subscription_auth_enabled() invalidates it.
+    """
+    global _subscription_auth_enabled_cache, _subscription_auth_enabled_cache_time
+
+    now = time.time()
+    if (
+        _subscription_auth_enabled_cache is not None
+        and (now - _subscription_auth_enabled_cache_time) < SUBSCRIPTION_AUTH_CACHE_TTL
+    ):
+        return _subscription_auth_enabled_cache
+
+    # No try/except here on purpose: a DB read error must propagate so the gate
+    # fails closed instead of defaulting to enabled.
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            "SELECT value FROM SYSTEM_CONFIG WHERE key = ?",
+            (SUBSCRIPTION_AUTH_ENABLED_KEY,),
+        )
+        row = await cursor.fetchone()
+
+    if row is None or row[0] is None:
+        enabled = False
+    else:
+        enabled = str(row[0]).strip().lower() in _SUBSCRIPTION_AUTH_TRUE_VALUES
+
+    _subscription_auth_enabled_cache = enabled
+    _subscription_auth_enabled_cache_time = now
+    return enabled
+
+
+async def set_subscription_auth_enabled(value: bool) -> None:
+    """Persist the subscription-auth kill switch and invalidate the cache.
+
+    Writes SYSTEM_CONFIG key 'subscription_auth_enabled' as "true"/"false" and
+    then clears the in-process cache so the change takes effect promptly (the VM
+    runs a single uvicorn worker, so in-process invalidation is sufficient).
+    """
+    global _subscription_auth_enabled_cache, _subscription_auth_enabled_cache_time
+
+    stored = "true" if value else "false"
+    async with get_db_connection() as conn:
+        # UPDATE first (preserves the description column on existing rows), then
+        # INSERT OR IGNORE for the first-write case.
+        await conn.execute(
+            "UPDATE SYSTEM_CONFIG SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+            (stored, SUBSCRIPTION_AUTH_ENABLED_KEY),
+        )
+        await conn.execute(
+            "INSERT OR IGNORE INTO SYSTEM_CONFIG (key, value, description, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (SUBSCRIPTION_AUTH_ENABLED_KEY, stored, SUBSCRIPTION_AUTH_ENABLED_DESCRIPTION),
+        )
+        await conn.commit()
+
+    _subscription_auth_enabled_cache = None
+    _subscription_auth_enabled_cache_time = 0.0
+
+
 async def add_pending_earnings(user_id: int, amount: float, conn=None, cursor=None) -> bool:
     """
     Increment pending_earnings for a user (creator or referral).
@@ -1673,11 +1771,19 @@ async def record_creator_earnings(
     net_earnings: float,
     referral_id: int = None,
     conn=None,
-    cursor=None
+    cursor=None,
+    earning_type: str = 'markup',
+    source_ref: str = None,
+    pack_id: int = None
 ) -> bool:
     """
     Record a creator earnings transaction in CREATOR_EARNINGS table.
     If conn/cursor provided, uses them (for transaction). Otherwise creates new connection.
+
+    earning_type distinguishes per-token 'markup' from one-time 'prompt_purchase'
+    / 'pack_purchase' sales. source_ref holds the Stripe session id for purchases
+    (NULL for markup) and is protected by a partial UNIQUE index so a retried
+    webhook cannot double-record. pack_id names the pack for 'pack_purchase' rows.
     """
     if net_earnings <= 0:
         return True
@@ -1685,11 +1791,13 @@ async def record_creator_earnings(
     insert_sql = '''
         INSERT INTO CREATOR_EARNINGS
         (creator_id, prompt_id, consumer_id, referral_id, tokens_consumed,
-         gross_amount, platform_commission, net_earnings, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         gross_amount, platform_commission, net_earnings,
+         earning_type, source_ref, pack_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     '''
     params = (creator_id, prompt_id, consumer_id, referral_id, tokens_consumed,
-              gross_amount, platform_commission, net_earnings)
+              gross_amount, platform_commission, net_earnings,
+              earning_type, source_ref, pack_id)
 
     if conn and cursor:
         # Use provided connection (within transaction)
@@ -2328,9 +2436,9 @@ async def consume_token(
 
         # Don't commit here since transaction is managed by caller's transaction
         return True
-    except Exception as e:
-        logger.error(f"[consume_token] - Error executing balance update query: {e}")
-        return False
+    except Exception:
+        logger.exception("[consume_token] - Error executing balance update query")
+        raise
 
 
 # ============================================================================

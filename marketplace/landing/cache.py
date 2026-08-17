@@ -48,13 +48,15 @@ async def warmup_landing_cache():
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
                 """
-                SELECT p.public_id, p.id, p.name, p.is_unlisted, u.username,
+                SELECT p.public_id, p.id, p.name, p.is_unlisted,
+                       p.public, p.has_landing_page, p.landing_trusted, u.username,
                        COALESCE(COUNT(a.id), 0) as visit_count
                 FROM PROMPTS p
                 JOIN USERS u ON p.created_by_user_id = u.id
                 LEFT JOIN LANDING_PAGE_ANALYTICS a ON a.prompt_id = p.id
                 WHERE p.public_id IS NOT NULL
-                GROUP BY p.id, p.public_id, p.name, p.is_unlisted, u.username
+                GROUP BY p.id, p.public_id, p.name, p.is_unlisted,
+                         p.public, p.has_landing_page, p.landing_trusted, u.username
                 ORDER BY visit_count DESC
                 LIMIT ?
                 """,
@@ -63,12 +65,16 @@ async def warmup_landing_cache():
 
             count = 0
             async for row in cursor:
-                public_id, prompt_id, name, is_unlisted, username, _ = row
+                (public_id, prompt_id, name, is_unlisted,
+                 public, has_landing_page, landing_trusted, username, _) = row
                 path = build_prompt_filesystem_path(username, prompt_id, name)
                 _landing_path_cache[public_id] = {
                     "prompt_id": prompt_id,
                     "prompt_name": name,
                     "is_unlisted": is_unlisted or 0,
+                    "public": public or 0,
+                    "has_landing_page": has_landing_page or 0,
+                    "landing_trusted": landing_trusted or 0,
                     "username": username,
                     "path": path,
                 }
@@ -84,8 +90,12 @@ async def get_landing_path_cached(public_id: str) -> dict:
     """
     Get landing path with smart LRU caching.
 
-    The query intentionally does not filter by p.public. The public flag
-    controls directory listing, not whether a direct landing page is reachable.
+    The query resolves the landing's identity, filesystem path AND the flags the
+    serving routes need to enforce the access policy: ``public``,
+    ``has_landing_page`` and ``landing_trusted``. It deliberately does NOT filter
+    on those flags -- the authenticated admin preview path must still be able to
+    resolve non-public landings. Enforcement (public = 1 AND has_landing_page = 1
+    for public access; trusted vs. isolated serving) happens in the routes.
     """
     require_public_landings_enabled()
 
@@ -108,7 +118,8 @@ async def get_landing_path_cached(public_id: str) -> dict:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
                 """
-                SELECT p.id, p.name, p.is_unlisted, u.username
+                SELECT p.id, p.name, p.is_unlisted,
+                       p.public, p.has_landing_page, p.landing_trusted, u.username
                 FROM PROMPTS p
                 JOIN USERS u ON p.created_by_user_id = u.id
                 WHERE p.public_id = ?
@@ -120,13 +131,16 @@ async def get_landing_path_cached(public_id: str) -> dict:
         if not row:
             raise HTTPException(status_code=404, detail="Prompt not found")
 
-        prompt_id, name, is_unlisted, username = row
+        prompt_id, name, is_unlisted, public, has_landing_page, landing_trusted, username = row
         path = build_prompt_filesystem_path(username, prompt_id, name)
 
         result = {
             "prompt_id": prompt_id,
             "prompt_name": name,
             "is_unlisted": is_unlisted or 0,
+            "public": public or 0,
+            "has_landing_page": has_landing_page or 0,
+            "landing_trusted": landing_trusted or 0,
             "username": username,
             "path": path,
         }

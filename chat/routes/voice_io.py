@@ -8,6 +8,7 @@ from pathlib import Path
 import aiohttp
 import httpx
 import jwt
+import orjson
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, Form
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydub import AudioSegment
@@ -78,26 +79,32 @@ async def websocket_endpoint(websocket: WebSocket):
         current_user = await get_current_user_from_websocket(websocket)
         if current_user is None:
             await websocket.close(code=4401, reason="Session expired")
-            manager.disconnect(websocket)
             return
 
         if READONLY_MODE:
             await websocket.close(code=1013, reason="Read-only mode active")
-            manager.disconnect(websocket)
             return
 
         while True:
-            import orjson
-
             message = await websocket.receive_text()
             current_user = await get_current_user_from_websocket(websocket)
             if current_user is None:
-                if manager.active_connections[websocket]["task"]:
-                    manager.active_connections[websocket]["task"].cancel()
                 await websocket.close(code=4401, reason="Session expired")
-                manager.disconnect(websocket)
                 return
-            data = orjson.loads(message)
+            try:
+                data = orjson.loads(message)
+            except orjson.JSONDecodeError:
+                await manager.send_json(
+                    websocket,
+                    {"action": "error", "error": "Invalid JSON payload"},
+                )
+                continue
+            if not isinstance(data, dict):
+                await manager.send_json(
+                    websocket,
+                    {"action": "error", "error": "Invalid JSON payload"},
+                )
+                continue
             action = data.get("action")
 
             if action == "start_tts":
@@ -128,6 +135,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await manager.send_json(websocket, {"action": "stopped"})
 
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(websocket)
 
 
@@ -352,6 +361,20 @@ async def transcribe_with_deepgram(audio_content: bytes = None, user_agent: str 
         raise
 
 
+def _decode_audio_duration(
+    content: bytes,
+    *,
+    audio_format: str,
+    codec: str | None = None,
+) -> float:
+    """Decode an uploaded recording and return its duration off the event loop."""
+    options = {"format": audio_format}
+    if codec is not None:
+        options["codec"] = codec
+    decoded_audio = AudioSegment.from_file(io.BytesIO(content), **options)
+    return decoded_audio.duration_seconds
+
+
 async def transcribe(request: Request, audio: UploadFile = File(None), user_id: int = None):
     try:
         audio_duration = 0
@@ -359,24 +382,29 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
 
         if audio:
             content = await audio.read()
-            audio_file = io.BytesIO(content)
             user_agent = request.headers.get("user-agent")
             browser = get_browser(user_agent)
 
             if browser == "firefox":
                 logger.info("Using OggOpus for Firefox")
-                ogg_audio = AudioSegment.from_file(audio_file, format="ogg", codec="opus")
-                audio_duration = ogg_audio.duration_seconds
+                audio_format = "ogg"
+                codec = "opus"
             elif browser == "chrome" or browser == "edge":
                 logger.info("Using WebMOpus for Chrome and Edge")
-                webm_audio = AudioSegment.from_file(audio_file, format="webm", codec="opus")
-                audio_duration = webm_audio.duration_seconds
+                audio_format = "webm"
+                codec = "opus"
             elif browser == "safari":
                 logger.info("Using MP4 for Safari")
-                mp4_audio = AudioSegment.from_file(audio_file, format="mp4")
-                audio_duration = mp4_audio.duration_seconds
+                audio_format = "mp4"
+                codec = None
             else:
                 raise HTTPException(status_code=400, detail="Unsupported browser (for now)")
+            audio_duration = await asyncio.to_thread(
+                _decode_audio_duration,
+                content,
+                audio_format=audio_format,
+                codec=codec,
+            )
         else:
             raise HTTPException(status_code=400, detail="No audio or media URL provided")
 

@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 import logging
 
+from middleware.security import get_client_ip
+
 logger = logging.getLogger(__name__)
 
 
@@ -264,43 +266,6 @@ class RateLimitConfig:
     # --- Email verification ---
     VERIFY_BY_IP = (20, 60)              # 20 per hour per IP
     VERIFY_FAILURES = (10, 60)           # 10 failures per hour
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def get_client_ip(request) -> str:
-    """
-    Extract client IP address, considering reverse proxies.
-
-    Priority:
-    1. CF-Connecting-IP (Cloudflare)
-    2. X-Forwarded-For (first IP in chain)
-    3. X-Real-IP (nginx)
-    4. Direct client connection
-    """
-    # Cloudflare sends real client IP in this header
-    cf_ip = request.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip.strip()
-
-    # X-Forwarded-For can have multiple IPs: client, proxy1, proxy2
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        # Take the first IP (original client)
-        return forwarded.split(",")[0].strip()
-
-    # X-Real-IP from nginx
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
-
-    # Direct connection
-    if request.client and request.client.host:
-        return request.client.host
-
-    return "unknown"
 
 
 def check_rate_limits(

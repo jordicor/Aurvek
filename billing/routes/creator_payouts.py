@@ -50,7 +50,7 @@ async def stripe_connect_return(request: Request, current_user: User = Depends(g
     require_creator_tools_enabled()
 
     if current_user is None:
-        return RedirectResponse(url="/login?next=/creator-earnings", status_code=302)
+        return RedirectResponse(url="/login?next=/my-earnings", status_code=302)
 
     return await handle_connect_return_response(current_user)
 
@@ -58,7 +58,7 @@ async def stripe_connect_return(request: Request, current_user: User = Depends(g
 @router.get("/api/connect/refresh")
 async def stripe_connect_refresh(request: Request):
     require_creator_tools_enabled()
-    return RedirectResponse(url="/creator-earnings?warning=link_expired", status_code=302)
+    return RedirectResponse(url="/my-earnings?warning=link_expired", status_code=302)
 
 
 @router.get("/api/connect/status")

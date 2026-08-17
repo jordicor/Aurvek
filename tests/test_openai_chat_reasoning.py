@@ -124,6 +124,56 @@ async def test_partial_stream_usage_is_accumulated_even_when_provider_then_fails
 
 
 @pytest.mark.asyncio
+async def test_persistence_failure_emits_error_without_normal_completion(monkeypatch):
+    payload = "\n\n".join([
+        'data: {"choices":[{"delta":{"content":"generated answer"}}]}',
+        'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}',
+        "data: [DONE]",
+        "",
+    ])
+    captured = {}
+    monkeypatch.setattr(
+        openai_chat.aiohttp,
+        "ClientSession",
+        lambda *args, **kwargs: _FakeSession(payload, captured),
+    )
+    monkeypatch.setattr(
+        openai_chat,
+        "save_content_to_db",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        openai_chat,
+        "record_provider_success_for_label",
+        AsyncMock(),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in openai_chat.call_llm_api(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-test",
+            temperature=0.7,
+            max_tokens=100,
+            prompt="system",
+            conversation_id=123,
+            current_user=_User(),
+            request=None,
+            api_url="https://example.invalid/v1/chat/completions",
+            api_key="test",
+            provider_label="OpenAI (GPT)",
+            user_message="hi",
+            save_to_db=True,
+        )
+    ]
+
+    payloads = [_sse_payload(chunk) for chunk in chunks if chunk.startswith("data: {")]
+    assert any(item.get("content") == "generated answer" for item in payloads)
+    assert payloads[-1]["persistence_error"] is True
+    assert chunks[-1].startswith("data: ")
+
+
+@pytest.mark.asyncio
 async def test_o1_reasoning_tokens_are_not_charged_twice(monkeypatch):
     response_payload = {
         "choices": [{"message": {"content": "answer"}}],

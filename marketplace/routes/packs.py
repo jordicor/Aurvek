@@ -70,7 +70,10 @@ from mobile.client import (
     purchase_metadata_for_request,
 )
 from prompts import create_pack_directory, get_pack_path, get_pack_components_dir
-from marketplace.services.landing_registration import sanitize_landing_reg_config
+from marketplace.services.landing_registration import (
+    sanitize_landing_reg_config,
+    validate_shared_landing_config,
+)
 from ranking import maybe_trigger_recalculation
 from marketplace.config import (
     marketplace_public_landings_enabled,
@@ -528,6 +531,7 @@ async def api_create_pack(request: Request, current_user: User = Depends(get_cur
                 lrc = None
         if isinstance(lrc, dict):
             lrc = sanitize_landing_reg_config(lrc, max_initial_balance=MAX_FREE_INITIAL_BALANCE)
+            lrc = await validate_shared_landing_config(lrc)
             if lrc.get("billing_mode") == "user_pays":
                 creator_balance = await get_balance(current_user.id)
                 if creator_balance <= 0:
@@ -675,6 +679,7 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
             if not isinstance(lrc, dict):
                 lrc = {}
             lrc = sanitize_landing_reg_config(lrc, max_initial_balance=ib_cap)
+            lrc = await validate_shared_landing_config(lrc)
         else:
             lrc = None
             # Re-validate existing config if price/is_paid changed (cap may have tightened)
@@ -693,6 +698,7 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
                             lrc = existing_config
 
         if lrc is not None:
+            lrc = await validate_shared_landing_config(lrc)
             # Validate user_pays requires creator to have positive balance
             if lrc.get("billing_mode") == "user_pays":
                 creator_balance = await get_balance(pack_row["created_by_user_id"])
@@ -922,6 +928,7 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
                 except Exception:
                     existing_lrc = {}
             if isinstance(existing_lrc, dict):
+                existing_lrc = await validate_shared_landing_config(existing_lrc)
                 current_ib = float(existing_lrc.get("initial_balance", 0))
                 if current_ib > ib_cap:
                     logger.warning(
@@ -1044,6 +1051,62 @@ async def api_unpublish_pack(pack_id: int, current_user: User = Depends(get_curr
 # Cover Image Upload / Delete
 # ---------------------------------------------------------------------------
 
+_ALLOWED_COVER_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+
+
+def _save_pack_cover_variants(
+    content: bytes,
+    *,
+    img_dir: Path,
+    pack_id: int,
+    sanitized_name: str,
+    old_cover_image: str | None,
+) -> None:
+    """Validate and persist all cover variants in one worker-thread block."""
+    try:
+        image = PilImage.open(io.BytesIO(content))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file") from exc
+
+    with image:
+        if image.format not in _ALLOWED_COVER_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported image format: {image.format}. "
+                    "Allowed: JPEG, PNG, WEBP, GIF"
+                ),
+            )
+
+        width, height = image.size
+        if width * height > MAX_IMAGE_PIXELS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Image dimensions too large. Maximum is "
+                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                ),
+            )
+
+        image.load()
+
+        if old_cover_image:
+            for label in ("240", "512", "fullsize"):
+                old_path = DATA_DIR / f"{old_cover_image}_{label}.webp"
+                if old_path.is_file():
+                    old_path.unlink()
+
+        img_dir.mkdir(parents=True, exist_ok=True)
+        fullsize_width = min(image.width, MAX_COVER_FULLSIZE_WIDTH)
+        for size, label in zip(
+            (240, 512, fullsize_width),
+            ("240", "512", "fullsize"),
+        ):
+            resized = resize_image_cover(image.copy(), size)
+            file_path = img_dir / f"{pack_id}_{sanitized_name}_{label}.webp"
+            resized.save(str(file_path), "WEBP")
+
+
 @router.post("/api/packs/{pack_id}/cover-image")
 async def api_upload_cover_image(
     pack_id: int,
@@ -1071,35 +1134,6 @@ async def api_upload_cover_image(
             detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024)}MB",
         )
 
-    # Open image and validate
-    try:
-        image = PilImage.open(io.BytesIO(content))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
-    # Validate image format against whitelist
-    ALLOWED_COVER_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
-    if image.format not in ALLOWED_COVER_FORMATS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported image format: {image.format}. Allowed: JPEG, PNG, WEBP, GIF",
-        )
-
-    # Validate pixel count (decompression bomb protection)
-    width, height = image.size
-    if width * height > MAX_IMAGE_PIXELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels",
-        )
-
-    # Clean up old cover image files if they exist (handles rename orphans)
-    if pack_row["cover_image"]:
-        for label in ("240", "512", "fullsize"):
-            old_path = DATA_DIR / f"{pack_row['cover_image']}_{label}.webp"
-            if old_path.is_file():
-                os.remove(old_path)
-
     # Build directory path
     pack_dir = _build_pack_filesystem_path(
         pack_row["username"] if "username" in pack_row.keys() else None,
@@ -1119,19 +1153,16 @@ async def api_upload_cover_image(
             pack_dir = _build_pack_filesystem_path(user_row[0], pack_id, pack_row["name"])
 
     img_dir = pack_dir / "static" / "img"
-    os.makedirs(img_dir, exist_ok=True)
-
     sanitized = sanitize_name(pack_row["name"])
 
-    # Generate 3 sizes: 240, 512, fullsize (cropped to 16:9, capped width)
-    fullsize_width = min(image.width, MAX_COVER_FULLSIZE_WIDTH)
-    sizes = [240, 512, fullsize_width]
-    size_labels = ["240", "512", "fullsize"]
-    for sz, label in zip(sizes, size_labels):
-        resized = resize_image_cover(image.copy(), sz)
-        filename = f"{pack_id}_{sanitized}_{label}.webp"
-        file_path = img_dir / filename
-        resized.save(str(file_path), "WEBP")
+    await asyncio.to_thread(
+        _save_pack_cover_variants,
+        content,
+        img_dir=img_dir,
+        pack_id=pack_id,
+        sanitized_name=sanitized,
+        old_cover_image=pack_row["cover_image"],
+    )
 
     # Build base URL (without size suffix or extension)
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(
@@ -1268,6 +1299,63 @@ def _secure_filename(filename: str) -> str:
 def _allowed_image_file(filename: str) -> bool:
     """Check if filename has an allowed image extension."""
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
+
+
+def _save_pack_landing_image(
+    content: bytes,
+    *,
+    original_filename: str,
+    requested_name: str,
+    img_dir: Path,
+) -> str:
+    """Validate and persist one pack landing image off the event loop."""
+    filename = _secure_filename(requested_name)
+    ext = Path(original_filename).suffix.lower()
+    ext_clean = ext.lstrip(".")
+    if ext_clean not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File extension {ext} not allowed")
+    if not filename.lower().endswith(
+        tuple("." + allowed_ext for allowed_ext in ALLOWED_IMAGE_EXTENSIONS)
+    ):
+        filename += ext
+
+    img_dir.mkdir(parents=True, exist_ok=True)
+    file_path = validate_path_within_directory(filename, img_dir)
+
+    try:
+        with PilImage.open(io.BytesIO(content)) as verified_image:
+            verified_image.verify()
+        with PilImage.open(io.BytesIO(content)) as decoded_image:
+            width, height = decoded_image.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Image {original_filename} dimensions too large. Maximum is "
+                        f"{MAX_IMAGE_PIXELS:,} pixels"
+                    ),
+                )
+            decoded_image.load()
+            converted_image = (
+                decoded_image.copy()
+                if ext in {".jpg", ".jpeg", ".png"}
+                else None
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image file: {original_filename}",
+        ) from exc
+
+    if converted_image is not None:
+        webp_path = file_path.with_suffix(".webp")
+        converted_image.save(str(webp_path), "WEBP")
+        return webp_path.name
+
+    file_path.write_bytes(content)
+    return file_path.name
 
 
 async def _get_pack_dir_and_info(pack_id: int, pack_row) -> tuple:
@@ -2698,7 +2786,6 @@ async def pack_landing_upload_images(
 
     pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
     img_dir = pack_dir / "static" / "img"
-    os.makedirs(str(img_dir), exist_ok=True)
 
     uploaded_files = []
     for image, name in zip(images, names):
@@ -2713,49 +2800,18 @@ async def pack_landing_upload_images(
                 detail=f"Image {image.filename} too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024)}MB",
             )
 
-        try:
-            pil_img = PilImage.open(io.BytesIO(content))
-            pil_img.verify()
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {image.filename}")
-
-        # Re-open for size check (verify() invalidates the image object)
-        pil_img = PilImage.open(io.BytesIO(content))
-        width, height = pil_img.size
-        if width * height > MAX_IMAGE_PIXELS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Image {image.filename} dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels",
-            )
-
-        filename = _secure_filename(name)
-        ext = Path(image.filename).suffix.lower()
-        ext_clean = ext.lstrip(".")
-        if ext_clean not in ALLOWED_IMAGE_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"File extension {ext} not allowed")
-        if not filename.lower().endswith(tuple("." + e for e in ALLOWED_IMAGE_EXTENSIONS)):
-            filename += ext
-
-        validated_path = validate_path_within_directory(filename, img_dir)
-        file_path = str(validated_path)
-
-        if ext in {".jpg", ".jpeg", ".png"}:
-            # Convert to webp
-            webp_path = f"{os.path.splitext(file_path)[0]}.webp"
-            pil_img.save(webp_path, "WEBP")
-            uploaded_files.append({
-                "id": Path(webp_path).name,
-                "name": Path(webp_path).name,
-                "url": f"/pack/{pack_row['public_id']}/{pack_row['slug']}/static/img/{Path(webp_path).name}",
-            })
-        else:
-            with open(file_path, "wb") as buffer:
-                buffer.write(content)
-            uploaded_files.append({
-                "id": filename,
-                "name": filename,
-                "url": f"/pack/{pack_row['public_id']}/{pack_row['slug']}/static/img/{filename}",
-            })
+        stored_filename = await asyncio.to_thread(
+            _save_pack_landing_image,
+            content,
+            original_filename=image.filename,
+            requested_name=name,
+            img_dir=img_dir,
+        )
+        uploaded_files.append({
+            "id": stored_filename,
+            "name": stored_filename,
+            "url": f"/pack/{pack_row['public_id']}/{pack_row['slug']}/static/img/{stored_filename}",
+        })
 
     return JSONResponse({
         "message": f"Successfully uploaded {len(uploaded_files)} images",
@@ -3189,7 +3245,8 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
                     detail=f"Final price after discount (${final_amount:.2f}) is below the minimum processing amount ($0.50). The discount must either cover the full price or leave at least $0.50."
                 )
 
-        session = stripe.checkout.Session.create(
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.create,
             payment_method_types=['card'],
             line_items=[{
                 'price_data': {

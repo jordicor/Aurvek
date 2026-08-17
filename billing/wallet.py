@@ -1,3 +1,4 @@
+import asyncio
 import math
 import secrets
 
@@ -59,7 +60,8 @@ async def create_wallet_checkout(data: dict, base_url: str, user_id: int) -> dic
         raise HTTPException(status_code=400, detail=f"Invalid request data: {exc}") from exc
 
     try:
-        session = stripe.checkout.Session.create(
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.create,
             payment_method_types=["card"],
             line_items=[
                 {
@@ -270,7 +272,7 @@ async def get_payment_success_model(session_id: str, user_id: int) -> dict | Non
     if not STRIPE_SECRET_KEY:
         return None
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
         if not session or session.metadata.get("user_id") != str(user_id):
             return None
 

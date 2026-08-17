@@ -1,3 +1,5 @@
+import asyncio
+
 import stripe
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -26,7 +28,8 @@ async def create_connect_onboarding_response(request, current_user):
             account_id = existing_account_id
             logger.info("Using existing Connect account %s for user %s", account_id, current_user.id)
         else:
-            account = stripe.Account.create(
+            account = await asyncio.to_thread(
+                stripe.Account.create,
                 type="express",
                 email=current_user.email if getattr(current_user, "email", None) else None,
                 metadata={"user_id": str(current_user.id)},
@@ -45,7 +48,8 @@ async def create_connect_onboarding_response(request, current_user):
                 await conn.commit()
 
         base_url = get_auth_base_url(request).rstrip("/")
-        account_link = stripe.AccountLink.create(
+        account_link = await asyncio.to_thread(
+            stripe.AccountLink.create,
             account=account_id,
             refresh_url=f"{base_url}/api/connect/refresh",
             return_url=f"{base_url}/api/connect/return",
@@ -67,7 +71,7 @@ async def create_connect_onboarding_response(request, current_user):
 
 async def handle_connect_return_response(current_user):
     if not STRIPE_SECRET_KEY:
-        return RedirectResponse(url="/creator-earnings?error=stripe_not_configured", status_code=302)
+        return RedirectResponse(url="/my-earnings?error=stripe_not_configured", status_code=302)
 
     try:
         async with get_db_connection(readonly=True) as conn:
@@ -79,9 +83,9 @@ async def handle_connect_return_response(current_user):
             account_id = result[0] if result else None
 
         if not account_id:
-            return RedirectResponse(url="/creator-earnings?error=no_account", status_code=302)
+            return RedirectResponse(url="/my-earnings?error=no_account", status_code=302)
 
-        account = stripe.Account.retrieve(account_id)
+        account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
         charges_enabled = 1 if account.charges_enabled else 0
         payouts_enabled = 1 if account.payouts_enabled else 0
         details_submitted = 1 if account.details_submitted else 0
@@ -107,17 +111,17 @@ async def handle_connect_return_response(current_user):
         )
 
         if payouts_enabled:
-            return RedirectResponse(url="/creator-earnings?success=connected", status_code=302)
+            return RedirectResponse(url="/my-earnings?success=connected", status_code=302)
         if details_submitted:
-            return RedirectResponse(url="/creator-earnings?warning=pending_verification", status_code=302)
-        return RedirectResponse(url="/creator-earnings?warning=incomplete", status_code=302)
+            return RedirectResponse(url="/my-earnings?warning=pending_verification", status_code=302)
+        return RedirectResponse(url="/my-earnings?warning=incomplete", status_code=302)
 
     except stripe.error.StripeError as exc:
         logger.error("Stripe Connect return error: %s", exc)
-        return RedirectResponse(url="/creator-earnings?error=stripe_error", status_code=302)
+        return RedirectResponse(url="/my-earnings?error=stripe_error", status_code=302)
     except Exception as exc:
         logger.error("Connect return error: %s", exc)
-        return RedirectResponse(url="/creator-earnings?error=unknown", status_code=302)
+        return RedirectResponse(url="/my-earnings?error=unknown", status_code=302)
 
 
 async def get_connect_status_response(current_user):
@@ -147,7 +151,7 @@ async def get_connect_status_response(current_user):
 
         if STRIPE_SECRET_KEY and onboarding_complete and not payouts_enabled:
             try:
-                account = stripe.Account.retrieve(account_id)
+                account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
                 payouts_enabled = 1 if account.payouts_enabled else 0
                 charges_enabled = 1 if account.charges_enabled else 0
 

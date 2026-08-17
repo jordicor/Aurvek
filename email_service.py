@@ -23,13 +23,23 @@ DEFAULT_BRANDING = {
 
 class EmailService:
     def __init__(self):
-        self.use_email_service = os.getenv('USE_EMAIL_SERVICE', 'false').lower() == 'true'
+        use_email_service = os.getenv('USE_EMAIL_SERVICE')
+        if use_email_service is None:
+            raise RuntimeError(
+                "USE_EMAIL_SERVICE must be explicitly set to 'true' or 'false'"
+            )
+        normalized = use_email_service.strip().lower()
+        if normalized not in {'true', 'false'}:
+            raise RuntimeError(
+                "USE_EMAIL_SERVICE must be explicitly set to 'true' or 'false'"
+            )
+        self.use_email_service = normalized == 'true'
         self.postmark_token = os.getenv('POSTMARK_SERVER_TOKEN')
         self.from_email = os.getenv('FROM_EMAIL', 'noreply@yourapp.com')
 
     def send_magic_link_email(self, to_email: str, magic_link: str, username: str, branding: Dict = None) -> bool:
         """
-        Send magic link via email using Postmark API or display in console
+        Send a magic link via Postmark, or fail closed when delivery is disabled.
 
         Args:
             to_email: Recipient email address
@@ -41,9 +51,9 @@ class EmailService:
             bool: True if successful, False otherwise
         """
         if not self.use_email_service:
-            # Console fallback when email service is disabled
+            # Fail closed without writing the link to logs.
             logger.info(f"Email service disabled. Magic link generated for user '{username}' ({to_email})")
-            return True
+            return False
 
         if not self.postmark_token:
             logger.error("POSTMARK_SERVER_TOKEN not configured")
@@ -52,10 +62,14 @@ class EmailService:
         return self._send_via_postmark(to_email, magic_link, username, branding)
 
     def send_ultra_admin_code(self, to_email: str, code: str, username: str) -> bool:
-        """Send Ultra Admin+ elevation verification code via email or console."""
+        """Send an Ultra Admin+ elevation verification code via Postmark."""
         if not self.use_email_service:
-            logger.info(f"[ULTRA ADMIN+] Elevation code for '{username}' ({to_email}): {code}")
-            return True
+            logger.info(
+                "[ULTRA ADMIN+] Email service disabled; elevation code generated for '%s' (%s)",
+                username,
+                to_email,
+            )
+            return False
 
         if not self.postmark_token:
             logger.error("POSTMARK_SERVER_TOKEN not configured")
@@ -90,7 +104,8 @@ class EmailService:
                     'HtmlBody': html_body,
                     'TextBody': text_body,
                     'MessageStream': 'outbound'
-                }
+                },
+                timeout=10,
             )
 
             if response.status_code == 200:
@@ -120,13 +135,15 @@ class EmailService:
             bool: True if successful, False otherwise
         """
         if not self.use_email_service:
-            # Console fallback when email service is disabled
-            logger.info(f"[VERIFICATION EMAIL] To: {to_email}")
-            logger.info(f"[VERIFICATION EMAIL] URL: {verification_url}")
-            logger.info(f"[VERIFICATION EMAIL] Type: {'User' if is_user else 'Customer'}")
+            # Fail closed without writing the verification URL to logs.
+            logger.info(
+                "[VERIFICATION EMAIL] Email service disabled; %s verification generated for %s",
+                'user' if is_user else 'customer',
+                to_email,
+            )
             if prompt_name:
                 logger.info(f"[VERIFICATION EMAIL] Prompt: {prompt_name}")
-            return True
+            return False
 
         if not self.postmark_token:
             logger.error("POSTMARK_SERVER_TOKEN not configured")
@@ -149,11 +166,13 @@ class EmailService:
             bool: True if successful, False otherwise
         """
         if not self.use_email_service:
-            logger.info(f"[CLAIM EMAIL] To: {to_email}")
-            logger.info(f"[CLAIM EMAIL] URL: {claim_url}")
+            logger.info(
+                "[CLAIM EMAIL] Email service disabled; entitlement claim generated for %s",
+                to_email,
+            )
             if product_name:
                 logger.info(f"[CLAIM EMAIL] Product: {product_name}")
-            return True
+            return False
 
         if not self.postmark_token:
             logger.error("POSTMARK_SERVER_TOKEN not configured")

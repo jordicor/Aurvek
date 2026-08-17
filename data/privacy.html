@@ -86,7 +86,7 @@
     <div class="container">
         <a href="/" class="back-link">&larr; Back to Aurvek</a>
         <h1>Privacy Policy</h1>
-        <p class="last-updated">Last updated: March 1, 2026</p>
+        <p class="last-updated">Last updated: August 15, 2026</p>
 
         <div class="highlight-box">
             <p>Aurvek ("we", "us", "our") operates the <strong>example.com</strong> platform. This policy explains what data we collect, why, and how we protect it.</p>
@@ -100,6 +100,7 @@
             <li><strong>Username</strong> &mdash; chosen by you or auto-generated during registration.</li>
             <li><strong>Password</strong> &mdash; if you choose password-based authentication, stored as a salted bcrypt hash. We never store or see your plaintext password.</li>
             <li><strong>Google account data</strong> &mdash; if you sign in with Google, we receive your Google ID, email, and display name via OAuth 2.0. We do not access your contacts, calendar, or any other Google data.</li>
+            <li><strong>Optional ChatGPT connection</strong> &mdash; if you choose to connect your own ChatGPT subscription, OpenAI provides a Codex authorization credential to Aurvek. We store that credential encrypted, together with limited plan and model-catalog metadata, so your own requests can use the models available to your account. This is separate from signing in to Aurvek.</li>
         </ul>
 
         <h3>Payment Information</h3>
@@ -134,7 +135,7 @@
         <h2>3. Third-Party Services</h2>
         <p>We use the following third-party services that may process your data:</p>
         <ul>
-            <li><strong>AI Providers</strong> (OpenAI, Anthropic, Google, xAI) &mdash; your conversation messages are sent to these providers to generate AI responses. Each provider has its own privacy policy and data handling practices.</li>
+            <li><strong>AI Providers</strong> (OpenAI, Anthropic, Google, xAI) &mdash; your conversation messages are sent to the provider and model you select to generate AI responses. If you connect a ChatGPT subscription, those text conversations and usage are processed by OpenAI under the terms and data controls of your connected account. Each provider has its own privacy policy and data handling practices.</li>
             <li><strong>Stripe</strong> &mdash; payment processing. Subject to <a href="https://stripe.com/privacy" target="_blank" rel="noopener">Stripe's Privacy Policy</a>.</li>
             <li><strong>Cloudflare</strong> &mdash; CDN, DDoS protection, and DNS. Subject to <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener">Cloudflare's Privacy Policy</a>.</li>
             <li><strong>Google OAuth</strong> &mdash; authentication only. Subject to <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google's Privacy Policy</a>.</li>
@@ -146,6 +147,7 @@
             <li>Data is stored on servers we control. Database access is restricted and encrypted at rest.</li>
             <li>Passwords are hashed with bcrypt and a unique pepper. We cannot recover your password.</li>
             <li>API keys and secrets are stored in environment variables, never in source code.</li>
+            <li>Connected ChatGPT credentials are encrypted at rest with a dedicated encryption key. A plaintext credential is created only in a private, short-lived runtime directory during connection or a request and is removed during teardown.</li>
             <li>We implement rate limiting, IP-based abuse detection, and progressive banning for security.</li>
         </ul>
 
@@ -153,6 +155,7 @@
         <ul>
             <li>Account data is retained as long as your account is active.</li>
             <li>Conversation data can be deleted by you at any time through the chat interface.</li>
+            <li>You can disconnect ChatGPT at any time. Aurvek immediately blocks the connected credential and asks Codex to sign out. If sign-out cannot yet be confirmed, the credential remains encrypted solely so Aurvek can retry revocation; it cannot be used for chat. Once confirmed, Aurvek replaces it with a token-free revocation record. Limited non-secret connection metadata may remain for security auditing until account deletion.</li>
             <li>If you request account deletion, we will remove your data within 30 days, except where legally required to retain it (e.g., financial transaction records).</li>
         </ul>
 

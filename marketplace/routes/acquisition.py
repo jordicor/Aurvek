@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 from datetime import datetime, timedelta
 
@@ -16,6 +17,7 @@ from marketplace.services.acquisition_context import handle_pack_for_existing_us
 from marketplace.services.entitlements import (
     grant_prompt_entitlement,
     user_has_pack_access as user_has_pack_entitlement_access,
+    user_has_prompt_access as user_has_prompt_entitlement_access,
 )
 from marketplace.services.pending_entitlements import send_entitlement_claim_email
 from marketplace.services.pending_registrations import (
@@ -132,7 +134,7 @@ async def claim_entitlement(request: Request, token: str):
         try:
             async with get_db_connection() as conn:
                 prompt_cursor = await conn.execute(
-                    "SELECT created_by_user_id FROM PROMPTS WHERE id = ?",
+                    "SELECT created_by_user_id, purchase_price FROM PROMPTS WHERE id = ?",
                     (prompt_id,),
                 )
                 prompt_row = await prompt_cursor.fetchone()
@@ -147,22 +149,53 @@ async def claim_entitlement(request: Request, token: str):
                             "error": "This claim link targets a prompt that is no longer available.",
                         },
                     )
-                await grant_prompt_entitlement(
-                    conn,
-                    user_id=current_user.id,
-                    prompt_id=prompt_id,
-                    source="claim_link",
-                    source_ref_type="pending_entitlement",
-                    source_ref_id=pending_id,
-                    metadata={"token_id": pending_id},
-                    created_by_user_id=prompt_row[0],
-                )
-                await conn.execute(
-                    "UPDATE USER_DETAILS SET current_prompt_id = ? WHERE user_id = ?",
-                    (prompt_id, current_user.id),
-                )
-                await conn.execute("DELETE FROM PENDING_ENTITLEMENTS WHERE id = ?", (pending_id,))
-                await conn.commit()
+
+                purchase_price = float(prompt_row[1]) if prompt_row[1] else 0.0
+                if purchase_price > 0:
+                    # Paid prompt: a claim link must never grant it for free.
+                    if not await user_has_prompt_entitlement_access(
+                        conn, user_id=current_user.id, prompt_id=prompt_id
+                    ):
+                        # User does not own it -> consume the token and route to purchase.
+                        await conn.execute(
+                            "DELETE FROM PENDING_ENTITLEMENTS WHERE id = ?", (pending_id,)
+                        )
+                        await conn.commit()
+                        logger.info(
+                            "Claim link for paid prompt %s routed to purchase flow: user=%s",
+                            prompt_id,
+                            current_user.id,
+                        )
+                        return RedirectResponse(f"/purchase/prompt/{prompt_id}")
+                    # User already owns it (prior purchase or pack) -> just select it.
+                    await conn.execute(
+                        "UPDATE USER_DETAILS SET current_prompt_id = ? WHERE user_id = ?",
+                        (prompt_id, current_user.id),
+                    )
+                    await conn.execute(
+                        "DELETE FROM PENDING_ENTITLEMENTS WHERE id = ?", (pending_id,)
+                    )
+                    await conn.commit()
+                else:
+                    # Free prompt: grant the claim entitlement as before.
+                    await grant_prompt_entitlement(
+                        conn,
+                        user_id=current_user.id,
+                        prompt_id=prompt_id,
+                        source="claim_link",
+                        source_ref_type="pending_entitlement",
+                        source_ref_id=pending_id,
+                        metadata={"token_id": pending_id},
+                        created_by_user_id=prompt_row[0],
+                    )
+                    await conn.execute(
+                        "UPDATE USER_DETAILS SET current_prompt_id = ? WHERE user_id = ?",
+                        (prompt_id, current_user.id),
+                    )
+                    await conn.execute(
+                        "DELETE FROM PENDING_ENTITLEMENTS WHERE id = ?", (pending_id,)
+                    )
+                    await conn.commit()
         except Exception as e:
             logger.error(f"Error setting prompt for claim: {e}")
             raise
@@ -316,13 +349,16 @@ async def register_pack_submit(request: Request):
 
         branding = await get_user_branding(pack_owner_id)
 
-    email_service.send_verification_email(
+    email_sent = await asyncio.to_thread(
+        email_service.send_verification_email,
         to_email=email,
         verification_url=verification_url,
         is_user=False,
         prompt_name=None,
         branding=branding,
     )
+    if not email_sent:
+        logger.error("Failed to send pack verification email to %s", email)
 
     logger.info(f"Pack registration pending for {email}, pack_id={pack_id}")
 

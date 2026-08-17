@@ -84,7 +84,7 @@ async def explore_categories(current_user: User = Depends(get_current_user)):
             await cursor.execute(
                 """
                 SELECT c.id, c.name, c.icon, c.is_age_restricted,
-                       COUNT(pc.prompt_id) as prompt_count
+                       COUNT(p.id) as prompt_count
                 FROM CATEGORIES c
                 LEFT JOIN PROMPT_CATEGORIES pc ON c.id = pc.category_id
                 LEFT JOIN PROMPTS p ON pc.prompt_id = p.id AND p.public = 1 AND p.is_unlisted = 0

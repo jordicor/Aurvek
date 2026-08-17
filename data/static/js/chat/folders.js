@@ -5,6 +5,32 @@ let currentEditingFolderId = null;
 let currentMovingConversationId = null;
 let currentSelectedFolderId = null; // Track currently selected folder for new chat creation
 
+function getActiveConversationFolderId() {
+    const selected = window.selectedChat &&
+        String(window.selectedChat.dataset?.conversationId) ===
+            String(currentConversationId)
+        ? window.selectedChat
+        : document.querySelector(
+            `.active-chat[data-conversation-id="${currentConversationId}"]`
+        );
+    if (!selected) return null;
+
+    const datasetFolderId = parseInt(selected.dataset?.folderId, 10);
+    if (Number.isInteger(datasetFolderId) && datasetFolderId > 0) {
+        return datasetFolderId;
+    }
+    const container = selected.closest?.('.folder-chats-container');
+    const containerFolderId = parseInt(
+        container?.id?.replace('folder-chats-', ''),
+        10
+    );
+    return Number.isInteger(containerFolderId) && containerFolderId > 0
+        ? containerFolderId
+        : null;
+}
+
+window.getActiveConversationFolderId = getActiveConversationFolderId;
+
 // Per-folder cursor pagination state: { lastActivity: string|null, lastId: number|null, allLoaded: boolean, loading: boolean }
 const folderPaginationState = new Map();
 const FOLDER_CHATS_PAGE_SIZE = 5;
@@ -190,6 +216,7 @@ function loadMoreFolders() {
     nextBatch.forEach(folder => {
         container.appendChild(createFolderElement(folder));
     });
+    setupDropZones(container);
     foldersDisplayedCount += nextBatch.length;
 
     if (foldersDisplayedCount < chatFolders.length) {
@@ -403,7 +430,7 @@ async function loadFolderChats(folderId, onComplete = null, cursorParams = null)
             container.appendChild(emptyMsg);
         } else {
             conversations.forEach(conversation => {
-                const chatElement = createFolderChatElement(conversation);
+                const chatElement = createFolderChatElement(conversation, folderId);
                 container.appendChild(chatElement);
             });
 
@@ -450,12 +477,23 @@ function loadMoreFolderChats(folderId) {
 }
 
 // Create chat element for folder
-function createFolderChatElement(conversation) {
+function createFolderChatElement(conversation, folderId = null) {
     const chatElement = document.createElement('a');
     chatElement.href = '#';
     chatElement.className = 'list-group-item list-group-item-action folder-chat-item';
     chatElement.dataset.conversationId = conversation.id;
     chatElement.dataset.lastActivity = conversation.last_activity || '';
+    chatElement.dataset.machine = conversation.machine || '';
+    chatElement.dataset.llmModel = conversation.llm_model || '';
+    if (Number.isInteger(Number(folderId)) && Number(folderId) > 0) {
+        chatElement.dataset.folderId = String(folderId);
+    }
+    if (conversation.llm_id) {
+        chatElement.dataset.llmId = String(conversation.llm_id);
+    }
+    if (conversation.prompt_id) {
+        chatElement.dataset.promptId = String(conversation.prompt_id);
+    }
     chatElement._conversationData = conversation;
 
     const chatName = conversation.chat_name || `Chat ${conversation.id}`;
@@ -504,7 +542,14 @@ function createFolderChatElement(conversation) {
             // Update selectedChat global variable so active chat detection works
             window.selectedChat = chatElement;
             
-            continueConversation(conversation.id, chatName);
+            continueConversation(
+                conversation.id,
+                chatName,
+                conversation.machine,
+                false,
+                null,
+                conversation
+            );
         }
     });
     
@@ -599,13 +644,6 @@ function createChatMenuForFolder(conversation) {
             if (listGroup) {
                 listGroup.addEventListener('scroll', closeAllChatMenus, { once: true });
             }
-        }
-    });
-
-    // Close menu when clicking outside
-    document.addEventListener('click', (e) => {
-        if (!chatMenu.contains(e.target) && !chatMenuContent.contains(e.target) && chatMenuContent.style.display === 'block') {
-            closeAllChatMenus();
         }
     });
 
@@ -849,68 +887,71 @@ function makeChatItemsDraggable() {
     }
 }
 
+function setupDropZones(root = document) {
+    const folderItems = root.querySelectorAll('.folder-item');
+    folderItems.forEach(folderItem => {
+        if (folderItem.hasAttribute('data-drop-zone-ready')) return;
+        folderItem.setAttribute('data-drop-zone-ready', 'true');
+        folderItem.addEventListener('dragover', handleDragOver);
+        folderItem.addEventListener('drop', handleDrop);
+        folderItem.addEventListener('dragenter', handleDragEnter);
+        folderItem.addEventListener('dragleave', handleDragLeave);
+    });
+
+    // Make expanded folder chat lists also drop targets (drop onto the open chat list)
+    const folderChatsContainers = root.querySelectorAll('.folder-chats-container');
+    folderChatsContainers.forEach(container => {
+        if (container.hasAttribute('data-drop-zone-ready')) return;
+        container.setAttribute('data-drop-zone-ready', 'true');
+        const folderId = parseInt(container.id.replace('folder-chats-', ''));
+        container.addEventListener('dragover', handleDragOver);
+        container.addEventListener('drop', (e) => handleDrop(e, folderId));
+        container.addEventListener('dragenter', (e) => {
+            if (draggedConversationId) {
+                e.preventDefault();
+                // Highlight the parent folder item
+                const folderItem = document.querySelector(`[data-folder-id="${folderId}"]`);
+                if (folderItem) folderItem.classList.add('drag-over');
+            }
+        });
+        container.addEventListener('dragleave', (e) => {
+            if (!container.contains(e.relatedTarget)) {
+                const folderItem = document.querySelector(`[data-folder-id="${folderId}"]`);
+                if (folderItem) folderItem.classList.remove('drag-over');
+            }
+        });
+    });
+
+    // Make the main chats container a drop zone (to remove from folders)
+    const mainChatsContainer = document.getElementById('dynamic-chats-container');
+    if (mainChatsContainer && !mainChatsContainer.hasAttribute('data-drop-zone-ready')) {
+        mainChatsContainer.setAttribute('data-drop-zone-ready', 'true');
+        mainChatsContainer.addEventListener('dragover', handleDragOver);
+        mainChatsContainer.addEventListener('drop', (e) => handleDrop(e, null));
+        mainChatsContainer.addEventListener('dragenter', (e) => {
+            if (draggedConversationId) {
+                e.preventDefault();
+                mainChatsContainer.classList.add('drag-over');
+            }
+        });
+        mainChatsContainer.addEventListener('dragleave', (e) => {
+            if (!mainChatsContainer.contains(e.relatedTarget)) {
+                mainChatsContainer.classList.remove('drag-over');
+            }
+        });
+    }
+
+    // Also the load-more button area as drop target
+    const loadMoreBtn = document.getElementById('load-more-button');
+    if (loadMoreBtn && !loadMoreBtn.hasAttribute('data-drop-zone-ready')) {
+        loadMoreBtn.setAttribute('data-drop-zone-ready', 'true');
+        loadMoreBtn.addEventListener('dragover', handleDragOver);
+        loadMoreBtn.addEventListener('drop', (e) => handleDrop(e, null));
+    }
+}
+
 // Make folders drop targets
 function makeFoldersDroppable() {
-    // Setup drop zones when folders are rendered
-    const setupDropZones = () => {
-        const folderItems = document.querySelectorAll('.folder-item');
-        folderItems.forEach(folderItem => {
-            folderItem.addEventListener('dragover', handleDragOver);
-            folderItem.addEventListener('drop', handleDrop);
-            folderItem.addEventListener('dragenter', handleDragEnter);
-            folderItem.addEventListener('dragleave', handleDragLeave);
-        });
-
-        // Make expanded folder chat lists also drop targets (drop onto the open chat list)
-        const folderChatsContainers = document.querySelectorAll('.folder-chats-container');
-        folderChatsContainers.forEach(container => {
-            const folderId = parseInt(container.id.replace('folder-chats-', ''));
-            container.addEventListener('dragover', handleDragOver);
-            container.addEventListener('drop', (e) => handleDrop(e, folderId));
-            container.addEventListener('dragenter', (e) => {
-                if (draggedConversationId) {
-                    e.preventDefault();
-                    // Highlight the parent folder item
-                    const folderItem = document.querySelector(`[data-folder-id="${folderId}"]`);
-                    if (folderItem) folderItem.classList.add('drag-over');
-                }
-            });
-            container.addEventListener('dragleave', (e) => {
-                if (!container.contains(e.relatedTarget)) {
-                    const folderItem = document.querySelector(`[data-folder-id="${folderId}"]`);
-                    if (folderItem) folderItem.classList.remove('drag-over');
-                }
-            });
-        });
-        
-        // Make the main chats container a drop zone (to remove from folders)
-        const mainChatsContainer = document.getElementById('dynamic-chats-container');
-        if (mainChatsContainer && !mainChatsContainer.hasAttribute('data-drop-zone-ready')) {
-            mainChatsContainer.setAttribute('data-drop-zone-ready', 'true');
-            mainChatsContainer.addEventListener('dragover', handleDragOver);
-            mainChatsContainer.addEventListener('drop', (e) => handleDrop(e, null));
-            mainChatsContainer.addEventListener('dragenter', (e) => {
-                if (draggedConversationId) {
-                    e.preventDefault();
-                    mainChatsContainer.classList.add('drag-over');
-                }
-            });
-            mainChatsContainer.addEventListener('dragleave', (e) => {
-                if (!mainChatsContainer.contains(e.relatedTarget)) {
-                    mainChatsContainer.classList.remove('drag-over');
-                }
-            });
-        }
-
-        // Also the load-more button area as drop target
-        const loadMoreBtn = document.getElementById('load-more-button');
-        if (loadMoreBtn && !loadMoreBtn.hasAttribute('data-drop-zone-ready')) {
-            loadMoreBtn.setAttribute('data-drop-zone-ready', 'true');
-            loadMoreBtn.addEventListener('dragover', handleDragOver);
-            loadMoreBtn.addEventListener('drop', (e) => handleDrop(e, null));
-        }
-    };
-    
     // Setup initially and after folder updates
     setupDropZones();
     
@@ -1280,7 +1321,20 @@ function setupNewChatIntegration() {
     // Override startNewConversation to support folders
     window.startNewConversation = async function(promptId = null, options = {}) {
         const incognito = options && options.incognito === true;
+        const forceCreate = options && options.__forceCreate === true;
         const targetFolderId = incognito ? null : currentSelectedFolderId;
+        const activeFolderId = getActiveConversationFolderId();
+        const reuseLocationMatches = Number(targetFolderId || 0) ===
+            Number(activeFolderId || 0);
+        const selectedPromptId = parseInt(
+            document.getElementById('promptDropdown')?.value,
+            10
+        );
+        const reuseContextMatches = promptId === null &&
+            Number.isInteger(selectedPromptId) &&
+            selectedPromptId === window.getActiveConversationPromptId?.() &&
+            !currentConversationIncognito &&
+            !(window.activeConversationHasExternalAccess?.() || false);
         
         // If no folder selected, use original function
         if ((!targetFolderId || incognito) && typeof window.originalStartNewConversation === 'function') {
@@ -1292,8 +1346,31 @@ function setupNewChatIntegration() {
             return Promise.resolve();
         }
 
-        if (!incognito && !isFirstCall && isCurrentConversationEmpty) {
-            return Promise.resolve();
+        if (!forceCreate && reuseLocationMatches && reuseContextMatches &&
+            !incognito && !isFirstCall && isCurrentConversationEmpty) {
+            if (window.modelSelector?.reconcileDefaultForEmptyConversation &&
+                currentConversationId) {
+                const reuseConversationId = currentConversationId;
+                const reuseViewGeneration = conversationViewGeneration;
+                const reused = await window.modelSelector
+                    .reconcileDefaultForEmptyConversation(
+                        reuseConversationId,
+                        reuseViewGeneration
+                    );
+                if (reused) return true;
+                if (!isCurrentConversationView(
+                    reuseConversationId,
+                    reuseViewGeneration
+                )) return false;
+                return window.startNewConversation(promptId, {
+                    ...options,
+                    __forceCreate: true
+                });
+            }
+            return window.startNewConversation(promptId, {
+                ...options,
+                __forceCreate: true
+            });
         }
 
         if (promptId === null) {

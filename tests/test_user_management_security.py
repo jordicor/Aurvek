@@ -1,6 +1,7 @@
 """Regression coverage for user-management authorization boundaries."""
 
 import asyncio
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 import app as app_module
+import user_deletion as user_deletion_module
 from user_accounts import InvalidInitialBalanceError, validate_managed_balance
 
 
@@ -133,7 +135,8 @@ def user_management_db(tmp_path, monkeypatch):
             created_by INTEGER,
             current_alter_ego_id INTEGER DEFAULT 0,
             web_search_mode TEXT DEFAULT 'native',
-            storage_quota_bytes INTEGER DEFAULT NULL
+            storage_quota_bytes INTEGER DEFAULT NULL,
+            subscription_auth TEXT DEFAULT NULL
         );
 
         CREATE TABLE PHONE_VERIFICATION_CHALLENGES (
@@ -170,7 +173,8 @@ def user_management_db(tmp_path, monkeypatch):
 
         CREATE TABLE LLM (
             id INTEGER PRIMARY KEY,
-            enabled INTEGER DEFAULT 1
+            enabled INTEGER DEFAULT 1,
+            machine TEXT
         );
 
         CREATE TABLE CATEGORIES (
@@ -208,7 +212,7 @@ def user_management_db(tmp_path, monkeypatch):
         "INSERT INTO USER_ROLES (id, role_name) VALUES (?, ?)",
         [(1, "admin"), (2, "user"), (3, "customer")],
     )
-    conn.execute("INSERT INTO LLM (id, enabled) VALUES (1, 1)")
+    conn.execute("INSERT INTO LLM (id, enabled, machine) VALUES (1, 1, 'GPT')")
     conn.executemany(
         "INSERT INTO USERS (id, username, role_id, email) VALUES (?, ?, ?, ?)",
         [
@@ -247,12 +251,18 @@ def user_management_db(tmp_path, monkeypatch):
             await test_conn.close()
 
     monkeypatch.setattr(app_module, "get_db_connection", _get_test_conn)
+    monkeypatch.setattr(user_deletion_module, "get_db_connection", _get_test_conn)
 
     async def _no_stale_reservations():
         return 0
 
     monkeypatch.setattr(
         app_module,
+        "reconcile_stale_usage_reservations",
+        _no_stale_reservations,
+    )
+    monkeypatch.setattr(
+        user_deletion_module,
         "reconcile_stale_usage_reservations",
         _no_stale_reservations,
     )
@@ -549,9 +559,12 @@ async def test_delete_user_blocks_active_usage_before_side_effects(
 
     monkeypatch.setattr(app_module, "is_elevated", _not_elevated)
     monkeypatch.setattr(app_module, "add_revoked_user", _record_revocation)
+    monkeypatch.setattr(user_deletion_module, "add_revoked_user", _record_revocation)
     monkeypatch.setattr(app_module, "log_admin_action", _record_audit)
+    # The active-usage guard (and its stale-hold reconciliation) lives in the
+    # user_deletion service, inside its write transaction.
     monkeypatch.setattr(
-        app_module,
+        user_deletion_module,
         "reconcile_stale_usage_reservations",
         _record_reconciliation,
     )
@@ -875,7 +888,7 @@ async def test_create_user_role_user_funds_initial_balance_atomically(
         ).fetchone()
         transfer_rows = conn.execute(
             """
-            SELECT user_id, type, amount, reference_id
+            SELECT user_id, type, amount, description, reference_id
             FROM TRANSACTIONS
             WHERE type IN ('balance_transfer_out', 'balance_transfer_in')
             ORDER BY id
@@ -898,7 +911,10 @@ async def test_create_user_role_user_funds_initial_balance_atomically(
         (10, "balance_transfer_out", 15),
         (customer[0], "balance_transfer_in", 15),
     ]
-    assert transfer_rows[0][3] == transfer_rows[1][3]
+    assert transfer_rows[0][3] == "Balance transfer sent"
+    assert transfer_rows[1][3] == "Balance transfer received"
+    assert transfer_rows[0][4] == transfer_rows[1][4]
+    assert re.fullmatch(r"initial_balance_v2_[0-9a-f]{32}", transfer_rows[0][4])
     assert assignment == ("assigned_by", "manual")
 
 
@@ -1011,11 +1027,21 @@ async def test_create_user_admin_grant_does_not_debit_admin(
             WHERE u.username = 'admin-funded'
             """
         ).fetchone()[0]
+        grant_transaction = conn.execute(
+            """
+            SELECT t.description, t.reference_id
+            FROM TRANSACTIONS t
+            JOIN USERS u ON u.id = t.user_id
+            WHERE u.username = 'admin-funded' AND t.type = 'balance_credit'
+            """
+        ).fetchone()
     finally:
         conn.close()
 
     assert admin_balance == 50
     assert customer_balance == 15
+    assert grant_transaction[0] == "Platform initial balance credit"
+    assert re.fullmatch(r"initial_balance_v2_[0-9a-f]{32}", grant_transaction[1])
 
 
 def _insert_approved_phone_challenge(

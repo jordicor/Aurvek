@@ -18,7 +18,6 @@ class APIKey:
         self.available_chars = 0
         self.reset_date = None
         self.last_used = None
-        self.update_info()
 
     def update_info(self):
         url = "https://api.elevenlabs.io/v1/user"
@@ -30,7 +29,11 @@ class APIKey:
             self.available_chars = data["subscription"]["character_limit"] - data["subscription"]["character_count"]
             self.reset_date = datetime.fromtimestamp(data["subscription"]["next_character_count_reset_unix"])
         except requests.RequestException as e:
-            logger.error(f"Error updating information for API key {self.key}: {str(e)}")
+            logger.error(
+                "Error updating information for ElevenLabs API key ending in %s: %s",
+                self.key[-4:],
+                e,
+            )
             self.available_chars = 0
             self.reset_date = None
 

@@ -1,3 +1,4 @@
+import asyncio
 import math
 
 from ai_runtime.dependencies import *
@@ -88,6 +89,61 @@ from ai_runtime.watchdog.takeover import watchdog_takeover_response
 
 
 # --- Storage-quota skip signalling ------------------------------------------
+
+
+def _sha1_hexdigest(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
+
+
+def _preflight_pdf_data(
+    pdf_data: bytes,
+    retry_payload: dict | None,
+) -> tuple[int, str | None]:
+    page_count = validate_pdf(pdf_data, enforce_page_limit=False)
+    retry_error = (
+        _validate_pdf_retry_upload(retry_payload, pdf_data, page_count)
+        if retry_payload
+        else None
+    )
+    return page_count, retry_error
+
+
+def _prepare_pdf_data_for_message(
+    pdf_data: bytes,
+    *,
+    range_requested: bool,
+    page_start: int | None,
+    page_end: int | None,
+) -> tuple[bytes, str, int, int]:
+    original_pdf_hash = _sha1_hexdigest(pdf_data)
+    page_count = validate_pdf(
+        pdf_data,
+        enforce_page_limit=not range_requested,
+    )
+    original_page_count = page_count
+    if range_requested:
+        pdf_data, page_count, original_page_count = extract_pdf_page_range(
+            pdf_data,
+            page_start,
+            page_end,
+        )
+    return (
+        pdf_data,
+        original_pdf_hash,
+        page_count,
+        original_page_count,
+    )
+
+
+def _encode_pdf_data_for_message(
+    pdf_data: bytes,
+    extract_text: bool,
+) -> tuple[str, str | None]:
+    pdf_b64 = base64.b64encode(pdf_data).decode("utf-8")
+    extracted_text = extract_pdf_text_local(pdf_data) if extract_text else None
+    return pdf_b64, extracted_text
+
+
 # process_save_message runs the upload gate deep inside create_pending_* (via
 # file_storage). When an inbound platform/device attachment is quota-rejected it
 # is skipped rather than aborting the whole message, and the fact is stamped on
@@ -172,6 +228,7 @@ async def process_save_message(
     pdf_retry_token: Optional[str] = None,
     attachment_refs: Optional[list[str]] = None,
     strip_device_action_blocks: bool = False,
+    expected_llm_id: Optional[int] = None,
 ):
     """
     Pure business logic function for processing and saving messages.
@@ -351,6 +408,32 @@ async def process_save_message(
             logger.info(f"You cannot save messages to another user's conversation. current_user.id: {current_user.id}, conversation_user_id: {conversation_user_id}")
             return JSONResponse(content={'success': False, 'message': 'You cannot save messages to another user\'s conversation.'}, status_code=403)
 
+        # Browser sends are bound to the exact provider/model identity that was
+        # visible when the user pressed Send. Recheck inside the consolidated
+        # business-logic read so a concurrent tab cannot switch the provider
+        # after the route-level admission check. Direct platform integrations
+        # intentionally omit this optional precondition.
+        if expected_llm_id is not None and int(conversation_llm_id) != int(expected_llm_id):
+            return JSONResponse(
+                content={
+                    'success': False,
+                    'error_code': 'conversation_model_changed',
+                    'message': 'The AI model changed in another session. Review it and send again.',
+                    'llm_id': int(conversation_llm_id),
+                    'model': model,
+                },
+                status_code=409,
+            )
+
+        # GPTSub is deliberately text-only. Reject both direct uploads and pending
+        # attachment references immediately after the ownership check, before the
+        # backend loads, hashes, parses, or persists any file content.
+        if machine == "GPTSub" and (files or attachment_refs):
+            discardable_attachment_refs.extend(attachment_refs)
+            return await _attachment_error_response(
+                'ChatGPT subscription models currently support text messages only.'
+            )
+
         MAX_FILES_PER_MESSAGE = 16
         if len(files) + len(attachment_refs) > MAX_FILES_PER_MESSAGE:
             return JSONResponse(
@@ -391,7 +474,10 @@ async def process_save_message(
             if pdf_file_count == 1:
                 retry_pdf = next((f for f in files if f['content_type'] == 'application/pdf'), None)
                 if retry_pdf:
-                    pdf_file_hash_for_retry = hashlib.sha1(retry_pdf['data']).hexdigest()
+                    pdf_file_hash_for_retry = await asyncio.to_thread(
+                        _sha1_hexdigest,
+                        retry_pdf['data'],
+                    )
 
         if pdf_range_requested_preflight:
             if pdf_file_count != 1:
@@ -410,16 +496,12 @@ async def process_save_message(
                     if len(f['data']) > MAX_PDF_SIZE_MB * 1024 * 1024:
                         return await _attachment_error_response(f'PDF exceeds {MAX_PDF_SIZE_MB}MB limit.')
                     try:
-                        page_count_for_cost = validate_pdf(
+                        page_count_for_cost, retry_validation_error = await asyncio.to_thread(
+                            _preflight_pdf_data,
                             f['data'],
-                            enforce_page_limit=False,
+                            pdf_retry_payload if pdf_range_requested_preflight else None,
                         )
                         if pdf_range_requested_preflight:
-                            retry_validation_error = _validate_pdf_retry_upload(
-                                pdf_retry_payload,
-                                f['data'],
-                                page_count_for_cost,
-                            )
                             if retry_validation_error:
                                 return await _attachment_error_response(retry_validation_error)
                             range_start = int(pdf_page_start)
@@ -436,7 +518,7 @@ async def process_save_message(
                                         filename=f.get('filename'),
                                         current_user=current_user,
                                         conversation_id=conversation_id,
-                                        retry_file_hash=hashlib.sha1(f['data']).hexdigest(),
+                                        retry_file_hash=pdf_file_hash_for_retry,
                                     ),
                                     status_code=400
                                 )
@@ -449,7 +531,7 @@ async def process_save_message(
                                     filename=f.get('filename') if pdf_file_count == 1 else None,
                                     current_user=current_user,
                                     conversation_id=conversation_id,
-                                    retry_file_hash=hashlib.sha1(f['data']).hexdigest() if pdf_file_count == 1 else None,
+                                    retry_file_hash=pdf_file_hash_for_retry,
                                 ),
                                 status_code=400
                             )
@@ -468,7 +550,7 @@ async def process_save_message(
                                 filename=pdf_filename_for_retry if pdf_file_count == 1 else None,
                                 current_user=current_user,
                                 conversation_id=conversation_id,
-                                retry_file_hash=hashlib.sha1(f['data']).hexdigest() if pdf_file_count == 1 else None,
+                                retry_file_hash=pdf_file_hash_for_retry,
                             ),
                             status_code=400
                         )
@@ -592,21 +674,40 @@ async def process_save_message(
             from common import resolve_api_key_for_provider, get_user_api_key_mode, API_KEY_MODE_SYSTEM_ONLY, BYOK_MIN_BALANCE_PAID_PROMPT
             api_key_mode_preflight = await get_user_api_key_mode(current_user.id)
             preflight_provider = "OpenRouter" if pdf_redirect_will_happen else machine
-            preflight_key, preflight_use_system = resolve_api_key_for_provider(
-                user_api_keys or {},
-                api_key_mode_preflight,
-                preflight_provider,
-            )
-            if (
-                pdf_redirect_will_happen
-                and not preflight_key
-                and preflight_use_system
-                and not openrouter_key
-            ):
-                return await _attachment_error_response('PDF files with this model require OpenRouter integration. Use Claude, Gemini, or select an OpenRouter model directly.')
-            if not preflight_key and not preflight_use_system:
-                return await _attachment_error_response(f'API key required for {preflight_provider}.')
-            is_byok = preflight_key is not None
+            if machine == "GPTSub":
+                # GPTSub uses the user's ChatGPT subscription: text inference is free and
+                # requires no API key, so it skips the resolver entirely and falls through
+                # to the free-BYOK path (no balance for a free prompt). The authoritative
+                # fail-closed gate (link + kill-switch) is checked here so continuations,
+                # which read this preflight byok value, bill at zero. Ships together with
+                # the injection guard in get_ai_response.
+                try:
+                    from subscription_auth import gptsub_allowed
+                except ImportError:
+                    return await _attachment_error_response('This option is not available right now.')
+                if not await gptsub_allowed(current_user, model=model):
+                    return await _attachment_error_response('This option is not available right now.')
+                if files:
+                    return await _attachment_error_response(
+                        'ChatGPT subscription models currently support text messages only.'
+                    )
+                is_byok = True
+            else:
+                preflight_key, preflight_use_system = resolve_api_key_for_provider(
+                    user_api_keys or {},
+                    api_key_mode_preflight,
+                    preflight_provider,
+                )
+                if (
+                    pdf_redirect_will_happen
+                    and not preflight_key
+                    and preflight_use_system
+                    and not openrouter_key
+                ):
+                    return await _attachment_error_response('PDF files with this model require OpenRouter integration. Use Claude, Gemini, or select an OpenRouter model directly.')
+                if not preflight_key and not preflight_use_system:
+                    return await _attachment_error_response(f'API key required for {preflight_provider}.')
+                is_byok = preflight_key is not None
 
             if is_byok:
                 # BYOK: no API cost to platform. Only need balance for paid prompt markup.
@@ -788,19 +889,19 @@ async def process_save_message(
                 filename = pdf['filename'] or 'document.pdf'
                 existing_ref = pdf.get('attachment_ref')
                 existing_attachment = pdf.get('attachment_record')
-                original_pdf_data = pdf_data
-                original_pdf_hash = hashlib.sha1(original_pdf_data).hexdigest()
-                page_count = validate_pdf(
+                (
                     pdf_data,
-                    enforce_page_limit=not pdf_range_requested,
+                    original_pdf_hash,
+                    page_count,
+                    original_page_count,
+                ) = await asyncio.to_thread(
+                    _prepare_pdf_data_for_message,
+                    pdf_data,
+                    range_requested=pdf_range_requested,
+                    page_start=pdf_page_start,
+                    page_end=pdf_page_end,
                 )
-                original_page_count = page_count
                 if pdf_range_requested:
-                    pdf_data, page_count, original_page_count = extract_pdf_page_range(
-                        pdf_data,
-                        pdf_page_start,
-                        pdf_page_end
-                    )
                     name_root, name_ext = os.path.splitext(filename)
                     filename = f"{name_root or 'document'}_pages_{pdf_page_start}-{pdf_page_end}{name_ext or '.pdf'}"
                     logger.info(
@@ -817,12 +918,12 @@ async def process_save_message(
                     )
             except ValueError as exc:
                 return await _attachment_error_response(str(exc))
-            pdf_b64 = base64.b64encode(pdf_data).decode("utf-8")
 
-            # For O1 only: extract text locally (O1 is text-only, can't receive PDF data)
-            extracted_text = None
-            if machine == "O1":
-                extracted_text = extract_pdf_text_local(pdf_data)
+            pdf_b64, extracted_text = await asyncio.to_thread(
+                _encode_pdf_data_for_message,
+                pdf_data,
+                machine == "O1",
+            )
 
             if existing_ref and existing_attachment and not pdf_range_requested:
                 pending_attachment_refs.append(existing_ref)
@@ -881,7 +982,11 @@ async def process_save_message(
                     return await _attachment_error_response(f"Text file '{tf['filename']}' exceeds {MAX_TEXT_FILE_SIZE_MB}MB limit")
 
                 try:
-                    text_content = decode_text_file(tf['data'], tf['filename'])
+                    text_content = await asyncio.to_thread(
+                        decode_text_file,
+                        tf['data'],
+                        tf['filename'],
+                    )
                 except ValueError as e:
                     return await _attachment_error_response(str(e))
 
@@ -2060,6 +2165,21 @@ async def get_ai_response(
                 elif machine == "Kimi":
                     api_func = call_kimi_api
                     provider_tools = tools_for_openai(filtered_tools)
+                elif machine == "GPTSub":
+                    # ChatGPT-subscription provider. Private module, imported lazily so
+                    # a public checkout without it degrades cleanly.
+                    try:
+                        from subscription_auth import call_gptsub_api
+                    except ImportError:
+                        logger.error("GPTSub provider module unavailable")
+                        yield f"data: {orjson.dumps({'error': 'This option is temporarily unavailable.'}).decode()}\n\n"
+                        return
+                    if call_gptsub_api is None:
+                        logger.error("GPTSub provider failed to initialize")
+                        yield f"data: {orjson.dumps({'error': 'This option is temporarily unavailable.'}).decode()}\n\n"
+                        return
+                    api_func = call_gptsub_api
+                    provider_tools = None  # Chat-only: no Aurvek tools through GPTSub
                 else:
                     raise ValueError(f"Unknown machine type: {machine}")
 
@@ -2114,26 +2234,51 @@ async def get_ai_response(
                 # ===========================================
                 from common import resolve_api_key_for_provider, get_user_api_key_mode
 
-                api_key_mode = await get_user_api_key_mode(current_user.id)
-                resolved_key, use_system = resolve_api_key_for_provider(
-                    user_api_keys or {},
-                    api_key_mode,
-                    machine
-                )
-
-                if resolved_key:
-                    kwargs["user_api_key"] = resolved_key
+                if machine == "GPTSub":
+                    # GPTSub resolves its own credential INTERNALLY (per user,
+                    # keyed by current_user.id). That credential is
+                    # never placed in resolved_key / user_api_key / kwargs, which is what
+                    # makes the execution.py -> Anthropic credential leak structurally
+                    # impossible. Both resolved_key and use_system MUST be defined here:
+                    # they are read later by the billing derivations and the
+                    # tool-continuation call. The dispatch branch above already guarded
+                    # the module import, so a direct import here cannot raise ImportError.
+                    from subscription_auth import gptsub_allowed
+                    resolved_key = None
+                    use_system = False
+                    is_gptsub = True
                     kwargs["byok"] = True
-                    logger.info(f"Using user's custom {machine} API key")
-                elif use_system:
-                    kwargs["byok"] = False
-                    logger.info(f"Using system {machine} API key")
+                    # Defense-in-depth: also pin the local byok so the finally-settle and
+                    # tool-continuation (which read the local byok, not kwargs) bill zero
+                    # for GPTSub even if is_byok were ever derived differently upstream.
+                    byok = True
+                    # Authoritative fail-closed gate for the main chat path. gptsub_allowed
+                    # already covers the kill-switch, so no separate flag read is needed.
+                    if not await gptsub_allowed(current_user, model=model):
+                        yield f"data: {orjson.dumps({'error': 'This option is not available right now.'}).decode()}\n\n"
+                        return
                 else:
-                    # own_only mode without configured key - should have been caught earlier
-                    # but double-check here for security
-                    logger.error(f"User {current_user.id} in own_only mode without API key for {machine}")
-                    yield f"data: {orjson.dumps({'error': 'API key required', 'action': 'configure_api_keys'}).decode()}\n\n"
-                    return
+                    is_gptsub = False
+                    api_key_mode = await get_user_api_key_mode(current_user.id)
+                    resolved_key, use_system = resolve_api_key_for_provider(
+                        user_api_keys or {},
+                        api_key_mode,
+                        machine
+                    )
+
+                    if resolved_key:
+                        kwargs["user_api_key"] = resolved_key
+                        kwargs["byok"] = True
+                        logger.info(f"Using user's custom {machine} API key")
+                    elif use_system:
+                        kwargs["byok"] = False
+                        logger.info(f"Using system {machine} API key")
+                    else:
+                        # own_only mode without configured key - should have been caught earlier
+                        # but double-check here for security
+                        logger.error(f"User {current_user.id} in own_only mode without API key for {machine}")
+                        yield f"data: {orjson.dumps({'error': 'API key required', 'action': 'configure_api_keys'}).decode()}\n\n"
+                        return
 
                 if input_token_cost_per_million is None or output_token_cost_per_million is None:
                     if llm_id is not None:
@@ -2166,7 +2311,7 @@ async def get_ai_response(
                     prompt_id=prompt_id,
                     input_cost_per_million=input_token_cost_per_million,
                     output_cost_per_million=output_token_cost_per_million,
-                    byok=bool(resolved_key),
+                    byok=bool(resolved_key) or is_gptsub,
                 )
                 fresh_availability = await get_user_billing_availability(
                     current_user.id
@@ -2210,12 +2355,12 @@ async def get_ai_response(
                         "provider_call_start",
                         machine=machine,
                         model=model,
-                        byok=bool(resolved_key),
+                        byok=bool(resolved_key) or is_gptsub,
                         use_system_key=bool(use_system and not resolved_key),
                     )
                     if event:
                         yield event
-                    if machine == "GPT":
+                    if machine in ("GPT", "GPTSub"):
                         kwargs["perf_trace"] = perf_trace
 
                 # Call the API and collect response

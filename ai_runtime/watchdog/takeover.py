@@ -146,6 +146,10 @@ async def watchdog_takeover_response(
 
     wd_machine = wd_llm["machine"]
     wd_model = wd_llm["model"]
+    if wd_machine == "GPTSub":
+        logger.error("watchdog takeover: personal subscription LLM is not supported")
+        yield f"data: {orjson.dumps({'error': 'Personal ChatGPT subscription models cannot be used for watchdog takeover.'}).decode()}\n\n"
+        return
     wd_max_tokens, wd_limit_fallback = _model_output_cap(wd_llm.get("max_output_tokens"))
     _log_output_limit_decision(
         source="watchdog_takeover",
@@ -381,6 +385,12 @@ async def watchdog_takeover_response_requestfree(
 
     wd_machine = wd_llm["machine"]
     wd_model = wd_llm["model"]
+    if wd_machine == "GPTSub":
+        logger.error(
+            "watchdog takeover requestfree: personal subscription LLM is not supported"
+        )
+        yield f"data: {orjson.dumps({'error': 'Personal ChatGPT subscription models cannot be used for watchdog takeover.'}).decode()}\n\n"
+        return
     wd_max_tokens, wd_limit_fallback = _model_output_cap(wd_llm.get("max_output_tokens"))
     _log_output_limit_decision(
         source="watchdog_takeover_requestfree",

@@ -12,7 +12,10 @@ from marketplace.services.entitlements import (
     grant_pack_entitlement,
     user_has_pack_access as user_has_pack_entitlement_access,
 )
-from marketplace.services.landing_registration import DEFAULT_LANDING_REGISTRATION_CONFIG
+from marketplace.services.landing_registration import (
+    DEFAULT_LANDING_REGISTRATION_CONFIG,
+    strip_personal_subscription_default,
+)
 
 
 async def get_prompt_for_registration(public_id: str) -> Optional[dict]:
@@ -90,6 +93,7 @@ async def resolve_pack_oauth_context(pack_id):
             if pack_config_row[0]:
                 stored_config = orjson.loads(pack_config_row[0])
                 landing_config.update(stored_config)
+            landing_config = await strip_personal_subscription_default(landing_config)
 
             pack_owner_id = pack_config_row[1] if landing_config.get("billing_mode") == "user_pays" else None
             return (pack_id, first_prompt_id, False, landing_config, pack_owner_id, None)

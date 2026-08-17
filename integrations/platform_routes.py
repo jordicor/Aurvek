@@ -116,9 +116,13 @@ async def update_external_platform(
                      WHEN json_extract(u.external_platforms, '$.telegram.conversation_id') = c.id THEN 'telegram'
                      ELSE NULL
                    END as external_platform,
-                   c.last_activity
+                   c.last_activity,
+                   c.llm_id,
+                   l.model AS llm_model,
+                   l.machine
             FROM conversations c
             JOIN user_details u ON c.user_id = u.user_id
+            LEFT JOIN LLM l ON l.id = c.llm_id
             WHERE c.user_id = ?
             ORDER BY c.last_activity DESC, c.id DESC
             LIMIT ?
@@ -131,11 +135,12 @@ async def update_external_platform(
             await cursor.execute(
                 """
                 SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
-                       c.last_activity
+                       c.last_activity, c.llm_id, l.model AS llm_model, l.machine
                 FROM conversations c
-                WHERE c.id = ?
+                LEFT JOIN LLM l ON l.id = c.llm_id
+                WHERE c.id = ? AND c.user_id = ?
                 """,
-                (platform, conversation_id),
+                (platform, conversation_id, current_user.id),
             )
             platform_conversation = await cursor.fetchone()
 
@@ -152,6 +157,9 @@ async def update_external_platform(
             "chat_name": conv[3],
             "external_platform": conv[4],
             "last_activity": conv[5],
+            "llm_id": conv[6],
+            "llm_model": conv[7],
+            "machine": conv[8],
             "external_bindings": None if conv[4] else binding_summaries.get(int(conv[0])),
         }
         for conv in visible_conversations
@@ -168,6 +176,9 @@ async def update_external_platform(
                 "chat_name": platform_conversation[3],
                 "external_platform": platform_conversation[4],
                 "last_activity": platform_conversation[5],
+                "llm_id": platform_conversation[6],
+                "llm_model": platform_conversation[7],
+                "machine": platform_conversation[8],
                 "external_bindings": None,
             }
         )

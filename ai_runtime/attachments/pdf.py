@@ -1,7 +1,23 @@
+import asyncio
+
 from ai_runtime.dependencies import *
 from ai_runtime.attachments.paths import _resolve_legacy_attachment_path
 
 PDF_RETRY_TOKEN_TTL_SECONDS = 30 * 60
+
+
+def _prepare_pdf_payload(pdf_data: bytes, extract_text: bool) -> tuple[str, str | None]:
+    pdf_b64 = base64.b64encode(pdf_data).decode("utf-8")
+    extracted_text = extract_pdf_text_local(pdf_data) if extract_text else None
+    return pdf_b64, extracted_text
+
+
+def _load_legacy_pdf_payload(file_path, extract_text: bool) -> tuple[str, str | None]:
+    """Read and prepare a legacy PDF in one worker-thread block."""
+    with open(file_path, "rb") as file_handle:
+        pdf_data = file_handle.read()
+    return _prepare_pdf_payload(pdf_data, extract_text)
+
 
 def _merge_pdf_error_metadata(*metas: dict | None) -> dict | None:
     pdfs = []
@@ -536,7 +552,11 @@ async def hydrate_pdf_for_context(
             pdf_data, attachment = result
             page_count = attachment.get("page_count") or page_count
 
-            pdf_b64 = base64.b64encode(pdf_data).decode("utf-8")
+            pdf_b64, extracted_text = await asyncio.to_thread(
+                _prepare_pdf_payload,
+                pdf_data,
+                machine in ("O1", "MiniMax", "Kimi"),
+            )
 
             if machine == "Claude":
                 return {
@@ -558,7 +578,6 @@ async def hydrate_pdf_for_context(
                     }
                 }
             elif machine in ("O1", "MiniMax", "Kimi"):
-                extracted_text = extract_pdf_text_local(pdf_data)
                 return {
                     "type": "text",
                     "text": f"[Content of PDF: {filename} ({page_count} pages)]\n\n{extracted_text}"
@@ -578,13 +597,14 @@ async def hydrate_pdf_for_context(
     _, file_path = resolved_legacy
 
     try:
-        with open(file_path, 'rb') as f:
-            pdf_data = f.read()
+        pdf_b64, extracted_text = await asyncio.to_thread(
+            _load_legacy_pdf_payload,
+            file_path,
+            machine in ("O1", "MiniMax", "Kimi"),
+        )
     except FileNotFoundError:
         logger.warning(f"PDF file not found: {file_path}")
         return None
-
-    pdf_b64 = base64.b64encode(pdf_data).decode("utf-8")
 
     if machine == "Claude":
         return {
@@ -606,7 +626,6 @@ async def hydrate_pdf_for_context(
             }
         }
     elif machine in ("O1", "MiniMax", "Kimi"):
-        extracted_text = extract_pdf_text_local(pdf_data)
         return {
             "type": "text",
             "text": f"[Content of PDF: {filename} ({page_count} pages)]\n\n{extracted_text}"

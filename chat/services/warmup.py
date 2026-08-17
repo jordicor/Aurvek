@@ -9,6 +9,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from itertools import islice
 from typing import Any
 
 from cachetools import TTLCache
@@ -71,7 +72,7 @@ def normalize_model_ids(value: Any) -> tuple[int, ...]:
 
     normalized = []
     seen = set()
-    for item in value:
+    for item in islice(value, 16):
         try:
             model_id = int(item)
         except (TypeError, ValueError):

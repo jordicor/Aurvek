@@ -297,7 +297,16 @@ async def get_selector_llms(
     conn: aiosqlite.Connection,
     preserve_ids: list[int] | set[int] | tuple[int, ...] | None = None,
     include_gransabio: bool = False,
+    gptsub_models: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
+    """Build the enabled-LLM selector list.
+
+    ``gptsub_models`` is the current user's saved live Codex catalog. Omitting it is
+    fail-safe HIDE; a boolean "linked" flag is insufficient because shared LLM rows
+    are the union across accounts. Preserved GPTSub ids are still hidden unless that
+    model belongs to this user's catalog. Preserve behavior for every other machine
+    is unchanged.
+    """
     preserved_set = set()
     for value in preserve_ids or []:
         try:
@@ -317,6 +326,22 @@ async def get_selector_llms(
         enabled_clause = f"({enabled_clause} OR id IN ({placeholders}))"
         params.extend(preserved)
     conditions.append(enabled_clause)
+
+    # GPTSub is personal even though its backing LLM rows are shared. Never use a
+    # union-wide visible boolean and never preserve an unauthorized GPTSub id.
+    allowed_gptsub_models = sorted(
+        {
+            model
+            for model in gptsub_models or []
+            if isinstance(model, str) and model and len(model) <= 128
+        }
+    )
+    gptsub_terms = ["machine != 'GPTSub'"]
+    if allowed_gptsub_models:
+        placeholders = ",".join("?" for _ in allowed_gptsub_models)
+        gptsub_terms.append(f"model IN ({placeholders})")
+        params.extend(allowed_gptsub_models)
+    conditions.append("(" + " OR ".join(gptsub_terms) + ")")
 
     where_sql = " AND ".join(conditions)
     cursor = await conn.execute(
@@ -495,6 +520,10 @@ async def set_model_enabled(conn: aiosqlite.Connection, llm_id: int, enabled: bo
     row = await cursor.fetchone()
     if not row:
         raise LlmCatalogError("LLM not found")
+    if str(row["machine"] or "").strip().casefold() == "gptsub":
+        raise LlmCatalogError(
+            "GPTSub model state is managed by linked-account catalog synchronization"
+        )
     if row["machine"] == "GranSabio" and row["model"] == "gransabio-pipeline":
         raise LlmCatalogError("System LLM cannot be disabled")
 

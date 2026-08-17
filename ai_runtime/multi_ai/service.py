@@ -28,7 +28,7 @@ from ai_runtime.context.history import apply_no_memory_context_budget
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
 from ai_runtime.context.warmup import _build_warmup_cache_key_from_state, _copy_warmup_context_messages
 from ai_runtime.multi_ai.errors import MultiAiBillingError
-from ai_runtime.persistence.messages import save_multi_ai_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, save_multi_ai_to_db
 from ai_runtime.providers.claude import call_claude_api
 from ai_runtime.providers.gemini import call_gemini_api
 from ai_runtime.providers.kimi import call_kimi_api
@@ -725,6 +725,21 @@ async def process_multi_ai_message(
     excluded_models = []
     for mid in model_ids:
         info = llm_infos[mid]
+        # GPTSub (ChatGPT subscription) is interactive-single-chat only. Its
+        # dispatch/credential/kill-switch paths live in messages.py, not here; a
+        # GPTSub id in multi-AI would crash the dispatch (else: raise ValueError),
+        # never receive its token, and bypass the kill-switch. Exclude it explicitly
+        # before the resolver, which would otherwise return (None, True) in
+        # system/both modes and let GPTSub slip through to the crashing dispatch.
+        if info["machine"] == "GPTSub":
+            excluded_models.append(mid)
+            logger.info(
+                "[process_multi_ai_message] Excluding GPTSub model %s from multi-AI "
+                "(subscription models are single-chat only)",
+                mid,
+            )
+            yield f"data: {orjson.dumps({'multi_ai_error': True, 'llm_id': mid, 'model': info['model'], 'error': 'ChatGPT subscription models are not available in multi-AI mode.'}).decode()}\n\n"
+            continue
         provider_for_key = (
             "OpenRouter"
             if context_pdf_pages > 0 and info["machine"] in ("GPT", "xAI")
@@ -1112,13 +1127,19 @@ async def process_multi_ai_message(
                 billing_reservation_id=ai_reservation_id,
             )
 
-            yield f"data: {orjson.dumps({'message_ids': {'user': user_msg_id, 'bot': bot_msg_id}}).decode()}\n\n"
+            if user_msg_id and bot_msg_id:
+                yield f"data: {orjson.dumps({'message_ids': {'user': user_msg_id, 'bot': bot_msg_id}}).decode()}\n\n"
+            else:
+                yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+                return
         except MultiAiBillingError as exc:
             logger.warning("[process_multi_ai_message] Multi-AI billing failed: %s", exc)
-            yield f"data: {orjson.dumps({'error': 'Insufficient balance to finalize Multi-AI response'}).decode()}\n\n"
+            yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+            return
         except Exception as exc:
             logger.error("[process_multi_ai_message] Failed to save to DB: %s", exc, exc_info=True)
-            yield f"data: {orjson.dumps({'error': 'Failed to save response'}).decode()}\n\n"
+            yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+            return
 
         yield "data: [DONE]\n\n"
     finally:

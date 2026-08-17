@@ -1,7 +1,12 @@
 from ai_runtime.dependencies import *
 from ai_runtime.config import safe_log_headers, _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
-from ai_runtime.persistence.messages import save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.providers.claude_capabilities import (
+    claude_omits_temperature,
+    claude_requires_adaptive_thinking,
+    claude_supports_adaptive_thinking,
+)
 from ai_runtime.tooling.citations import build_citation_event
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
@@ -35,15 +40,9 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     if model_max_tokens < 1:
         model_max_tokens = 1
 
-    is_opus_adaptive_only = any(m in model_lower for m in (
-        "opus-4-8", "opus-4.8", "opus-4-7", "opus-4.7"
-    ))
-    is_adaptive_capable = any(m in model_lower for m in (
-        "opus-4-8", "opus-4.8", "opus-4-7", "opus-4.7",
-        "opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"
-    ))
-    # Claude 4.6+ rejects/deprecates the temperature parameter; Anthropic recommends omitting it.
-    is_temperature_deprecated = is_adaptive_capable
+    is_opus_adaptive_only = claude_requires_adaptive_thinking(model)
+    is_adaptive_capable = claude_supports_adaptive_thinking(model)
+    is_temperature_deprecated = claude_omits_temperature(model)
 
     data = {
         "model": model,
@@ -493,6 +492,9 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                                                         billing_only_accumulated_usage=bool(billing_reservation_id))
             if user_message_id and bot_message_id:
                 yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
+            else:
+                yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+                return
 
         yield content.strip()
     else:

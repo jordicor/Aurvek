@@ -151,6 +151,7 @@ CREATE TABLE PROMPTS (
     purchase_price DECIMAL DEFAULT NULL,
     ranking_score REAL DEFAULT 0,
     has_landing_page BOOLEAN DEFAULT 0,
+    landing_trusted INTEGER NOT NULL DEFAULT 0,
     geo_policy TEXT DEFAULT NULL,
     gransabio_enabled INTEGER DEFAULT 0,
     gransabio_config TEXT DEFAULT NULL,
@@ -547,6 +548,7 @@ CREATE TABLE USER_DETAILS (
     web_search_inline_citations BOOLEAN DEFAULT 0,
     domain_slots_purchased INTEGER DEFAULT 0,
     storage_quota_bytes INTEGER DEFAULT NULL CHECK(storage_quota_bytes IS NULL OR storage_quota_bytes >= 0),
+    subscription_auth TEXT DEFAULT NULL,
     CONSTRAINT USER_DETAILS_PK PRIMARY KEY (user_id),
     CONSTRAINT FK_USER_DETAILS_LLM FOREIGN KEY (llm_id) REFERENCES LLM(id),
     CONSTRAINT FK_USER_DETAILS_PROMPTS_2 FOREIGN KEY (current_prompt_id) REFERENCES PROMPTS(id),
@@ -705,6 +707,9 @@ CREATE TABLE CREATOR_EARNINGS (
     gross_amount DECIMAL NOT NULL,
     platform_commission DECIMAL NOT NULL,
     net_earnings DECIMAL NOT NULL,
+    earning_type TEXT NOT NULL DEFAULT 'markup',
+    source_ref TEXT DEFAULT NULL,
+    pack_id INTEGER DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (creator_id) REFERENCES USERS(id),
     FOREIGN KEY (prompt_id) REFERENCES PROMPTS(id),
@@ -716,6 +721,12 @@ CREATE INDEX idx_creator_earnings_creator ON CREATOR_EARNINGS(creator_id);
 CREATE INDEX idx_creator_earnings_prompt ON CREATOR_EARNINGS(prompt_id);
 CREATE INDEX idx_creator_earnings_consumer ON CREATOR_EARNINGS(consumer_id);
 CREATE INDEX idx_creator_earnings_created ON CREATOR_EARNINGS(created_at);
+-- Partial unique index so a retried Stripe webhook cannot double-record a sale
+-- (markup rows have NULL source_ref and are excluded from the constraint).
+-- Must stay identical to migration_creator_earnings_purchase_type.py.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_earnings_source_ref
+    ON CREATOR_EARNINGS(source_ref)
+    WHERE source_ref IS NOT NULL;
 
 -- =============================================================================
 -- TRANSACTIONS (balance changes history)
@@ -738,6 +749,27 @@ CREATE INDEX idx_transactions_user_id ON TRANSACTIONS(user_id);
 CREATE INDEX idx_transactions_created_at ON TRANSACTIONS(created_at);
 CREATE INDEX idx_transactions_type ON TRANSACTIONS(type);
 CREATE INDEX idx_transactions_reference_id ON TRANSACTIONS(reference_id);
+
+-- =============================================================================
+-- FINANCIAL_ARCHIVE (pseudonymized ledger of deleted users' wallet rows)
+-- =============================================================================
+-- Single-party TRANSACTIONS rows are snapshotted here (identity columns
+-- excluded, deleted_user_ref = keyed HMAC pseudonym) when an account is
+-- deleted, so financial reconciliation survives account erasure.
+CREATE TABLE FINANCIAL_ARCHIVE (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deleted_user_ref TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    source_row_id INTEGER NOT NULL,
+    amount DECIMAL,
+    currency TEXT,
+    payment_reference TEXT,
+    occurred_at TIMESTAMP,
+    row_snapshot TEXT NOT NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_financial_archive_user_ref ON FINANCIAL_ARCHIVE(deleted_user_ref);
 
 -- =============================================================================
 -- USAGE_DAILY (daily usage summaries per user)
@@ -805,7 +837,8 @@ CREATE TABLE MEMORY_PROVIDER_MESSAGE_LINKS (
     source TEXT NOT NULL DEFAULT 'live',
     synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    PRIMARY KEY (message_id, provider)
+    PRIMARY KEY (message_id, provider),
+    FOREIGN KEY (message_id) REFERENCES MESSAGES(id)
 );
 
 CREATE TABLE MEMORY_PROVIDER_CONVERSATION_LINKS (

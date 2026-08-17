@@ -20,6 +20,71 @@ DEFAULT_LANDING_REGISTRATION_CONFIG = {
     "category_access": None,
 }
 
+_PERSONAL_SUBSCRIPTION_MACHINE = "GPTSub"
+
+
+def _coerce_llm_id(value):
+    if value in (None, "", "null") or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _llm_machines(llm_ids: list[int]) -> dict[int, str]:
+    normalized = sorted(set(llm_ids))
+    if not normalized:
+        return {}
+    placeholders = ",".join("?" for _ in normalized)
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            f"SELECT id, machine FROM LLM WHERE id IN ({placeholders})",
+            tuple(normalized),
+        )
+        rows = await cursor.fetchall()
+    return {int(row["id"]): str(row["machine"] or "") for row in rows}
+
+
+async def validate_shared_landing_config(config: dict) -> dict:
+    """Return a copy whose default exists and is not a personal subscription."""
+    result = dict(config or {})
+    default_llm_id = _coerce_llm_id(result.get("default_llm_id"))
+    if default_llm_id is None:
+        result["default_llm_id"] = None
+        return result
+    machines = await _llm_machines([default_llm_id])
+    if default_llm_id not in machines:
+        raise HTTPException(status_code=400, detail="Default LLM does not exist")
+    if machines[default_llm_id] == _PERSONAL_SUBSCRIPTION_MACHINE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A personal ChatGPT subscription cannot be a registration "
+                "default. Each user must connect their own account first."
+            ),
+        )
+    result["default_llm_id"] = default_llm_id
+    return result
+
+
+async def strip_personal_subscription_default(config: dict) -> dict:
+    """Fail closed when loading a legacy pack/default for a brand-new user."""
+    result = dict(config or {})
+    default_llm_id = _coerce_llm_id(result.get("default_llm_id"))
+    if default_llm_id is None:
+        result["default_llm_id"] = None
+        return result
+    machines = await _llm_machines([default_llm_id])
+    if (
+        default_llm_id not in machines
+        or machines.get(default_llm_id) == _PERSONAL_SUBSCRIPTION_MACHINE
+    ):
+        result["default_llm_id"] = None
+    else:
+        result["default_llm_id"] = default_llm_id
+    return result
+
 
 async def get_landing_registration_config(prompt_id: int) -> dict:
     """
@@ -48,6 +113,19 @@ async def get_landing_registration_config(prompt_id: int) -> dict:
             config.update(stored_config)
         except orjson.JSONDecodeError:
             logger.warning(f"Invalid JSON in landing_registration_config for prompt {prompt_id}")
+
+    # A landing configuration is copied to a brand-new user who cannot possibly
+    # have linked a personal ChatGPT subscription yet. Strip legacy GPTSub
+    # defaults on read as well as rejecting new writes below.
+    default_llm_id = _coerce_llm_id(config.get("default_llm_id"))
+    forced_llm_id = _coerce_llm_id(forced_llm_id)
+    machines = await _llm_machines(
+        [value for value in (default_llm_id, forced_llm_id) if value is not None]
+    )
+    if machines.get(default_llm_id) == _PERSONAL_SUBSCRIPTION_MACHINE:
+        config["default_llm_id"] = None
+    if machines.get(forced_llm_id) == _PERSONAL_SUBSCRIPTION_MACHINE:
+        forced_llm_id = None
 
     config["_prompt_forced_llm_id"] = forced_llm_id
     return config
@@ -133,6 +211,8 @@ async def set_landing_registration_config(prompt_id: int, config: dict) -> bool:
         config,
         max_initial_balance=MAX_FREE_INITIAL_BALANCE,
     )
+
+    sanitized = await validate_shared_landing_config(sanitized)
 
     try:
         config_json = orjson.dumps(sanitized).decode("utf-8")

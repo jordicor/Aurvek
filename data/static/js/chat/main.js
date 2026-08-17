@@ -1,5 +1,51 @@
 /* main.js */
 
+// Model writes from the default dropdown and the conversation header must reach
+// the server in user-event order. Aborting a fetch is not sufficient because the
+// server may already have committed the write. Keep one shared queue and expose
+// a pending barrier so messages cannot be sent against an older model identity.
+if (typeof window.enqueueConversationModelMutation !== 'function') {
+    let conversationModelMutationQueue = Promise.resolve();
+    let conversationModelMutationGeneration = 0;
+    let conversationModelMutationPendingCount = 0;
+
+    window.conversationModelMutationPending = false;
+    window.enqueueConversationModelMutation = function(task) {
+        const generation = ++conversationModelMutationGeneration;
+        conversationModelMutationPendingCount += 1;
+        window.conversationModelMutationPending = true;
+
+        const operation = conversationModelMutationQueue.then(
+            () => Promise.resolve().then(task),
+            () => Promise.resolve().then(task)
+        );
+        conversationModelMutationQueue = operation.catch(() => undefined);
+
+        return operation.then(
+            value => ({
+                value,
+                error: null,
+                isLatest: generation === conversationModelMutationGeneration
+            }),
+            error => ({
+                value: null,
+                error,
+                isLatest: generation === conversationModelMutationGeneration
+            })
+        ).finally(() => {
+            conversationModelMutationPendingCount = Math.max(
+                0,
+                conversationModelMutationPendingCount - 1
+            );
+            window.conversationModelMutationPending =
+                conversationModelMutationPendingCount > 0;
+        });
+    };
+    window.invalidateConversationModelMutations = function() {
+        conversationModelMutationGeneration += 1;
+    };
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Restore conversation ID after theme change reload
     const restoreConvId = localStorage.getItem('restoreConversationId');
@@ -15,7 +61,10 @@ document.addEventListener('DOMContentLoaded', function() {
     var toggleButton = document.querySelector('.btn-toggle-sidebar');
     var sidebar = document.getElementById('sidebar');
     var userBalanceElement = document.getElementById("user-balance");
-    var userBalance = userBalanceElement ? parseInt(userBalanceElement.getAttribute("data-balance")) : 0;	
+    const parsedUserBalance = userBalanceElement
+        ? Number.parseFloat(userBalanceElement.getAttribute("data-balance") || '0')
+        : 0;
+    var userBalance = Number.isFinite(parsedUserBalance) ? parsedUserBalance : 0;
     var messageInputContainer = document.getElementById("form-message");
     var insufficientBalanceMessage = document.getElementById("insufficient-balance-message");
     var chatContent = document.querySelector('.chat-window');
@@ -50,13 +99,119 @@ document.addEventListener('DOMContentLoaded', function() {
     // For the LLM select
     var llmDropdown = document.getElementById('llmDropdown');
     if (llmDropdown) {
-        llmDropdown.addEventListener('change', withSession(function(e) {
+        let committedLlmDropdownValue = llmDropdown.value;
+        llmDropdown.addEventListener('change', function(e) {
+            if (document.getElementById('send-button')?.innerText === 'Stop') {
+                e.target.value = committedLlmDropdownValue;
+                NotificationModal.warning(
+                    'Message in progress',
+                    'Wait for the current message to finish before changing the AI model.'
+                );
+                return;
+            }
             const selectedValue = e.target.value;
-            updateSelection('/chat', {
-                form_type: 'llm',
-                type_of_model: selectedValue
+            const selectedLlmId = parseInt(selectedValue, 10);
+            const selectedConversationId =
+                typeof currentConversationId !== 'undefined'
+                    ? currentConversationId
+                    : null;
+            const selectedViewGeneration =
+                typeof conversationViewGeneration !== 'undefined'
+                    ? conversationViewGeneration
+                    : null;
+
+            window.enqueueConversationModelMutation(async () => {
+                const defaultResult = await updateSelection('/chat', {
+                    form_type: 'llm',
+                    type_of_model: selectedValue
+                });
+                if (!defaultResult) {
+                    throw new Error('Failed to update the default AI model');
+                }
+                if (!Number.isInteger(selectedLlmId) ||
+                    !selectedConversationId) {
+                    return { defaultResult, conversationResult: null };
+                }
+
+                // startNewConversation deliberately reuses an empty chat. Ask
+                // the server to update that exact chat only if it is still empty;
+                // this avoids stale client-side emptiness during navigation.
+                let conversationResult;
+                try {
+                    conversationResult = await updateEmptyConversationSelection(
+                        selectedConversationId,
+                        selectedLlmId
+                    );
+                } catch (error) {
+                    if (window.modelSelector) {
+                        window.modelSelector.invalidateCachedModel(
+                            selectedConversationId
+                        );
+                        await window.modelSelector.reconcileConversationModelIdentity(
+                            selectedConversationId
+                        );
+                    }
+                    throw error;
+                }
+                if (conversationResult?.updated && window.modelSelector) {
+                    window.modelSelector.cacheCommittedModel(
+                        selectedConversationId,
+                        conversationResult.llm_id,
+                        conversationResult.model
+                    );
+                    const targetIsCurrent =
+                        typeof conversationIdsMatch === 'function'
+                            ? conversationIdsMatch(
+                                currentConversationId,
+                                selectedConversationId
+                            )
+                            : String(currentConversationId) ===
+                                String(selectedConversationId);
+                    if (targetIsCurrent) {
+                        window.modelSelector.applyCommittedModel(
+                            conversationResult.llm_id,
+                            conversationResult.model,
+                            selectedConversationId,
+                            conversationViewGeneration
+                        );
+                    }
+                }
+                return { defaultResult, conversationResult };
+            }).then(({ value, error, isLatest }) => {
+                if (error) {
+                    if (isLatest) {
+                        e.target.value = committedLlmDropdownValue;
+                        console.error('Error updating model selection:', error);
+                        NotificationModal.error(
+                            'Model update failed',
+                            'The selected AI model was not saved. Please try again.'
+                        );
+                    }
+                    return;
+                }
+                if (value?.defaultResult) {
+                    committedLlmDropdownValue = selectedValue;
+                }
+                const result = value?.conversationResult;
+                const stillCurrent = selectedConversationId &&
+                    (typeof isCurrentConversationView === 'function'
+                        ? isCurrentConversationView(
+                            selectedConversationId,
+                            selectedViewGeneration
+                        )
+                        : String(currentConversationId) === String(selectedConversationId));
+                if (!isLatest || !stillCurrent || !result?.updated ||
+                    !window.modelSelector) {
+                    return;
+                }
+                window.modelSelector.applyCommittedModel(
+                    result.llm_id,
+                    result.model,
+                    selectedConversationId,
+                    selectedViewGeneration
+                );
             });
-        }));
+        });
     } else {
         console.error('[DEBUG] LLM dropdown NOT found');
     }
@@ -65,7 +220,7 @@ document.addEventListener('DOMContentLoaded', function() {
     hljs.highlightAll();
 
     function updateSelection(url, data) {
-        secureFetch(url, {
+        return secureFetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -76,19 +231,88 @@ document.addEventListener('DOMContentLoaded', function() {
         .then(data => {
             if (!data.success) {
                 console.error('Error updating selection');
+                return null;
             }
+            return data;
         })
         .catch(error => {
             console.error('Error:', error);
+            return null;
         });
     }
 
-    function checkBalanceAndHideInput() {
-        var hasByok = hasOwnKeys && apiKeyMode !== 'system_only';
-        if (userBalance === 0 && !hasByok) {
+    async function updateEmptyConversationSelection(conversationId, llmId) {
+        const response = await secureFetch(
+            `/api/conversations/${conversationId}/model`,
+            {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    llm_id: llmId,
+                    only_if_empty: true
+                })
+            }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Failed to update the empty conversation model');
+        }
+        if (data.success !== true || typeof data.updated !== 'boolean' ||
+            (data.updated && (
+                !Number.isInteger(parseInt(data.llm_id, 10)) ||
+                typeof data.model !== 'string' || !data.model
+            ))) {
+            throw new Error('Empty conversation model update returned an invalid response');
+        }
+        return data;
+    }
+    window.updateConversationBalanceAvailability = function(isPaidOverride = null) {
+        if (!messageInputContainer || !insufficientBalanceMessage) return;
+        if (typeof admin_view !== 'undefined' && admin_view) return;
+
+        const currentId = typeof currentConversationId !== 'undefined'
+            ? currentConversationId
+            : null;
+        const selected = window.selectedChat &&
+            (typeof conversationIdsMatch === 'function'
+                ? conversationIdsMatch(
+                    window.selectedChat.dataset?.conversationId,
+                    currentId
+                )
+                : String(window.selectedChat.dataset?.conversationId) === String(currentId))
+            ? window.selectedChat
+            : null;
+        const embedded = typeof embeddedInitialConversations !== 'undefined' &&
+            Array.isArray(embeddedInitialConversations)
+            ? embeddedInitialConversations.find(conversation =>
+                (typeof conversationIdsMatch === 'function'
+                    ? conversationIdsMatch(conversation.id, currentId)
+                    : String(conversation.id) === String(currentId)))
+            : null;
+        const isPaid = typeof isPaidOverride === 'boolean'
+            ? isPaidOverride
+            : (selected?._conversationData?.is_paid === true ||
+                selected?.dataset?.isPaid === '1' ||
+                embedded?.is_paid === true);
+        const hasByok = typeof hasOwnKeys !== 'undefined' && hasOwnKeys &&
+            typeof apiKeyMode !== 'undefined' && apiKeyMode !== 'system_only';
+        const usesGptSub = typeof window.currentConversationUsesChatGptSubscription === 'function' &&
+            window.currentConversationUsesChatGptSubscription() === true;
+        const hasOwnedCredential = hasByok || usesGptSub;
+        const lacksPaidPromptBalance = hasOwnedCredential && isPaid && userBalance < 0.10;
+        const lacksPlatformBalance = userBalance === 0 && !hasOwnedCredential;
+
+        if (lacksPaidPromptBalance || lacksPlatformBalance) {
             messageInputContainer.style.display = 'none';
             insufficientBalanceMessage.style.display = 'block';
+        } else {
+            messageInputContainer.style.display = 'flex';
+            insufficientBalanceMessage.style.display = 'none';
         }
+    };
+
+    function checkBalanceAndHideInput() {
+        window.updateConversationBalanceAvailability();
     }
     checkBalanceAndHideInput();    
 

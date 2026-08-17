@@ -97,6 +97,20 @@ async def get_atagia_bridge_config() -> AtagiaBridgeConfig:
     return bridge_config_from_mapping(config, enabled_override=enabled_override)
 
 
+async def get_atagia_erasure_bridge_config() -> AtagiaBridgeConfig:
+    """Return bridge settings for account-erasure operations.
+
+    Erasure availability is a data-custody question, not a runtime one: user
+    data already stored in Atagia remains under custody while the active memory
+    provider is switched away from it, and account deletion must still be able
+    to purge that data. Only atagia_enabled (plus transport settings) governs
+    this config -- the active-provider gate applied by get_atagia_bridge_config
+    deliberately does NOT.
+    """
+    config = await get_atagia_config()
+    return bridge_config_from_mapping(config)
+
+
 def bridge_config_from_mapping(
     config: dict[str, Any],
     *,

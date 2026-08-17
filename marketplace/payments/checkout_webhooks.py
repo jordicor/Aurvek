@@ -7,7 +7,7 @@ import json
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from common import get_pricing_config, upsert_creator_relationship
+from common import get_pricing_config, record_creator_earnings, upsert_creator_relationship
 from database import get_db_connection
 from log_config import logger
 from marketplace.config import marketplace_checkout_enabled
@@ -196,6 +196,30 @@ async def _handle_pack_checkout_completed(session, metadata: dict) -> dict:
                     "UPDATE USER_DETAILS SET pending_earnings = COALESCE(pending_earnings, 0) + ? WHERE user_id = ?",
                     (creator_net, creator_id),
                 )
+                # Record the sale in the creator ledger alongside the wallet increment.
+                # Idempotent via the PACK_PURCHASES existence guard above (this block runs
+                # only on first fulfillment) plus the partial UNIQUE index on source_ref.
+                if first_prompt_row:
+                    await record_creator_earnings(
+                        creator_id=creator_id,
+                        prompt_id=first_prompt_row[0],
+                        consumer_id=buyer_user_id,
+                        tokens_consumed=0,
+                        gross_amount=final_amount,
+                        platform_commission=final_amount * commission_rate,
+                        net_earnings=creator_net,
+                        conn=conn,
+                        cursor=cursor,
+                        earning_type="pack_purchase",
+                        source_ref=session_id,
+                        pack_id=pack_id,
+                    )
+                else:
+                    logger.warning(
+                        "Pack %s purchase: no active prompt to attribute CREATOR_EARNINGS row (session=%s)",
+                        pack_id,
+                        session_id,
+                    )
 
             await cursor.execute(
                 """
@@ -459,6 +483,22 @@ async def _handle_prompt_checkout_completed(session, metadata: dict) -> dict:
                 await cursor.execute(
                     "UPDATE USER_DETAILS SET pending_earnings = COALESCE(pending_earnings, 0) + ? WHERE user_id = ?",
                     (creator_net, creator_id),
+                )
+                # Record the sale in the creator ledger alongside the wallet increment.
+                # Idempotent via the PROMPT_PURCHASES existence guard above (this block runs
+                # only on first fulfillment) plus the partial UNIQUE index on source_ref.
+                await record_creator_earnings(
+                    creator_id=creator_id,
+                    prompt_id=prompt_id,
+                    consumer_id=buyer_user_id,
+                    tokens_consumed=0,
+                    gross_amount=final_amount,
+                    platform_commission=final_amount * commission_rate,
+                    net_earnings=creator_net,
+                    conn=conn,
+                    cursor=cursor,
+                    earning_type="prompt_purchase",
+                    source_ref=session_id,
                 )
 
             await cursor.execute(

@@ -450,10 +450,12 @@ def seed_prompts(conn, admin_id):
         src_landing_folder = SEED_LANDINGS_DIR / landing_folder_name
         has_landing = 1 if (src_landing_folder / "home.html").exists() else 0
 
-        # Insert prompt
+        # Insert prompt. Seed landings are admin-authored, so they are trusted
+        # (served directly from the primary domain) exactly when they have a
+        # landing page -- mirroring migration_landing_trusted.py's backfill.
         cursor.execute("""
-            INSERT INTO PROMPTS (id, name, prompt, voice_id, description, image, created_by_user_id, created_at, public, public_id, has_landing_page)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO PROMPTS (id, name, prompt, voice_id, description, image, created_by_user_id, created_at, public, public_id, has_landing_page, landing_trusted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             prompt_data["id"],
             prompt_data["name"],
@@ -465,6 +467,7 @@ def seed_prompts(conn, admin_id):
             datetime.now().isoformat(),
             prompt_data["public"],
             public_id,
+            has_landing,
             has_landing
         ))
 

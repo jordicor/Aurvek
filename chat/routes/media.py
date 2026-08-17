@@ -9,7 +9,7 @@ from urllib.parse import quote
 import aiofiles.os
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
 from auth import get_current_user
@@ -351,12 +351,14 @@ async def download_pdf(path: str, current_user: User = Depends(get_current_user)
 
     user_base_path = Path(get_user_directory(current_user.username))
     validated_path = validate_path_within_directory(decoded_path, user_base_path)
-    if not validated_path.exists():
+    if not validated_path.is_file():
         raise HTTPException(status_code=404, detail="PDF not found")
 
-    base_path = Path(os.path.join(Path(__file__).resolve().parents[2], "data"))
-    download_url = f"/users/{validated_path.relative_to(base_path)}"
-    return RedirectResponse(url=download_url)
+    return FileResponse(
+        path=validated_path,
+        media_type="application/pdf",
+        filename=validated_path.name,
+    )
 
 
 @router.get("/download-mp3")
@@ -370,12 +372,14 @@ async def download_mp3(path: str, current_user: User = Depends(get_current_user)
 
     user_base_path = Path(get_user_directory(current_user.username))
     validated_path = validate_path_within_directory(decoded_path, user_base_path)
-    if not validated_path.exists():
+    if not validated_path.is_file():
         raise HTTPException(status_code=404, detail="MP3 not found")
 
-    base_path = Path(os.path.join(Path(__file__).resolve().parents[2], "data"))
-    download_url = f"/users/{validated_path.relative_to(base_path)}"
-    return RedirectResponse(url=download_url)
+    return FileResponse(
+        path=validated_path,
+        media_type="audio/mpeg",
+        filename=validated_path.name,
+    )
 
 
 @router.get("/list-files")

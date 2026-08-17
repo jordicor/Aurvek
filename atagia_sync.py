@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 AtagiaRole = Literal["user", "assistant"]
 
+# Atagia stores its links in the shared generic memory-provider tables under
+# this provider name (coordinated with the deletion coordinator).
+ATAGIA_PROVIDER = "atagia"
+
 RECENT_ERROR_LIMIT = 20
 DEFAULT_BATCH_SIZE = 100
 TRANSIENT_INGEST_RETRY_DELAYS_SECONDS = (1.0, 3.0, 7.0)
@@ -179,14 +183,18 @@ async def get_atagia_sync_status() -> dict[str, Any]:
         run_cursor = await conn.execute(
             """
             SELECT *
-            FROM ATAGIA_SYNC_RUNS
+            FROM MEMORY_PROVIDER_SYNC_RUNS
+            WHERE provider = ?
             ORDER BY id DESC
             LIMIT 1
-            """
+            """,
+            (ATAGIA_PROVIDER,),
         )
         run = await run_cursor.fetchone()
         count_cursor = await conn.execute(
-            "SELECT COUNT(*) AS linked_count FROM ATAGIA_MESSAGE_LINKS"
+            "SELECT COUNT(*) AS linked_count FROM MEMORY_PROVIDER_MESSAGE_LINKS "
+            "WHERE provider = ?",
+            (ATAGIA_PROVIDER,),
         )
         linked_row = await count_cursor.fetchone()
         pending_cursor = await conn.execute(
@@ -194,11 +202,17 @@ async def get_atagia_sync_status() -> dict[str, Any]:
             SELECT COUNT(*) AS pending_count
             FROM MESSAGES m
             JOIN CONVERSATIONS c ON c.id = m.conversation_id
-            LEFT JOIN ATAGIA_MESSAGE_LINKS l ON l.message_id = m.id
+            LEFT JOIN MEMORY_PROVIDER_MESSAGE_LINKS l
+                ON l.message_id = m.id AND l.provider = ?
             WHERE l.message_id IS NULL
-              AND m.type IN ('user', 'bot', 'assistant')
+              AND m.type IN ('user', 'bot')
               AND COALESCE(c.hidden_from_history, 0) = 0
-            """
+              AND EXISTS (
+                  SELECT 1 FROM USERS u
+                  WHERE u.id = COALESCE(m.user_id, c.user_id)
+              )
+            """,
+            (ATAGIA_PROVIDER,),
         )
         pending_row = await pending_cursor.fetchone()
 
@@ -358,24 +372,30 @@ def _is_transient_sqlite_lock_error(value: Any) -> bool:
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
+    """Create the generic memory-provider tables Atagia depends on (idempotent)."""
     await conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS ATAGIA_MESSAGE_LINKS (
-            message_id INTEGER PRIMARY KEY,
-            atagia_message_id TEXT NOT NULL UNIQUE,
+        CREATE TABLE IF NOT EXISTS MEMORY_PROVIDER_MESSAGE_LINKS (
+            message_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            provider_message_id TEXT NOT NULL,
+            provider_event_id TEXT,
             conversation_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
             source TEXT NOT NULL DEFAULT 'live',
             synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(message_id) REFERENCES MESSAGES(id)
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (message_id, provider),
+            FOREIGN KEY (message_id) REFERENCES MESSAGES(id)
         )
         """
     )
     await conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS ATAGIA_SYNC_RUNS (
+        CREATE TABLE IF NOT EXISTS MEMORY_PROVIDER_SYNC_RUNS (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
             status TEXT NOT NULL,
             started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             finished_at TEXT,
@@ -391,17 +411,19 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
     )
     await conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS ATAGIA_SYNC_STATE (
-            conversation_id INTEGER PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS MEMORY_PROVIDER_SYNC_STATE (
+            provider TEXT NOT NULL,
+            conversation_id INTEGER NOT NULL,
             last_message_id INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (provider, conversation_id)
         )
         """
     )
     await conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_atagia_links_conversation
-        ON ATAGIA_MESSAGE_LINKS(conversation_id, message_id)
+        CREATE INDEX IF NOT EXISTS idx_memory_provider_links_conversation
+        ON MEMORY_PROVIDER_MESSAGE_LINKS(provider, conversation_id, message_id)
         """
     )
 
@@ -410,7 +432,9 @@ async def _create_sync_run() -> int:
     async with database.get_db_connection() as conn:
         await _ensure_schema(conn)
         cursor = await conn.execute(
-            "INSERT INTO ATAGIA_SYNC_RUNS (status) VALUES ('running') RETURNING id"
+            "INSERT INTO MEMORY_PROVIDER_SYNC_RUNS (provider, status) "
+            "VALUES (?, 'running') RETURNING id",
+            (ATAGIA_PROVIDER,),
         )
         row = await cursor.fetchone()
         await conn.commit()
@@ -424,11 +448,17 @@ async def _count_unlinked_messages() -> int:
             SELECT COUNT(*) AS total
             FROM MESSAGES m
             JOIN CONVERSATIONS c ON c.id = m.conversation_id
-            LEFT JOIN ATAGIA_MESSAGE_LINKS l ON l.message_id = m.id
+            LEFT JOIN MEMORY_PROVIDER_MESSAGE_LINKS l
+                ON l.message_id = m.id AND l.provider = ?
             WHERE l.message_id IS NULL
-              AND m.type IN ('user', 'bot', 'assistant')
+              AND m.type IN ('user', 'bot')
               AND COALESCE(c.hidden_from_history, 0) = 0
-            """
+              AND EXISTS (
+                  SELECT 1 FROM USERS u
+                  WHERE u.id = COALESCE(m.user_id, c.user_id)
+              )
+            """,
+            (ATAGIA_PROVIDER,),
         )
         row = await cursor.fetchone()
     return int(row[0] if row else 0)
@@ -453,15 +483,20 @@ async def _fetch_unlinked_message_batch(
                 c.role_id AS prompt_id
             FROM MESSAGES m
             JOIN CONVERSATIONS c ON c.id = m.conversation_id
-            LEFT JOIN ATAGIA_MESSAGE_LINKS l ON l.message_id = m.id
+            LEFT JOIN MEMORY_PROVIDER_MESSAGE_LINKS l
+                ON l.message_id = m.id AND l.provider = ?
             WHERE m.id > ?
               AND l.message_id IS NULL
-              AND m.type IN ('user', 'bot', 'assistant')
+              AND m.type IN ('user', 'bot')
               AND COALESCE(c.hidden_from_history, 0) = 0
+              AND EXISTS (
+                  SELECT 1 FROM USERS u
+                  WHERE u.id = COALESCE(m.user_id, c.user_id)
+              )
             ORDER BY m.id ASC
             LIMIT ?
             """,
-            (after_message_id, max(1, int(batch_size))),
+            (ATAGIA_PROVIDER, after_message_id, max(1, int(batch_size))),
         )
         rows = await cursor.fetchall()
     return list(rows)
@@ -479,11 +514,20 @@ async def _insert_message_link(
 ) -> bool:
     cursor = await conn.execute(
         """
-        INSERT OR IGNORE INTO ATAGIA_MESSAGE_LINKS
-            (message_id, atagia_message_id, conversation_id, user_id, role, source)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO MEMORY_PROVIDER_MESSAGE_LINKS
+            (message_id, provider, provider_message_id, provider_event_id,
+             conversation_id, user_id, role, source, metadata_json)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, '{}')
         """,
-        (message_id, atagia_message_id, conversation_id, user_id, role, source),
+        (
+            message_id,
+            ATAGIA_PROVIDER,
+            atagia_message_id,
+            conversation_id,
+            user_id,
+            role,
+            source,
+        ),
     )
     return bool(cursor.rowcount)
 
@@ -493,14 +537,14 @@ async def _update_sync_state(conversation_id: int, message_id: int) -> None:
         await _ensure_schema(conn)
         await conn.execute(
             """
-            INSERT INTO ATAGIA_SYNC_STATE
-                (conversation_id, last_message_id, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(conversation_id) DO UPDATE SET
+            INSERT INTO MEMORY_PROVIDER_SYNC_STATE
+                (provider, conversation_id, last_message_id, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(provider, conversation_id) DO UPDATE SET
                 last_message_id = MAX(last_message_id, excluded.last_message_id),
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (conversation_id, message_id),
+            (ATAGIA_PROVIDER, conversation_id, message_id),
         )
         await conn.commit()
 
@@ -529,8 +573,9 @@ async def _update_sync_run(run_id: int, **fields: Any) -> None:
     async with database.get_db_connection() as conn:
         await _ensure_schema(conn)
         await conn.execute(
-            f"UPDATE ATAGIA_SYNC_RUNS SET {assignments} WHERE id = ?",
-            (*values, run_id),
+            f"UPDATE MEMORY_PROVIDER_SYNC_RUNS SET {assignments} "
+            "WHERE id = ? AND provider = ?",
+            (*values, run_id, ATAGIA_PROVIDER),
         )
         await conn.commit()
 
@@ -549,7 +594,7 @@ async def _mark_run_finished(
         await _ensure_schema(conn)
         await conn.execute(
             """
-            UPDATE ATAGIA_SYNC_RUNS
+            UPDATE MEMORY_PROVIDER_SYNC_RUNS
             SET
                 status = ?,
                 finished_at = CURRENT_TIMESTAMP,
@@ -560,7 +605,7 @@ async def _mark_run_finished(
                 failed_messages = ?,
                 last_error = ?,
                 recent_errors = ?
-            WHERE id = ?
+            WHERE id = ? AND provider = ?
             """,
             (
                 status,
@@ -572,6 +617,7 @@ async def _mark_run_finished(
                 error or ((summary.recent_errors or [None])[-1]),
                 json.dumps(summary.recent_errors or []),
                 summary.run_id,
+                ATAGIA_PROVIDER,
             ),
         )
         await conn.commit()

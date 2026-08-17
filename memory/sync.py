@@ -320,7 +320,8 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
             source TEXT NOT NULL DEFAULT 'live',
             synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             metadata_json TEXT NOT NULL DEFAULT '{}',
-            PRIMARY KEY (message_id, provider)
+            PRIMARY KEY (message_id, provider),
+            FOREIGN KEY (message_id) REFERENCES MESSAGES(id)
         )
         """
     )

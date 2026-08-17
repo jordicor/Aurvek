@@ -15,18 +15,14 @@ from chat.services.privacy import (
     ensure_conversation_privacy_schema,
     purge_conversation_local_records,
 )
+from chat.services.stop_signals import stop_signals
 
 
 async def memory_link_providers_for_conversation(conversation_id: int) -> set[str]:
     providers: set[str] = set()
     async with get_db_connection(readonly=True) as conn:
-        if await _table_exists(conn, "ATAGIA_MESSAGE_LINKS"):
-            cursor = await conn.execute(
-                "SELECT 1 FROM ATAGIA_MESSAGE_LINKS WHERE conversation_id = ? LIMIT 1",
-                (conversation_id,),
-            )
-            if await cursor.fetchone():
-                providers.add("atagia")
+        # 'atagia' is a normal provider in the generic MEMORY_PROVIDER_* tables, so
+        # it is discovered by the DISTINCT provider scans below (no legacy table).
         if await _table_exists(conn, "MEMORY_PROVIDER_MESSAGE_LINKS"):
             cursor = await conn.execute(
                 """
@@ -194,42 +190,44 @@ async def purge_stale_incognito_conversations_for_user(current_user: User) -> No
 
 
 async def delete_owned_conversation(current_user: User, conversation_id: int) -> dict:
-    async with get_db_connection() as conn:
-        cursor = await conn.cursor()
-        await ensure_conversation_privacy_schema(conn)
+    async with conversation_write_lock(conversation_id):
+        async with get_db_connection() as conn:
+            cursor = await conn.cursor()
+            await ensure_conversation_privacy_schema(conn)
 
-        await cursor.execute(
-            """
-            SELECT user_id, role_id, COALESCE(is_incognito, 0) AS is_incognito
-            FROM conversations
-            WHERE id = ?
-            """,
-            (conversation_id,),
-        )
-        result = await cursor.fetchone()
-        if not result:
-            return {"success": False, "error": "Conversation not found", "status_code": 404}
+            await cursor.execute(
+                """
+                SELECT user_id, role_id, COALESCE(is_incognito, 0) AS is_incognito
+                FROM conversations
+                WHERE id = ?
+                """,
+                (conversation_id,),
+            )
+            result = await cursor.fetchone()
+            if not result:
+                return {"success": False, "error": "Conversation not found", "status_code": 404}
 
-        user_id = result[0]
-        if user_id != current_user.id:
-            return {"success": False, "error": "Access denied", "status_code": 403}
+            user_id = result[0]
+            if user_id != current_user.id:
+                return {"success": False, "error": "Access denied", "status_code": 403}
 
-        prompt_id = result[1]
-        is_incognito = bool(result[2])
-        purged_memory_providers = await purge_linked_memory_providers_best_effort(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            prompt_id=prompt_id,
-            incognito=is_incognito,
-        )
+            stop_signals[conversation_id] = True
+            prompt_id = result[1]
+            is_incognito = bool(result[2])
+            purged_memory_providers = await purge_linked_memory_providers_best_effort(
+                user_id=current_user.id,
+                conversation_id=conversation_id,
+                prompt_id=prompt_id,
+                incognito=is_incognito,
+            )
 
-        await delete_conversation_rows(
-            conn,
-            conversation_id=conversation_id,
-            user_id=current_user.id,
-            memory_link_providers_to_delete=purged_memory_providers,
-        )
-        await conn.commit()
+            await delete_conversation_rows(
+                conn,
+                conversation_id=conversation_id,
+                user_id=current_user.id,
+                memory_link_providers_to_delete=purged_memory_providers,
+            )
+            await conn.commit()
 
     await prune_unreferenced_blobs()
     await delete_conversation_files_for_user(current_user, conversation_id)

@@ -27,6 +27,7 @@ _HTTP_TIMEOUT_SECONDS = 8
 
 _PROVIDER_DISPLAY_NAMES = {
     "openai": "OpenAI",
+    "gptsub": "ChatGPT subscription",
     "anthropic": "Claude",
     "google": "Gemini",
     "openrouter": "OpenRouter",
@@ -168,6 +169,11 @@ def provider_from_label(label: str | None) -> str:
     label_lower = (label or "").strip().lower()
     if "openrouter" in label_lower:
         return "openrouter"
+    if "gptsub" in label_lower:
+        # The subscription (GPTSub) path must NOT collapse into the main "openai"
+        # health bucket -- its errors/successes are tracked separately so a GPTSub
+        # stall never degrades the main GPT provider signal.
+        return "gptsub"
     if "openai" in label_lower or "gpt" in label_lower or "o1" in label_lower:
         return "openai"
     if "claude" in label_lower or "anthropic" in label_lower:

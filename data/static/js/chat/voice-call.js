@@ -49,6 +49,7 @@
         const promptName = document.getElementById('voice-overlay-prompt-name');
         const helperText = document.getElementById('voice-helper-text');
         const caption = document.getElementById('voice-overlay-caption');
+        const incognitoBadge = document.getElementById('incognito-chat-badge');
 
         if (!voiceButton || !overlay || !startStopButton || !statusText || !statusIcon) {
             return;
@@ -88,6 +89,8 @@
         let completing = false;
         let loadingConfig = false;
         let sessionStartRejected = false;
+        let completionRetryPending = false;
+        const defaultVoiceButtonTitle = voiceButton.title || 'AI voice assistant';
 
         function getSelectedConversationId() {
             if (typeof currentConversationId === 'undefined' || currentConversationId === null) {
@@ -98,6 +101,39 @@
 
         function isSameConversation(first, second) {
             return first !== null && second !== null && String(first) === String(second);
+        }
+
+        function isIncognitoConversationActive() {
+            if (typeof currentConversationIncognito !== 'undefined') {
+                return Boolean(currentConversationIncognito);
+            }
+            return Boolean(incognitoBadge && !incognitoBadge.hidden);
+        }
+
+        function syncVoiceAvailability() {
+            const incognito = isIncognitoConversationActive();
+            voiceButton.disabled = incognito;
+            voiceButton.hidden = incognito;
+            if (incognito) {
+                voiceButton.setAttribute('aria-disabled', 'true');
+                voiceButton.title = 'Voice calls are not available in incognito chats';
+                if (
+                    !completionRetryPending
+                    && !['connecting', 'active', 'updating'].includes(currentState)
+                ) {
+                    setOverlayVisible(false);
+                }
+            } else {
+                voiceButton.setAttribute('aria-disabled', 'false');
+                voiceButton.title = defaultVoiceButtonTitle;
+            }
+        }
+
+        function clearCallBinding() {
+            activeSessionId = null;
+            callConversationId = null;
+            completionRetryPending = false;
+            configData = null;
         }
 
         function setOverlayVisible(show) {
@@ -373,9 +409,10 @@
                     } catch (_) {
                         // ignore
                     }
-                    setState('error', detail, {
-                        helper: 'Verify that the prompt has an assigned agent.'
-                    });
+                    const helper = response.status === 402
+                        ? 'Add credit to your account and try again.'
+                        : 'Verify that the prompt has an assigned agent.';
+                    setState('error', detail, { helper: helper });
                     return null;
                 }
                 const data = await response.json();
@@ -514,7 +551,20 @@
             }
         }
 
+        async function cancelPendingCompletion() {
+            if (completionRetryPending && activeSessionId && callConversationId !== null) {
+                await markSessionStatus('failed', callConversationId, activeSessionId);
+            }
+            conversationRef = null;
+            sessionStartRejected = false;
+            clearCallBinding();
+        }
+
         async function startCall() {
+            if (completionRetryPending) {
+                await completeSession();
+                return;
+            }
             const Conversation = resolveConversation();
             if (!Conversation) {
                 setState('error', 'ElevenLabs SDK not available on this page.', {
@@ -573,6 +623,7 @@
 
             muteState = false;
             sessionStartRejected = false;
+            completionRetryPending = false;
             updateMuteUI();
             setState('connecting', 'Connecting to ElevenLabs...');
 
@@ -593,8 +644,7 @@
                 });
                 await markSessionStatus('failed');
                 conversationRef = null;
-                activeSessionId = null;
-                callConversationId = null;
+                clearCallBinding();
                 sessionStartRejected = false;
             }
         }
@@ -617,8 +667,7 @@
             if (!activeSessionId || callConversationId === null) {
                 setState('ready', 'The call has ended.');
                 conversationRef = null;
-                activeSessionId = null;
-                callConversationId = null;
+                clearCallBinding();
                 sessionStartRejected = false;
                 lockChatInputs(false);
                 return;
@@ -628,14 +677,12 @@
             }
             const completedConversationId = callConversationId;
             const completedSessionId = activeSessionId;
+            let clearBindingWhenDone = false;
             completing = true;
             setState('updating', 'Saving call transcript...', {
                 helper: 'This may take a few seconds.'
             });
             try {
-                // Wait longer for ElevenLabs to process the conversation
-                await wait(4000);  // Increased from 2200ms to 4000ms
-
                 const response = await secureFetch(`/api/conversations/${completedConversationId}/elevenlabs/complete`, {
                     method: 'POST',
                     headers: {
@@ -656,14 +703,24 @@
                     } catch (_) {
                         // ignore
                     }
+                    const retryable = response.status === 425 || response.status === 502;
                     setState('error', detail, {
-                        helper: 'You can retry downloading the transcript later.'
+                        helper: retryable
+                            ? 'Retry to fetch the transcript from this same call.'
+                            : 'This call cannot be completed. Close the panel and try a new call.'
                     });
-                    await markSessionStatus('failed', completedConversationId, completedSessionId);
+                    if (retryable) {
+                        completionRetryPending = true;
+                    } else {
+                        await markSessionStatus('failed', completedConversationId, completedSessionId);
+                        clearBindingWhenDone = true;
+                    }
                     return;
                 }
                 const data = await response.json();
                 const saved = data && typeof data.messages_saved === 'number' ? data.messages_saved : 0;
+                completionRetryPending = false;
+                clearBindingWhenDone = true;
 
                 // Refresh the chat messages if we saved something
                 if (saved > 0 && isSameConversation(getSelectedConversationId(), completedConversationId)) {
@@ -733,20 +790,26 @@
                 }
             } catch (error) {
                 console.error('Error completing ElevenLabs session:', error);
-                setState('error', 'Could not save call transcript.', {
-                    helper: 'You can retry from the voice window.'
-                });
-                await markSessionStatus('failed', completedConversationId, completedSessionId);
+                if (clearBindingWhenDone) {
+                    setState('ready', 'The call has ended.', {
+                        helper: 'The transcript was saved, but the chat could not be refreshed.'
+                    });
+                } else {
+                    setState('error', 'Could not save call transcript.', {
+                        helper: 'Retry to fetch the transcript from this same call.'
+                    });
+                    completionRetryPending = true;
+                }
             } finally {
                 completing = false;
                 conversationRef = null;
                 lockChatInputs(false);
                 muteState = false;
                 updateMuteUI();
-                activeSessionId = null;
-                callConversationId = null;
-                // Reset config to avoid reusing stale watchdog hints on consecutive calls
-                configData = null;
+                if (clearBindingWhenDone) {
+                    // Reset config to avoid reusing stale watchdog hints on consecutive calls.
+                    clearCallBinding();
+                }
                 closeButton.disabled = false;
             }
         }
@@ -762,9 +825,7 @@
                     await window.WellbeingReminders.refresh();
                 }
                 const ref = conversationRef;
-                activeSessionId = null;
-                callConversationId = null;
-                configData = null;
+                clearCallBinding();
                 conversationRef = null;
                 setState('error', sessionResult.message || 'A break pause is required before starting a voice call.', {
                     helper: shouldRefreshWellbeing ? 'Use the break reminder prompt before continuing.' : 'Try again when ready.'
@@ -794,6 +855,7 @@
             });
             await markSessionStatus('failed');
             conversationRef = null;
+            clearCallBinding();
             lockChatInputs(false);
         }
 
@@ -815,13 +877,21 @@
             if (currentState === 'ready') {
                 await startCall();
             } else if (currentState === 'error') {
-                await fetchConfig(true);
+                if (completionRetryPending && activeSessionId && callConversationId !== null) {
+                    await completeSession();
+                } else {
+                    await fetchConfig(true);
+                }
             } else if (currentState === 'active') {
                 await stopCall();
             }
         });
 
         voiceButton.addEventListener('click', async () => {
+            syncVoiceAvailability();
+            if (isIncognitoConversationActive()) {
+                return;
+            }
             // Block voice calls on locked conversations
             if (typeof isCurrentConversationLocked !== 'undefined' && isCurrentConversationLocked) {
                 return;
@@ -831,17 +901,25 @@
                 if (currentState === 'active' || currentState === 'connecting' || currentState === 'updating') {
                     return;
                 }
+                await cancelPendingCompletion();
                 setOverlayVisible(false);
                 return;
             }
             setOverlayVisible(true);
+            if (completionRetryPending) {
+                setState('error', 'The previous call transcript is still pending.', {
+                    helper: 'Retry to fetch the transcript from that same call.'
+                });
+                return;
+            }
             await fetchConfig(false);
         });
 
-        closeButton.addEventListener('click', () => {
+        closeButton.addEventListener('click', async () => {
             if (currentState === 'active' || currentState === 'connecting' || currentState === 'updating') {
                 return;
             }
+            await cancelPendingCompletion();
             setOverlayVisible(false);
             setState('ready', 'Ready to start the call.', {
                 helper: 'Press the voice icon to open this panel.'
@@ -853,5 +931,13 @@
         });
         setOverlayVisible(false);
         updateMuteUI();
+        syncVoiceAvailability();
+        if (incognitoBadge && typeof MutationObserver !== 'undefined') {
+            const observer = new MutationObserver(syncVoiceAvailability);
+            observer.observe(incognitoBadge, {
+                attributes: true,
+                attributeFilter: ['hidden']
+            });
+        }
     });
 })();

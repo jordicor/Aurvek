@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import re
@@ -39,6 +40,38 @@ from security_config import is_forbidden_prompt_name
 
 
 router = APIRouter()
+
+
+def _save_creator_avatar_variants(
+    content: bytes,
+    profile_dir: str,
+    user_hash: str,
+    suffix: str,
+) -> None:
+    """Decode, validate, resize, and persist a creator avatar off the event loop."""
+    with PilImage.open(io.BytesIO(content)) as image:
+        width, height = image.size
+        if width * height > MAX_IMAGE_PIXELS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Image dimensions too large. Maximum is "
+                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                ),
+            )
+
+        image.load()
+        os.makedirs(profile_dir, exist_ok=True)
+        for size in (32, 64, 128, "fullsize"):
+            if size == "fullsize":
+                resized = image
+                filename = f"{user_hash}{suffix}_fullsize.webp"
+            else:
+                resized = resize_image(image, size)
+                filename = f"{user_hash}{suffix}_{size}.webp"
+
+            file_path = os.path.join(profile_dir, filename)
+            resized.save(file_path, "WEBP")
 
 
 @router.get("/my-storefront")
@@ -167,38 +200,26 @@ async def upload_creator_avatar(
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(current_user.username)
     profile_dir = os.path.join(users_directory, hash_prefix1, hash_prefix2, user_hash, "profile")
 
-    if not os.path.exists(profile_dir):
-        os.makedirs(profile_dir)
-
     content = await file.read()
 
     if len(content) > MAX_IMAGE_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024*1024)}MB")
 
-    try:
-        image = PilImage.open(io.BytesIO(content))
-        width, height = image.size
-        if width * height > MAX_IMAGE_PIXELS:
-            raise HTTPException(status_code=400, detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels")
-    except UnidentifiedImageError:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
-    sizes = [32, 64, 128, "fullsize"]
-    ext = "webp"
     suffix = "_creator"
     base_url = f"users/{hash_prefix1}/{hash_prefix2}/{user_hash}/profile/{user_hash}{suffix}"
 
     try:
-        for size in sizes:
-            if size == "fullsize":
-                resized = image
-                filename = f"{user_hash}{suffix}_fullsize.{ext}"
-            else:
-                resized = resize_image(image, size)
-                filename = f"{user_hash}{suffix}_{size}.{ext}"
-
-            file_path = os.path.join(profile_dir, filename)
-            resized.save(file_path, ext.upper())
+        await asyncio.to_thread(
+            _save_creator_avatar_variants,
+            content,
+            profile_dir,
+            user_hash,
+            suffix,
+        )
+    except UnidentifiedImageError:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Error saving creator avatar: %s", exc)
         raise HTTPException(status_code=500, detail="Error processing image")

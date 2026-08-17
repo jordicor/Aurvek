@@ -1,7 +1,11 @@
 import time
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 
 from chat.routes import media, voice_io
 
@@ -99,6 +103,93 @@ async def test_download_pdf_checks_access_before_redis_lock(mock_db, monkeypatch
         )
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "relative_directory", "filename", "media_type"),
+    (
+        (
+            media.download_pdf,
+            "files/000/0042/pdf/uploads",
+            "Informe clínico.pdf",
+            "application/pdf",
+        ),
+        (
+            media.download_mp3,
+            "files/000/0042/mp3",
+            "Sesión privada.mp3",
+            "audio/mpeg",
+        ),
+    ),
+)
+async def test_authenticated_download_serves_validated_file_directly(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+    relative_directory,
+    filename,
+    media_type,
+):
+    user_directory = tmp_path / "alice"
+    file_path = user_directory / relative_directory / filename
+    file_path.parent.mkdir(parents=True)
+    file_path.write_bytes(b"private media")
+    monkeypatch.setattr(
+        media,
+        "get_user_directory",
+        lambda _username: str(user_directory),
+    )
+
+    relative_path = file_path.relative_to(user_directory).as_posix()
+    response = await endpoint(
+        quote(relative_path, safe="/"),
+        current_user=SimpleNamespace(username="alice"),
+    )
+
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == file_path.resolve()
+    assert response.media_type == media_type
+    assert response.filename == filename
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "filename"),
+    (
+        (media.download_pdf, "other-user.pdf"),
+        (media.download_mp3, "other-user.mp3"),
+    ),
+)
+async def test_download_rejects_traversal_and_cross_user_paths(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+    filename,
+):
+    user_directory = tmp_path / "alice"
+    other_directory = tmp_path / "bob"
+    user_directory.mkdir()
+    other_file = other_directory / filename
+    other_file.parent.mkdir(parents=True)
+    other_file.write_bytes(b"secret")
+    monkeypatch.setattr(
+        media,
+        "get_user_directory",
+        lambda _username: str(user_directory),
+    )
+
+    attempted_paths = (
+        f"../bob/{filename}",
+        str(other_file),
+    )
+    for attempted_path in attempted_paths:
+        with pytest.raises(HTTPException) as exc_info:
+            await endpoint(
+                attempted_path,
+                current_user=SimpleNamespace(username="alice"),
+            )
+        assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio

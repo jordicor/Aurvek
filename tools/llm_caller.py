@@ -10,6 +10,7 @@ import aiohttp
 import orjson
 from dataclasses import dataclass
 from typing import Optional
+from ai_runtime.providers.claude_capabilities import claude_omits_temperature
 
 logger = logging.getLogger("llm_caller")
 
@@ -135,11 +136,7 @@ async def _call_claude(
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_message}],
     }
-    model_lower = model.lower()
-    is_temperature_deprecated = any(m in model_lower for m in (
-        "opus-4-7", "opus-4.7", "opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"
-    ))
-    if not is_temperature_deprecated:
+    if not claude_omits_temperature(model):
         data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
@@ -321,8 +318,9 @@ async def _call_openrouter(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "temperature": 0.0,
     }
+    if not claude_omits_temperature(model):
+        data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
         async with session.post(

@@ -31,9 +31,12 @@ from models import User
 from chat.services.attachment_uploads import parse_attachment_refs_value
 from chat.services.avatar_urls import get_signed_bot_avatar_urls
 from chat.services.file_inputs import is_text_file
-from chat.services.message_rendering import process_message
+from chat.services.message_rendering import (
+    preload_attachment_records_for_messages,
+    process_message,
+)
 from chat.services.message_requests import validate_message_request
-from chat.services.privacy import ensure_conversation_privacy_schema
+from chat.services.privacy import delete_message_rows, ensure_conversation_privacy_schema
 
 router = APIRouter()
 
@@ -187,10 +190,13 @@ async def get_messages(
             empty_bot_ids,
         )
         async with get_db_connection(readonly=False) as write_conn:
-            placeholders = ",".join("?" * len(empty_bot_ids))
-            await write_conn.execute(
-                f"DELETE FROM messages WHERE id IN ({placeholders})",
-                empty_bot_ids,
+            # Shared domain helper: clears memory-provider links, watchdog rows,
+            # and sync watermarks so the auto-repair does not hit the enforced FK
+            # on MESSAGES or leave orphaned links behind.
+            await delete_message_rows(
+                write_conn,
+                conversation_id=conversation_id,
+                message_ids=empty_bot_ids,
             )
             await write_conn.commit()
         empty_bot_set = set(empty_bot_ids)
@@ -254,16 +260,30 @@ async def get_messages(
             "has_more": False,
         })
 
+    render_rows = [
+        (row, custom_unescape(row["message"]))
+        for row in rows
+        if row["message_id"] is not None
+    ]
+    attachment_records = await preload_attachment_records_for_messages(
+        [(row["message_id"], message) for row, message in render_rows],
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        allow_admin=is_user_admin,
+    )
+
     messages_list = []
-    for row in rows:
+    for row, unescaped_message in render_rows:
         if row["message_id"] is not None:
             processed_message = await process_message(
-                custom_unescape(row["message"]),
+                unescaped_message,
                 request,
                 current_user,
                 media_owner_username=row["username"],
                 conversation_id=conversation_id,
                 message_id=row["message_id"],
+                attachment_records=attachment_records,
+                can_admin_view=is_user_admin,
             )
             msg_data = {
                 "id": row["message_id"],
@@ -348,10 +368,55 @@ async def save_message(
     pdf_page_end: Optional[int] = Form(None),
     pdf_retry_token: Optional[str] = Form(None),
     attachment_refs: Optional[str] = Form(None),
+    expected_llm_id: Optional[int] = Form(None),
 ):
     logger.info("enters in save_message (wrapper)")
     if current_user is None:
         return unauthenticated_response()
+
+    # The browser must name the exact model identity it rendered. Model names
+    # are not unique across providers (for example GPT and GPTSub can expose
+    # the same model string), and another tab may change the conversation
+    # between render and send. Reject stale/legacy clients before any upload,
+    # billing, persistence, or provider work.
+    if not multi_ai_models and (expected_llm_id is None or expected_llm_id <= 0):
+        return JSONResponse(
+            content={
+                "success": False,
+                "error_code": "expected_llm_id_required",
+                "message": "Reload the conversation so Aurvek can confirm the selected AI model.",
+            },
+            status_code=428,
+        )
+
+    async with get_db_connection(readonly=True) as conn:
+        identity_cursor = await conn.execute(
+            """
+            SELECT c.locked, c.llm_id, l.machine, l.model
+            FROM CONVERSATIONS c
+            JOIN LLM l ON l.id = c.llm_id
+            WHERE c.id = ? AND c.user_id = ?
+            """,
+            (conversation_id, current_user.id),
+        )
+        conversation_identity = await identity_cursor.fetchone()
+
+    if not conversation_identity or conversation_identity[0]:
+        return JSONResponse(
+            content={"success": False, "message": "Conversation is locked."},
+            status_code=403,
+        )
+    if not multi_ai_models and int(conversation_identity[1]) != expected_llm_id:
+        return JSONResponse(
+            content={
+                "success": False,
+                "error_code": "conversation_model_changed",
+                "message": "The AI model changed in another session. Review it and send again.",
+                "llm_id": int(conversation_identity[1]),
+                "model": conversation_identity["model"],
+            },
+            status_code=409,
+        )
 
     user_api_keys = None
     user_keys_header = request.headers.get("X-User-API-Keys")
@@ -381,15 +446,32 @@ async def save_message(
 
     api_key_mode = await get_user_api_key_mode(current_user.id)
     if api_key_mode == API_KEY_MODE_OWN_ONLY and not user_api_keys:
-        return JSONResponse(
-            content={
-                "error": "api_keys_required",
-                "message": "Your account requires you to configure your own API keys to use AI services.",
-                "action": "configure_api_keys",
-                "redirect": "/profile/api-credentials",
-            },
-            status_code=403,
-        )
+        # A linked ChatGPT subscription is also a user-owned credential. Resolve
+        # the owned conversation's provider before applying the generic API-key
+        # requirement; multi-AI remains unsupported for GPTSub and is not exempt.
+        gptsub_request_allowed = False
+        if not multi_ai_models:
+            if conversation_identity["machine"] == "GPTSub":
+                try:
+                    from subscription_auth.gate import gptsub_allowed
+
+                    gptsub_request_allowed = await gptsub_allowed(
+                        current_user,
+                        model=conversation_identity["model"],
+                    )
+                except Exception:
+                    gptsub_request_allowed = False
+
+        if not gptsub_request_allowed:
+            return JSONResponse(
+                content={
+                    "error": "api_keys_required",
+                    "message": "Your account requires you to configure your own API keys to use AI services.",
+                    "action": "configure_api_keys",
+                    "redirect": "/profile/api-credentials",
+                },
+                status_code=403,
+            )
 
     guard_response = await validate_message_request(
         request=request,
@@ -476,15 +558,6 @@ async def save_message(
         except orjson.JSONDecodeError:
             return JSONResponse(content={"error": "Invalid multi_ai_models format"}, status_code=400)
 
-    async with get_db_connection(readonly=True) as conn:
-        lock_cursor = await conn.execute(
-            "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
-            (conversation_id, current_user.id),
-        )
-        lock_row = await lock_cursor.fetchone()
-        if not lock_row or lock_row[0]:
-            return JSONResponse(content={"success": False, "message": "Conversation is locked."}, status_code=403)
-
     files = None
     if file:
         valid_files = [f for f in file if f]
@@ -546,5 +619,6 @@ async def save_message(
             pdf_page_end=pdf_page_end,
             pdf_retry_token=pdf_retry_token,
             attachment_refs=parsed_attachment_refs,
+            expected_llm_id=expected_llm_id,
         ),
     )

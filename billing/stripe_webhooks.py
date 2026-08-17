@@ -1,3 +1,5 @@
+import asyncio
+
 import stripe
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -85,7 +87,11 @@ async def _handle_charge_dispute_created(dispute):
         return {"status": "ignored", "reason": "missing_payment_intent"}
 
     try:
-        sessions = stripe.checkout.Session.list(payment_intent=payment_intent_id, limit=1)
+        sessions = await asyncio.to_thread(
+            stripe.checkout.Session.list,
+            payment_intent=payment_intent_id,
+            limit=1,
+        )
         if not sessions or not sessions.data:
             return {"status": "ignored", "reason": "checkout_session_not_found"}
 

@@ -118,6 +118,7 @@ from auth import (
     hash_password,
     verify_password,
 )
+from auth_constants import SESSION_COOKIE_NAME
 from auth import get_current_user_from_websocket, get_user_id_from_conversation, get_user_by_token, create_user_info, create_login_response, generate_magic_link
 from auth import get_user_by_google_id, get_user_by_email, update_user_google_id
 from auth_flows import (
@@ -212,6 +213,7 @@ from prompts import get_user_accessible_prompts as get_user_role_accessible_prom
 from prompts import get_user_directory, get_user_prompts_directory, list_prompts, process_prompt_image_upload, create_prompt, create_prompt_post, edit_prompt, update_prompt, delete_prompt, delete_prompt_image
 from prompts import get_prompt_owner_id
 from prompts import can_user_access_prompt
+import user_deletion
 from marketplace.landing.cache import get_landing_cache_stats, warmup_landing_cache
 from marketplace.landing.rendering import landing_404_response
 from marketplace.landing.jobs import cleanup_old_jobs
@@ -286,6 +288,7 @@ from marketplace.services.entitlements import active_entitlement_condition, gran
 from marketplace.services.landing_registration import (
     DEFAULT_LANDING_REGISTRATION_CONFIG,
     get_landing_registration_config,
+    strip_personal_subscription_default,
 )
 from marketplace.services.pending_entitlements import send_entitlement_claim_email
 from marketplace.services.pending_registrations import (
@@ -454,6 +457,128 @@ async def lifespan(app: FastAPI):
     from gransabio_service import check_gransabio_worker_config
     await check_gransabio_worker_config(dual_mode_active=_dual_mode_active)
 
+    # Best-effort sweep of stale GPTSub (ChatGPT subscription) runtime dirs left by
+    # a prior crash: per-user homes (u_*) and per-turn work dirs
+    # (gptsub_cwd_*/turn_*) are ephemeral, and a fresh single-worker start has no
+    # live turns, so orphans are safe to remove. Only runs if GPTSUB_RUNTIME_DIR
+    # is set; fully defensive -- it must never crash startup.
+    _gptsub_runtime_dir = None
+    _gptsub_runtime_sweep_ok = True
+    if os.environ.get("GPTSUB_RUNTIME_DIR"):
+        try:
+            from subscription_auth.config import resolve_codex_home_runtime_dir
+
+            _gptsub_runtime_dir = resolve_codex_home_runtime_dir()
+        except Exception:
+            _gptsub_runtime_sweep_ok = False
+            logger.exception("GPTSub runtime directory validation failed at startup")
+    if _gptsub_runtime_dir and os.path.isdir(_gptsub_runtime_dir):
+        _gptsub_stale_prefixes = (
+            "u_",
+            "gptsub_cwd_",
+            "turn_",
+            "appserver_",
+        )
+        _gptsub_swept = 0
+        try:
+            for _entry in os.scandir(_gptsub_runtime_dir):
+                if not _entry.name.startswith(_gptsub_stale_prefixes):
+                    continue
+                # Direct, real directories only. Never follow a symlink/reparse point
+                # supplied inside the runtime directory during a crash recovery
+                # sweep. A matching non-directory is itself an unsafe residue and
+                # must block later enablement; silently skipping it would let the
+                # initialize-only doctor approve an unclean runtime.
+                if not _entry.is_dir(follow_symlinks=False):
+                    raise RuntimeError("unsafe stale GPTSub runtime entry")
+                _target = _entry.path
+                shutil.rmtree(_target, ignore_errors=False)
+                if os.path.lexists(_target):
+                    raise RuntimeError("stale GPTSub runtime path survived cleanup")
+                _gptsub_swept += 1
+            if _gptsub_swept:
+                logger.info("Swept %d stale GPTSub runtime director(ies) at startup", _gptsub_swept)
+        except Exception:
+            _gptsub_runtime_sweep_ok = False
+            logger.exception(
+                "GPTSub runtime dir sweep failed; readiness will remain disabled"
+            )
+
+    # A failed validation/sweep is a plaintext-lifecycle safety failure even when
+    # the durable switch currently says OFF. Latch now so an administrator cannot
+    # enable later in the same process after a basic initialize-only doctor passes.
+    if not _gptsub_runtime_sweep_ok and _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
+        try:
+            from subscription_auth.gate import latch_subscription_auth_off
+
+            latch_subscription_auth_off()
+        except Exception:
+            logger.critical(
+                "GPTSub runtime sweep failure could not engage the local OFF latch",
+                exc_info=True,
+            )
+
+    # A deployment must never remain globally enabled when its exact binary,
+    # dedicated key, isolation directory, or initialize contract is broken. This
+    # silent readiness probe contains no account/model data and automatically trips
+    # the persistent kill switch on a bad restart.
+    try:
+        from common import (
+            get_subscription_auth_enabled,
+            set_subscription_auth_enabled,
+        )
+
+        if await get_subscription_auth_enabled():
+            ready = False
+            try:
+                from subscription_auth.doctor import runtime_ready
+
+                ready = _gptsub_runtime_sweep_ok and await runtime_ready()
+            except Exception:
+                # An exception is itself a failed readiness check. Persist OFF
+                # below; logging alone would leave a previously-enabled flag live.
+                logger.exception("GPTSub startup readiness probe failed")
+            if not ready:
+                # The database write may fail while the previously-read TRUE value
+                # remains cached. Trip the process-local irreversible latch first so
+                # no request can materialize a credential on a rejected runtime.
+                from subscription_auth.gate import latch_subscription_auth_off
+
+                latch_subscription_auth_off()
+                await set_subscription_auth_enabled(False)
+                logger.critical(
+                    "GPTSub failed startup readiness; subscription_auth_enabled was disabled"
+                )
+    except Exception:
+        # The first switch read can itself fail before runtime_ready() runs. Do not
+        # rely only on that transient read failure: if the DB recovers with a
+        # persisted TRUE value later in this process, inference would otherwise be
+        # admitted on a runtime that this startup never approved. Latch locally
+        # before a best-effort durable OFF write.
+        if _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
+            try:
+                from subscription_auth.gate import latch_subscription_auth_off
+
+                latch_subscription_auth_off()
+            except Exception:
+                logger.critical(
+                    "GPTSub startup failure could not engage the local OFF latch",
+                    exc_info=True,
+                )
+            try:
+                from common import set_subscription_auth_enabled
+
+                await asyncio.wait_for(
+                    set_subscription_auth_enabled(False), timeout=5.0
+                )
+            except Exception:
+                logger.critical(
+                    "GPTSub startup failure could not persist the OFF switch; "
+                    "the local latch remains authoritative",
+                    exc_info=True,
+                )
+        logger.exception("GPTSub startup readiness enforcement failed")
+
     yield
 
     if _marketplace_refresh_task:
@@ -492,10 +617,35 @@ async def lifespan(app: FastAPI):
         pass
 
     try:
+        from integrations.elevenlabs.service import (
+            shutdown_http_client as shutdown_elevenlabs_http_client,
+        )
+        await shutdown_elevenlabs_http_client()
+    except Exception:
+        logger.exception("Error closing ElevenLabs HTTP client")
+
+    try:
         from atagia_bridge import close_atagia_bridge
         await close_atagia_bridge()
     except Exception:
         pass
+
+    if async_twilio is not None:
+        try:
+            await async_twilio.close()
+        except Exception:
+            logger.exception("Error closing async Twilio client")
+
+    # Tear down any held GPTSub (ChatGPT subscription) pending-link login state
+    # so its worker subprocesses do not leak on restart. Private
+    # module -- guard the import; ImportError just means the feature is absent.
+    try:
+        from subscription_auth import shutdown_pending_links
+        await shutdown_pending_links()
+    except ImportError:
+        pass
+    except Exception:
+        logger.exception("subscription_auth: error tearing down pending links on shutdown")
 
     # Cleanup on shutdown
     if use_redis:
@@ -537,6 +687,21 @@ app.include_router(marketplace_geo_router)
 app.include_router(prompt_landings_router)
 app.include_router(prompt_landing_builder_router)
 app.include_router(marketplace_acquisition_router)
+
+# GPTSub (ChatGPT subscription) account-linking router. Private module,
+# excluded from the public mirror -- guard the import so the open-source build
+# simply lacks the feature.
+_SUBSCRIPTION_AUTH_MODULE_AVAILABLE = False
+try:
+    from subscription_auth import router as subscription_auth_router
+    app.include_router(subscription_auth_router)
+    _SUBSCRIPTION_AUTH_MODULE_AVAILABLE = True
+except ModuleNotFoundError as exc:
+    # The public mirror deliberately omits this private package. A missing
+    # dependency *inside* an installed package is a broken private deployment and
+    # must still fail startup instead of silently hiding the feature.
+    if exc.name != "subscription_auth":
+        raise
 
 # CORS configuration - use ALLOWED_ORIGINS env var (comma-separated) or default to same-origin only
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
@@ -982,7 +1147,7 @@ async def add_user(
                             billing_auto_refill_amount,
                             billing_max_limit,
                             web_search_mode
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'native')
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'native')
                     """, (
                         user_id,
                         prompt_id,
@@ -1174,7 +1339,7 @@ async def change_password(
             "reauthenticate": True,
         },
     )
-    response.delete_cookie("session")
+    response.delete_cookie(SESSION_COOKIE_NAME)
     return response
 
 @app.post("/api/set-password")
@@ -1233,7 +1398,7 @@ async def set_initial_password(
             "reauthenticate": True,
         }
     )
-    response.delete_cookie("session")
+    response.delete_cookie(SESSION_COOKIE_NAME)
     return response
 
 @app.get("/edit-profile")
@@ -1567,11 +1732,57 @@ async def api_credentials_page(request: Request, current_user: User = Depends(ge
     api_key_mode = await get_user_api_key_mode(current_user.id)
     requires_own_keys = await user_requires_own_keys(current_user.id)
 
+    # ChatGPT subscription (GPTSub) linking state for the settings card.
+    # Both reads are guarded so the open-source build (module absent) or a
+    # transient DB error simply hides the feature (fail-closed UI).
+    subscription_available = False
+    subscription_linked = False
+    subscription_revocation_pending = False
+    subscription_reset_required = False
+    subscription_plan_type = None
+    try:
+        import subscription_auth  # noqa: F401 -- private module; absent in the public GitHub mirror
+        from common import get_subscription_auth_enabled
+        subscription_available = await get_subscription_auth_enabled()
+    except Exception:
+        subscription_available = False
+    try:
+        from subscription_auth.gate import linked_blob_for_user
+
+        link_blob = await linked_blob_for_user(current_user.id)
+        if link_blob:
+            subscription_linked = True
+            subscription_plan_type = link_blob.get("plan_type")
+        else:
+            from subscription_auth.token_store import load_link
+
+            stored_blob = await load_link(current_user.id)
+            subscription_revocation_pending = bool(
+                isinstance(stored_blob, dict)
+                and stored_blob.get("status") == "revocation_pending"
+                and isinstance(stored_blob.get("auth_json"), dict)
+            )
+            from subscription_auth.linking import _stored_link_block
+
+            subscription_reset_required = (
+                await _stored_link_block(current_user.id) == "reset_required"
+            )
+    except Exception:
+        subscription_linked = False
+        subscription_revocation_pending = False
+        subscription_reset_required = True
+        subscription_plan_type = None
+
     context = await get_template_context(request, current_user)
     context.update({
         "current_user_id": current_user.id,
         "api_key_mode": api_key_mode,
-        "requires_own_keys": requires_own_keys
+        "requires_own_keys": requires_own_keys,
+        "subscription_available": subscription_available,
+        "subscription_linked": subscription_linked,
+        "subscription_revocation_pending": subscription_revocation_pending,
+        "subscription_reset_required": subscription_reset_required,
+        "subscription_plan_type": subscription_plan_type,
     })
     return templates.TemplateResponse("profile/api_credentials.html", context)
 
@@ -2403,7 +2614,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
             }
         })
 
-    token = request.cookies.get("session")
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         session_data = {"expired": True, "reason": "missing_token"}
         response = JSONResponse(content={
@@ -2415,7 +2626,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     try:
@@ -2431,7 +2642,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     exp = payload.get("exp")
@@ -2446,7 +2657,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     expires_in = int(exp) - int(time.time())
@@ -2461,7 +2672,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     user_info = payload.get("user_info")
@@ -2476,7 +2687,7 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
                 "brand_color_secondary": '#10B981'
             }
         })
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     used_magic_link = user_info.get("used_magic_link", False)
@@ -3145,6 +3356,38 @@ async def get_user_api_keys(user_id: int) -> dict:
         return {}
 
 
+def _save_profile_picture_variants(
+    content: bytes,
+    profile_directory: str,
+    user_hash: str,
+    alter_ego_suffix: str,
+) -> None:
+    """Decode, validate, resize, and persist profile pictures off the event loop."""
+    with PilImage.open(io.BytesIO(content)) as image:
+        width, height = image.size
+        if width * height > MAX_IMAGE_PIXELS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Image dimensions too large. Maximum is "
+                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                ),
+            )
+
+        image.load()
+        os.makedirs(profile_directory, exist_ok=True)
+        for size in (32, 64, 128, "fullsize"):
+            if size == "fullsize":
+                resized_image = image
+                filename = f"{user_hash}{alter_ego_suffix}_fullsize.webp"
+            else:
+                resized_image = resize_image(image, size)
+                filename = f"{user_hash}{alter_ego_suffix}_{size}.webp"
+
+            file_path = os.path.join(profile_directory, filename)
+            resized_image.save(file_path, "WEBP")
+
+
 @app.post("/upload-profile-picture")
 async def upload_profile_picture(
     file: UploadFile,
@@ -3160,26 +3403,11 @@ async def upload_profile_picture(
 
     profile_pictures_directory = os.path.join(users_directory, hash_prefix1, hash_prefix2, user_hash, "profile")
 
-    if not os.path.exists(profile_pictures_directory):
-        os.makedirs(profile_pictures_directory)
-
     content = await file.read()
 
     # Security: Check file size limit
     if len(content) > MAX_IMAGE_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024*1024)}MB")
-
-    try:
-        image = PilImage.open(io.BytesIO(content))
-        # Security: Check for decompression bombs (excessive pixel count)
-        width, height = image.size
-        if width * height > MAX_IMAGE_PIXELS:
-            raise HTTPException(status_code=400, detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels")
-    except UnidentifiedImageError:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
-    sizes = [32, 64, 128, 'fullsize']
-    ext = 'webp'
 
     # Generate suffix based on alter-ego ID if available
     if is_alter_ego:
@@ -3194,16 +3422,17 @@ async def upload_profile_picture(
     base_url = f"users/{hash_prefix1}/{hash_prefix2}/{user_hash}/profile/{user_hash}{alter_ego_suffix}"
 
     try:
-        for size in sizes:
-            if size == 'fullsize':
-                resized_image = image
-                filename = f"{user_hash}{alter_ego_suffix}_fullsize.{ext}"
-            else:
-                resized_image = resize_image(image, size)
-                filename = f"{user_hash}{alter_ego_suffix}_{size}.{ext}"
-
-            file_path = os.path.join(profile_pictures_directory, filename)
-            resized_image.save(file_path, ext.upper())
+        await asyncio.to_thread(
+            _save_profile_picture_variants,
+            content,
+            profile_pictures_directory,
+            user_hash,
+            alter_ego_suffix,
+        )
+    except UnidentifiedImageError:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error saving images: {str(e)}")
         raise HTTPException(status_code=500, detail="Error processing image")
@@ -3212,6 +3441,48 @@ async def upload_profile_picture(
 
 
 # ── Neko Glass Custom Wallpaper Endpoints ────────────────────────────────────
+
+def _save_nekoglass_wallpaper(content: bytes, wallpaper_path: str) -> None:
+    """Decode, validate, resize, and persist a wallpaper off the event loop."""
+    try:
+        with PilImage.open(io.BytesIO(content)) as image:
+            width, height = image.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Image dimensions too large. Maximum is "
+                        f"{MAX_IMAGE_PIXELS:,} pixels"
+                    ),
+                )
+
+            allowed_formats = {"JPEG", "PNG", "WEBP", "GIF"}
+            if image.format not in allowed_formats:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unsupported image format: {image.format}. "
+                        "Allowed: JPEG, PNG, WEBP, GIF"
+                    ),
+                )
+
+            image.load()
+            max_dimension = 3840
+            if max(width, height) > max_dimension:
+                image.thumbnail(
+                    (max_dimension, max_dimension),
+                    PilImage.Resampling.LANCZOS,
+                )
+
+            output = image if image.mode == "RGB" else image.convert("RGB")
+            try:
+                os.makedirs(os.path.dirname(wallpaper_path), exist_ok=True)
+                output.save(wallpaper_path, "WEBP", quality=85)
+            finally:
+                if output is not image:
+                    output.close()
+    except UnidentifiedImageError as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file") from exc
 
 @app.post("/api/nekoglass/wallpaper")
 async def upload_nekoglass_wallpaper(
@@ -3227,37 +3498,10 @@ async def upload_nekoglass_wallpaper(
     if len(content) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Wallpaper image too large. Maximum size is 5MB")
 
-    try:
-        image = PilImage.open(io.BytesIO(content))
-        # Decompression bomb check
-        width, height = image.size
-        if width * height > MAX_IMAGE_PIXELS:
-            raise HTTPException(status_code=400, detail=f"Image dimensions too large. Maximum is {MAX_IMAGE_PIXELS:,} pixels")
-        # Format whitelist
-        ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
-        if image.format not in ALLOWED_FORMATS:
-            raise HTTPException(status_code=400, detail=f"Unsupported image format: {image.format}. Allowed: JPEG, PNG, WEBP, GIF")
-    except UnidentifiedImageError:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
-    # Auto-resize large images to prevent processing timeouts (Cloudflare 524)
-    MAX_WALLPAPER_DIMENSION = 3840  # 4K is plenty for a wallpaper
-    if max(width, height) > MAX_WALLPAPER_DIMENSION:
-        ratio = MAX_WALLPAPER_DIMENSION / max(width, height)
-        new_width = int(width * ratio)
-        new_height = int(height * ratio)
-        image = image.resize((new_width, new_height), PilImage.Resampling.LANCZOS)
-
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(current_user.username)
     profile_dir = os.path.join(users_directory, hash_prefix1, hash_prefix2, user_hash, "profile")
-    os.makedirs(profile_dir, exist_ok=True)
-
-    # Convert to RGB for consistent WebP output (handles RGBA, P, LA, L, I, F, etc.)
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-
     wallpaper_path = os.path.join(profile_dir, "nekoglass-wallpaper.webp")
-    image.save(wallpaper_path, 'WEBP', quality=85)
+    await asyncio.to_thread(_save_nekoglass_wallpaper, content, wallpaper_path)
 
     return JSONResponse(content={"status": "ok"})
 
@@ -3461,7 +3705,7 @@ async def edit_profile(
                     logger.info(f"No voice_id found for voice_code: {sample_voice_id}")
 
             if alter_ego_id == "" or alter_ego_id == "0":
-                await cursor.execute("UPDATE USER_DETAILS SET current_alter_ego_id = 0 WHERE user_id = ?", (user_id,))
+                await cursor.execute("UPDATE USER_DETAILS SET current_alter_ego_id = NULL WHERE user_id = ?", (user_id,))
             elif alter_ego_id:
                 await cursor.execute("UPDATE USER_DETAILS SET current_alter_ego_id = ? WHERE user_id = ?", (alter_ego_id, user_id))
 
@@ -3477,13 +3721,13 @@ async def edit_profile(
                 status_code=200,
             )
             if phone_number_changed:
-                response.delete_cookie("session")
+                response.delete_cookie(SESSION_COOKIE_NAME)
             return response
         else:
             redirect_url = "/login" if phone_number_changed else "/edit-profile"
             response = RedirectResponse(url=redirect_url, status_code=303)
             if phone_number_changed:
-                response.delete_cookie("session")
+                response.delete_cookie(SESSION_COOKIE_NAME)
             return response
 
     except PhoneVerificationError as e:
@@ -3905,9 +4149,9 @@ async def delete_alter_ego(alter_ego_id: int, current_user: User = Depends(get_c
             # Delete the alter-ego from the database
             await cursor.execute("DELETE FROM USER_ALTER_EGOS WHERE id = ?", (alter_ego_id,))
 
-            # If this alter-ego was the current one, reset current_alter_ego_id to 0
+            # If this alter-ego was the current one, clear current_alter_ego_id (NULL = no alter ego)
             await cursor.execute(
-                "UPDATE USER_DETAILS SET current_alter_ego_id = 0 WHERE user_id = ? AND current_alter_ego_id = ?",
+                "UPDATE USER_DETAILS SET current_alter_ego_id = NULL WHERE user_id = ? AND current_alter_ego_id = ?",
                 (current_user.id, alter_ego_id)
             )
 
@@ -4043,38 +4287,38 @@ async def check_allow_image_generation(user_id: int) -> bool:
 async def check_session(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
         response = JSONResponse(content={"expired": True, "reason": "unauthenticated"})
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
-    token = request.cookies.get("session")
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         response = JSONResponse(content={"expired": True, "reason": "missing_token"})
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     try:
         payload = decode_jwt_cached(token, SECRET_KEY)
     except JWTError:
         response = JSONResponse(content={"expired": True, "reason": "invalid_token"})
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     exp = payload.get("exp")
     if exp is None:
         response = JSONResponse(content={"expired": True, "reason": "missing_expiration"})
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     expires_in = int(exp) - int(time.time())
     if expires_in <= 0:
         response = JSONResponse(content={"expired": True, "reason": "token_expired"})
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     user_info = payload.get("user_info")
     if not isinstance(user_info, dict):
         response = JSONResponse(content={"expired": True, "reason": "invalid_payload"})
-        response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+        response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return response
 
     used_magic_link = user_info.get("used_magic_link", False)
@@ -4134,6 +4378,7 @@ async def sitemap_xml():
         )
 
     from common import PUBLIC_PROFILE_DOMAIN
+    from marketplace.landing.paths import build_prompt_filesystem_path
 
     domain = PUBLIC_PROFILE_DOMAIN
     protocol = "http" if "localhost" in domain else "https"
@@ -4155,17 +4400,17 @@ async def sitemap_xml():
 
             if flags.public_landings_enabled:
                 # -- Public prompt landing pages --
-                # public=1, is_unlisted=0, has_landing_page=1, public_id IS NOT NULL
+                # Only trusted, publicly-servable landings belong in the sitemap:
+                # public=1, is_unlisted=0, has_landing_page=1, landing_trusted=1,
+                # public_id IS NOT NULL -- and only when home.html exists on disk.
                 cursor = await conn.execute("""
-                    SELECT p.public_id, p.name, p.created_at,
-                           CASE WHEN pcd.custom_domain IS NOT NULL AND pcd.is_active = 1
-                                AND pcd.verification_status = 1
-                                THEN pcd.custom_domain ELSE NULL END AS custom_domain
+                    SELECT p.public_id, p.name, p.created_at, p.id, u.username
                     FROM PROMPTS p
-                    LEFT JOIN PROMPT_CUSTOM_DOMAINS pcd ON p.id = pcd.prompt_id
+                    JOIN USERS u ON p.created_by_user_id = u.id
                     WHERE p.public = 1
                       AND p.is_unlisted = 0
                       AND p.has_landing_page = 1
+                      AND p.landing_trusted = 1
                       AND p.public_id IS NOT NULL
                 """)
                 prompt_rows = await cursor.fetchall()
@@ -4174,6 +4419,14 @@ async def sitemap_xml():
                     public_id = row[0]
                     name = row[1]
                     created_at = row[2]
+                    prompt_id = row[3]
+                    username = row[4]
+
+                    # Never advertise a landing whose home.html no longer exists
+                    # on disk (the DB flag can outlive the file).
+                    landing_dir = build_prompt_filesystem_path(username, prompt_id, name)
+                    if not (landing_dir / "home.html").is_file():
+                        continue
 
                     slug = slugify(name) if name else ""
 
@@ -4313,6 +4566,7 @@ async def dashboard(request: Request, current_user: User = Depends(get_current_u
             "manageable_prompts": manageable_prompts,
             "user_balance": user_balance,
             "captcha_enabled": get_captcha_runtime_status(),
+            "subscription_auth_available": _SUBSCRIPTION_AUTH_MODULE_AVAILABLE,
         })
         return templates.TemplateResponse("index.html", base_ctx)
 
@@ -4418,14 +4672,17 @@ async def magic_link_recovery(request: Request):
             from common import get_branding_for_user
             branding = await get_branding_for_user(user_id)
 
-            # Send email or display in console
-            email_sent = email_service.send_magic_link_email(email, magic_link, username, branding=branding)
+            # Send the recovery link without blocking the event loop.
+            email_sent = await asyncio.to_thread(
+                email_service.send_magic_link_email,
+                email,
+                magic_link,
+                username,
+                branding=branding,
+            )
 
             if email_sent:
                 message = "If your email is registered, you will receive a new magic link shortly."
-                if not email_service.use_email_service:
-                    message += " Check the console for your magic link."
-
                 return templates.TemplateResponse(
                     "magic_link_recovery.html",
                     _build_recovery_context(message, "success", next_url)
@@ -4451,14 +4708,28 @@ async def magic_link_recovery(request: Request):
     return templates.TemplateResponse("magic_link_recovery.html", _build_recovery_context(current_next_url=next_url))
 
 @app.get("/logout", response_class=HTMLResponse)
-def logout(request: Request):
+async def logout(request: Request, current_user: User = Depends(get_current_user)):
+    # A device-code login holds a live child process server-side. Tear down only
+    # entries owned by this authenticated user before clearing the signed session;
+    # never let a reused browser session act on another user's pending state.
+    if current_user is not None:
+        try:
+            from subscription_auth.linking import discard_pending_for_user
+
+            await discard_pending_for_user(current_user.id)
+        except (ImportError, AttributeError):
+            pass
+        except Exception:
+            logger.exception("Could not tear down pending subscription link on logout")
+    request.session.clear()
     response = templates.TemplateResponse("login.html", {
         "request": request,
         "message": "You have successfully logged out.",
         "captcha": get_captcha_config(),
         "google_oauth_available": bool(GOOGLE_CLIENT_ID)
     })
-    response.delete_cookie(key="session", path="/", samesite="lax", secure=SECURE_COOKIES)
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
+    response.delete_cookie(key="_oauth_state", path="/", samesite="lax", secure=SECURE_COOKIES)
 
     return response
 
@@ -4477,6 +4748,8 @@ async def create_user(request: Request, current_user: User = Depends(get_current
         prompts = await get_user_accessible_prompts(current_user, cursor)
 
         preserve_ids = [selected_machine] if selected_machine else []
+        # New account: it can never have a linked ChatGPT subscription yet, so
+        # GPTSub rows are hidden (fail-safe HIDE).
         llm_models_rows = await get_selector_llms(conn, preserve_ids=preserve_ids)
         llm_models = [
             (row["id"], row["machine"], row["model"], row["vision"])
@@ -4591,17 +4864,26 @@ async def create_user_post(
         raise HTTPException(status_code=400, detail="Invalid API key mode.")
 
     async with get_db_connection(readonly=True) as conn:
+        # `machine` is the selected LLM id (legacy form field name). Validate it is
+        # enabled and, for GPTSub, refuse it: a brand-new account can never have a
+        # linked ChatGPT subscription, so a GPTSub default would be inert.
         async with conn.execute(
             """
-            SELECT id
+            SELECT id, machine
             FROM LLM
             WHERE id = ?
               AND COALESCE(enabled, 1) = 1
             """,
             (machine,),
         ) as cursor:
-            if not await cursor.fetchone():
+            selected_default_llm = await cursor.fetchone()
+            if not selected_default_llm:
                 raise HTTPException(status_code=400, detail="Selected LLM is not available.")
+            if selected_default_llm["machine"] == "GPTSub":
+                raise HTTPException(
+                    status_code=400,
+                    detail="ChatGPT subscription models cannot be set as the default for a new account.",
+                )
 
     if phone:
         try:
@@ -4819,7 +5101,36 @@ async def edit_user_form(
         user_row = await cursor.fetchone()
 
         if user_row:
-            llm_models_rows = await get_selector_llms(conn, preserve_ids=[user_row[4]])
+            # GPTSub rows are shared across linked accounts, so filter them by this
+            # target user's saved live catalog (not merely a linked boolean).
+            from common import get_subscription_auth_enabled
+            gptsub_models = []
+            try:
+                gptsub_feature_enabled = await get_subscription_auth_enabled()
+            except Exception:
+                gptsub_feature_enabled = False
+            if gptsub_feature_enabled:
+                try:
+                    from subscription_auth.gate import linked_blob_for_user
+
+                    blob = await linked_blob_for_user(user_row[0])
+                    saved_models = (
+                        blob.get("available_models", [])
+                        if blob and blob.get("models_sync_status") == "synced"
+                        else []
+                    )
+                    if isinstance(saved_models, list):
+                        gptsub_models = [
+                            model for model in saved_models
+                            if isinstance(model, str) and model and len(model) <= 128
+                        ]
+                except Exception:
+                    gptsub_models = []
+            llm_models_rows = await get_selector_llms(
+                conn,
+                preserve_ids=[user_row[4]],
+                gptsub_models=gptsub_models,
+            )
             llm_models = [
                 (row["id"], row["machine"], row["model"], row["vision"])
                 for row in llm_models_rows
@@ -5103,7 +5414,7 @@ async def update_user(
 
         await cursor.execute(
             """
-            SELECT id, COALESCE(enabled, 1)
+            SELECT id, COALESCE(enabled, 1), machine
             FROM LLM
             WHERE id = ?
             """,
@@ -5112,8 +5423,46 @@ async def update_user(
         selected_llm = await cursor.fetchone()
         if not selected_llm:
             raise HTTPException(status_code=400, detail="Selected LLM does not exist.")
-        if not bool(selected_llm[1]) and int(machine) != int(current_user_llm_id or 0):
+        if not bool(selected_llm[1]) and (
+            selected_llm[2] == "GPTSub"
+            or int(machine) != int(current_user_llm_id or 0)
+        ):
             raise HTTPException(status_code=400, detail="Selected LLM is disabled.")
+        if selected_llm[2] == "GPTSub":
+            # A personal model is valid only for the target user's exact catalog.
+            # Do not preserve an unchanged GPTSub default after unlink.
+            await cursor.execute("SELECT model FROM LLM WHERE id = ?", (machine,))
+            selected_model_row = await cursor.fetchone()
+            selected_model = selected_model_row[0] if selected_model_row else None
+            try:
+                from common import get_subscription_auth_enabled
+                from subscription_auth.gate import linked_blob_for_user
+
+                target_blob = (
+                    await linked_blob_for_user(user_id)
+                    if await get_subscription_auth_enabled()
+                    else None
+                )
+                available_models = (
+                    target_blob.get("available_models", [])
+                    if target_blob
+                    and target_blob.get("models_sync_status") == "synced"
+                    else []
+                )
+                target_model_allowed = (
+                    isinstance(available_models, list)
+                    and selected_model in available_models
+                )
+            except Exception:
+                target_model_allowed = False
+            if not target_model_allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "This ChatGPT subscription model is not available to this "
+                        "user; reconnect their subscription or choose another model."
+                    ),
+                )
 
         if new_username != current_username:
             raise HTTPException(
@@ -5220,8 +5569,7 @@ async def update_user(
                     is_target_admin = (role_id == 1)
                     is_role_change = (user_role_id != role_id)
                     if is_target_admin and is_role_change:
-                        forwarded = request.headers.get("X-Forwarded-For")
-                        req_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else None)
+                        req_ip = get_client_ip(request)
                         if not await is_elevated(current_user.id, request_ip=req_ip):
                             return JSONResponse(content={"success": False, "error": "Ultra Admin+ elevation required to change an admin's role."})
                         await cursor.execute("SELECT role_name FROM USER_ROLES WHERE id = ?", (user_role_id,))
@@ -5550,8 +5898,7 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
         ultra_admin_elevated = False
         ultra_admin_ttl = -1
         if await current_user.is_admin:
-            forwarded = request.headers.get("X-Forwarded-For")
-            req_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else None)
+            req_ip = get_client_ip(request)
             ultra_admin_elevated = await is_elevated(current_user.id, request_ip=req_ip)
             if ultra_admin_elevated:
                 ultra_admin_ttl = await get_elevation_ttl(current_user.id)
@@ -5669,8 +6016,7 @@ async def set_user_activation(request: Request, username: str, current_user: Use
             return JSONResponse(content={"error": "You cannot deactivate your own account."}, status_code=400)
 
         if target_role_name == "admin" and target_user_id != current_user.id:
-            forwarded = request.headers.get("X-Forwarded-For")
-            request_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else None)
+            request_ip = get_client_ip(request)
             if not await is_elevated(current_user.id, request_ip=request_ip):
                 return JSONResponse(
                     content={"error": "Ultra Admin+ elevation required to change another admin's activation status."},
@@ -5716,7 +6062,7 @@ async def set_user_activation(request: Request, username: str, current_user: Use
 
 
 def _get_rate_limit_reset_warning() -> Optional[str]:
-    worker_count = int(os.getenv("UVICORN_WORKERS", "3"))
+    worker_count = int(os.getenv("UVICORN_WORKERS", "1"))
     if worker_count > 1:
         return (
             f"Rate limits are stored in-memory per worker. UVICORN_WORKERS={worker_count}, "
@@ -5751,7 +6097,7 @@ async def clear_user_rate_limits(request: Request, username: str, current_user: 
         "cleared": cleared,
         "username": username,
         "warning": warning,
-        "worker_count": int(os.getenv("UVICORN_WORKERS", "3"))
+        "worker_count": int(os.getenv("UVICORN_WORKERS", "1"))
     })
 
 
@@ -5773,7 +6119,7 @@ async def clear_ip_rate_limits(request: Request, ip: str, current_user: User = D
         "cleared": cleared,
         "ip": ip,
         "warning": warning,
-        "worker_count": int(os.getenv("UVICORN_WORKERS", "3"))
+        "worker_count": int(os.getenv("UVICORN_WORKERS", "1"))
     })
 
 
@@ -5811,7 +6157,7 @@ async def get_user_rate_limit_status(request: Request, username: str, current_us
         "limits": status_data,
         "blocked_login_ips": blocked_ips,
         "warning": _get_rate_limit_reset_warning(),
-        "worker_count": int(os.getenv("UVICORN_WORKERS", "3"))
+        "worker_count": int(os.getenv("UVICORN_WORKERS", "1"))
     })
 
 @app.post("/api/refresh-session")
@@ -5826,7 +6172,7 @@ async def refresh_session(request: Request, current_user: User = Depends(get_cur
 
         expires_delta = None
         if current_user.used_magic_link:
-            current_token = request.cookies.get("session")
+            current_token = request.cookies.get(SESSION_COOKIE_NAME)
             if not current_token:
                 raise HTTPException(status_code=401, detail="Session token missing")
 
@@ -5862,7 +6208,7 @@ async def refresh_session(request: Request, current_user: User = Depends(get_cur
         else:
             max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # convert to seconds
         response.set_cookie(
-            key="session",
+            key=SESSION_COOKIE_NAME,
             value=token,
             max_age=max_age,
             httponly=True,
@@ -5880,262 +6226,79 @@ async def refresh_session(request: Request, current_user: User = Depends(get_cur
 
 
 async def delete_user(username, current_user, request_ip=None):
+    """Delete one account, delegating the full cascade to the user_deletion service.
+
+    This endpoint wrapper keeps only the caller-authorization check. The service
+    owns the active-usage guard (re-checked inside its write transaction, where
+    BEGIN IMMEDIATE serializes with reservation creation), the
+    admin/financial/Atagia guards, the external purge, the local cascade, and the
+    filesystem cleanup, so the HTTP path and the CLI behave identically.
+    """
+    username = username.strip()
+    username_ci = username.lower()
+    logger.debug("Attempting to delete username %s by user %s", username, current_user.username)
+
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
-        username = username.strip()
-        username_ci = username.lower()
-        logger.debug(f"Attempting to delete username: {username} by user: {current_user.username}")
-
-        # First verify if the user to delete exists
-        await cursor.execute("""
-            SELECT u.id, u.username, u.role_id
+        await cursor.execute(
+            """
+            SELECT u.id
             FROM users u
             JOIN user_details ud ON u.id = ud.user_id
             WHERE LOWER(u.username) = ?
-        """, (username_ci,))
+            """,
+            (username_ci,),
+        )
         user = await cursor.fetchone()
-
         if not user:
-            logger.warning(f"Delete attempt failed: User {username} not found")
+            logger.warning("Delete attempt failed: User %s not found", username)
             raise HTTPException(status_code=404, detail="User not found")
-
         user_id = user[0]
-        target_role_id = user[2]
 
-        # Verify if the target user is admin
-        await cursor.execute("SELECT role_name FROM user_roles WHERE id = ?", (target_role_id,))
-        target_role = await cursor.fetchone()
-        is_target_admin = target_role and target_role[0] == 'admin'
-
-        # Verify if the current user is admin
+        # Non-admins may only delete their own account. Deleting admin accounts is
+        # blocked entirely by the service (admin_account guard), so no elevation
+        # path is needed here.
         is_current_user_admin = await current_user.is_admin
         is_self_deletion = current_user.username.strip().lower() == username_ci
-
-        # Security validations
-        ultra_admin_elevated = await is_elevated(current_user.id, request_ip=request_ip) if is_current_user_admin else False
-
-        if (not is_current_user_admin and not is_self_deletion) or \
-           (is_current_user_admin and is_target_admin and not is_self_deletion and not ultra_admin_elevated):
-            logger.warning(f"Unauthorized deletion attempt: {current_user.username} trying to delete {username}")
+        if not is_current_user_admin and not is_self_deletion:
+            logger.warning(
+                "Unauthorized deletion attempt: %s trying to delete %s",
+                current_user.username,
+                username,
+            )
             raise HTTPException(
                 status_code=403,
-                detail="Unauthorized: You do not have permission to delete this account"
+                detail="Unauthorized: You do not have permission to delete this account",
             )
 
-        audit_admin_deletion = bool(is_target_admin and ultra_admin_elevated)
-        held_blob_ids = []
-        transaction_started = False
-        try:
-            await conn.rollback()
-            await reconcile_stale_usage_reservations()
-            # Serialize this guard with reservation creation and the user DELETE.
-            # Once this write transaction starts, a new reservation cannot slip
-            # between the active-usage check and the account cascade.
-            await conn.execute("BEGIN IMMEDIATE")
-            transaction_started = True
-            await cursor.execute(
-                """
-                SELECT 1
-                FROM BILLING_USAGE_RESERVATIONS
-                WHERE status = 'active'
-                  AND (user_id = ? OR billing_account_id = ?)
-                LIMIT 1
-                """,
-                (user_id, user_id),
-            )
-            if await cursor.fetchone():
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Account cannot be deleted while provider usage is "
-                        "still in progress. Please try again shortly."
-                    ),
-                )
+    result = await user_deletion.delete_user_account(user_id=user_id)
 
-            # Capture the DISTINCT blobs this user references BEFORE the DB
-            # cascade. Deleting the USERS row cascades FILE_ATTACHMENTS away, so
-            # the blob ids must be recorded now; the ones left unreferenced are
-            # pruned after the transaction commits (blobs still referenced by
-            # other users survive -- dedupe-correct).
-            await cursor.execute(
-                "SELECT DISTINCT blob_id FROM FILE_ATTACHMENTS WHERE user_id = ?",
-                (user_id,),
-            )
-            held_blob_ids = [row[0] for row in await cursor.fetchall()]
-
-            # Cascade deletion of all related data in database
-            async with conn.cursor() as delete_cursor:
-                # Clean welcome messages for this user's prompts and packs before cascade loop
-                await delete_cursor.execute(
-                    "DELETE FROM WELCOME_MESSAGES WHERE entity_type = 'prompt' AND entity_id IN (SELECT id FROM PROMPTS WHERE created_by_user_id = ?)",
-                    (user_id,)
-                )
-                await delete_cursor.execute(
-                    "DELETE FROM WELCOME_MESSAGES WHERE entity_type = 'pack' AND entity_id IN (SELECT id FROM PACKS WHERE created_by_user_id = ?)",
-                    (user_id,)
-                )
-                # Also clean any read tracking for this user
-                await delete_cursor.execute(
-                    "DELETE FROM WELCOME_MESSAGE_READS WHERE user_id = ?",
-                    (user_id,)
-                )
-                # Nullify self-referencing FKs in USER_DETAILS before their targets are deleted
-                await delete_cursor.execute("UPDATE USER_DETAILS SET current_alter_ego_id = NULL WHERE user_id = ?", (user_id,))
-
-                # -- Cross-user cleanup: other users' data referencing this user's prompts/packs --
-                # Nullify conversation references to this user's prompts (other users keep their convs)
-                prompt_subq = "(SELECT id FROM PROMPTS WHERE created_by_user_id = ?)"
-                pack_subq = "(SELECT id FROM PACKS WHERE created_by_user_id = ?)"
-                ext_subq = f"(SELECT id FROM PROMPT_EXTENSIONS WHERE prompt_id IN {prompt_subq})"
-
-                await delete_cursor.execute(f"UPDATE CONVERSATIONS SET role_id = NULL WHERE role_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"UPDATE CONVERSATIONS SET active_extension_id = NULL WHERE active_extension_id IN {ext_subq}", (user_id,))
-                await delete_cursor.execute(f"UPDATE USER_DETAILS SET current_prompt_id = NULL WHERE current_prompt_id IN {prompt_subq}", (user_id,))
-                # Delete cross-user FK rows referencing this user's prompts
-                await delete_cursor.execute(f"DELETE FROM PROMPT_PERMISSIONS WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM PROMPT_PURCHASES WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM ENTITLEMENTS WHERE asset_type = 'prompt' AND asset_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM PACK_ITEMS WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM CREATOR_EARNINGS WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM WATCHDOG_EVENTS WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM WATCHDOG_STATE WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM PENDING_REGISTRATIONS WHERE prompt_id IN {prompt_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM PENDING_ENTITLEMENTS WHERE prompt_id IN {prompt_subq}", (user_id,))
-                # Delete cross-user FK rows referencing this user's packs
-                await delete_cursor.execute(f"DELETE FROM PACK_PURCHASES WHERE pack_id IN {pack_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM ENTITLEMENTS WHERE asset_type = 'pack' AND asset_id IN {pack_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM PENDING_REGISTRATIONS WHERE pack_id IN {pack_subq}", (user_id,))
-                await delete_cursor.execute(f"DELETE FROM PENDING_ENTITLEMENTS WHERE pack_id IN {pack_subq}", (user_id,))
-
-                # -- Same-user cascade: delete this user's own data in dependency order --
-                cascade_tables = [
-                    ("MESSAGES", "user_id = ?"),
-                    ("WATCHDOG_EVENTS", "conversation_id IN (SELECT id FROM CONVERSATIONS WHERE user_id = ?)"),
-                    ("WATCHDOG_STATE", "conversation_id IN (SELECT id FROM CONVERSATIONS WHERE user_id = ?)"),
-                    ("CONVERSATIONS", "user_id = ?"),
-                    ("CHAT_FOLDERS", "user_id = ?"),
-                    ("SERVICE_USAGE", "user_id = ?"),
-                    ("USAGE_DAILY", "user_id = ?"),
-                    ("TRANSACTIONS", "user_id = ?"),
-                    ("DISCOUNTS", "created_by_user_id = ?"),
-                    ("PROMPT_PERMISSIONS", "user_id = ?"),
-                    ("PROMPT_PURCHASES", "buyer_user_id = ?"),
-                    ("FAVORITE_PROMPTS", "user_id = ?"),
-                    ("PACK_PURCHASES", "buyer_user_id = ?"),
-                    ("PACK_ACCESS", "user_id = ?"),
-                    ("ENTITLEMENTS", "user_id = ?"),
-                    ("PACKS", "created_by_user_id = ?"),
-                    ("CREATOR_EARNINGS", "creator_id = ?"),
-                    ("CREATOR_EARNINGS", "consumer_id = ?"),
-                    ("CREATOR_EARNINGS", "referral_id = ?"),
-                    ("CREATOR_PROFILES", "user_id = ?"),
-                    ("USER_CREATOR_RELATIONSHIPS", "user_id = ?"),
-                    ("USER_CREATOR_RELATIONSHIPS", "creator_id = ?"),
-                    ("USER_CAPTIVE_DOMAINS", "user_id = ?"),
-                    ("PROMPT_CUSTOM_DOMAINS", "activated_by_user_id = ?"),
-                    ("USER_BRANDING", "user_id = ?"),
-                    ("USER_ALTER_EGOS", "user_id = ?"),
-                    ("WHATSAPP_LOG", "user_id = ?"),
-                    ("TELEGRAM_LOG", "user_id = ?"),
-                    ("PENDING_ENTITLEMENTS", "user_id = ?"),
-                    ("MAGIC_LINKS", "user_id = ?"),
-                    ("PROMPT_SECTION_CONFIGS", "prompt_id IN (SELECT id FROM PROMPTS WHERE created_by_user_id = ?)"),
-                    ("PROMPT_AGENT_MAPPING", "prompt_id IN (SELECT id FROM PROMPTS WHERE created_by_user_id = ?)"),
-                    ("PROMPTS", "created_by_user_id = ?"),
-                ]
-
-                for table, condition in cascade_tables:
-                    await delete_cursor.execute(f"DELETE FROM {table} WHERE {condition}", (user_id,))
-
-                # -- Nullify references (preserve data but remove FK links) --
-                await delete_cursor.execute("UPDATE ADMIN_AUDIT_LOG SET target_user_id = NULL WHERE target_user_id = ?", (user_id,))
-                await delete_cursor.execute("UPDATE ADMIN_AUDIT_LOG SET admin_id = NULL WHERE admin_id = ?", (user_id,))
-                await delete_cursor.execute("UPDATE USER_DETAILS SET billing_account_id = NULL WHERE billing_account_id = ?", (user_id,))
-                await delete_cursor.execute("UPDATE LANDING_PAGE_ANALYTICS SET converted_user_id = NULL WHERE converted_user_id = ?", (user_id,))
-                await delete_cursor.execute("UPDATE USER_DETAILS SET created_by = NULL WHERE created_by = ?", (user_id,))
-
-                # Delete user details and user record last
-                await delete_cursor.execute("DELETE FROM USER_DETAILS WHERE user_id = ?", (user_id,))
-                await delete_cursor.execute("DELETE FROM USERS WHERE id = ?", (user_id,))
-                logger.debug(f"Deleted user record for {username}")
-
-                await conn.commit()
-                transaction_started = False
-                logger.info(f"Successfully deleted user {username} and all associated data")
-
-        except HTTPException:
-            if transaction_started:
-                await conn.rollback()
-            raise
-        except Exception as e:
-            if transaction_started:
-                await conn.rollback()
-            logger.error(f"Error during user deletion process for {username}: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error during user deletion process: {str(e)}"
-            )
-
-    # External side effects only run after the account deletion committed.
-    if audit_admin_deletion:
-        await log_admin_action(
-            admin_id=current_user.id,
-            action_type="ultra_admin_deleted_admin",
-            request=None,
-            target_user_id=None,
-            details=(
-                f"Admin '{username}' deleted by '{current_user.username}' "
-                "via Ultra Admin+"
+    if result.status == "not_found":
+        raise HTTPException(status_code=404, detail="User not found")
+    if result.status == "blocked":
+        raise HTTPException(status_code=409, detail=result.summary)
+    if result.status == "atagia_unreachable":
+        logger.error("User deletion blocked for %s: Atagia unreachable", username)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Account deletion requires the external memory service, which is "
+                "currently unreachable. Please retry later."
             ),
         )
+    if result.status not in ("completed", "completed_with_cleanup_errors"):
+        logger.error("Unexpected deletion status for %s: %s", username, result.status)
+        raise HTTPException(status_code=500, detail="Error during user deletion process.")
 
-    try:
-        await add_revoked_user(user_id)
-        logger.debug(f"Added user {username} to revoked list")
-    except Exception as exc:
-        # The account is already gone from the source of truth, so a transient
-        # revocation-cache failure must not report the committed deletion as a
-        # failure to the caller.
+    if result.status == "completed_with_cleanup_errors":
         logger.error(
-            "Could not add deleted user %s to the revocation cache: %s",
+            "User %s deleted but some cleanup steps failed: %s",
             username,
-            exc,
+            result.cleanup_errors,
         )
 
-    # Prune the blobs this user held that are now unreferenced. Runs only after
-    # the deletion transaction has fully closed (the `async with` above exited):
-    # prune_unreferenced_blobs opens its own connection and BEGIN IMMEDIATE.
-    # Blobs still referenced by other users are kept (dedupe-correct). The
-    # account is already gone from the source of truth, so a cleanup failure
-    # must not report the committed deletion as a failure -- log and continue.
-    # Guard the empty case: passing [] would fall into the no-arg branch and
-    # trigger a platform-wide zero-ref scan instead of a no-op.
-    if held_blob_ids:
-        try:
-            await prune_unreferenced_blobs(held_blob_ids)
-        except Exception as exc:
-            logger.error(
-                "Error pruning blobs for deleted user %s: %s", username, str(exc)
-            )
-
-    # Remove the user's entire media tree (conversation files, generated media,
-    # profile pictures, prompt landing pages). Leave the two shared hash-prefix
-    # parent dirs untouched. Same non-fail-fast policy as above: the DB rows are
-    # already gone, so disk-cleanup failure must not resurrect a half-deleted
-    # user (this mirrors prune_unreferenced_blobs' own unlink handling).
-    user_dir = get_user_directory(username)
-    if os.path.exists(user_dir):
-        try:
-            shutil.rmtree(user_dir)
-            logger.debug(f"Deleted user directory: {user_dir}")
-        except Exception as e:
-            logger.error(f"Error deleting user directory {user_dir}: {str(e)}")
-
+    logger.info("Successfully deleted user %s and all associated data", username)
     return {"message": f"User {username} successfully deleted"}
-
-async def delete_selected_users(usernames, current_user, request_ip=None):
-    for username in usernames:
-        await delete_user(username, current_user, request_ip=request_ip)
 
 # ── Ultra Admin+ endpoints ──────────────────────────────────────────
 
@@ -6163,7 +6326,12 @@ async def ultra_admin_request_code(request: Request, current_user: User = Depend
         return JSONResponse(content={"error": "Please wait before requesting another code."}, status_code=429)
 
     # Send code via email
-    sent = email_service.send_ultra_admin_code(email, code, current_user.username)
+    sent = await asyncio.to_thread(
+        email_service.send_ultra_admin_code,
+        email,
+        code,
+        current_user.username,
+    )
     if not sent:
         await redis_client.delete(f"ultra_admin:code:{current_user.id}")
         await redis_client.delete(f"ultra_admin:cooldown:{current_user.id}")
@@ -6199,8 +6367,7 @@ async def ultra_admin_verify(request: Request, current_user: User = Depends(get_
         return JSONResponse(content={"error": "Invalid code format."}, status_code=400)
 
     # Get request IP
-    forwarded = request.headers.get("X-Forwarded-For")
-    ip_address = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    ip_address = get_client_ip(request)
 
     success, message = await verify_elevation_code(current_user.id, code, ip_address)
 
@@ -6255,8 +6422,7 @@ async def ultra_admin_status(request: Request, current_user: User = Depends(get_
     if current_user is None or not await current_user.is_admin:
         return JSONResponse(content={"elevated": False, "remaining_seconds": -1})
 
-    forwarded = request.headers.get("X-Forwarded-For")
-    ip_address = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    ip_address = get_client_ip(request)
 
     elevated = await is_elevated(current_user.id, request_ip=ip_address)
     ttl = await get_elevation_ttl(current_user.id) if elevated else -1
@@ -6270,19 +6436,21 @@ async def delete_users(request: Request, current_user: User = Depends(get_curren
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
-    if not (await current_user.is_admin or await current_user.is_user):
+    # Admin-only: deleting accounts is an administrative action. Regular users
+    # delete their own account through /api/delete-account.
+    if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
 
     form_data = await request.form()
     selected_users = form_data.getlist("selected_users")
 
-    # Extract request IP for Ultra Admin+ validation
-    forwarded = request.headers.get("X-Forwarded-For")
-    request_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else None)
+    # Extract request IP for downstream auditing.
+    request_ip = get_client_ip(request)
 
     if not selected_users:
         return JSONResponse(content={"error": "No users selected."}, status_code=400)
 
+    outcomes = []
     errors = []
     error_statuses = []
     deleted = []
@@ -6290,21 +6458,43 @@ async def delete_users(request: Request, current_user: User = Depends(get_curren
         try:
             await delete_user(username, current_user, request_ip=request_ip)
             deleted.append(username)
+            outcomes.append({"username": username, "status": "deleted"})
         except HTTPException as e:
             errors.append(f"{username}: {e.detail}")
             error_statuses.append(e.status_code)
+            outcomes.append(
+                {
+                    "username": username,
+                    "status": "blocked" if e.status_code == 409 else "failed",
+                    "http_status": e.status_code,
+                    "detail": e.detail,
+                }
+            )
 
     if errors and not deleted:
         unique_statuses = set(error_statuses)
         status_code = error_statuses[0] if len(unique_statuses) == 1 else 400
         return JSONResponse(
-            content={"detail": "; ".join(errors)},
+            content={"detail": "; ".join(errors), "outcomes": outcomes},
             status_code=status_code,
         )
     elif errors:
-        return JSONResponse(content={"message": f"Deleted {len(deleted)} user(s). Errors: {'; '.join(errors)}"})
+        return JSONResponse(
+            content={
+                "message": f"Deleted {len(deleted)} of {len(selected_users)} user(s).",
+                "deleted": deleted,
+                "errors": errors,
+                "outcomes": outcomes,
+            }
+        )
     else:
-        return JSONResponse(content={"message": f"Successfully deleted {len(deleted)} user(s)."})
+        return JSONResponse(
+            content={
+                "message": f"Successfully deleted {len(deleted)} user(s).",
+                "deleted": deleted,
+                "outcomes": outcomes,
+            }
+        )
 
 @app.post("/api/delete-account")
 async def delete_account(request: Request, current_user: User = Depends(get_current_user)):
@@ -6320,8 +6510,10 @@ async def delete_account(request: Request, current_user: User = Depends(get_curr
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Do not leak internal error detail to the client; full context is logged.
+        logger.exception("Unexpected error deleting account for user %s", current_user.username)
+        raise HTTPException(status_code=500, detail="Error during account deletion.")
 
 LLM_FALLBACK_MODEL = "gpt-5-mini"
 
@@ -6510,7 +6702,7 @@ async def _reassign_and_delete_llm(
         """
         SELECT id, machine, model, input_token_cost, output_token_cost, vision
         FROM LLM
-        WHERE machine != 'GranSabio'
+        WHERE machine NOT IN ('GranSabio', 'GPTSub')
           AND COALESCE(enabled, 1) = 1
         """
     ) as cursor:
@@ -6537,13 +6729,15 @@ async def _reassign_and_delete_llm(
 
 async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_model: str = LLM_FALLBACK_MODEL) -> Dict[str, int]:
     async with conn.execute(
-        "SELECT id FROM LLM WHERE model = ? ORDER BY id DESC LIMIT 1",
+        "SELECT id FROM LLM WHERE model = ? AND machine NOT IN ('GPTSub', 'GranSabio') ORDER BY id DESC LIMIT 1",
         (fallback_model,),
     ) as cursor:
         fallback_row = await cursor.fetchone()
 
     if not fallback_row:
-        async with conn.execute("SELECT id FROM LLM ORDER BY id DESC LIMIT 1") as cursor:
+        async with conn.execute(
+            "SELECT id FROM LLM WHERE machine NOT IN ('GPTSub', 'GranSabio') ORDER BY id DESC LIMIT 1"
+        ) as cursor:
             fallback_row = await cursor.fetchone()
         if not fallback_row:
             raise HTTPException(status_code=500, detail="No LLMs available for orphan reassignment")
@@ -6628,7 +6822,36 @@ async def api_llms_list(
                 continue
 
     async with get_db_connection(readonly=True) as conn:
-        rows = await get_selector_llms(conn, preserve_ids=preserved)
+        # Shared GPTSub rows are visible only when their model id occurs in this
+        # user's saved live catalog. Fail-safe HIDE on every read/decrypt error.
+        from common import get_subscription_auth_enabled
+        gptsub_models = []
+        try:
+            gptsub_feature_enabled = await get_subscription_auth_enabled()
+        except Exception:
+            gptsub_feature_enabled = False
+        if gptsub_feature_enabled:
+            try:
+                from subscription_auth.gate import linked_blob_for_user
+
+                blob = await linked_blob_for_user(current_user.id)
+                saved_models = (
+                    blob.get("available_models", [])
+                    if blob and blob.get("models_sync_status") == "synced"
+                    else []
+                )
+                if isinstance(saved_models, list):
+                    gptsub_models = [
+                        model for model in saved_models
+                        if isinstance(model, str) and model and len(model) <= 128
+                    ]
+            except Exception:
+                gptsub_models = []
+        rows = await get_selector_llms(
+            conn,
+            preserve_ids=preserved,
+            gptsub_models=gptsub_models,
+        )
 
     return [
         {
@@ -6671,6 +6894,11 @@ async def create_llm_post(
 
     if machine == 'GranSabio' and model == 'gransabio-pipeline':
         raise HTTPException(status_code=403, detail="This machine/model combination is reserved for the system.")
+    if machine.strip().casefold() == "gptsub":
+        raise HTTPException(
+            status_code=403,
+            detail="GPTSub rows are synchronized from linked user accounts and cannot be created manually.",
+        )
 
     metadata = build_manual_insert_metadata(machine, model, vision)
     async with get_db_connection() as conn:
@@ -6733,6 +6961,11 @@ async def edit_llm(request: Request, llm_id: int, current_user: User = Depends(g
         # Block editing the synthetic GranSabio LLM
         if llm[0] == 'GranSabio' and llm[1] == 'gransabio-pipeline':
             raise HTTPException(status_code=403, detail="System LLM cannot be edited.")
+        if llm[0] == "GPTSub":
+            raise HTTPException(
+                status_code=403,
+                detail="Synchronized GPTSub rows cannot be edited manually.",
+            )
 
         context = await get_template_context(request, current_user)
         context.update({
@@ -6785,9 +7018,19 @@ async def update_llm(
             row = await cur.fetchone()
         if row and row[0] == 'GranSabio' and row[1] == 'gransabio-pipeline':
             raise HTTPException(status_code=403, detail="System LLM cannot be modified.")
+        if row and row[0] == "GPTSub":
+            raise HTTPException(
+                status_code=403,
+                detail="Synchronized GPTSub rows cannot be modified manually.",
+            )
     # Prevent renaming another LLM into the reserved pair
     if machine == 'GranSabio' and model == 'gransabio-pipeline':
         raise HTTPException(status_code=403, detail="This machine/model combination is reserved for the system.")
+    if machine.strip().casefold() == "gptsub":
+        raise HTTPException(
+            status_code=403,
+            detail="The GPTSub machine is reserved for account catalog synchronization.",
+        )
 
     if not row:
         raise HTTPException(status_code=404, detail="LLM not found")
@@ -6861,6 +7104,11 @@ async def delete_llm(llm_id: int, current_user: User = Depends(get_current_user)
             row = await cur.fetchone()
         if row and row[0] == 'GranSabio' and row[1] == 'gransabio-pipeline':
             raise HTTPException(status_code=403, detail="System LLM cannot be deleted.")
+        if row and row[0] == "GPTSub":
+            raise HTTPException(
+                status_code=403,
+                detail="Synchronized GPTSub rows cannot be deleted manually.",
+            )
 
     async with get_db_connection() as conn:
         try:
@@ -6907,7 +7155,7 @@ async def bulk_delete_llms(request: Request, current_user: User = Depends(get_cu
         try:
             await conn.execute("BEGIN IMMEDIATE")
             async with conn.execute(
-                f"SELECT id FROM LLM WHERE id IN ({placeholders}) AND machine NOT IN ('OpenRouter', 'GranSabio')",
+                f"SELECT id FROM LLM WHERE id IN ({placeholders}) AND machine NOT IN ('OpenRouter', 'GranSabio', 'GPTSub')",
                 sanitized_ids
             ) as cursor:
                 target_rows = await cursor.fetchall()
@@ -7383,6 +7631,114 @@ async def admin_gransabio_test(request: Request, current_user: User = Depends(ge
     return JSONResponse(content=result)
 
 
+# Subscription Auth Admin (subscription-auth kill switch)
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/subscription-auth")
+async def admin_subscription_auth_get(request: Request, current_user: User = Depends(get_current_user)):
+    if current_user is None or not await current_user.is_admin:
+        return RedirectResponse(url="/")
+    if not _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
+        raise HTTPException(status_code=404, detail="Not found")
+    from common import get_subscription_auth_enabled
+    from subscription_auth.linking import pending_link_count
+    from subscription_auth.request_security import ensure_csrf_token
+    from subscription_auth.token_store import load_link
+    from subscription_auth.doctor import runtime_ready
+
+    context = await get_template_context(request, current_user)
+    context["enabled"] = await get_subscription_auth_enabled()
+    context["subscription_csrf_token"] = ensure_csrf_token(request)
+    context["pending_link_count"] = await pending_link_count()
+    context["runtime_ready"] = await runtime_ready()
+
+    linked_count = 0
+    state_counts: dict[str, int] = {}
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            "SELECT user_id FROM USER_DETAILS WHERE subscription_auth IS NOT NULL"
+        )
+        candidate_rows = await cursor.fetchall()
+        llm_cursor = await conn.execute(
+            "SELECT id, model, display_name, enabled FROM LLM "
+            "WHERE machine = 'GPTSub' ORDER BY id"
+        )
+        context["gptsub_models"] = [dict(row) for row in await llm_cursor.fetchall()]
+    for candidate in candidate_rows:
+        blob = await load_link(int(candidate["user_id"]))
+        status = blob.get("status", "broken") if isinstance(blob, dict) else "broken"
+        state_counts[status] = state_counts.get(status, 0) + 1
+        if status == "linked":
+            linked_count += 1
+    context["linked_count"] = linked_count
+    context["link_state_counts"] = state_counts
+    return templates.TemplateResponse("admin_subscription_auth.html", context)
+
+
+@app.post("/admin/subscription-auth")
+async def admin_subscription_auth_post(request: Request, current_user: User = Depends(get_current_user)):
+    if current_user is None or not await current_user.is_admin:
+        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+    if not _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
+        raise HTTPException(status_code=404, detail="Not found")
+    from subscription_auth.request_security import validate_mutation_request
+
+    csrf_rejection = validate_mutation_request(request)
+    if csrf_rejection:
+        return csrf_rejection
+    from common import set_subscription_auth_enabled
+    data = await request.json()
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        return JSONResponse(
+            content={"success": False, "message": "'enabled' must be a boolean."},
+            status_code=400,
+        )
+    if enabled:
+        from subscription_auth.gate import subscription_auth_emergency_off_latched
+
+        if subscription_auth_emergency_off_latched():
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": (
+                        "GPTSub was disabled by a runtime safety check. Restart "
+                        "Aurvek after fixing the runtime and rerun the doctor."
+                    ),
+                },
+                status_code=503,
+            )
+        from subscription_auth.doctor import runtime_ready
+
+        if not await runtime_ready():
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": (
+                        "GPTSub runtime is not ready. Keep the switch off and run "
+                        "the secret-free production doctor."
+                    ),
+                },
+                status_code=503,
+            )
+    if not enabled:
+        # Linearize an emergency OFF locally before the DB write or any await. If
+        # persistence is unavailable, the process must still remain denied; a
+        # deliberate re-enable therefore requires a clean restart and doctor run.
+        from subscription_auth.gate import latch_subscription_auth_off
+
+        latch_subscription_auth_off()
+    await set_subscription_auth_enabled(enabled)
+    if not enabled:
+        # The switch is already durably OFF, so no poll can pass its final
+        # pre-persistence revalidation. Tear down every held device flow promptly
+        # instead of retaining child processes until their individual TTLs.
+        from subscription_auth.linking import shutdown_pending_links
+
+        await shutdown_pending_links()
+    return JSONResponse(content={"success": True, "message": "Subscription auth setting saved."})
+
+
 # ============================================================
 # Security Guard LLM Configuration
 # ============================================================
@@ -7413,7 +7769,12 @@ async def admin_security_guard(request: Request, current_user: User = Depends(ge
             if row and row[0]:
                 current_llm_id = int(row[0])
 
-        llm_rows = await get_selector_llms(conn, preserve_ids=[current_llm_id] if current_llm_id else [])
+        # The Security Guard is a system-wide LLM, not a per-user personal
+        # subscription; GPTSub (ChatGPT subscription) must never be selectable here.
+        llm_rows = await get_selector_llms(
+            conn,
+            preserve_ids=[current_llm_id] if current_llm_id else [],
+        )
         llms = [(row["id"], row["machine"], row["model"]) for row in llm_rows]
 
     context = await get_template_context(request, current_user)
@@ -7437,9 +7798,6 @@ async def save_security_guard_config(
     if not await current_user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Convert empty string to None
-    llm_id_value = llm_id if llm_id else None
-
     async with get_db_connection() as conn:
         # Ensure SYSTEM_CONFIG table exists
         await conn.execute("""
@@ -7450,6 +7808,24 @@ async def save_security_guard_config(
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # A system-wide guard cannot borrow one user's private ChatGPT
+        # subscription. Validate the forged/manual POST as well as filtering the
+        # selector UI; only a live non-GPTSub row may be persisted.
+        llm_id_value = None
+        if llm_id:
+            try:
+                parsed_llm_id = int(llm_id)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="Invalid LLM selection")
+            cursor = await conn.execute(
+                "SELECT id FROM LLM "
+                "WHERE id = ? AND enabled = 1 AND machine != 'GPTSub'",
+                (parsed_llm_id,),
+            )
+            if await cursor.fetchone() is None:
+                raise HTTPException(status_code=400, detail="Invalid LLM selection")
+            llm_id_value = str(parsed_llm_id)
 
         # Update or insert the config
         await conn.execute("""
@@ -7888,7 +8264,7 @@ async def api_create_system_prompt_block(request: Request, current_user: User = 
     return JSONResponse(content=created, status_code=201)
 
 
-@app.put("/api/system-prompt-blocks/{block_id}")
+@app.put("/api/system-prompt-blocks/{block_id:int}")
 async def api_update_system_prompt_block(block_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Update an existing system prompt block."""
     if current_user is None:
@@ -9875,6 +10251,7 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
                 SELECT id
                 FROM LLM
                 WHERE COALESCE(enabled, 1) = 1
+                  AND machine != 'GPTSub'
                 ORDER BY id
                 LIMIT 1
                 """
@@ -9917,6 +10294,46 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
                 ucr_creator_id = await get_prompt_owner_id(prompt_id)
             except Exception:
                 pass
+
+        # Standalone prompt landing (not pack-derived): branch free vs paid,
+        # mirroring the email/password path in verify_email. A paid prompt must
+        # never be granted at registration -> create the user with defaults and
+        # route them to the purchase flow. A free prompt applies its landing
+        # registration config so OAuth and email registrants behave identically.
+        # landing_config is only non-None here for free packs (resolve_pack_oauth_context
+        # returns a config dict), so `landing_config is None` isolates direct prompt landings.
+        analytics_prompt_id = None  # Preserve for analytics even if prompt_id is cleared (paid prompt)
+        paid_prompt_purchase_url = None
+        if prompt_id and landing_config is None:
+            try:
+                async with get_db_connection(readonly=True) as price_conn:
+                    price_cursor = await price_conn.execute(
+                        "SELECT purchase_price FROM PROMPTS WHERE id = ?",
+                        (prompt_id,),
+                    )
+                    price_row = await price_cursor.fetchone()
+                prompt_purchase_price = float(price_row[0]) if price_row and price_row[0] else 0.0
+
+                if prompt_purchase_price > 0:
+                    # Paid prompt: keep defaults (no free config/access), preserve
+                    # the id for analytics, and route to purchase. No creator
+                    # relationship here (it is recorded when the purchase completes),
+                    # so drop the eagerly-resolved owner to match verify_email.
+                    analytics_prompt_id = prompt_id
+                    paid_prompt_purchase_url = f"/purchase/prompt/{prompt_id}"
+                    logger.info(f"Prompt {prompt_id} is paid - OAuth user created with defaults, purchase required")
+                    prompt_id = None
+                    ucr_creator_id = None
+                else:
+                    # Free prompt: apply the landing registration config via the
+                    # same helper the email path uses, so both registration paths
+                    # produce identical setup.
+                    landing_config = await get_landing_registration_config(prompt_id)
+                    if landing_config.get("billing_mode") == "user_pays":
+                        prompt_owner_id = ucr_creator_id
+            except Exception as config_err:
+                logger.warning(f"Could not get landing config for prompt {prompt_id}: {config_err}")
+                # Continue with defaults
 
         # Create user with pack config if available, otherwise with defaults
         if landing_config:
@@ -10045,20 +10462,33 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
             except Exception as pack_err:
                 logger.error(f"Failed to grant pack access via Google OAuth: {pack_err}")
 
-        # Analytics conversion tracking
+        # Analytics conversion tracking. Pack registrations attribute the
+        # conversion to the pack; standalone prompt registrations to the prompt
+        # (mirrors verify_email, including paid prompts via analytics_prompt_id).
         visitor_id = request.cookies.get('_aurvek_visitor')
-        if visitor_id and analytics_pack_id:
+        if visitor_id and (analytics_pack_id or prompt_id or analytics_prompt_id):
             try:
                 async with get_db_connection() as conv_conn:
-                    await conv_conn.execute('''
-                        UPDATE LANDING_PAGE_ANALYTICS
-                        SET converted = 1, converted_user_id = ?
-                        WHERE rowid = (
-                            SELECT rowid FROM LANDING_PAGE_ANALYTICS
-                            WHERE pack_id = ? AND visitor_id = ? AND converted = 0
-                            ORDER BY visit_timestamp DESC LIMIT 1
-                        )
-                    ''', (user_id, analytics_pack_id, visitor_id))
+                    if analytics_pack_id:
+                        await conv_conn.execute('''
+                            UPDATE LANDING_PAGE_ANALYTICS
+                            SET converted = 1, converted_user_id = ?
+                            WHERE rowid = (
+                                SELECT rowid FROM LANDING_PAGE_ANALYTICS
+                                WHERE pack_id = ? AND visitor_id = ? AND converted = 0
+                                ORDER BY visit_timestamp DESC LIMIT 1
+                            )
+                        ''', (user_id, analytics_pack_id, visitor_id))
+                    else:
+                        await conv_conn.execute('''
+                            UPDATE LANDING_PAGE_ANALYTICS
+                            SET converted = 1, converted_user_id = ?
+                            WHERE rowid = (
+                                SELECT rowid FROM LANDING_PAGE_ANALYTICS
+                                WHERE prompt_id = ? AND visitor_id = ? AND converted = 0
+                                ORDER BY visit_timestamp DESC LIMIT 1
+                            )
+                        ''', (user_id, prompt_id or analytics_prompt_id, visitor_id))
                     await conv_conn.commit()
             except Exception as conv_err:
                 logger.warning(f"Could not mark analytics conversion for Google OAuth: {conv_err}")
@@ -10067,7 +10497,9 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
         user = await get_user_by_id(user_id)
         logger.info(f"Created new {target_role} from Google OAuth: user_id={user_id}, username={username}")
 
-        redirect_url = paid_pack_landing_url or oauth_next  # None for free packs, URL for paid packs
+        # Redirect precedence mirrors verify_email: paid pack landing, then paid
+        # prompt purchase flow, then the normal post-login destination.
+        redirect_url = paid_pack_landing_url or paid_prompt_purchase_url or oauth_next
         user_info = await create_user_info(user, used_magic_link=False)
         default_redirect = await get_after_login_redirect(user.id)
         return create_login_response(user_info, redirect_url=redirect_url, default_redirect=default_redirect)
@@ -10168,6 +10600,8 @@ async def verify_email(request: Request, token: str):
         ucr_creator_id = None
         analytics_pack_id = pack_id  # Preserve for analytics even if pack_id is cleared
         paid_pack_landing_url = None
+        analytics_prompt_id = None  # Preserve for analytics even if prompt_id is cleared (paid prompt)
+        paid_prompt_purchase_url = None
 
         if pack_id and not is_user:
             # Pack registration: revalidate pack state and use pack's landing_reg_config
@@ -10214,6 +10648,9 @@ async def verify_email(request: Request, token: str):
                             if pack_config_row[0]:
                                 stored_config = orjson.loads(pack_config_row[0])
                                 landing_config.update(stored_config)
+                            landing_config = await strip_personal_subscription_default(
+                                landing_config
+                            )
                             ucr_creator_id = pack_config_row[1]
                             if landing_config.get("billing_mode") == "user_pays":
                                 prompt_owner_id = pack_config_row[1]
@@ -10224,11 +10661,30 @@ async def verify_email(request: Request, token: str):
                 analytics_pack_id = None
         elif prompt_id and not is_user:
             try:
-                landing_config = await get_landing_registration_config(prompt_id)
-                ucr_creator_id = await get_prompt_owner_id(prompt_id)
-                # If user_pays mode, reuse the same owner ID for billing
-                if landing_config.get("billing_mode") == "user_pays":
-                    prompt_owner_id = ucr_creator_id
+                # Branch free vs paid prompt landings. A paid prompt must never be
+                # granted at registration: create the user with defaults and route
+                # them to the purchase flow (mirrors the paid-pack path above).
+                async with get_db_connection(readonly=True) as conn:
+                    price_cursor = await conn.execute(
+                        "SELECT purchase_price FROM PROMPTS WHERE id = ?",
+                        (prompt_id,),
+                    )
+                    price_row = await price_cursor.fetchone()
+                prompt_purchase_price = float(price_row[0]) if price_row and price_row[0] else 0.0
+
+                if prompt_purchase_price > 0:
+                    # Paid prompt: keep landing_config at defaults (no free balance/access);
+                    # config is applied when the purchase webhook fires.
+                    analytics_prompt_id = prompt_id
+                    paid_prompt_purchase_url = f"/purchase/prompt/{prompt_id}"
+                    logger.info(f"Prompt {prompt_id} is paid - user created with defaults, purchase required")
+                    prompt_id = None
+                else:
+                    landing_config = await get_landing_registration_config(prompt_id)
+                    ucr_creator_id = await get_prompt_owner_id(prompt_id)
+                    # If user_pays mode, reuse the same owner ID for billing
+                    if landing_config.get("billing_mode") == "user_pays":
+                        prompt_owner_id = ucr_creator_id
             except Exception as config_err:
                 logger.warning(f"Could not get landing config for prompt {prompt_id}: {config_err}")
                 # Continue with defaults
@@ -10247,6 +10703,7 @@ async def verify_email(request: Request, token: str):
                     SELECT id
                     FROM LLM
                     WHERE COALESCE(enabled, 1) = 1
+                      AND machine != 'GPTSub'
                     ORDER BY id
                     LIMIT 1
                     """
@@ -10377,7 +10834,7 @@ async def verify_email(request: Request, token: str):
             # Pack registrations attribute the conversion to the pack, not the prompt
             # Use analytics_pack_id to track paid pack registrations even after pack_id is cleared
             visitor_id = request.cookies.get('_aurvek_visitor')
-            if visitor_id and (analytics_pack_id or prompt_id):
+            if visitor_id and (analytics_pack_id or prompt_id or analytics_prompt_id):
                 try:
                     async with get_db_connection() as conv_conn:
                         if analytics_pack_id:
@@ -10399,16 +10856,22 @@ async def verify_email(request: Request, token: str):
                                     WHERE prompt_id = ? AND visitor_id = ? AND converted = 0
                                     ORDER BY visit_timestamp DESC LIMIT 1
                                 )
-                            ''', (user_id, prompt_id, visitor_id))
+                            ''', (user_id, prompt_id or analytics_prompt_id, visitor_id))
                         await conv_conn.commit()
                 except Exception as conv_err:
                     logger.warning(f"Could not mark analytics conversion: {conv_err}")
 
-            # Redirect: paid pack users go to pack landing page, others to chat
-            redirect_url = paid_pack_landing_url if paid_pack_landing_url else "/chat"
+            # Redirect: paid pack users go to the pack landing page, paid prompt
+            # users go to the prompt purchase flow, everyone else to chat.
+            if paid_pack_landing_url:
+                redirect_url = paid_pack_landing_url
+            elif paid_prompt_purchase_url:
+                redirect_url = paid_prompt_purchase_url
+            else:
+                redirect_url = "/chat"
             response = RedirectResponse(url=redirect_url, status_code=303)
             response.set_cookie(
-                key="session",
+                key=SESSION_COOKIE_NAME,
                 value=access_token,
                 httponly=True,
                 max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -10740,18 +11203,19 @@ async def register_submit(
         branding = await get_user_branding(prompt_owner_id)
 
     # Send verification email
-    email_sent = email_service.send_verification_email(
+    email_sent = await asyncio.to_thread(
+        email_service.send_verification_email,
         to_email=email,
         verification_url=verification_url,
         is_user=(target_role == "user"),
         prompt_name=prompt_name,
-        branding=branding
+        branding=branding,
     )
 
     if not email_sent:
-        logger.error(f"Failed to send verification email to {email}")
-        # Still return success to avoid email enumeration
-        # The console will show the link if email service is disabled
+        logger.error("Failed to send verification email to %s", email)
+        # Keep the public response generic to avoid email enumeration; the
+        # delivery failure remains explicit in the service result and logs.
 
     logger.info(f"Registration pending for {email} as {target_role}")
 
@@ -11044,12 +11508,7 @@ async def disable_cloudflare_cache(
     if not await is_admin(current_user.id):
         return JSONResponse(content={"error": "Admin access required."}, status_code=403)
 
-    forwarded = request.headers.get("X-Forwarded-For")
-    request_ip = (
-        forwarded.split(",")[0].strip()
-        if forwarded
-        else (request.client.host if request.client else "unknown")
-    )
+    request_ip = get_client_ip(request)
     if not await is_elevated(current_user.id, request_ip=request_ip):
         return JSONResponse(
             content={
@@ -12080,15 +12539,15 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
         user_id = current_user.id
-        is_admin_user = await is_admin(user_id)
 
         # Get user's accessible packs via entitlements
         await cursor.execute(f'''
             SELECT p.id, p.name, p.slug, p.description, p.cover_image,
-                   p.created_by_user_id,
+                   p.created_by_user_id, creator.username AS created_by_username,
                    (SELECT COUNT(*) FROM PACK_ITEMS pi WHERE pi.pack_id = p.id AND pi.is_active = 1) as prompt_count
             FROM PACKS p
             JOIN ENTITLEMENTS e ON e.asset_type = 'pack' AND e.asset_id = p.id
+            JOIN USERS creator ON creator.id = p.created_by_user_id
             WHERE e.user_id = ? AND {active_entitlement_condition("e")}
             ORDER BY e.created_at DESC, e.id DESC
             LIMIT 50
@@ -12096,17 +12555,15 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
         packs = [dict(row) for row in await cursor.fetchall()]
 
         # Check welcome files for packs
-        from welcome_service import _get_pack_info
         for pack in packs:
             try:
-                pack_info = await _get_pack_info(pack['id'])
-                if pack_info:
-                    pack_dir = get_pack_path(pack['id'], pack_info)
-                    pack['has_welcome'] = os.path.isfile(os.path.join(pack_dir, "welcome", "index.html"))
-                else:
-                    pack['has_welcome'] = False
+                pack_dir = get_pack_path(pack['id'], pack)
+                pack['has_welcome'] = os.path.isfile(
+                    os.path.join(pack_dir, "welcome", "index.html")
+                )
             except Exception:
                 pack['has_welcome'] = False
+            pack.pop('created_by_username', None)
 
         # Get user's accessible prompts not in any pack
         await cursor.execute('''
@@ -12132,11 +12589,13 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
         if all_prompts_access:
             await cursor.execute('''
                 SELECT p.id, p.name, p.description, p.image, p.extensions_enabled,
+                       creator.username AS created_by_username,
                        (SELECT COUNT(*) FROM PROMPT_EXTENSIONS pe WHERE pe.prompt_id = p.id) as extension_count,
                        CASE WHEN p.created_by_user_id = ? THEN 1
                             WHEN EXISTS (SELECT 1 FROM PROMPT_PERMISSIONS pp2 WHERE pp2.prompt_id = p.id AND pp2.user_id = ? AND pp2.permission_level = 'owner') THEN 1
                             ELSE 0 END as is_mine
                 FROM PROMPTS p
+                JOIN USERS creator ON creator.id = p.created_by_user_id
                 WHERE 1=1
             ''' + pack_exclusion + '''
                 ORDER BY p.name
@@ -12145,11 +12604,13 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
         else:
             query = f'''
                 SELECT DISTINCT p.id, p.name, p.description, p.image, p.extensions_enabled,
+                       creator.username AS created_by_username,
                        (SELECT COUNT(*) FROM PROMPT_EXTENSIONS pe WHERE pe.prompt_id = p.id) as extension_count,
                        CASE WHEN p.created_by_user_id = ? THEN 1
                             WHEN EXISTS (SELECT 1 FROM PROMPT_PERMISSIONS pp2 WHERE pp2.prompt_id = p.id AND pp2.user_id = ? AND pp2.permission_level = 'owner') THEN 1
                             ELSE 0 END as is_mine
                 FROM PROMPTS p
+                JOIN USERS creator ON creator.id = p.created_by_user_id
                 LEFT JOIN PROMPT_PERMISSIONS pp ON p.id = pp.prompt_id AND pp.user_id = ?
                 WHERE (
                     EXISTS (SELECT 1 FROM PROMPT_PERMISSIONS pp2 WHERE pp2.prompt_id = p.id AND pp2.user_id = ? AND pp2.permission_level IN ('owner', 'edit'))
@@ -12183,11 +12644,11 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
         # Check welcome files for loose prompts
         for p in loose_prompts:
             try:
-                pi = await get_prompt_info(p['id'])
-                prompt_dir = get_prompt_path(p['id'], pi)
+                prompt_dir = get_prompt_path(p['id'], p)
                 p['has_welcome'] = os.path.isfile(os.path.join(prompt_dir, "welcome", "index.html"))
             except Exception:
                 p['has_welcome'] = False
+            p.pop('created_by_username', None)
 
         # Get user branding via UCR (USER_CREATOR_RELATIONSHIPS)
         branding = None
@@ -12236,13 +12697,19 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
         if marketplace_discovery_enabled() and (public_prompts_access or all_prompts_access):
             if all_prompts_access:
                 await cursor.execute('''
-                    SELECT p.id, p.name, p.created_at FROM PROMPTS p
+                    SELECT p.id, p.name, p.created_at,
+                           creator.username AS created_by_username
+                    FROM PROMPTS p
+                    JOIN USERS creator ON creator.id = p.created_by_user_id
                     WHERE p.public = 1
                     ORDER BY p.created_at DESC LIMIT 5
                 ''')
             else:
                 await cursor.execute('''
-                    SELECT p.id, p.name, p.created_at FROM PROMPTS p
+                    SELECT p.id, p.name, p.created_at,
+                           creator.username AS created_by_username
+                    FROM PROMPTS p
+                    JOIN USERS creator ON creator.id = p.created_by_user_id
                     WHERE p.public = 1 AND (p.purchase_price IS NULL OR p.purchase_price <= 0)
                     ORDER BY p.created_at DESC LIMIT 5
                 ''')
@@ -12251,11 +12718,11 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
             # Check welcome files for latest prompts
             for p in latest_prompts:
                 try:
-                    pi = await get_prompt_info(p['id'])
-                    prompt_dir = get_prompt_path(p['id'], pi)
+                    prompt_dir = get_prompt_path(p['id'], p)
                     p['has_welcome'] = os.path.isfile(os.path.join(prompt_dir, "welcome", "index.html"))
                 except Exception:
                     p['has_welcome'] = False
+                p.pop('created_by_username', None)
 
         # Generate prompt image URLs for loose prompts
         new_expiration = datetime.now(timezone.utc) + timedelta(hours=MEDIA_TOKEN_EXPIRE_HOURS)
@@ -12474,9 +12941,11 @@ async def get_home_pack(pack_id: int, request: Request, current_user: User = Dep
         # Prompts in this pack
         await cursor.execute('''
             SELECT pr.id, pr.name, pr.description, pr.image, pr.extensions_enabled,
+                   creator.username AS created_by_username,
                    (SELECT COUNT(*) FROM PROMPT_EXTENSIONS pe WHERE pe.prompt_id = pr.id) as extension_count
             FROM PROMPTS pr
             JOIN PACK_ITEMS pi ON pi.prompt_id = pr.id
+            JOIN USERS creator ON creator.id = pr.created_by_user_id
             WHERE pi.pack_id = ? AND pi.is_active = 1
             ORDER BY pi.display_order
         ''', (pack_id,))
@@ -12493,25 +12962,34 @@ async def get_home_pack(pack_id: int, request: Request, current_user: User = Dep
                 except Exception:
                     pass
 
-        # For each prompt, get extensions list if enabled
+        # Resolve all enabled prompt extensions in one query, preserving per-prompt order.
+        enabled_prompt_ids = [p['id'] for p in prompts if p['extensions_enabled']]
+        extensions_by_prompt = {prompt_id: [] for prompt_id in enabled_prompt_ids}
+        if enabled_prompt_ids:
+            placeholders = ",".join("?" for _ in enabled_prompt_ids)
+            await cursor.execute(
+                f'''SELECT prompt_id, id, name, slug, description
+                    FROM PROMPT_EXTENSIONS
+                    WHERE prompt_id IN ({placeholders})
+                    ORDER BY prompt_id, display_order''',
+                enabled_prompt_ids,
+            )
+            for row in await cursor.fetchall():
+                extension = dict(row)
+                prompt_id_for_extension = extension.pop('prompt_id')
+                extensions_by_prompt[prompt_id_for_extension].append(extension)
+
         for p in prompts:
-            if p['extensions_enabled']:
-                await cursor.execute('''
-                    SELECT id, name, slug, description FROM PROMPT_EXTENSIONS
-                    WHERE prompt_id = ? ORDER BY display_order
-                ''', (p['id'],))
-                p['extensions'] = [dict(r) for r in await cursor.fetchall()]
-            else:
-                p['extensions'] = []
+            p['extensions'] = extensions_by_prompt.get(p['id'], [])
 
         # Check welcome files for pack prompts
         for p in prompts:
             try:
-                pi = await get_prompt_info(p['id'])
-                prompt_dir = get_prompt_path(p['id'], pi)
+                prompt_dir = get_prompt_path(p['id'], p)
                 p['has_welcome'] = os.path.isfile(os.path.join(prompt_dir, "welcome", "index.html"))
             except Exception:
                 p['has_welcome'] = False
+            p.pop('created_by_username', None)
 
         # Recent conversations in this pack
         await cursor.execute('''
@@ -12530,13 +13008,9 @@ async def get_home_pack(pack_id: int, request: Request, current_user: User = Dep
 
     # Check for welcome file
     try:
-        pack_info_for_path = await _get_pack_info_for_path(pack_id)
-        if pack_info_for_path:
-            pack_dir = get_pack_path(pack_id, pack_info_for_path)
-            welcome_path = os.path.join(pack_dir, "welcome", "index.html")
-            pack_data['has_welcome'] = os.path.isfile(welcome_path)
-        else:
-            pack_data['has_welcome'] = False
+        pack_dir = get_pack_path(pack_id, pack_data)
+        welcome_path = os.path.join(pack_dir, "welcome", "index.html")
+        pack_data['has_welcome'] = os.path.isfile(welcome_path)
     except Exception:
         pack_data['has_welcome'] = False
 
@@ -13284,21 +13758,6 @@ async def unmute_welcome_message(message_id: int, current_user: User = Depends(g
 app.include_router(prompt_custom_domain_router)
 
 
-# Add this to handle cleanup during shutdown
-@app.on_event("shutdown")
-async def shutdown_event():
-    # Close async Twilio client
-    if async_twilio is not None:
-        await async_twilio.close()
-
-    # Cancel all pending tasks except the current task
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-
-    # Wait for all tasks to be cancelled
-    await asyncio.gather(*tasks, return_exceptions=True)
-
 _dual_mode_active = False  # Set before uvicorn.run, read by GranSabio startup check
 
 if __name__ == '__main__':
@@ -13306,7 +13765,7 @@ if __name__ == '__main__':
     dual_mode = False
     use_ssl = True
     host = '0.0.0.0'
-    worker_count = int(os.getenv("UVICORN_WORKERS", "3"))
+    worker_count = int(os.getenv("UVICORN_WORKERS", "1"))
 
     if 'dev' in sys.argv:
         # Development mode: HTTP only
@@ -13343,6 +13802,9 @@ if __name__ == '__main__':
             print(f"   Cert file: {ssl_certfile}")
             if dual_mode:
                 print("   Dual mode: Will start HTTP server only")
+                dual_mode = False
+                _dual_mode_active = False
+                os.environ.pop("_AURVEK_DUAL_MODE", None)
                 use_ssl = False
             else:
                 print("   HTTPS mode requested but falling back to HTTP")

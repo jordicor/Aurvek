@@ -20,6 +20,7 @@ import pytest_asyncio
 # backend merely because the developer's .env points at production-like hosts.
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("SECURITY_REDIS_MODE", "off")
+os.environ.setdefault("USE_EMAIL_SERVICE", "false")
 
 # ---------------------------------------------------------------------------
 # Event loop
@@ -234,9 +235,6 @@ def _clean_tables(db_path):
         "USER_ACTIVITY_SESSION_CONVERSATIONS",
         "USER_ACTIVITY_SESSIONS",
         "USER_WELLBEING_PREFERENCES",
-        "ATAGIA_SYNC_STATE",
-        "ATAGIA_SYNC_RUNS",
-        "ATAGIA_MESSAGE_LINKS",
         "MEMORY_PROVIDER_SYNC_STATE",
         "MEMORY_PROVIDER_SYNC_RUNS",
         "MEMORY_PROVIDER_CONVERSATION_LINKS",

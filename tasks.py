@@ -25,7 +25,7 @@ def generate_mp3_task(conversation_id: int, user_id: int, is_admin: bool):
     asyncio.run(generate_and_save_mp3(conversation_id, user_id, is_admin))
 
 
-@dramatiq.actor
+@dramatiq.actor(max_retries=5, min_backoff=10_000, max_backoff=300_000)
 def download_elevenlabs_audio_task(conversation_id: int, session_id: str, user_id: int):
     import asyncio
     from integrations.elevenlabs.service import service as elevenlabs_service

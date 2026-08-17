@@ -205,6 +205,9 @@
                             <a href="/admin/services" class="dashboard-card-link"><i class="fas fa-server"></i> Service Management</a>
                             <a href="/admin/memory" class="dashboard-card-link"><i class="fas fa-database"></i> System Memory</a>
                             <a href="/admin/gransabio" class="dashboard-card-link"><i class="fas fa-brain"></i> GranSabio</a>
+                            {% if subscription_auth_available %}
+                            <a href="/admin/subscription-auth" class="dashboard-card-link"><i class="fas fa-id-card"></i> Subscription Auth</a>
+                            {% endif %}
                         </div>
                     </div>
                 </div>

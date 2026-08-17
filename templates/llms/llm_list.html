@@ -163,6 +163,15 @@
                         {% endif %}
                     </td>
                     <td>
+                        {% if llm.machine == 'GPTSub' %}
+                        <button type="button"
+                                class="btn btn-sm {{ 'btn-outline-success' if llm.enabled else 'btn-outline-secondary' }}"
+                                disabled
+                                title="Managed by linked-account catalog synchronization"
+                                data-bs-toggle="tooltip">
+                            <i class="fas {{ 'fa-toggle-on' if llm.enabled else 'fa-toggle-off' }}"></i>
+                        </button>
+                        {% else %}
                         <button type="button"
                                 class="btn btn-sm {{ 'btn-outline-success' if llm.enabled else 'btn-outline-secondary' }}"
                                 onclick="toggleLlmEnabled({{ llm.id }}, {{ 'false' if llm.enabled else 'true' }})"
@@ -170,6 +179,7 @@
                                 data-bs-toggle="tooltip">
                             <i class="fas {{ 'fa-toggle-on' if llm.enabled else 'fa-toggle-off' }}"></i>
                         </button>
+                        {% endif %}
                     </td>
                     <td>
                         <span class="badge provider-badge provider-{{ llm.machine }}">{{ llm.machine }}</span>
@@ -193,12 +203,16 @@
                     </td>
                     <td><span class="badge bg-secondary">{{ llm.sync_status or 'manual' }}</span></td>
                     <td class="text-end table-actions">
+                        {% if llm.machine == 'GPTSub' %}
+                        <span class="badge bg-secondary" title="Managed from Subscription Auth">Managed</span>
+                        {% else %}
                         <a href="/admin/llm/edit/{{ llm.id }}" class="btn btn-sm btn-outline-primary" title="Edit" data-bs-toggle="tooltip">
                             <i class="fas fa-edit"></i>
                         </a>
                         <button onclick="deleteLlm({{ llm.id }})" class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="tooltip">
                             <i class="fas fa-trash"></i>
                         </button>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

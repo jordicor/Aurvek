@@ -10,6 +10,7 @@ from common import (
     MAX_CHAT_IMAGE_DIMENSION,
     READONLY_MODE,
     _get_marketplace_template_flags,
+    get_subscription_auth_enabled,
     get_user_api_key_mode,
     templates,
     user_has_valid_api_keys,
@@ -47,6 +48,31 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
     await ensure_conversation_privacy_schema()
     if not admin_view and effective_user_id == current_user.id:
         await purge_stale_incognito_conversations_for_user(current_user)
+
+    # GPTSub rows are shared, but authorization is personal. Derive the selector
+    # intersection from this user's decryptable live catalog; a linked boolean would
+    # leak models available only to another account. Fail-safe HIDE on every error.
+    gptsub_models: list[str] = []
+    try:
+        gptsub_feature_enabled = await get_subscription_auth_enabled()
+        if gptsub_feature_enabled:
+            from subscription_auth.gate import linked_blob_for_user
+
+            linked_blob = await linked_blob_for_user(effective_user_id)
+            saved_models = (
+                linked_blob.get("available_models", [])
+                if linked_blob and linked_blob.get("models_sync_status") == "synced"
+                else []
+            )
+            if isinstance(saved_models, list):
+                gptsub_models = [
+                    model
+                    for model in saved_models
+                    if isinstance(model, str) and model and len(model) <= 128
+                ]
+    except Exception:
+        gptsub_models = []
+
     async with conn.cursor() as cursor:
         await cursor.execute(
             """
@@ -72,10 +98,6 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 c.role_id,
                 COALESCE(p.image, p2.image) AS bot_picture,
                 COALESCE(p.description, p2.description) AS prompt_description,
-                (SELECT json_group_array(json_object('id', id, 'machine', machine, 'model', model, 'enabled', enabled, 'display_name', display_name))
-                 FROM LLM
-                 WHERE machine != 'GranSabio'
-                   AND (COALESCE(enabled, 1) = 1 OR id = ud.llm_id OR id = c.llm_id)) AS llm_models_json,
                 (SELECT json_group_array(json_object('id', id, 'name', name)) FROM Voices) AS voices_json,
                 ud.current_alter_ego_id,
                 ae.name AS alter_ego_name,
@@ -108,7 +130,17 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
 
         logger.debug("Retrieved start_date from database: %s", full_data["start_date"])
 
-        llm_models = orjson.loads(full_data["llm_models_json"]) if full_data["llm_models_json"] else []
+        from llm_catalog import get_selector_llms
+
+        llm_model_rows = await get_selector_llms(
+            conn,
+            preserve_ids=[
+                full_data["current_model_type"],
+                full_data["new_chat_model_type"],
+            ],
+            gptsub_models=gptsub_models,
+        )
+        llm_models = [dict(row) for row in llm_model_rows]
         llm_models.sort(key=lambda m: (m.get("machine", ""), m.get("display_name") or m.get("model", "")))
         available_voices = orjson.loads(full_data["voices_json"]) if full_data["voices_json"] else []
 
@@ -142,6 +174,10 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
         api_key_mode = await get_user_api_key_mode(effective_user_id)
         requires_own_keys = await user_requires_own_keys(effective_user_id)
         has_own_keys = await user_has_valid_api_keys(effective_user_id)
+        # Keep this as the generic API-key capability. The browser adds the
+        # exact active GPTSub llm_id dynamically; treating the mere presence of
+        # any linked model as permission would incorrectly enable a different
+        # platform model that still requires an API key.
         can_send_messages = not (requires_own_keys and not has_own_keys)
 
         await cursor.execute(
@@ -207,14 +243,15 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                            COALESCE(p.force_web_search, 0) as web_search_forced,
                            p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                            COALESCE(p.is_paid, 0) as is_paid,
-                           c.last_activity
+                           c.last_activity, c.llm_id, l.machine, c.role_id
                     FROM conversations c
                     JOIN llm l ON c.llm_id = l.id
                     LEFT JOIN prompts p ON c.role_id = p.id
-                    WHERE c.id = ? AND (c.folder_id IS NULL OR c.folder_id = 0)
+                    WHERE c.id = ? AND c.user_id = ?
+                      AND (c.folder_id IS NULL OR c.folder_id = 0)
                       AND COALESCE(c.hidden_from_history, 0) = 0
                     """,
-                    (platform, conv_id),
+                    (platform, conv_id, effective_user_id),
                 )
                 ext_conv = await cursor.fetchone()
                 if ext_conv:
@@ -230,7 +267,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                    COALESCE(p.force_web_search, 0) as web_search_forced,
                    p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                    COALESCE(p.is_paid, 0) as is_paid,
-                   c.last_activity
+                   c.last_activity, c.llm_id, l.machine, c.role_id
             FROM conversations c
             JOIN llm l ON c.llm_id = l.id
             LEFT JOIN prompts p ON c.role_id = p.id
@@ -264,6 +301,9 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 "allowed_llms": orjson.loads(row[11]) if row[11] else None,
                 "is_paid": bool(row[12]),
                 "last_activity": row[13],
+                "llm_id": row[14],
+                "machine": row[15],
+                "prompt_id": row[16],
                 "external_bindings": (
                     None if row[4] else binding_summaries.get(int(row[0]))
                 ),

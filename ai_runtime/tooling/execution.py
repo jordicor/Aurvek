@@ -1,3 +1,5 @@
+import asyncio
+
 from ai_runtime.dependencies import *
 from billing.usage_reservations import (
     BillingReservationError,
@@ -7,7 +9,7 @@ from billing.usage_reservations import (
 )
 from tools import function_handlers
 from rediscfg import redis_client
-from ai_runtime.persistence.messages import save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
 from ai_runtime.providers.claude import call_claude_api
 from ai_runtime.providers.gemini import call_gemini_api
 from ai_runtime.providers.kimi import call_kimi_api
@@ -188,6 +190,25 @@ async def atFieldActivate(
         api_func = call_minimax_api
     elif client == "Kimi":
         api_func = call_kimi_api
+    elif client == "GPTSub":
+        # Defense-in-depth: the GPTSub credential is resolved inside its provider and
+        # is NEVER carried in user_api_key, so the Claude catch-all below can never
+        # leak it. This explicit branch keeps a suspicious-text re-prompt on the
+        # user's subscription model instead of silently defaulting to Claude. Fail
+        # closed cleanly if the private module is absent (open-source build).
+        try:
+            from subscription_auth import call_gptsub_api, gptsub_allowed
+        except ImportError:
+            call_gptsub_api = None
+            gptsub_allowed = None
+        if (
+            call_gptsub_api is None
+            or gptsub_allowed is None
+            or not await gptsub_allowed(current_user, model=model)
+        ):
+            yield f"data: {orjson.dumps({'content': 'This action is not available on ChatGPT subscription models.'}).decode()}\n\n"
+            return
+        api_func = call_gptsub_api
     else:
         api_func = call_claude_api
 
@@ -635,6 +656,13 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 api_func = call_minimax_api
             elif client == "Kimi":
                 api_func = call_kimi_api
+            elif client == "GPTSub":
+                # GPTSub is chat-only (Aurvek tool-calls are not wired through
+                # it), so a tool second-pass should never reach here. This
+                # is a clean UX message, not a leak fix (the else below already
+                # fails closed and does not default to Claude).
+                yield f"data: {orjson.dumps({'content': 'Tools are not available on ChatGPT subscription models.'}).decode()}\n\n"
+                return
             else:
                 # Fallback: just show the error if we can't do a second-pass
                 yield f"data: {orjson.dumps({'content': tool_error_message}).decode()}\n\n"
@@ -912,7 +940,15 @@ async def handle_function_call(function_name, function_arguments, messages, mode
 
                 is_whatsapp = await is_whatsapp_conversation(conversation_id)
 
-                result = get_directions(origin, destination, api_key, mode, include_map, waypoints)
+                result = await asyncio.to_thread(
+                    get_directions,
+                    origin,
+                    destination,
+                    api_key,
+                    mode,
+                    include_map,
+                    waypoints,
+                )
 
                 if "error" not in result:
                     # Preserve any text Claude generated before calling the tool
@@ -924,7 +960,12 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                     whatsapp_text_content = content
 
                     if include_map and "static_map_url" in result:
-                        map_image_data = requests.get(result["static_map_url"], timeout=(5, 15)).content
+                        map_response = await asyncio.to_thread(
+                            requests.get,
+                            result["static_map_url"],
+                            timeout=(5, 15),
+                        )
+                        map_image_data = map_response.content
                         filename = f"map_{conversation_id}.png"
                         source = "bot"
                         format = 'png' if is_whatsapp else 'webp'
@@ -1022,6 +1063,9 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             for deferred_chunk in deferred_delivery_chunks:
                 yield deferred_chunk
             yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
+        else:
+            yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+            return
 
 
     yield content.strip()

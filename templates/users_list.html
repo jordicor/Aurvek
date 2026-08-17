@@ -190,10 +190,10 @@
                 <a href="/create-user" class="btn btn-success">
                     <i class="fas fa-user-plus me-1"></i> Create User
                 </a>
+                {% if is_admin %}
                 <button type="submit" class="btn btn-outline-danger" id="deleteBtn" disabled>
                     <i class="fas fa-trash me-1"></i> Delete (<span id="selectedCount">0</span>)
                 </button>
-                {% if is_admin %}
                 <button type="button" class="btn btn-outline-warning" id="disableBtn" disabled onclick="setSelectedUsersActivation(false)">
                     <i class="fas fa-user-slash me-1"></i> Disable (<span class="selected-count">0</span>)
                 </button>

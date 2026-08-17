@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,6 +176,232 @@ async def test_prompt_wizard_security_guard_is_fail_closed(monkeypatch):
     )
     assert response is not None
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_publication_gate_fails_closed_without_private_pipeline(
+    monkeypatch,
+    tmp_path,
+):
+    from marketplace.routes import prompt_landing_builder
+
+    monkeypatch.setattr(
+        prompt_landing_builder,
+        "_PROMPT_PIPELINE_DIR",
+        tmp_path / "missing",
+    )
+
+    errors = await prompt_landing_builder._get_landing_publication_errors(
+        1,
+        "<main>Safe landing</main>",
+    )
+
+    assert errors == [
+        prompt_landing_builder.PUBLICATION_VERIFICATION_UNAVAILABLE
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publication_gate_preserves_private_verifier_result(
+    monkeypatch,
+    tmp_path,
+):
+    from marketplace.routes import prompt_landing_builder
+
+    truth = {"id": 7}
+
+    def fake_import(name):
+        if name.endswith("truth_sheet"):
+            return SimpleNamespace(load_truth_sheet=lambda prompt_id: truth)
+        return SimpleNamespace(
+            check_publication_readiness=lambda content, loaded_truth: [
+                f"blocked:{content}:{loaded_truth['id']}"
+            ]
+        )
+
+    monkeypatch.setattr(prompt_landing_builder, "_PROMPT_PIPELINE_DIR", tmp_path)
+    monkeypatch.setattr(prompt_landing_builder, "import_module", fake_import)
+
+    errors = await prompt_landing_builder._get_landing_publication_errors(
+        7,
+        "landing",
+    )
+
+    assert errors == ["blocked:landing:7"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("truth_result", [None, RuntimeError("database unavailable")])
+async def test_publication_gate_blocks_missing_or_failed_truth(
+    monkeypatch,
+    tmp_path,
+    truth_result,
+):
+    from marketplace.routes import prompt_landing_builder
+
+    def load_truth_sheet(prompt_id):
+        if isinstance(truth_result, Exception):
+            raise truth_result
+        return truth_result
+
+    def fake_import(name):
+        if name.endswith("truth_sheet"):
+            return SimpleNamespace(load_truth_sheet=load_truth_sheet)
+        return SimpleNamespace(check_publication_readiness=lambda content, truth: [])
+
+    monkeypatch.setattr(prompt_landing_builder, "_PROMPT_PIPELINE_DIR", tmp_path)
+    monkeypatch.setattr(prompt_landing_builder, "import_module", fake_import)
+
+    errors = await prompt_landing_builder._get_landing_publication_errors(
+        1,
+        "landing",
+    )
+
+    assert errors == [
+        prompt_landing_builder.PUBLICATION_VERIFICATION_UNAVAILABLE
+    ]
+
+
+@pytest.mark.asyncio
+async def test_revoke_landing_publication_clears_flags_and_cache(monkeypatch):
+    from marketplace.routes import prompt_landing_builder
+
+    executed = []
+    committed = False
+
+    class Cursor:
+        async def fetchone(self):
+            return ("public-17",)
+
+    class Connection:
+        async def execute(self, sql, params):
+            executed.append((" ".join(sql.split()), params))
+            return Cursor()
+
+        async def commit(self):
+            nonlocal committed
+            committed = True
+
+    @asynccontextmanager
+    async def fake_connection():
+        yield Connection()
+
+    invalidated = []
+    monkeypatch.setattr(prompt_landing_builder, "get_db_connection", fake_connection)
+    monkeypatch.setattr(
+        prompt_landing_builder,
+        "invalidate_landing_cache",
+        invalidated.append,
+    )
+
+    await prompt_landing_builder._revoke_landing_publication(17)
+
+    assert executed[0] == (
+        "UPDATE PROMPTS SET has_landing_page = 0, landing_trusted = 0 WHERE id = ?",
+        (17,),
+    )
+    assert committed is True
+    assert invalidated == ["public-17"]
+
+
+@pytest.mark.asyncio
+async def test_persist_home_revokes_before_write_and_verification(
+    monkeypatch,
+    tmp_path,
+):
+    from marketplace.routes import prompt_landing_builder
+
+    home_path = tmp_path / "home.html"
+    events = []
+
+    async def revoke(prompt_id):
+        events.append("revoke")
+        assert prompt_id == 23
+        assert not home_path.exists()
+
+    async def verify(prompt_id, content):
+        events.append("verify")
+        assert prompt_id == 23
+        assert home_path.read_text(encoding="utf-8") == content
+        return ["blocked"]
+
+    class Connection:
+        async def execute(self, sql, params):
+            events.append("section-config")
+            return None
+
+        async def commit(self):
+            events.append("commit")
+
+    @asynccontextmanager
+    async def fake_connection(*args, **kwargs):
+        yield Connection()
+
+    monkeypatch.setattr(prompt_landing_builder, "PRIMARY_APP_DOMAIN", "")
+    monkeypatch.setattr(
+        prompt_landing_builder,
+        "create_prompt_directory",
+        lambda *args: str(tmp_path),
+    )
+    monkeypatch.setattr(prompt_landing_builder, "get_db_connection", fake_connection)
+    monkeypatch.setattr(prompt_landing_builder, "_revoke_landing_publication", revoke)
+    monkeypatch.setattr(
+        prompt_landing_builder,
+        "_get_landing_publication_errors",
+        verify,
+    )
+
+    response = await prompt_landing_builder._persist_landing_page(
+        prompt_id=23,
+        section="home",
+        content="<main>new content</main>",
+        use_default_template=False,
+        prompt_info={"created_by_username": "creator", "name": "Prompt"},
+        is_admin=True,
+    )
+
+    assert response.status_code == 200
+    assert events == ["revoke", "section-config", "commit", "verify"]
+    assert home_path.read_text(encoding="utf-8") == "<main>new content</main>"
+
+
+@pytest.mark.asyncio
+async def test_landing_save_lock_serializes_same_prompt(monkeypatch, tmp_path):
+    from marketplace.routes import prompt_landing_builder
+
+    monkeypatch.setattr(prompt_landing_builder, "_LANDING_SAVE_LOCK_DIR", tmp_path)
+    monkeypatch.setattr(
+        prompt_landing_builder,
+        "_LANDING_SAVE_LOCK_TIMEOUT_SECONDS",
+        2,
+    )
+
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    async def first_save():
+        async with prompt_landing_builder._landing_save_lock(31):
+            first_entered.set()
+            await release_first.wait()
+
+    async def second_save():
+        second_started.set()
+        async with prompt_landing_builder._landing_save_lock(31):
+            second_entered.set()
+
+    first_task = asyncio.create_task(first_save())
+    await first_entered.wait()
+    second_task = asyncio.create_task(second_save())
+    await second_started.wait()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(second_entered.wait(), timeout=0.1)
+
+    release_first.set()
+    await asyncio.gather(first_task, second_task)
+    assert second_entered.is_set()
 
 
 def test_no_bypass_permissions_remains_in_wizard_sources():

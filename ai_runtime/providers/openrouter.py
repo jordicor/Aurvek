@@ -1,4 +1,5 @@
 from ai_runtime.dependencies import *
+from ai_runtime.providers.claude_capabilities import claude_omits_temperature
 from ai_runtime.providers.openai_chat import call_llm_api
 
 async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, conversation_id, current_user, request, user_message=None, user_api_key=None, tools=None,
@@ -69,6 +70,7 @@ async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, 
         web_search_mode=web_search_mode,
         byok=byok,
         api_model=api_model,
+        omit_temperature=claude_omits_temperature(api_model or model),
         pending_attachment_refs=pending_attachment_refs,
         strip_device_action_blocks=strip_device_action_blocks,
         billing_reservation_id=billing_reservation_id,

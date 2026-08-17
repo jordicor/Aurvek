@@ -118,20 +118,20 @@ async def get_conversations(
                                    COALESCE(p.force_web_search, 0) as web_search_forced,
                                    p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                                    COALESCE(p.is_paid, 0) as is_paid,
-                                   c.last_activity
+                                   c.last_activity, c.llm_id, l.machine, c.role_id
                             FROM conversations c
                             JOIN llm l ON c.llm_id = l.id
                             LEFT JOIN prompts p ON c.role_id = p.id
-                            WHERE c.id = ?{folder_condition}
+                            WHERE c.id = ? AND c.user_id = ?{folder_condition}
                               AND COALESCE(c.hidden_from_history, 0) = 0
                         """
-                        ext_params = [platform, conv_id] + folder_params
+                        ext_params = [platform, conv_id, user_id] + folder_params
                         await cursor.execute(ext_query, ext_params)
                         ext_conv = await cursor.fetchone()
                         if ext_conv:
                             external_conversations.append(ext_conv)
 
-            normal_limit = limit - len(external_conversations)
+            normal_limit = max(0, limit - len(external_conversations))
             query = f"""
                 SELECT c.id, c.user_id, c.start_date, c.chat_name,
                        NULL as external_platform,
@@ -139,7 +139,7 @@ async def get_conversations(
                        COALESCE(p.force_web_search, 0) as web_search_forced,
                        p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                        COALESCE(p.is_paid, 0) as is_paid,
-                       c.last_activity
+                       c.last_activity, c.llm_id, l.machine, c.role_id
                 FROM conversations c
                 JOIN llm l ON c.llm_id = l.id
                 LEFT JOIN prompts p ON c.role_id = p.id
@@ -179,6 +179,9 @@ async def get_conversations(
                     "allowed_llms": orjson.loads(conv[11]) if conv[11] else None,
                     "is_paid": bool(conv[12]),
                     "last_activity": conv[13],
+                    "llm_id": conv[14],
+                    "machine": conv[15],
+                    "prompt_id": conv[16],
                     "external_bindings": (
                         None if conv[4] else binding_summaries.get(int(conv[0]))
                     ),
@@ -313,7 +316,9 @@ async def start_new_conversation(
             "machine": machine,
             "prompt_name": prompt_name,
             "locked": False,
+            "llm_id": llm_id,
             "llm_model": llm_model,
+            "prompt_id": prompt_id,
             "forced_llm_id": forced_llm_id_value,
             "hide_llm_name": bool(hide_llm_name_value) if hide_llm_name_value else False,
             "allowed_llms": orjson.loads(allowed_llms_value) if allowed_llms_value else None,

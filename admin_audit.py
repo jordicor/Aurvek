@@ -2,6 +2,7 @@ from fastapi import Request
 
 from database import get_db_connection
 from log_config import logger
+from middleware.security import get_client_ip
 
 
 async def log_admin_action(
@@ -19,11 +20,7 @@ async def log_admin_action(
         user_agent = None
 
         if request:
-            forwarded = request.headers.get("X-Forwarded-For")
-            if forwarded:
-                ip_address = forwarded.split(",")[0].strip()
-            else:
-                ip_address = request.client.host if request.client else None
+            ip_address = get_client_ip(request)
             user_agent = request.headers.get("User-Agent", "")[:500]
 
         async with get_db_connection() as conn:

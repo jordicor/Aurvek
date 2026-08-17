@@ -3,6 +3,7 @@ from jwt import PyJWTError as JWTError
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from auth_constants import SESSION_COOKIE_NAME
 from common import SECRET_KEY, decode_jwt_cached, verify_token_expiration
 from log_config import logger
 from models import User
@@ -25,7 +26,7 @@ async def validate_message_request(
         return JSONResponse(content={"redirect": "/login"}, status_code=401)
 
     if not is_whatsapp:
-        token = request.cookies.get("session")
+        token = request.cookies.get(SESSION_COOKIE_NAME)
         if not token:
             logger.debug("no token!")
             return JSONResponse(content={"redirect": "/login"}, status_code=401)

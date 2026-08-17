@@ -1297,7 +1297,7 @@
 
 {% block scripts_inline %}
 <script>
-    let currentAlterEgoId = "{{ user_data['current_alter_ego_id'] }}";
+    let currentAlterEgoId = "{{ user_data['current_alter_ego_id'] or '' }}";
     let currentUserVoiceId = "{{ current_user_voice_id }}";
     let currentUserId = "{{ current_user_id }}";
     let originalPhoneNumber = {{ (user_data['phone_number'] or '')|tojson }};

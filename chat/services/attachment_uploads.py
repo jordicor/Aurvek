@@ -273,7 +273,11 @@ async def create_pending_attachment_from_upload(
         raise ValueError(f"File '{filename}' exceeds the {max_bytes // (1024 * 1024)}MB size limit")
 
     if normalized_type == "application/pdf":
-        page_count = validate_pdf(data, enforce_page_limit=False)
+        page_count = await asyncio.to_thread(
+            validate_pdf,
+            data,
+            enforce_page_limit=False,
+        )
         return await create_pending_pdf_attachment(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -284,7 +288,7 @@ async def create_pending_attachment_from_upload(
         )
 
     if is_text_file(normalized_type, filename):
-        text_content = decode_text_file(data, filename)
+        text_content = await asyncio.to_thread(decode_text_file, data, filename)
         return await create_pending_text_attachment(
             user_id=user_id,
             conversation_id=conversation_id,

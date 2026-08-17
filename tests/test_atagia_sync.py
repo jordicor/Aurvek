@@ -81,6 +81,7 @@ class FakeBridge:
 @pytest.mark.asyncio
 async def test_sync_all_history_backfills_unlinked_messages(mock_db) -> None:
     async with mock_db() as conn:
+        await conn.execute("INSERT INTO USERS (id, username) VALUES (7, 'u7')")
         await conn.execute(
             "INSERT INTO CONVERSATIONS (id, user_id, role_id) VALUES (1, 7, 42)"
         )
@@ -144,6 +145,7 @@ async def test_sync_all_history_backfills_unlinked_messages(mock_db) -> None:
 @pytest.mark.asyncio
 async def test_sync_all_history_records_errors_without_stopping_run(mock_db) -> None:
     async with mock_db() as conn:
+        await conn.execute("INSERT INTO USERS (id, username) VALUES (9, 'u9')")
         await conn.execute(
             "INSERT INTO CONVERSATIONS (id, user_id, role_id) VALUES (2, 9, 77)"
         )
@@ -186,6 +188,7 @@ async def test_sync_all_history_retries_transient_atagia_database_locks(
     monkeypatch.setattr(atagia_sync, "TRANSIENT_INGEST_RETRY_DELAYS_SECONDS", (0.0, 0.0))
 
     async with mock_db() as conn:
+        await conn.execute("INSERT INTO USERS (id, username) VALUES (18, 'u18')")
         await conn.execute(
             "INSERT INTO CONVERSATIONS (id, user_id, role_id) VALUES (6, 18, 81)"
         )
@@ -214,6 +217,7 @@ async def test_sync_all_history_retries_transient_atagia_database_locks(
 @pytest.mark.asyncio
 async def test_sync_all_history_skips_hidden_incognito_conversations(mock_db) -> None:
     async with mock_db() as conn:
+        await conn.execute("INSERT INTO USERS (id, username) VALUES (13, 'u13')")
         await conn.execute(
             "INSERT INTO CONVERSATIONS (id, user_id, role_id) VALUES (4, 13, 90)"
         )
@@ -253,6 +257,7 @@ async def test_sync_all_history_skips_hidden_incognito_conversations(mock_db) ->
 @pytest.mark.asyncio
 async def test_record_atagia_message_link_is_idempotent(mock_db) -> None:
     async with mock_db() as conn:
+        await conn.execute("INSERT INTO USERS (id, username) VALUES (12, 'u12')")
         await conn.execute(
             "INSERT INTO CONVERSATIONS (id, user_id, role_id) VALUES (3, 12, 88)"
         )
@@ -283,3 +288,35 @@ async def test_record_atagia_message_link_is_idempotent(mock_db) -> None:
     assert second is False
     status = await get_atagia_sync_status()
     assert status["linked_messages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_all_history_skips_messages_of_deleted_users(mock_db) -> None:
+    """Messages whose owning user no longer exists must never be backfilled.
+
+    Guards against re-propagating orphaned historical messages into Atagia
+    after a user has been deleted (the confirmed orphaned-message bug).
+    """
+    async with mock_db() as conn:
+        # No USERS row for id 99 -> the owning user does not exist.
+        await conn.execute(
+            "INSERT INTO CONVERSATIONS (id, user_id, role_id) VALUES (8, 99, 5)"
+        )
+        await conn.execute(
+            """
+            INSERT INTO MESSAGES (id, conversation_id, user_id, message, type, date)
+            VALUES (80, 8, 99, 'orphan', 'user', '2026-05-01 14:00:00')
+            """
+        )
+        await conn.commit()
+
+    bridge = FakeBridge()
+    summary = await sync_all_history(batch_size=10, bridge=bridge)
+
+    assert summary.status == "completed"
+    assert summary.total_messages == 0
+    assert bridge.ingest_calls == []
+
+    status = await get_atagia_sync_status()
+    assert status["pending_messages"] == 0
+    assert status["linked_messages"] == 0

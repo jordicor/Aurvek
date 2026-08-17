@@ -1,7 +1,7 @@
 from ai_runtime.dependencies import *
 from ai_runtime.config import _log_truncated_response
 from ai_runtime.errors import _provider_error_payload
-from ai_runtime.persistence.messages import save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
 from ai_runtime.tooling.citations import build_citation_event
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
@@ -218,9 +218,13 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                                                                             billing_only_accumulated_usage=bool(billing_reservation_id))
                 if user_message_id and bot_message_id:
                     yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
-            except Exception as e:
-                logger.error(f"[call_gemini_api] - Error saving content to database: {e}")
-                yield f"data: {orjson.dumps({'error': f'Error saving response: {str(e)}'}).decode()}\n\n"
+                else:
+                    yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+                    return
+            except Exception:
+                logger.exception("[call_gemini_api] - Error saving content to database")
+                yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+                return
 
         yield content.strip()
     else:

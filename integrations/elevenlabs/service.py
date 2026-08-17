@@ -17,14 +17,17 @@ from storage_quota import record_generated_file
 from log_config import logger
 from wellbeing_service import record_voice_transcript_activity
 
-# Import the load balancer to get valid API keys
-try:
-    from tools.tts_load_balancer import get_elevenlabs_key
-except ImportError:
-    # Fallback to common if load balancer not available
-    from common import elevenlabs_key
-    def get_elevenlabs_key():
-        return elevenlabs_key
+def get_elevenlabs_key():
+    """Return an ElevenLabs API key from the load balancer.
+
+    Resolved lazily: importing tools.tts_load_balancer at module import time can
+    hit a circular-import window (the balancer's own import chain reaches back
+    into this module), which used to silently bind a fallback that read the
+    unrelated ELEVEN_KEY env var and broke every API call with a bogus key.
+    """
+    from tools.tts_load_balancer import get_elevenlabs_key as _select_key
+
+    return _select_key()
 
 API_BASE_URL = os.getenv("ELEVENLABS_CONVAI_BASE", "https://api.elevenlabs.io/v1/convai")
 USE_SIGNED_URL = os.getenv("ELEVENLABS_USE_SIGNED_URL", "true").lower() == "true"
@@ -42,6 +45,10 @@ class ElevenLabsProviderSessionError(ElevenLabsSessionBindingError):
     """Raised when ElevenLabs metadata does not match the expected call binding."""
 
 
+class ElevenLabsAudioNotReadyError(RuntimeError):
+    """Raised when provider audio is not available yet and should be retried."""
+
+
 class ElevenLabsService:
     """Service layer that centralises ElevenLabs agent resolution and transcript handling."""
 
@@ -49,6 +56,18 @@ class ElevenLabsService:
         self.api_base_url = API_BASE_URL.rstrip("/")
         self.http_timeout = HTTP_TIMEOUT_SECONDS
         self.context_message_limit = CONTEXT_MESSAGE_LIMIT
+        self._http_client: Optional[httpx.AsyncClient] = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Return the process-local client used by web request call flows."""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=self.http_timeout)
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client during application shutdown."""
+        if self._http_client is not None and not self._http_client.is_closed:
+            await self._http_client.aclose()
 
     @staticmethod
     def is_configured() -> bool:
@@ -107,10 +126,8 @@ class ElevenLabsService:
         logger.info("[ElevenLabs] User ID: %s", current_user_id)
         logger.info("[ElevenLabs] Recent messages count: %s", len(recent_messages))
         logger.info("[ElevenLabs] Context text length: %s", len(context_text))
-        logger.info("[ElevenLabs] Context preview (first 500 chars): %s", context_text[:500] if context_text else "EMPTY")
         logger.info("[ElevenLabs] Prompt text length: %s", len(prompt_text))
         logger.info("[ElevenLabs] Prompt name: %s", conversation.get("prompt_name"))
-        logger.info("[ElevenLabs] Prompt preview (first 300 chars): %s", prompt_text[:300] if prompt_text else "EMPTY")
 
         prompt_voice_code = conversation.get("prompt_voice_code")
         voice_id = agent_info.get("voice_id") or prompt_voice_code
@@ -465,12 +482,12 @@ class ElevenLabsService:
             raise RuntimeError("ElevenLabs integration is not configured")
         headers = {"xi-api-key": api_key, "Accept": "application/json"}
 
-        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
-            response = await client.get(url, headers=headers)
-            if response.status_code == 404:
-                return None
-            response.raise_for_status()
-            payload = response.json()
+        client = self._get_http_client()
+        response = await client.get(url, headers=headers)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
         return payload if isinstance(payload, dict) else None
 
     @staticmethod
@@ -517,22 +534,22 @@ class ElevenLabsService:
         headers = {"xi-api-key": api_key, "Accept": "application/json"}
 
         try:
-            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
-                response = await client.get(url, headers=headers)
+            client = self._get_http_client()
+            response = await client.get(url, headers=headers)
 
-                if response.status_code == 404:
-                    logger.warning("[ElevenLabs] Conversation %s not found", session_id)
-                    return None
+            if response.status_code == 404:
+                logger.warning("[ElevenLabs] Conversation %s not found", session_id)
+                return None
 
-                if response.status_code != 200:
-                    logger.error("[ElevenLabs] Failed to check status: %s - %s", response.status_code, response.text)
-                    return None
+            if response.status_code != 200:
+                logger.error("[ElevenLabs] Failed to check status: %s", response.status_code)
+                return None
 
-                data = response.json()
-                status = data.get("status", "unknown").lower()
+            data = response.json()
+            status = data.get("status", "unknown").lower()
 
-                logger.info("[ElevenLabs] Conversation %s status: %s", session_id, status)
-                return status
+            logger.info("[ElevenLabs] Conversation %s status: %s", session_id, status)
+            return status
 
         except Exception as exc:
             logger.error("[ElevenLabs] Error checking conversation status: %s", exc)
@@ -546,28 +563,27 @@ class ElevenLabsService:
         api_key = get_elevenlabs_key()
         if not api_key:
             logger.error("[ElevenLabs] No valid API key available")
-            return None
+            return []
         headers = {"xi-api-key": api_key, "Accept": "application/json"}
 
         logger.info("[ElevenLabs] Fetching transcript from URL: %s", url)
         logger.info("[ElevenLabs] Session ID: %s", session_id)
         logger.info("[ElevenLabs] API Base URL: %s", self.api_base_url)
 
-        async with httpx.AsyncClient(timeout=self.http_timeout) as client:
-            response = await client.get(url, headers=headers)
+        client = self._get_http_client()
+        response = await client.get(url, headers=headers)
 
-            if response.status_code == 404:
-                logger.error("[ElevenLabs] Conversation not found (404). This could mean:")
-                logger.error("  1. The conversation ID doesn't exist")
-                logger.error("  2. The API key doesn't have access to this conversation")
-                logger.error("  3. The conversation belongs to a different agent")
-                logger.error("[ElevenLabs] Full URL attempted: %s", url)
-                logger.error("[ElevenLabs] Response: %s", response.text)
-            elif response.status_code != 200:
-                logger.error("[ElevenLabs] API error response: %s - %s", response.status_code, response.text)
+        if response.status_code == 404:
+            logger.error("[ElevenLabs] Conversation %s was not found", session_id)
+        elif response.status_code != 200:
+            logger.error(
+                "[ElevenLabs] Transcript request failed for session %s with status %s",
+                session_id,
+                response.status_code,
+            )
 
-            response.raise_for_status()
-            payload = response.json()
+        response.raise_for_status()
+        payload = response.json()
 
         transcript = payload.get("transcript") or []
         if isinstance(transcript, list):
@@ -646,6 +662,14 @@ class ElevenLabsService:
                         else:
                             last_bot_message_id = inserted_id
                         saved_messages += 1
+
+                    if saved_messages == 0:
+                        # A provider may report a finished session before any
+                        # persistible transcript turns are visible. Keep the
+                        # binding open so the same session can be retried.
+                        await conn.rollback()
+                        transaction_started = False
+                        return (0, None, None, False)
 
                     cursor = await conn.execute(
                         """
@@ -783,6 +807,15 @@ class ElevenLabsService:
 
         async with get_db_connection(readonly=True) as conn:
             conversation = await self._load_conversation(conn, conversation_id)
+            cursor = await conn.execute(
+                """
+                SELECT 1
+                FROM ELEVENLABS_CALL_SESSIONS
+                WHERE session_id = ? AND conversation_id = ? AND user_id = ?
+                """,
+                (session_id, conversation_id, user_id),
+            )
+            binding = await cursor.fetchone()
 
         if not conversation:
             logger.warning('[ElevenLabs] Conversation %s not found while preparing audio download', conversation_id)
@@ -790,6 +823,14 @@ class ElevenLabsService:
 
         if conversation.get('user_id') != user_id:
             logger.warning('[ElevenLabs] Conversation %s does not belong to user %s', conversation_id, user_id)
+            return None
+
+        if not binding:
+            logger.warning(
+                '[ElevenLabs] Session %s is not bound to conversation %s',
+                session_id,
+                conversation_id,
+            )
             return None
 
         username = conversation.get('user_username')
@@ -838,7 +879,7 @@ class ElevenLabsService:
                 async with client.stream('GET', audio_url, headers=headers, params=params) as response:
                     if response.status_code == 404:
                         logger.warning('[ElevenLabs] Audio stream not available for session %s', session_id)
-                        return None
+                        response.raise_for_status()
                     response.raise_for_status()
 
                     async with aiofiles.open(file_path, 'wb') as file_obj:
@@ -854,6 +895,9 @@ class ElevenLabsService:
                     os.remove(file_path)
                 except OSError:
                     logger.warning('[ElevenLabs] Could not remove partial audio file at %s', file_path)
+            status_code = exc.response.status_code
+            if status_code == 404 or status_code >= 500:
+                raise
             return None
         except httpx.HTTPError as exc:
             logger.error('[ElevenLabs] HTTP error while downloading audio for session %s: %s', session_id, exc)
@@ -862,7 +906,7 @@ class ElevenLabsService:
                     os.remove(file_path)
                 except OSError:
                     logger.warning('[ElevenLabs] Could not remove partial audio file at %s', file_path)
-            return None
+            raise
         except Exception as exc:
             logger.exception('[ElevenLabs] Unexpected error while saving audio for conversation %s: %s', conversation_id, exc)
             if os.path.exists(file_path):
@@ -870,7 +914,7 @@ class ElevenLabsService:
                     os.remove(file_path)
                 except OSError:
                     logger.warning('[ElevenLabs] Could not remove partial audio file at %s', file_path)
-            return None
+            raise
 
         if bytes_written == 0:
             if os.path.exists(file_path):
@@ -879,7 +923,9 @@ class ElevenLabsService:
                 except OSError:
                     logger.warning('[ElevenLabs] Could not remove empty audio file at %s', file_path)
             logger.warning('[ElevenLabs] Empty audio response for session %s', session_id)
-            return None
+            raise ElevenLabsAudioNotReadyError(
+                f"ElevenLabs audio is not ready for session {session_id}"
+            )
 
         # Ledger the WAV so it counts against the owner's storage quota (one row
         # per file on disk). WAV is COUNT-ONLY: there is no
@@ -918,6 +964,7 @@ class ElevenLabsService:
                 c.role_id,
                 c.chat_name,
                 c.locked,
+                c.is_incognito,
                 c.elevenlabs_session_id,
                 c.elevenlabs_status,
                 p.prompt AS prompt_text,
@@ -992,11 +1039,11 @@ class ElevenLabsService:
         headers = {"xi-api-key": api_key, "Accept": "application/json"}
 
         try:
-            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
-                response = await client.get(url, headers=headers, params={"agent_id": agent_id})
-                response.raise_for_status()
-                payload = response.json()
-                return payload.get("signed_url") or payload.get("url")
+            client = self._get_http_client()
+            response = await client.get(url, headers=headers, params={"agent_id": agent_id})
+            response.raise_for_status()
+            payload = response.json()
+            return payload.get("signed_url") or payload.get("url")
         except httpx.HTTPError as exc:
             logger.warning("[ElevenLabs] Unable to fetch signed URL for agent %s: %s", agent_id, exc)
         except Exception as exc:
@@ -1096,7 +1143,6 @@ class ElevenLabsService:
         context += "\nuser: (system: user starts call to continue conversation)"
 
         logger.info("[ElevenLabs] Context built with %d message turns", len(lines))
-        logger.info("[ElevenLabs] Context sample: %s", context[:200] + "..." if len(context) > 200 else context)
 
         if len(context) > MAX_CONTEXT_CHARACTERS:
             # If too long, try to keep the most recent messages (like ConvAI does)
@@ -1134,4 +1180,41 @@ class ElevenLabsService:
         return "bot"
 
 
+async def delete_remote_conversation(conversation_id: str) -> None:
+    """Delete a ConvAI conversation from ElevenLabs (idempotent).
+
+    Used by the account-deletion service to purge remote voice-call
+    conversations after the local account rows are gone. A 404 means the
+    conversation is already absent and counts as success. Any other non-2xx
+    status raises so the caller can record the failure. Fail fast if the API key
+    is not configured -- callers must only invoke this when there is something to
+    purge.
+    """
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise ValueError(
+            "conversation_id is required to delete a remote ElevenLabs conversation"
+        )
+
+    api_key = get_elevenlabs_key()
+    if not api_key:
+        raise RuntimeError(
+            "ElevenLabs integration is not configured; cannot delete remote conversation"
+        )
+
+    url = f"{API_BASE_URL.rstrip('/')}/conversations/{conversation_id}"
+    headers = {"xi-api-key": api_key, "Accept": "application/json"}
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
+        response = await client.delete(url, headers=headers)
+    if response.status_code == 404:
+        return
+    response.raise_for_status()
+
+
 service = ElevenLabsService()
+
+
+async def shutdown_http_client() -> None:
+    """Close the shared ConvAI client owned by the module-level service."""
+    await service.aclose()

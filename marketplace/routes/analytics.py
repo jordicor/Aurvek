@@ -139,57 +139,6 @@ async def track_landing_visit(request: Request):
     return response
 
 
-@router.post("/api/analytics/mark-conversion")
-async def mark_analytics_conversion(request: Request):
-    """Mark the most recent matching landing visit as converted."""
-    require_public_landings_enabled()
-
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse(content={"error": "Invalid JSON"}, status_code=400)
-
-    prompt_id = data.get("prompt_id")
-    pack_id = data.get("pack_id")
-    user_id = data.get("user_id")
-    visitor_id = request.cookies.get("_aurvek_visitor")
-
-    if (not prompt_id and not pack_id) or not visitor_id:
-        return JSONResponse(content={"status": "skip", "reason": "missing_data"})
-
-    async with get_db_connection() as conn:
-        cursor = await conn.cursor()
-
-        if pack_id:
-            await cursor.execute(
-                """
-                UPDATE LANDING_PAGE_ANALYTICS
-                SET converted = 1, converted_user_id = ?
-                WHERE pack_id = ? AND visitor_id = ?
-                AND converted = 0
-                ORDER BY visit_timestamp DESC
-                LIMIT 1
-                """,
-                (user_id, pack_id, visitor_id),
-            )
-        else:
-            await cursor.execute(
-                """
-                UPDATE LANDING_PAGE_ANALYTICS
-                SET converted = 1, converted_user_id = ?
-                WHERE prompt_id = ? AND visitor_id = ?
-                AND converted = 0
-                ORDER BY visit_timestamp DESC
-                LIMIT 1
-                """,
-                (user_id, prompt_id, visitor_id),
-            )
-
-        await conn.commit()
-
-    return JSONResponse(content={"status": "marked"})
-
-
 @router.get("/api/user/landing-analytics")
 async def get_landing_analytics(request: Request, current_user: User = Depends(get_current_user)):
     """Get landing page analytics summary for all prompts owned by the user."""

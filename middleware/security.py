@@ -30,6 +30,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from auth_constants import SESSION_COOKIE_NAME
 from middleware.ip_reputation import reputation_manager
 from middleware.nginx_blocklist import nginx_blocklist_manager
 
@@ -1571,7 +1572,7 @@ def is_landing_page_route(path: str) -> bool:
 
 def _has_valid_session(request: Request) -> bool:
     """Lightweight JWT cookie check. Authenticated users are exempt from reputation scoring."""
-    token = request.cookies.get("access_token")
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return False
     try:

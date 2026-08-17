@@ -104,6 +104,7 @@ async def _load_context_exception_options() -> tuple[list[dict[str, Any]], list[
             SELECT id, machine, model, COALESCE(NULLIF(display_name, ''), model) AS label
             FROM LLM
             WHERE COALESCE(enabled, 1) = 1
+              AND machine != 'GPTSub'
             ORDER BY machine ASC, label ASC, id ASC
             """
         )

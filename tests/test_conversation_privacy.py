@@ -51,22 +51,27 @@ async def test_purge_conversation_local_records_deletes_messages_and_links(mock_
         )
         await conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS ATAGIA_MESSAGE_LINKS (
-                message_id INTEGER PRIMARY KEY,
-                atagia_message_id TEXT NOT NULL UNIQUE,
+            CREATE TABLE IF NOT EXISTS MEMORY_PROVIDER_MESSAGE_LINKS (
+                message_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                provider_message_id TEXT NOT NULL,
+                provider_event_id TEXT,
                 conversation_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                 source TEXT NOT NULL DEFAULT 'live',
-                synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (message_id, provider),
+                FOREIGN KEY (message_id) REFERENCES MESSAGES(id)
             )
             """
         )
         await conn.execute(
             """
-            INSERT INTO ATAGIA_MESSAGE_LINKS
-                (message_id, atagia_message_id, conversation_id, user_id, role)
-            VALUES (20, 'aurvek:msg:20', 2, 9, 'user')
+            INSERT INTO MEMORY_PROVIDER_MESSAGE_LINKS
+                (message_id, provider, provider_message_id, conversation_id, user_id, role)
+            VALUES (20, 'atagia', 'aurvek:msg:20', 2, 9, 'user')
             """
         )
         await mark_conversation_incognito(
@@ -82,7 +87,7 @@ async def test_purge_conversation_local_records_deletes_messages_and_links(mock_
     async with mock_db() as conn:
         conv = await (await conn.execute("SELECT id FROM CONVERSATIONS WHERE id = 2")).fetchone()
         msg = await (await conn.execute("SELECT id FROM MESSAGES WHERE id = 20")).fetchone()
-        link = await (await conn.execute("SELECT message_id FROM ATAGIA_MESSAGE_LINKS WHERE message_id = 20")).fetchone()
+        link = await (await conn.execute("SELECT message_id FROM MEMORY_PROVIDER_MESSAGE_LINKS WHERE message_id = 20")).fetchone()
 
     assert conv is None
     assert msg is None

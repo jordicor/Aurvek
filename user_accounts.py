@@ -133,7 +133,9 @@ async def apply_initial_balance(
     if funder_user_id == user_id:
         raise InitialBalanceError("An account cannot fund its own initial balance.")
 
-    reference_id = f"initial_balance_{user_id}_{secrets.token_hex(8)}"
+    # The shared reference correlates the two ledger rows without embedding either
+    # party's account id. It remains opaque even if one account is later erased.
+    reference_id = f"initial_balance_v2_{secrets.token_hex(16)}"
 
     if allow_platform_grant:
         grant_role_cursor = await conn.execute(
@@ -174,7 +176,7 @@ async def apply_initial_balance(
                 user_id,
                 balance,
                 balance,
-                f"Platform credit granted by admin {granted_by_user_id}",
+                "Platform initial balance credit",
                 reference_id,
             ),
         )
@@ -221,7 +223,7 @@ async def apply_initial_balance(
             balance,
             funder_balance_after + balance,
             funder_balance_after,
-            f"Initial balance transferred to user {user_id}",
+            "Balance transfer sent",
             reference_id,
         ),
     )
@@ -236,7 +238,7 @@ async def apply_initial_balance(
             user_id,
             balance,
             balance,
-            f"Initial balance funded by user {funder_user_id}",
+            "Balance transfer received",
             reference_id,
         ),
     )

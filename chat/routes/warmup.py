@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse
 
 from auth import get_current_user, unauthenticated_response
+from auth_constants import SESSION_COOKIE_NAME
 from common import SECRET_KEY, decode_jwt_cached, verify_token_expiration
 from log_config import logger
 from models import User
@@ -37,7 +38,7 @@ async def warmup_conversation_context(
     if current_user is None:
         return unauthenticated_response()
 
-    token = request.cookies.get("session")
+    token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return unauthenticated_response()
 

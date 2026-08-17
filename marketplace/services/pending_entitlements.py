@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
@@ -40,11 +41,11 @@ async def send_entitlement_claim_email(
     user_id: int,
     prompt_id: int | None = None,
     pack_id: int | None = None,
-):
+) -> bool:
     """Create a pending entitlement and send the claim email to the existing user."""
     token = await create_pending_entitlement(user_id, prompt_id, pack_id)
     if not token:
-        return
+        return False
 
     claim_url = f"{get_auth_base_url(request).rstrip('/')}/claim-entitlement/{token}"
 
@@ -76,10 +77,15 @@ async def send_entitlement_claim_email(
     except Exception as e:
         logger.warning(f"Could not get product name/branding for claim email: {e}")
 
-    email_service.send_claim_entitlement_email(
+    email_sent = await asyncio.to_thread(
+        email_service.send_claim_entitlement_email,
         to_email=email,
         claim_url=claim_url,
         product_name=product_name,
         branding=branding,
     )
-    logger.info(f"Claim entitlement email sent to {email} for user {user_id}")
+    if email_sent:
+        logger.info("Claim entitlement email sent to %s for user %s", email, user_id)
+    else:
+        logger.error("Failed to send claim entitlement email to %s for user %s", email, user_id)
+    return email_sent

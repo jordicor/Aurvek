@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -111,7 +112,10 @@ async def pack_purchase_success_page(
 
     if session_id and STRIPE_SECRET_KEY:
         try:
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = await asyncio.to_thread(
+                stripe.checkout.Session.retrieve,
+                session_id,
+            )
             if session and session.metadata.get('user_id', session.metadata.get('buyer_user_id')) == str(current_user.id):
                 payment_amount = float(session.metadata.get('final_amount', 0))
                 pid = session.metadata.get('pack_id')
@@ -351,7 +355,8 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
                     detail=f"Final price after discount (${final_amount:.2f}) is below the minimum processing amount ($0.50). The discount must either cover the full price or leave at least $0.50."
                 )
 
-        session = stripe.checkout.Session.create(
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.create,
             payment_method_types=['card'],
             line_items=[{
                 'price_data': {
@@ -420,7 +425,10 @@ async def prompt_purchase_success_page(
 
     if session_id and STRIPE_SECRET_KEY:
         try:
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = await asyncio.to_thread(
+                stripe.checkout.Session.retrieve,
+                session_id,
+            )
             if session and session.metadata.get('buyer_user_id') == str(current_user.id):
                 payment_amount = float(session.metadata.get('final_amount', 0))
                 pid = session.metadata.get('prompt_id')

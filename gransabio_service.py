@@ -2073,7 +2073,7 @@ async def acquire_gransabio_lock(
     key = f"gransabio:lock:{conversation_id}"
 
     # Determine if this deployment needs distributed locking
-    workers = int(os.getenv("UVICORN_WORKERS", "3"))
+    workers = int(os.getenv("UVICORN_WORKERS", "1"))
     is_dual_mode = os.getenv("_AURVEK_DUAL_MODE") == "1"
     needs_distributed = workers > 1 or is_dual_mode or GRANSABIO_USE_DRAMATIQ
 
@@ -2259,8 +2259,8 @@ async def check_gransabio_worker_config(dual_mode_active: bool = False):
     """
     global _gransabio_config_valid, _redis_available_cache, _redis_available_cache_time
 
-    # Use same default as app.py (3, not 1)
-    workers = int(os.getenv("UVICORN_WORKERS", "3"))
+    # Use the same safe single-worker default as app.py.
+    workers = int(os.getenv("UVICORN_WORKERS", "1"))
     use_dramatiq = GRANSABIO_USE_DRAMATIQ
     # Check both the parameter AND the env var (env var is reliable across forks)
     is_dual = dual_mode_active or os.getenv("_AURVEK_DUAL_MODE") == "1"

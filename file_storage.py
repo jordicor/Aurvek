@@ -42,6 +42,11 @@ PUBLIC_ID_PREFIX = "att_"
 THUMB_VARIANT = "thumb_256"
 ALLOWED_VARIANTS = {None, "", "fullsize", THUMB_VARIANT}
 
+_FILE_STORAGE_SCHEMA_VERSION = 1
+_file_storage_schema_ready: set[tuple[str, int]] = set()
+_file_storage_schema_lock = asyncio.Lock()
+_DEFAULT_DATABASE_CONNECTION_FACTORY = database.get_db_connection
+
 
 @dataclass(frozen=True)
 class PendingAttachment:
@@ -75,11 +80,60 @@ def extract_attachment_refs_from_message(message_json: str | list | dict | None)
 
 async def ensure_file_storage_schema(conn: aiosqlite.Connection | None = None) -> None:
     if conn is None:
+        configured_key = _configured_database_key()
+        if configured_key is not None and configured_key in _file_storage_schema_ready:
+            return
         async with database.get_db_connection() as owned_conn:
-            await _ensure_schema_on_connection(owned_conn)
-            await owned_conn.commit()
+            await _ensure_file_storage_schema_once(owned_conn)
         return
-    await _ensure_schema_on_connection(conn)
+    await _ensure_file_storage_schema_once(conn)
+
+
+async def _resolved_database_identity(conn: aiosqlite.Connection) -> str:
+    marked_identity = getattr(conn, "_aurvek_database_identity", None)
+    if marked_identity:
+        return str(marked_identity)
+    cursor = await conn.execute("PRAGMA database_list")
+    try:
+        rows = await cursor.fetchall()
+    finally:
+        await cursor.close()
+    for _, name, filename in rows:
+        if name == "main":
+            if filename:
+                return str(Path(filename).resolve())
+            return f":memory:{id(conn)}"
+    return f":connection:{id(conn)}"
+
+
+def _configured_database_key() -> tuple[str, int] | None:
+    """Return the native factory's DB key, or None for patched/custom factories."""
+    if database.get_db_connection is not _DEFAULT_DATABASE_CONNECTION_FACTORY:
+        return None
+    return (database.get_database_identity(), _FILE_STORAGE_SCHEMA_VERSION)
+
+
+async def _ensure_file_storage_schema_once(conn: aiosqlite.Connection) -> None:
+    key = (await _resolved_database_identity(conn), _FILE_STORAGE_SCHEMA_VERSION)
+    if key in _file_storage_schema_ready:
+        return
+
+    async with _file_storage_schema_lock:
+        if key in _file_storage_schema_ready:
+            return
+        had_transaction = conn.in_transaction
+        await _ensure_schema_on_connection(conn)
+        if had_transaction:
+            # Do not commit upload/branch transactions merely to initialize
+            # schema. Startup performs the durable initialization and marks it.
+            return
+        await conn.commit()
+        _file_storage_schema_ready.add(key)
+
+
+def reset_file_storage_schema_guard() -> None:
+    """Reset the once-guard for fixtures that switch or recreate databases."""
+    _file_storage_schema_ready.clear()
 
 
 async def _enforce_upload_quota(

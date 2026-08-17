@@ -17,6 +17,7 @@ import logging
 import os
 import aiohttp
 from typing import Optional
+from ai_runtime.providers.claude_capabilities import claude_omits_temperature
 from database import get_db_connection
 
 logger = logging.getLogger(__name__)
@@ -114,13 +115,19 @@ async def get_security_guard_config() -> Optional[dict]:
 
             # Get LLM details
             cursor = await conn.execute(
-                "SELECT id, machine, model FROM LLM WHERE id = ?",
+                "SELECT id, machine, model, enabled FROM LLM WHERE id = ?",
                 (llm_id,)
             )
             llm_row = await cursor.fetchone()
 
             if not llm_row:
                 logger.warning(f"Security Guard LLM ID {llm_id} not found in LLM table")
+                return None
+            if not bool(llm_row[3]) or llm_row[1] == "GPTSub":
+                logger.error(
+                    "Security Guard rejected disabled or private-subscription LLM ID %s",
+                    llm_id,
+                )
                 return None
 
             return {
@@ -153,11 +160,7 @@ async def _call_claude_security_check(model: str, user_input: str) -> str:
             }
         ],
     }
-    model_lower = model.lower()
-    is_temperature_deprecated = any(m in model_lower for m in (
-        "opus-4-7", "opus-4.7", "opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"
-    ))
-    if not is_temperature_deprecated:
+    if not claude_omits_temperature(model):
         data["temperature"] = 0.0  # Deterministic for security checks on legacy models
 
     async with aiohttp.ClientSession() as session:

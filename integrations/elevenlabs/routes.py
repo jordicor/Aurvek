@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from auth import get_current_user, unauthenticated_response
+from common import VOICE_CALL_MIN_BALANCE_TO_START, has_sufficient_balance
 from database import get_db_connection
 from integrations.elevenlabs.service import (
     ElevenLabsProviderSessionError,
@@ -47,6 +48,22 @@ def _binding_error_response(error_code: str) -> JSONResponse:
             "message": "This voice session is not linked to this conversation.",
         },
         status_code=409,
+    )
+
+
+def _insufficient_balance_response() -> JSONResponse:
+    # Realtime voice calls run on the platform ElevenLabs key and bill per minute.
+    # Fail fast: block before the signed URL is minted (config path) or before the
+    # session is bound (session path) so a zero-balance user cannot start a
+    # real-cost call. The 402 status is the machine signal; the human message is
+    # placed in both `error` and `message` because the config path surfaces
+    # `error` and the session path surfaces `message`.
+    human_message = (
+        "You need a prepaid balance to start a voice call. Add credit and try again."
+    )
+    return JSONResponse(
+        content={"error": human_message, "message": human_message},
+        status_code=402,
     )
 
 
@@ -91,10 +108,22 @@ async def get_elevenlabs_config(
         return JSONResponse(content={"error": "Conversation not found"}, status_code=404)
     if conversation.get("locked"):
         return JSONResponse(content={"error": "This conversation is locked"}, status_code=403)
+    if conversation.get("is_incognito"):
+        return JSONResponse(
+            content={"error": "Voice calls are not available in incognito chats"},
+            status_code=403,
+        )
 
     active_pause = await get_active_pause(current_user.id)
     if active_pause:
         return _pause_response(active_pause)
+
+    # Fail-fast cost guard: voice calls are billed per minute on the platform
+    # ElevenLabs key. Block before the signed URL is minted so a user without
+    # prepaid balance cannot start a real-cost call. The subscription (text-only)
+    # option never frees this -- paid media always requires real balance.
+    if not await has_sufficient_balance(current_user.id, VOICE_CALL_MIN_BALANCE_TO_START):
+        return _insufficient_balance_response()
 
     config = await elevenlabs_service.get_configuration(conversation_id, current_user.id, is_admin_user)
     if not config:
@@ -132,10 +161,22 @@ async def start_elevenlabs_session(
         return JSONResponse(content={"error": "Conversation not found"}, status_code=404)
     if conversation.get("locked"):
         return JSONResponse(content={"error": "This conversation is locked"}, status_code=403)
+    if conversation.get("is_incognito"):
+        return JSONResponse(
+            content={"error": "Voice calls are not available in incognito chats"},
+            status_code=403,
+        )
 
     active_pause = await get_active_pause(current_user.id)
     if active_pause:
         return _pause_response(active_pause)
+
+    # Fail-fast cost guard (defense in depth): the client reports the session as
+    # started here, so re-check balance to reject a call whose signed URL was
+    # obtained while the user still had balance that has since been depleted. On
+    # 402 the frontend tears the session down immediately (handleConnected).
+    if not await has_sufficient_balance(current_user.id, VOICE_CALL_MIN_BALANCE_TO_START):
+        return _insufficient_balance_response()
 
     existing_status = (conversation.get("elevenlabs_status") or "").lower()
     try:
@@ -316,8 +357,11 @@ async def complete_elevenlabs_session(
                 conversation["user_id"],
             )
             return JSONResponse(
-                content={"error": "The ElevenLabs session failed"},
-                status_code=502,
+                content={
+                    "error": "The ElevenLabs session failed",
+                    "status": "failed",
+                },
+                status_code=409,
             )
         else:
             logger.warning("[ElevenLabs] Unknown conversation status: %s", status)
@@ -333,11 +377,6 @@ async def complete_elevenlabs_session(
         transcript = await elevenlabs_service.fetch_full_transcript(session_id)
     except httpx.HTTPStatusError as exc:
         logger.error("[ElevenLabs] API error while fetching transcript for session %s: %s", session_id, exc)
-        await _mark_session_failed(
-            conversation_id,
-            session_id,
-            conversation["user_id"],
-        )
         return JSONResponse(
             content={
                 "error": "Failed to fetch ElevenLabs transcript",
@@ -347,11 +386,6 @@ async def complete_elevenlabs_session(
         )
     except httpx.HTTPError as exc:
         logger.error("[ElevenLabs] HTTP error while fetching transcript for session %s: %s", session_id, exc)
-        await _mark_session_failed(
-            conversation_id,
-            session_id,
-            conversation["user_id"],
-        )
         return JSONResponse(
             content={
                 "error": "Failed to fetch ElevenLabs transcript",
@@ -377,6 +411,15 @@ async def complete_elevenlabs_session(
             conversation["user_id"],
         )
         raise HTTPException(status_code=500, detail="Failed to store ElevenLabs transcript") from exc
+
+    if saved == 0 and not already_saved:
+        return JSONResponse(
+            content={
+                "error": "ElevenLabs transcript is not ready",
+                "detail": "No transcript turns are available yet. Try again later.",
+            },
+            status_code=425,
+        )
 
     if session_id and not already_saved:
         try:
