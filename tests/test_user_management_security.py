@@ -1256,6 +1256,52 @@ async def test_profile_phone_change_consumes_grant_and_revokes_sessions(
 
 
 @pytest.mark.asyncio
+async def test_existing_unverified_profile_phone_can_be_verified_in_place(
+    user_management_db,
+):
+    conn = sqlite3.connect(user_management_db)
+    try:
+        conn.execute(
+            "UPDATE USERS SET phone_number = ?, phone_verified = 0 WHERE id = 20",
+            ("+34600111225",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _insert_approved_phone_challenge(
+        user_management_db,
+        challenge_id="existing-profile-grant",
+        actor_user_id=20,
+        phone_number="+34600111225",
+        purpose="profile_phone_change",
+    )
+
+    response = await _edit_profile(
+        user_management_db,
+        phone_number="+34 600 111 225",
+        phone_verification_id="existing-profile-grant",
+    )
+
+    assert response.status_code == 200
+    assert b'"reauthenticate":false' in response.body
+    conn = sqlite3.connect(user_management_db)
+    try:
+        user_row = conn.execute(
+            "SELECT phone_number, phone_verified, session_version FROM USERS WHERE id = 20"
+        ).fetchone()
+        challenge_status = conn.execute(
+            "SELECT status FROM PHONE_VERIFICATION_CHALLENGES WHERE id = ?",
+            ("existing-profile-grant",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert user_row == ("+34600111225", 1, 1)
+    assert challenge_status == "consumed"
+
+
+@pytest.mark.asyncio
 async def test_profile_phone_change_requires_recent_authentication(
     user_management_db,
 ):

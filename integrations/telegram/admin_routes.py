@@ -15,6 +15,10 @@ from common import (
 from database import get_db_connection
 from log_config import logger
 from models import User
+from request_security import (
+    ensure_csrf_token,
+    validate_mutation_request,
+)
 
 
 router = APIRouter()
@@ -56,6 +60,7 @@ async def admin_telegram(request: Request, current_user: User = Depends(get_curr
     unknown_user_message = ""
     welcome_message = ""
     require_phone_verification = False
+    retain_voice_notes = False
     try:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
@@ -66,6 +71,10 @@ async def admin_telegram(request: Request, current_user: User = Depends(get_curr
             unknown_user_message = config.get('telegram_unknown_user_message', '')
             welcome_message = config.get('telegram_welcome_message', '')
             require_phone_verification = config.get('telegram_require_phone_verification', '0') == '1'
+            retain_voice_notes = (
+                str(config.get('telegram_retain_voice_notes', '') or '').strip()
+                == '1'
+            )
     except Exception as e:
         logger.error(f"Failed to load Telegram config from SYSTEM_CONFIG: {e}")
 
@@ -150,7 +159,9 @@ async def admin_telegram(request: Request, current_user: User = Depends(get_curr
         "unknown_user_message": unknown_user_message,
         "welcome_message": welcome_message,
         "require_phone_verification": require_phone_verification,
+        "telegram_retain_voice_notes": retain_voice_notes,
         "stats": stats,
+        "admin_csrf_token": ensure_csrf_token(request),
     })
     return templates.TemplateResponse("admin_telegram.html", context)
 
@@ -167,12 +178,21 @@ async def admin_telegram_save(request: Request, current_user: User = Depends(get
         return RedirectResponse(url="/admin/telegram?error=Telegram bot not configured. Set TELEGRAM_BOT_TOKEN in .env", status_code=303)
 
     form = await request.form()
+    csrf_rejection = validate_mutation_request(
+        request,
+        supplied_token=form.get("csrf_token"),
+    )
+    if csrf_rejection is not None:
+        return csrf_rejection
     action = form.get("action")
 
     if action == "save_config":
         unknown_msg = form.get("unknown_user_message", "").strip()
         welcome_msg = form.get("welcome_message", "").strip()
         require_verification = "1" if form.get("require_phone_verification") else "0"
+        retain_voice_notes = (
+            "1" if form.get("telegram_retain_voice_notes") == "1" else "0"
+        )
 
         try:
             async with get_db_connection() as conn:
@@ -191,6 +211,11 @@ async def admin_telegram_save(request: Request, current_user: User = Depends(get
                     VALUES ('telegram_require_phone_verification', ?, 'Require phone verification for Telegram', CURRENT_TIMESTAMP)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
                 """, (require_verification,))
+                await conn.execute("""
+                    INSERT INTO SYSTEM_CONFIG (key, value, description, updated_at)
+                    VALUES ('telegram_retain_voice_notes', ?, 'Retain original Telegram voice-note audio for future playback and processing', CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """, (retain_voice_notes,))
                 await conn.commit()
 
             return RedirectResponse(url="/admin/telegram?message=Configuration saved successfully", status_code=303)

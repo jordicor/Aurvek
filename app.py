@@ -182,7 +182,8 @@ from file_storage import (
     prune_unreferenced_blobs,
 )
 from welcome_service import build_world, user_has_pack_access, user_has_prompt_access, serve_welcome_world
-from tools.tts import handle_tts_request
+from tools.tts import handle_tts_request, resolve_playback_voice
+from ai_runtime.voice_resolution import CanonicalVoiceResolutionError
 from system_prompt_defaults import (
     MANDATORY_SYSTEM_KEYS, SYSTEM_BLOCK_METADATA, DEFAULT_SYSTEM_BLOCKS, MAX_BLOCK_CONTENT_SIZE
 )
@@ -310,10 +311,33 @@ from marketplace.config import (
 from marketplace.runtime import load_marketplace_config_from_db, refresh_marketplace_config_loop
 
 
+TTS_BILLING_MISSING_PROVIDERS: tuple[str, ...] = ()
+
+
+async def _initialize_tts_billing() -> None:
+    """Load provider prices before any runtime backend can accept TTS work."""
+    global TTS_BILLING_MISSING_PROVIDERS
+    await Cost.initialize()
+    TTS_BILLING_MISSING_PROVIDERS = tuple(sorted(
+        provider
+        for provider, config in Cost.TTS_PROVIDER_SERVICES.items()
+        if config.get("service_id") is None
+    ))
+    if TTS_BILLING_MISSING_PROVIDERS:
+        logger.critical(
+            "TTS billing unavailable for providers: %s; those providers will fail closed",
+            ", ".join(TTS_BILLING_MISSING_PROVIDERS),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _marketplace_refresh_task = None
     _nginx_blocklist_reconcile_task = None
+    _telephony_runtime = None
+    _telephony_unregister = None
+    await _initialize_tts_billing()
+
     # Check which system to use based on configuration
     use_redis = os.getenv('REDIS_IMG_TOKEN', '0') == '1'
 
@@ -349,6 +373,18 @@ async def lifespan(app: FastAPI):
     # Set WAL journal mode once (persistent across connections)
     from database import ensure_wal_mode
     await ensure_wal_mode()
+    # Voice-note assets extend the attachment kind checks. Production deploys
+    # run this migration before startup; this guard also upgrades local/legacy
+    # databases before the file-storage schema is cached for the process.
+    try:
+        from migration_messaging_voice_notes import migrate as migrate_messaging_voice_notes
+
+        await asyncio.to_thread(migrate_messaging_voice_notes)
+    except ModuleNotFoundError:
+        logger.info("Messaging voice-note migration module not found; assuming schema is current")
+    except Exception:
+        logger.exception("Failed to apply messaging voice-note migration")
+        raise
     await ensure_file_storage_schema()
     await discard_stale_pending_attachments()
     pruned_upload_dirs = await prune_stale_attachment_upload_chunks()
@@ -367,6 +403,15 @@ async def lifespan(app: FastAPI):
         logger.info("LLM catalog migration module not found; assuming schema is current")
     except Exception:
         logger.exception("Failed to apply LLM catalog metadata migration")
+        raise
+
+    try:
+        from migration_llm_reasoning_capabilities import migrate as migrate_llm_reasoning_capabilities
+        await asyncio.to_thread(migrate_llm_reasoning_capabilities)
+    except ModuleNotFoundError:
+        logger.info("LLM reasoning capabilities migration module not found; assuming catalog is current")
+    except Exception:
+        logger.exception("Failed to apply LLM reasoning capabilities migration")
         raise
 
     try:
@@ -579,7 +624,36 @@ async def lifespan(app: FastAPI):
                 )
         logger.exception("GPTSub startup readiness enforcement failed")
 
-    yield
+    try:
+        from integrations.telephony.admin_service import (
+            register_runtime_lifecycle,
+            unregister_runtime_lifecycle,
+        )
+        from integrations.telephony.runtime import get_telephony_runtime
+
+        _telephony_runtime = get_telephony_runtime()
+        register_runtime_lifecycle(_telephony_runtime)
+        _telephony_unregister = unregister_runtime_lifecycle
+        _telephony_status = await _telephony_runtime.start()
+        if _telephony_status.enabled and not _telephony_status.ready:
+            logger.warning(
+                "Native telephone channel is fail-closed: %s",
+                _telephony_status.reason,
+            )
+    except Exception:
+        logger.exception("Native telephone lifecycle failed closed during startup")
+
+    try:
+        yield
+    finally:
+        if _telephony_runtime is not None:
+            try:
+                await _telephony_runtime.stop()
+            except Exception:
+                logger.exception("Native telephone lifecycle failed during shutdown")
+            finally:
+                if _telephony_unregister is not None:
+                    _telephony_unregister(_telephony_runtime)
 
     if _marketplace_refresh_task:
         _marketplace_refresh_task.cancel()
@@ -1222,7 +1296,16 @@ async def health_check(current_user: User = Depends(get_current_user)):
     health_status = {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "services": {}
+        "services": {
+            "tts_billing": (
+                {
+                    "status": "degraded",
+                    "missing_providers": list(TTS_BILLING_MISSING_PROVIDERS),
+                }
+                if TTS_BILLING_MISSING_PROVIDERS
+                else {"status": "healthy"}
+            )
+        }
     }
 
     # Check Redis
@@ -1408,7 +1491,7 @@ async def show_edit_profile_form(request: Request, current_user: User = Depends(
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
-        await cursor.execute("SELECT username, phone_number, email, user_info, profile_picture FROM USERS WHERE id = ?", (current_user.id,))
+        await cursor.execute("SELECT username, phone_number, phone_verified, email, user_info, profile_picture FROM USERS WHERE id = ?", (current_user.id,))
         user_data = await cursor.fetchone()
         await cursor.execute("SELECT balance, voice_id, current_alter_ego_id, home_preferences FROM USER_DETAILS WHERE user_id = ?", (current_user.id,))
         user_details = await cursor.fetchone()
@@ -1430,9 +1513,10 @@ async def show_edit_profile_form(request: Request, current_user: User = Depends(
     user_data_dict = {
         "username": user_data[0],
         "phone_number": user_data[1] if user_data[1] not in (None, "None", "null") else "",
-        "email": user_data[2] if user_data[2] not in (None, "None", "null") else "",
-        "user_info": user_data[3] if user_data[3] else "",
-        "profile_picture": user_data[4] if user_data[4] else "",
+        "phone_verified": user_data[2] == 1,
+        "email": user_data[3] if user_data[3] not in (None, "None", "null") else "",
+        "user_info": user_data[4] if user_data[4] else "",
+        "profile_picture": user_data[5] if user_data[5] else "",
         "current_alter_ego_id": current_alter_ego_id  # Add current_alter_ego_id here
     }
 
@@ -1492,12 +1576,13 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     from common import get_user_api_key_mode, user_requires_own_keys
+    from request_security import ensure_csrf_token
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
 
         # Profile data
-        await cursor.execute("SELECT username, phone_number, email, user_info, profile_picture FROM USERS WHERE id = ?", (current_user.id,))
+        await cursor.execute("SELECT username, phone_number, phone_verified, email, user_info, profile_picture FROM USERS WHERE id = ?", (current_user.id,))
         user_data = await cursor.fetchone()
         await cursor.execute("SELECT balance, voice_id, current_alter_ego_id, home_preferences FROM USER_DETAILS WHERE user_id = ?", (current_user.id,))
         user_details = await cursor.fetchone()
@@ -1518,9 +1603,10 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
     user_data_dict = {
         "username": user_data[0],
         "phone_number": user_data[1] if user_data[1] not in (None, "None", "null") else "",
-        "email": user_data[2] if user_data[2] not in (None, "None", "null") else "",
-        "user_info": user_data[3] if user_data[3] else "",
-        "profile_picture": user_data[4] if user_data[4] else "",
+        "phone_verified": user_data[2] == 1,
+        "email": user_data[3] if user_data[3] not in (None, "None", "null") else "",
+        "user_info": user_data[4] if user_data[4] else "",
+        "profile_picture": user_data[5] if user_data[5] else "",
         "current_alter_ego_id": current_alter_ego_id
     }
 
@@ -1573,7 +1659,8 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
         "can_change_password": current_user.should_show_change_password(),
         "api_key_mode": api_key_mode,
         "requires_own_keys": requires_own_keys,
-        "user_balance": user_balance
+        "user_balance": user_balance,
+        "telephony_csrf_token": ensure_csrf_token(request)
     })
     return templates.TemplateResponse("settings.html", context)
 
@@ -3568,6 +3655,7 @@ async def edit_profile(
     user_id = current_user.id
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     phone_number_changed = False
+    phone_verification_completed = False
 
     try:
         async with get_db_connection() as conn:
@@ -3576,7 +3664,7 @@ async def edit_profile(
 
             await cursor.execute(
                 """
-                SELECT username, phone_number, email, user_info, profile_picture
+                SELECT username, phone_number, phone_verified, email, user_info, profile_picture
                 FROM USERS
                 WHERE id = ?
                 """,
@@ -3589,6 +3677,7 @@ async def edit_profile(
             (
                 current_username,
                 current_phone_number,
+                current_phone_verified,
                 current_email,
                 current_user_info,
                 _current_profile_picture,
@@ -3639,6 +3728,24 @@ async def edit_profile(
                     phone_number=submitted_phone,
                     purpose=PURPOSE_PROFILE_PHONE_CHANGE,
                 )
+            elif (
+                submitted_phone
+                and current_phone_verified != 1
+                and phone_verification_id
+            ):
+                if not has_recent_authentication(current_user):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Please sign in again before verifying your phone number.",
+                    )
+                await consume_phone_verification(
+                    conn,
+                    actor_user_id=user_id,
+                    challenge_id=phone_verification_id,
+                    phone_number=submitted_phone,
+                    purpose=PURPOSE_PROFILE_PHONE_CHANGE,
+                )
+                phone_verification_completed = True
 
             submitted_email = email.strip().lower() if email is not None else None
             submitted_email = submitted_email or None
@@ -3669,6 +3776,8 @@ async def edit_profile(
                     ]
                 )
                 update_values.append(submitted_phone)
+            elif phone_verification_completed:
+                update_fields.append("phone_verified = 1")
 
             if user_info is not None and user_info != current_user_info:
                 update_fields.append("user_info = ?")
@@ -4546,6 +4655,9 @@ async def dashboard(request: Request, current_user: User = Depends(get_current_u
 
     await load_marketplace_config_from_db()
     base_ctx = await get_template_context(request, current_user)
+    from request_security import ensure_csrf_token
+
+    base_ctx["admin_csrf_token"] = ensure_csrf_token(request)
 
     if not base_ctx["is_admin"] and not base_ctx["is_user"]:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -6640,6 +6752,7 @@ async def _apply_llm_reassignment(conn: aiosqlite.Connection, old_llm_id: int, n
         "conversations": 0,
         "user_details": 0,
         "forced_prompts": 0,
+        "phone_prompts": 0,
         "allowed_prompts": 0,
     }
 
@@ -6659,10 +6772,24 @@ async def _apply_llm_reassignment(conn: aiosqlite.Connection, old_llm_id: int, n
     metrics["user_details"] = cursor.rowcount or 0
 
     cursor = await conn.execute(
-        "UPDATE PROMPTS SET forced_llm_id = ? WHERE forced_llm_id = ?",
+        """
+        UPDATE PROMPTS
+        SET forced_llm_id = ?, forced_reasoning_json = NULL
+        WHERE forced_llm_id = ?
+        """,
         (new_llm_id, old_llm_id),
     )
     metrics["forced_prompts"] = cursor.rowcount or 0
+
+    cursor = await conn.execute(
+        """
+        UPDATE PROMPTS
+        SET phone_llm_id = ?, phone_reasoning_json = NULL
+        WHERE phone_llm_id = ?
+        """,
+        (new_llm_id, old_llm_id),
+    )
+    metrics["phone_prompts"] = cursor.rowcount or 0
 
     async with conn.execute(
         "SELECT id, allowed_llms FROM PROMPTS WHERE allowed_llms IS NOT NULL AND TRIM(allowed_llms) != ''"
@@ -6704,6 +6831,7 @@ async def _reassign_and_delete_llm(
         FROM LLM
         WHERE machine NOT IN ('GranSabio', 'GPTSub')
           AND COALESCE(enabled, 1) = 1
+          AND lower(model) NOT LIKE 'gpt-realtime-2.1%'
         """
     ) as cursor:
         llm_catalog = [dict(row) for row in await cursor.fetchall()]
@@ -6749,6 +6877,7 @@ async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_mod
         "conversations": 0,
         "user_details": 0,
         "forced_prompts": 0,
+        "phone_prompts": 0,
     }
 
     cursor = await conn.execute(
@@ -6774,13 +6903,23 @@ async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_mod
     cursor = await conn.execute(
         """
         UPDATE PROMPTS
-        SET forced_llm_id = ?
+        SET forced_llm_id = ?, forced_reasoning_json = NULL
         WHERE forced_llm_id IS NOT NULL
           AND forced_llm_id NOT IN (SELECT id FROM LLM)
         """,
         (fallback_llm_id,),
     )
     metrics["forced_prompts"] = cursor.rowcount or 0
+
+    cursor = await conn.execute(
+        """
+        UPDATE PROMPTS
+        SET phone_llm_id = NULL, phone_reasoning_json = NULL
+        WHERE phone_llm_id IS NOT NULL
+          AND phone_llm_id NOT IN (SELECT id FROM LLM)
+        """
+    )
+    metrics["phone_prompts"] = cursor.rowcount or 0
 
     return metrics
 
@@ -6804,6 +6943,7 @@ async def llm_list(request: Request, current_user: User = Depends(get_current_us
 async def api_llms_list(
     preserve_ids: str | None = Query(None),
     include_current_llm_id: int | None = Query(None),
+    include_realtime: bool = Query(False),
     current_user: User = Depends(get_current_user),
 ):
     """Return list of LLMs as JSON for frontend selects"""
@@ -6826,6 +6966,7 @@ async def api_llms_list(
         # user's saved live catalog. Fail-safe HIDE on every read/decrypt error.
         from common import get_subscription_auth_enabled
         gptsub_models = []
+        gptsub_reasoning = {}
         try:
             gptsub_feature_enabled = await get_subscription_auth_enabled()
         except Exception:
@@ -6845,12 +6986,22 @@ async def api_llms_list(
                         model for model in saved_models
                         if isinstance(model, str) and model and len(model) <= 128
                     ]
+                saved_reasoning = blob.get("model_reasoning", {}) if blob else {}
+                if isinstance(saved_reasoning, dict):
+                    gptsub_reasoning = {
+                        model: value
+                        for model, value in saved_reasoning.items()
+                        if model in gptsub_models and isinstance(value, dict)
+                    }
             except Exception:
                 gptsub_models = []
+                gptsub_reasoning = {}
         rows = await get_selector_llms(
             conn,
             preserve_ids=preserved,
+            include_realtime=include_realtime,
             gptsub_models=gptsub_models,
+            gptsub_reasoning=gptsub_reasoning,
         )
 
     return [
@@ -6861,6 +7012,7 @@ async def api_llms_list(
             "display_name": row["display_name"] or row["model"],
             "vision": bool(row["vision"]),
             "enabled": bool(row["enabled"]),
+            "capabilities": row["capabilities"],
         }
         for row in rows
     ]
@@ -7642,7 +7794,7 @@ async def admin_subscription_auth_get(request: Request, current_user: User = Dep
         raise HTTPException(status_code=404, detail="Not found")
     from common import get_subscription_auth_enabled
     from subscription_auth.linking import pending_link_count
-    from subscription_auth.request_security import ensure_csrf_token
+    from request_security import ensure_csrf_token
     from subscription_auth.token_store import load_link
     from subscription_auth.doctor import runtime_ready
 
@@ -7681,7 +7833,7 @@ async def admin_subscription_auth_post(request: Request, current_user: User = De
         return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
     if not _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
         raise HTTPException(status_code=404, detail="Not found")
-    from subscription_auth.request_security import validate_mutation_request
+    from request_security import validate_mutation_request
 
     csrf_rejection = validate_mutation_request(request)
     if csrf_rejection:
@@ -8597,7 +8749,7 @@ async def create_service(request: Request, current_user: User = Depends(get_curr
 
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
-    service_types = ["TTS", "STT", "Images", "Video", "Music"]
+    service_types = ["TTS", "STT", "Phone", "Images", "Video", "Music"]
     context = await get_template_context(request, current_user)
     context["service_types"] = service_types
     return templates.TemplateResponse("services/create_service.html", context)
@@ -8630,7 +8782,7 @@ async def edit_service(request: Request, service_id: int, current_user: User = D
         service = await cursor.fetchone()
         await conn.close()
         if service:
-            service_types = ["TTS", "STT", "Images", "Video", "Music"]
+            service_types = ["TTS", "STT", "Phone", "Images", "Video", "Music"]
             context = await get_template_context(request, current_user)
             context.update({
                 "service_id": service_id,
@@ -8689,9 +8841,22 @@ async def get_voices(current_user: User = Depends(get_current_user)):
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
-        await cursor.execute("SELECT voice_code, name FROM VOICES")
+        await cursor.execute(
+            """
+            SELECT v.id,v.voice_code,v.name
+            FROM VOICES v
+            JOIN SERVICES s ON s.id=v.tts_service
+            WHERE COALESCE(v.deprecated,0)=0
+              AND TRIM(COALESCE(v.voice_code,''))<>''
+              AND TRIM(COALESCE(s.name,''))<>''
+            ORDER BY v.id
+            """
+        )
         voices = await cursor.fetchall()
-    return [{"id": voice[0], "name": voice[1]} for voice in voices]
+    return [
+        {"id": voice[1], "catalog_id": voice[0], "name": voice[2]}
+        for voice in voices
+    ]
 
 @app.get("/admin/voices", response_class=HTMLResponse)
 async def list_voices(request: Request, current_user: User = Depends(get_current_user)):
@@ -8805,6 +8970,21 @@ async def set_default_voice(voice_id: int, current_user: User = Depends(get_curr
     if not await current_user.is_admin:
         return JSONResponse(content={"error": "Access denied"}, status_code=403)
     async with get_db_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        cursor = await conn.execute(
+            """
+            SELECT v.id FROM VOICES v
+            JOIN SERVICES s ON s.id=v.tts_service
+            WHERE v.id=? AND COALESCE(v.deprecated, 0)=0
+              AND length(trim(v.voice_code)) > 0
+            """,
+            (voice_id,),
+        )
+        if await cursor.fetchone() is None:
+            await conn.rollback()
+            return JSONResponse(
+                content={"error": "Voice not found or unavailable"}, status_code=404
+            )
         await conn.execute("UPDATE VOICES SET is_default = 0 WHERE is_default = 1")
         await conn.execute("UPDATE VOICES SET is_default = 1 WHERE id = ?", (voice_id,))
         await conn.commit()
@@ -8984,29 +9164,59 @@ async def auth_image(request: Request, token: str = Query(None), request_uri: st
 
 @app.get("/api/voice-sample/{sample_voice_id}")
 async def get_voice_sample(
+    request: Request,
     sample_voice_id: str,
     category: int = Query(..., ge=0, le=11),
+    provider: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
-    logger.info(f"Entering get_voice_sample, sample_voice_id: {sample_voice_id}, category: {category}")
+    is_admin_user = bool(await current_user.is_admin)
+    try:
+        resolved_voice = await resolve_playback_voice(
+            sample_voice_id,
+            allow_uncatalogued_preview=is_admin_user,
+            preview_provider=provider,
+        )
+    except CanonicalVoiceResolutionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": exc.code, "reason": str(exc)},
+        ) from exc
 
-    # Convert sample_voice_id to hexadecimal (assuming it's an alphanumeric string)
-    hex_id = ''.join(f"{ord(c):02x}" for c in sample_voice_id)[:5]  # First 5 characters in hex
-    folder_1 = hex_id[:2]  # First 2 characters in first folder
-    folder_2 = hex_id[2:5]  # Next 3 characters in second folder
+    # Provider-qualified digest prevents traversal and cross-provider cache collisions.
+    voice_digest = hashlib.sha256(
+        f"{resolved_voice.provider}:{resolved_voice.voice_code}".encode("utf-8")
+    ).hexdigest()
+    folder_1 = voice_digest[:2]
+    folder_2 = voice_digest[2:5]
 
     # Create the folder structure
     voice_sample_dir = os.path.join(VOICE_SAMPLES_DIR, folder_1, folder_2)
     os.makedirs(voice_sample_dir, exist_ok=True)
 
-    sample_filename = f"{sample_voice_id}_sample-{category}.opus"
+    sample_filename = f"{voice_digest}_sample-{category}.opus"
     sample_path = os.path.join(voice_sample_dir, sample_filename)
 
     if os.path.exists(sample_path):
         return FileResponse(sample_path, media_type="audio/ogg")
+
+    rate_error = check_rate_limits(
+        request,
+        ip_limit=RLC.VOICE_SAMPLE_BY_IP,
+        identifier=str(current_user.id),
+        identifier_limit=RLC.VOICE_SAMPLE_BY_USER,
+        action_name="voice_sample",
+    )
+    if rate_error:
+        retry_after = int(rate_error.get("retry_after_seconds") or 0)
+        raise HTTPException(
+            status_code=429,
+            detail=rate_error["message"],
+            headers={"Retry-After": str(retry_after)},
+        )
 
     try:
         sample_texts = [
@@ -9031,7 +9241,15 @@ async def get_voice_sample(
             "author": "bot",
             "conversationId": "sample"
         }
-        audio_path, error = await handle_tts_request(None, data, current_user, is_whatsapp=True, sample_voice_id=sample_voice_id, tts_context="external")
+        audio_path, error = await handle_tts_request(
+            None,
+            data,
+            current_user,
+            is_whatsapp=True,
+            sample_voice_id=sample_voice_id,
+            tts_context="external",
+            resolved_sample_voice=resolved_voice,
+        )
 
         if error:
             raise HTTPException(status_code=500, detail=f"Error generating voice sample: {error}")
@@ -11508,18 +11726,11 @@ async def disable_cloudflare_cache(
     if not await is_admin(current_user.id):
         return JSONResponse(content={"error": "Admin access required."}, status_code=403)
 
-    request_ip = get_client_ip(request)
-    if not await is_elevated(current_user.id, request_ip=request_ip):
-        return JSONResponse(
-            content={
-                "error": (
-                    "Ultra Admin+ elevation is required. "
-                    "Elevate from User Management and try again."
-                ),
-                "reason": "ultra_admin_required",
-            },
-            status_code=403,
-        )
+    from request_security import validate_mutation_request
+
+    csrf_rejection = validate_mutation_request(request)
+    if csrf_rejection is not None:
+        return csrf_rejection
 
     try:
         await run_cloudflare_cache_disable()

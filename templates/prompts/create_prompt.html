@@ -67,6 +67,7 @@
                         <select class="form-select" id="voiceSelect" name="sample_voice_id" required>
                             <!-- Options will be loaded dynamically -->
                         </select>
+                        <input type="hidden" id="voiceCatalogId" name="sample_voice_catalog_id" value="">
                         <select class="form-select" id="sampleCategory" style="display: none;">
                             <!-- Categories will be loaded dynamically -->
                         </select>
@@ -216,12 +217,63 @@
                                 <!-- LLMs loaded dynamically -->
                             </select>
                         </div>
+                        <div class="mb-3">
+                            <label for="forcedReasoningMode" class="form-label">Prompt thinking</label>
+                            <select class="form-select" id="forcedReasoningMode" name="forced_reasoning_mode">
+                                <option value="default">User/provider default</option>
+                            </select>
+                            <small class="form-text text-muted">Optionally enforce one thinking level whenever this prompt uses the forced model.</small>
+                        </div>
+                        <div class="mb-3" id="forcedReasoningBudgetWrap" hidden>
+                            <label for="forcedReasoningBudget" class="form-label">Thinking token budget</label>
+                            <input class="form-control" id="forcedReasoningBudget" name="forced_reasoning_budget_tokens" type="number">
+                        </div>
                         <div class="form-check mb-3">
                             <input type="checkbox" class="form-check-input" id="hideLLMName" name="hide_llm_name">
                             <label class="form-check-label" for="hideLLMName">
                                 Hide model name in chat UI
                                 <small class="text-muted d-block">Show "AI" instead of model name</small>
                             </label>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
+                        <label class="form-label"><i class="fas fa-phone me-1 text-muted"></i>Phone call AI</label>
+                        <div class="mb-3">
+                            <label for="phoneLLM" class="form-label">Model</label>
+                            <select class="form-select" id="phoneLLM" name="phone_llm_id">
+                                <option value="">Use the conversation model</option>
+                            </select>
+                            <small class="form-text text-muted">GPT Realtime 2.1 Mini is preselected for low-latency calls; you can choose another phone model or use the conversation model.</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="phoneReasoningMode" class="form-label">Thinking</label>
+                            <select class="form-select" id="phoneReasoningMode" name="phone_reasoning_mode">
+                                <option value="inherit">Inherit the prompt/model setting</option>
+                            </select>
+                        </div>
+                        <div class="mb-3" id="phoneReasoningBudgetWrap" hidden>
+                            <label for="phoneReasoningBudget" class="form-label">Thinking token budget</label>
+                            <input class="form-control" id="phoneReasoningBudget" name="phone_reasoning_budget_tokens" type="number">
+                        </div>
+                        <div class="mb-3" id="phoneRealtimeVoiceWrap" hidden>
+                            <label for="phoneRealtimeVoice" class="form-label">
+                                OpenAI phone voice
+                                <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="OpenAI speech-to-speech models use an OpenAI voice for conversational replies, so those replies can sound different from the prompt's selected voice. The prompt voice remains unchanged and still handles cached greetings and technical notices."></i>
+                            </label>
+                            <select class="form-select" id="phoneRealtimeVoice" name="phone_realtime_voice">
+                                <option value="marin" selected>Marin (recommended)</option>
+                                <option value="cedar">Cedar (recommended)</option>
+                                <option value="alloy">Alloy</option>
+                                <option value="ash">Ash</option>
+                                <option value="ballad">Ballad</option>
+                                <option value="coral">Coral</option>
+                                <option value="echo">Echo</option>
+                                <option value="sage">Sage</option>
+                                <option value="shimmer">Shimmer</option>
+                                <option value="verse">Verse</option>
+                            </select>
+                            <small class="form-text text-muted">Used for conversational replies in native OpenAI Realtime phone calls.</small>
                         </div>
                     </div>
                 </div>
@@ -632,6 +684,7 @@
                 voices.forEach(voice => {
                     const option = document.createElement('option');
                     option.value = voice.id;
+                    option.dataset.catalogId = voice.catalog_id;
                     option.textContent = voice.name;
                     voiceSelect.appendChild(option);
                 });
@@ -668,6 +721,9 @@
         });
 
         voiceSelect.addEventListener('change', function() {
+            const option = this.selectedOptions[0];
+            document.getElementById('voiceCatalogId').value =
+                option && option.dataset.catalogId ? option.dataset.catalogId : '';
             categorySelect.style.display = this.value ? 'inline-block' : 'none';
             playButton.style.display = this.value ? 'inline-block' : 'none';
         });
@@ -814,17 +870,91 @@
         document.getElementById('restrictedLLMOptions').style.display = mode === 'restricted' ? 'block' : 'none';
         document.getElementById('forcedLLMOptions').style.display = mode === 'forced' ? 'block' : 'none';
         document.getElementById('forcedLLM').disabled = mode !== 'forced';
+        document.getElementById('forcedReasoningMode').disabled = mode !== 'forced';
+        if (mode !== 'forced') document.getElementById('forcedReasoningMode').value = 'default';
+        updatePromptReasoningControls();
+    }
+
+    let promptLLMCatalog = [];
+    const promptReasoningLabels = {
+        default: 'Provider default', off: 'Off', auto: 'Automatic',
+        minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
+        xhigh: 'Very high', max: 'Maximum', custom: 'Custom token budget'
+    };
+
+    function catalogModel(id) {
+        const numericId = Number.parseInt(id, 10);
+        return promptLLMCatalog.find(item => Number(item.id) === numericId) || null;
+    }
+
+    function renderReasoningSelect(select, model, firstValue, firstLabel, budgetWrap, budgetInput) {
+        const previous = select.value || firstValue;
+        select.replaceChildren(new Option(firstLabel, firstValue));
+        const reasoning = model?.capabilities?.reasoning;
+        if (reasoning?.behavior === 'configurable' && Array.isArray(reasoning.modes)) {
+            reasoning.modes.forEach(mode => {
+                if (mode === firstValue) return;
+                select.appendChild(new Option(promptReasoningLabels[mode] || mode, mode));
+            });
+        }
+        if (Array.from(select.options).some(option => option.value === previous)) {
+            select.value = previous;
+        }
+        const budget = reasoning?.budget_tokens || {};
+        if (select.value === 'custom') {
+            budgetWrap.hidden = false;
+            budgetInput.disabled = false;
+            budgetInput.min = budget.min ?? 1;
+            budgetInput.max = budget.max ?? '';
+            budgetInput.step = budget.step ?? 1;
+            if (!budgetInput.value) budgetInput.value = budget.min ?? 1;
+        } else {
+            budgetWrap.hidden = true;
+            budgetInput.disabled = true;
+            budgetInput.value = '';
+        }
+    }
+
+    function updatePromptReasoningControls() {
+        const forcedModel = catalogModel(document.getElementById('forcedLLM')?.value);
+        renderReasoningSelect(
+            document.getElementById('forcedReasoningMode'),
+            forcedModel,
+            'default',
+            'User/provider default',
+            document.getElementById('forcedReasoningBudgetWrap'),
+            document.getElementById('forcedReasoningBudget')
+        );
+
+        const phoneModel = catalogModel(document.getElementById('phoneLLM')?.value);
+        const mode = document.querySelector('input[name="llm_mode"]:checked')?.value;
+        const inheritedModel = mode === 'forced' ? forcedModel : null;
+        renderReasoningSelect(
+            document.getElementById('phoneReasoningMode'),
+            phoneModel || inheritedModel,
+            'inherit',
+            'Inherit the prompt/model setting',
+            document.getElementById('phoneReasoningBudgetWrap'),
+            document.getElementById('phoneReasoningBudget')
+        );
+        document.getElementById('phoneRealtimeVoiceWrap').hidden =
+            phoneModel?.capabilities?.runtime?.kind !== 'openai_realtime';
     }
 
     function loadLLMs() {
-        return fetch('/api/llms')
-            .then(response => response.json())
-            .then(llms => {
+        return Promise.all([
+            fetch('/api/llms').then(response => response.json()),
+            fetch('/api/llms?include_realtime=true').then(response => response.json()),
+        ])
+            .then(([llms, phoneLlms]) => {
+                promptLLMCatalog = phoneLlms;
                 const select = document.getElementById('forcedLLM');
+                const phoneSelect = document.getElementById('phoneLLM');
                 const preWdSelect = document.getElementById('preWatchdogLLM');
                 const postWdSelect = document.getElementById('postWatchdogLLM');
                 const checkboxList = document.getElementById('llmCheckboxList');
                 select.innerHTML = '<option value="">Select a model</option>';
+                phoneSelect.innerHTML = '<option value="">Use the conversation model</option>';
                 preWdSelect.innerHTML = '<option value="">Select a model</option>';
                 postWdSelect.innerHTML = '<option value="">Select a model</option>';
                 checkboxList.innerHTML = '';
@@ -845,6 +975,25 @@
                     `;
                     checkboxList.appendChild(div);
                 });
+                phoneLlms
+                    .filter(llm => !['GPTSub', 'GranSabio'].includes(llm.machine)
+                        && llm.capabilities?.runtime?.channels?.includes('phone'))
+                    .forEach(llm => {
+                        const option = document.createElement('option');
+                        option.value = llm.id;
+                        option.textContent = `${llm.machine} - ${llm.model}`;
+                        option.selected = String(llm.model || '').toLowerCase()
+                            === 'gpt-realtime-2.1-mini';
+                        phoneSelect.appendChild(option);
+                    });
+                updatePromptReasoningControls();
+                const defaultPhoneModel = catalogModel(phoneSelect.value);
+                const phoneReasoning = document.getElementById('phoneReasoningMode');
+                if (defaultPhoneModel?.capabilities?.runtime?.kind === 'openai_realtime'
+                        && Array.from(phoneReasoning.options).some(option => option.value === 'minimal')) {
+                    phoneReasoning.value = 'minimal';
+                    updatePromptReasoningControls();
+                }
             })
             .catch(error => console.error('Error loading LLMs:', error));
     }
@@ -1124,6 +1273,11 @@
     document.addEventListener('DOMContentLoaded', function() {
         // FormGuard: prompt-main group
         var promptMainGroup = FormGuard.createGroup('prompt-main');
+
+        document.getElementById('forcedLLM').addEventListener('change', updatePromptReasoningControls);
+        document.getElementById('phoneLLM').addEventListener('change', updatePromptReasoningControls);
+        document.getElementById('forcedReasoningMode').addEventListener('change', updatePromptReasoningControls);
+        document.getElementById('phoneReasoningMode').addEventListener('change', updatePromptReasoningControls);
 
         var voicesReady = loadVoices();
         var categoriesReady = loadCategories();

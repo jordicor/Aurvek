@@ -287,7 +287,7 @@ def test_tts_key_refresh_is_lazy_and_error_logs_are_redacted(monkeypatch):
     )
     manager.api_keys[0].update_info()
     assert "super-secret-elevenlabs-key-1234" not in logged[0]
-    assert "1234" in logged[0]
+    assert "1234" not in logged[0]
 
 
 def test_email_configuration_is_explicit_and_fallback_logs_no_secrets(

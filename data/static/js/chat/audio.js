@@ -246,6 +246,8 @@ function disposeCachedAudio(audio = Config.currentAudio, objectUrl = currentAudi
     if (audio) {
         audio.onended = null;
         audio.onerror = null;
+        audio.onplaying = null;
+        audio.onwaiting = null;
         try { audio.pause(); } catch (error) { /* no-op */ }
         try { audio.currentTime = 0; } catch (error) { /* not seekable yet */ }
         audio.src = '';
@@ -316,6 +318,111 @@ function finishCachedAudio(audio, objectUrl, generation, audioIcon) {
     isWaiting = false;
     toggleIcons(audioIcon, 'stopped');
     Config.currentAudioIcon = null;
+}
+
+function resolveOriginalAudioUrl(url) {
+    if (typeof url !== 'string' || !url.trim()) {
+        throw new Error('Original audio URL is missing');
+    }
+    const resolved = new URL(url, window.location.origin);
+    if (resolved.origin !== window.location.origin ||
+            (resolved.protocol !== 'http:' && resolved.protocol !== 'https:')) {
+        throw new Error('Original audio URL must use the current origin');
+    }
+    if (!/^\/api\/attachments\/[^/]+\/content$/.test(resolved.pathname)) {
+        throw new Error('Original audio URL must use the attachment content endpoint');
+    }
+    return resolved.href;
+}
+
+function markAudioPlaybackError(audioIcon, label) {
+    if (!audioIcon) return;
+    const message = `${label} could not be played. Activate to retry.`;
+    audioIcon.classList.add('audio-playback-error');
+    audioIcon.title = message;
+    audioIcon.setAttribute('aria-label', message);
+    audioIcon.setAttribute('aria-pressed', 'false');
+}
+
+function playOriginalAudio(url, audioIcon) {
+    audioIcon?.classList.remove('audio-playback-error');
+    let resolvedUrl;
+    try {
+        resolvedUrl = resolveOriginalAudioUrl(url);
+    } catch (error) {
+        console.error('Could not play original audio:', error);
+        toggleIcons(audioIcon, 'stopped');
+        markAudioPlaybackError(audioIcon, 'Original voice note');
+        return;
+    }
+
+    if (isPlaying || isWaiting) {
+        stopAllAudio();
+        return;
+    }
+    stopAllAudio();
+
+    const generation = ttsGeneration;
+    let audio;
+    try {
+        audio = new Audio();
+        audio.preload = 'metadata';
+        audio.setAttribute('playsinline', '');
+        audio.src = resolvedUrl;
+    } catch (error) {
+        console.error('Could not initialize original audio:', error);
+        toggleIcons(audioIcon, 'stopped');
+        markAudioPlaybackError(audioIcon, 'Original voice note');
+        return;
+    }
+
+    Config.currentAudio = audio;
+    Config.currentAudioIcon = audioIcon;
+    isWaiting = true;
+    isPlaying = false;
+    toggleIcons(audioIcon, 'waiting');
+
+    const isCurrentAudio = () => (
+        generation === ttsGeneration && Config.currentAudio === audio
+    );
+    audio.onplaying = () => {
+        if (!isCurrentAudio()) return;
+        isWaiting = false;
+        isPlaying = true;
+        toggleIcons(audioIcon, 'playing');
+    };
+    audio.onwaiting = () => {
+        if (!isCurrentAudio()) return;
+        isWaiting = true;
+        isPlaying = false;
+        toggleIcons(audioIcon, 'waiting');
+    };
+    audio.onended = () => finishCachedAudio(
+        audio,
+        null,
+        generation,
+        audioIcon
+    );
+    audio.onerror = () => {
+        const wasCurrent = isCurrentAudio();
+        if (wasCurrent) {
+            console.error('Error playing original audio');
+        }
+        finishCachedAudio(audio, null, generation, audioIcon);
+        if (wasCurrent) markAudioPlaybackError(audioIcon, 'Original voice note');
+    };
+
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(error => {
+            const wasCurrent = isCurrentAudio();
+            if (wasCurrent) {
+                console.error('Error playing original audio:', error);
+            }
+            finishCachedAudio(audio, null, generation, audioIcon);
+            if (wasCurrent) markAudioPlaybackError(audioIcon, 'Original voice note');
+        });
+    }
 }
 
 function textToSpeech(text, userId, conversationId, audioIcon, author) {
@@ -414,23 +521,39 @@ function toggleIcons(audioIcon, state) {
         return;
     }
     const baseIcon = audioIcon.dataset.baseIcon || 'fa-volume-up';
+    const isOriginal = audioIcon.dataset.audioSource === 'original';
+    const playLabel = audioIcon.dataset.playLabel || (isOriginal
+        ? 'Play original voice note'
+        : 'Read aloud');
+    let actionLabel = playLabel;
 
     switch (state) {
         case 'waiting':
             audioIcon.classList.remove(baseIcon, 'fa-stop');
             audioIcon.classList.add('fa-hourglass-half');
+            actionLabel = isOriginal
+                ? 'Loading original voice note. Activate to stop.'
+                : 'Preparing read aloud. Activate to stop.';
             break;
         case 'playing':
             audioIcon.classList.remove(baseIcon, 'fa-hourglass-half');
             audioIcon.classList.add('fa-stop');
+            actionLabel = isOriginal
+                ? 'Stop original voice note'
+                : 'Stop reading aloud';
             break;
         case 'stopped':
             audioIcon.classList.remove('fa-stop', 'fa-hourglass-half');
             audioIcon.classList.add(baseIcon);
+            audioIcon.classList.remove('audio-playback-error');
             break;
         default:
             break;
     }
+    const active = state === 'waiting' || state === 'playing';
+    audioIcon.title = actionLabel;
+    audioIcon.setAttribute('aria-label', actionLabel);
+    audioIcon.setAttribute('aria-pressed', active ? 'true' : 'false');
 }
 
 // From here are the functions to record audio with microphone and convert to text

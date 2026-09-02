@@ -6,6 +6,7 @@
 
     const TAB_MAP = {
         '#profile': 'profile-tab',
+        '#calls': 'calls-tab',
         '#usage': 'usage-tab',
         '#wellbeing': 'wellbeing-tab',
         '#memory': 'memory-tab',
@@ -14,6 +15,7 @@
 
     const initialized = {
         profile: false,
+        calls: false,
         usage: false,
         wellbeing: false,
         memory: false,
@@ -56,6 +58,9 @@
             case 'profile':
                 // edit_profile.js initializes on DOMContentLoaded, already fired
                 break;
+            case 'calls':
+                loadCallsTab();
+                break;
             case 'usage':
                 loadUsageTab();
                 break;
@@ -68,6 +73,242 @@
                 // api-credentials.js initializes on DOMContentLoaded, already fired
                 // But if it hasn't been visible yet, we may need to trigger it
                 break;
+        }
+    }
+
+    // --- Calls Tab ---
+    let callsLoadController = null;
+    let callsLoadGeneration = 0;
+
+    function phoneCallStatus(value) {
+        const labels = {
+            created: 'Preparing',
+            dispatching: 'Preparing',
+            dispatch_unknown: 'Checking status',
+            queued: 'Preparing',
+            initiated: 'Calling',
+            ringing: 'Ringing',
+            in_progress: 'In call',
+            completed: 'Completed',
+            busy: 'Busy',
+            no_answer: 'No answer',
+            machine: 'Voicemail',
+            failed: 'Failed',
+            canceled: 'Canceled',
+            unresolved: 'Status unavailable'
+        };
+        return labels[String(value || '').toLowerCase()] || 'Unknown';
+    }
+
+    function phoneCallDirection(value) {
+        if (String(value || '').toLowerCase() === 'inbound') return 'Incoming call';
+        if (String(value || '').toLowerCase() === 'outbound') return 'Outgoing call';
+        return 'Phone call';
+    }
+
+    function phoneCallDate(value) {
+        if (!value) return '';
+        const raw = String(value);
+        const date = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(raw)
+            ? raw
+            : `${raw.replace(' ', 'T')}Z`);
+        return Number.isNaN(date.getTime()) ? raw : date.toLocaleString();
+    }
+
+    function phoneCallDuration(value) {
+        if (value === null || value === undefined || value === '') return '';
+        const total = Number(value);
+        if (!Number.isFinite(total) || total < 0) return '';
+        const rounded = Math.round(total);
+        const minutes = Math.floor(rounded / 60);
+        const seconds = rounded % 60;
+        if (minutes === 0) return `${seconds} sec`;
+        if (seconds === 0) return `${minutes} min`;
+        return `${minutes} min ${seconds} sec`;
+    }
+
+    function phoneCallCost(call) {
+        const value = call.total_cost ?? call.customer_cost ?? call.final_cost ?? call.estimated_cost;
+        if (value === null || value === undefined || value === '') return '';
+        const amount = Number(value);
+        if (!Number.isFinite(amount)) return '';
+        const currency = String(call.currency || 'USD');
+        try {
+            return new Intl.NumberFormat(undefined, {
+                style: 'currency',
+                currency
+            }).format(amount);
+        } catch (_error) {
+            return `${amount.toFixed(4)} ${currency}`;
+        }
+    }
+
+    function callConversationTitle(call) {
+        return call.conversation_title || call.conversation_name || call.chat_name || call.prompt_name ||
+            (call.conversation_id ? `Conversation #${call.conversation_id}` : 'Conversation');
+    }
+
+    function openCallConversation(conversationId) {
+        if (!conversationId) return;
+        window.location.href = `/chat?conversation_id=${encodeURIComponent(conversationId)}`;
+    }
+
+    async function cancelScheduledCall(job, button) {
+        const status = document.getElementById('settings-calls-status');
+        const csrfToken = document.querySelector('meta[name="aurvek-csrf-token"]')?.content;
+        if (!csrfToken) {
+            status.hidden = false;
+            status.textContent = 'Call cancellation security is unavailable. Reload the page and try again.';
+            return;
+        }
+        button.disabled = true;
+        try {
+            const fetcher = typeof secureFetch === 'function' ? secureFetch : fetch;
+            const response = await fetcher(
+                `/api/phone-call-jobs/${encodeURIComponent(job.id)}/cancel`,
+                {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {'X-GPTSub-CSRF': csrfToken}
+                }
+            );
+            if (!response || !response.ok) throw new Error('The scheduled call could not be canceled.');
+            await loadCallsTab();
+        } catch (error) {
+            status.hidden = false;
+            status.textContent = error instanceof Error
+                ? error.message
+                : 'The scheduled call could not be canceled.';
+            button.disabled = false;
+        }
+    }
+
+    function renderCalls(calls, jobs) {
+        const list = document.getElementById('settings-calls-list');
+        const status = document.getElementById('settings-calls-status');
+        if (!list || !status) return;
+        list.replaceChildren();
+        const scheduled = jobs.filter(job => {
+            const dueAt = job.scheduled_at_utc ? new Date(job.scheduled_at_utc).getTime() : Number.NaN;
+            return String(job.status || '').toLowerCase() === 'scheduled' &&
+                !job.call_id && Number.isFinite(dueAt) && dueAt > Date.now();
+        });
+        if (calls.length === 0 && scheduled.length === 0) {
+            status.textContent = 'No phone calls yet.';
+            status.hidden = false;
+            return;
+        }
+        status.textContent = '';
+        status.hidden = true;
+
+        scheduled.forEach(job => {
+            const item = document.createElement('article');
+            item.className = 'settings-call-item';
+            const main = document.createElement('div');
+            main.className = 'settings-call-main';
+            const title = document.createElement('p');
+            title.className = 'settings-call-title';
+            title.textContent = `${callConversationTitle(job)} · Scheduled call`;
+            const meta = document.createElement('p');
+            meta.className = 'settings-call-meta';
+            const prompt = job.prompt_name && job.prompt_name !== callConversationTitle(job)
+                ? job.prompt_name
+                : '';
+            meta.textContent = [
+                `Scheduled for ${phoneCallDate(job.scheduled_at_utc)}`,
+                prompt
+            ].filter(Boolean).join(' · ');
+            main.append(title, meta);
+
+            const actions = document.createElement('div');
+            actions.className = 'settings-call-actions';
+            const badge = document.createElement('span');
+            badge.className = 'settings-call-status';
+            badge.textContent = 'Scheduled';
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'btn btn-sm btn-outline-danger';
+            cancel.textContent = 'Cancel';
+            cancel.addEventListener('click', () => cancelScheduledCall(job, cancel));
+            actions.append(badge, cancel);
+            item.append(main, actions);
+            list.appendChild(item);
+        });
+
+        calls.forEach(call => {
+            const item = document.createElement('article');
+            item.className = 'settings-call-item';
+            const main = document.createElement('div');
+            main.className = 'settings-call-main';
+            const title = document.createElement('p');
+            title.className = 'settings-call-title';
+            title.textContent = `${callConversationTitle(call)} · ${phoneCallDirection(call.direction)}`;
+            const meta = document.createElement('p');
+            meta.className = 'settings-call-meta';
+            const prompt = call.prompt_name && call.prompt_name !== callConversationTitle(call)
+                ? call.prompt_name
+                : '';
+            const parts = [
+                phoneCallDate(call.started_at || call.answered_at || call.initiated_at || call.created_at),
+                phoneCallDuration(call.duration_seconds),
+                phoneCallCost(call),
+                prompt
+            ].filter(Boolean);
+            meta.textContent = parts.join(' · ');
+            main.append(title, meta);
+
+            const actions = document.createElement('div');
+            actions.className = 'settings-call-actions';
+            const badge = document.createElement('span');
+            badge.className = 'settings-call-status';
+            badge.textContent = phoneCallStatus(call.status);
+            actions.appendChild(badge);
+            if (call.conversation_id) {
+                const open = document.createElement('button');
+                open.type = 'button';
+                open.className = 'btn btn-sm btn-outline-primary';
+                open.textContent = 'Open conversation';
+                open.addEventListener('click', () => openCallConversation(call.conversation_id));
+                actions.appendChild(open);
+            }
+            item.append(main, actions);
+            list.appendChild(item);
+        });
+    }
+
+    async function loadCallsTab() {
+        const list = document.getElementById('settings-calls-list');
+        const status = document.getElementById('settings-calls-status');
+        if (!list || !status) return;
+        if (callsLoadController) callsLoadController.abort();
+        callsLoadController = new AbortController();
+        callsLoadGeneration += 1;
+        const generation = callsLoadGeneration;
+        const signal = callsLoadController.signal;
+        status.hidden = false;
+        status.textContent = 'Loading calls…';
+        list.replaceChildren();
+        try {
+            const fetcher = typeof secureFetch === 'function' ? secureFetch : fetch;
+            const response = await fetcher('/api/telephony/calls?limit=100', {
+                credentials: 'include',
+                signal
+            });
+            if (!response || !response.ok) throw new Error('Calls could not be loaded.');
+            const payload = await response.json();
+            if (signal.aborted || generation !== callsLoadGeneration) return;
+            const calls = Array.isArray(payload) ? payload : (Array.isArray(payload.calls) ? payload.calls : []);
+            const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+            renderCalls(calls, jobs);
+        } catch (_error) {
+            if (signal.aborted || generation !== callsLoadGeneration) return;
+            status.textContent = 'Calls could not be loaded.';
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'btn btn-sm btn-outline-primary ms-2';
+            retry.textContent = 'Try again';
+            retry.addEventListener('click', loadCallsTab);
+            status.appendChild(retry);
         }
     }
 
@@ -94,7 +335,7 @@
         if (!dateRangeEl) return;
         const days = dateRangeEl.value;
         const params = new URLSearchParams();
-        if (days !== 'all') params.append('days', days);
+        params.append('days', days === 'all' ? '0' : days);
 
         try {
             const fetcher = typeof secureFetch === 'function' ? secureFetch : fetch;

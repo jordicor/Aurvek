@@ -50,6 +50,7 @@
         const helperText = document.getElementById('voice-helper-text');
         const caption = document.getElementById('voice-overlay-caption');
         const incognitoBadge = document.getElementById('incognito-chat-badge');
+        const availabilityReason = document.getElementById('voice-call-availability-reason');
 
         if (!voiceButton || !overlay || !startStopButton || !statusText || !statusIcon) {
             return;
@@ -88,6 +89,9 @@
         let muteState = false;
         let completing = false;
         let loadingConfig = false;
+        let availabilityRequestSequence = 0;
+        let availabilityConversationId = null;
+        let voiceAvailability = null;
         let sessionStartRejected = false;
         let completionRetryPending = false;
         const defaultVoiceButtonTitle = voiceButton.title || 'AI voice assistant';
@@ -110,24 +114,102 @@
             return Boolean(incognitoBadge && !incognitoBadge.hidden);
         }
 
-        function syncVoiceAvailability() {
-            const incognito = isIncognitoConversationActive();
-            voiceButton.disabled = incognito;
+        function applyVoiceAvailability(available, reason = '', errorCode = '') {
+            const canonicalReason = String(reason || '').trim();
+            const incognito = errorCode === 'conversation_incognito';
+            voiceButton.disabled = !available;
             voiceButton.hidden = incognito;
-            if (incognito) {
-                voiceButton.setAttribute('aria-disabled', 'true');
-                voiceButton.title = 'Voice calls are not available in incognito chats';
-                if (
-                    !completionRetryPending
-                    && !['connecting', 'active', 'updating'].includes(currentState)
-                ) {
-                    setOverlayVisible(false);
-                }
-            } else {
-                voiceButton.setAttribute('aria-disabled', 'false');
-                voiceButton.title = defaultVoiceButtonTitle;
+            voiceButton.setAttribute('aria-disabled', available ? 'false' : 'true');
+            voiceButton.dataset.availabilityCode = errorCode || '';
+            voiceButton.title = available ? defaultVoiceButtonTitle : canonicalReason;
+            voiceButton.setAttribute(
+                'aria-label',
+                available ? defaultVoiceButtonTitle : `AI Voice unavailable. ${canonicalReason}`
+            );
+            if (availabilityReason) {
+                availabilityReason.textContent = available ? '' : canonicalReason;
+                availabilityReason.hidden = available || !canonicalReason || incognito;
+            }
+            if (!available && !completionRetryPending
+                && !['connecting', 'active', 'updating'].includes(currentState)) {
+                setOverlayVisible(false);
             }
         }
+
+        async function syncVoiceAvailability(force = false) {
+            const conversationId = getSelectedConversationId();
+            if (!force && voiceAvailability
+                && isSameConversation(availabilityConversationId, conversationId)) {
+                return voiceAvailability;
+            }
+
+            const requestSequence = ++availabilityRequestSequence;
+            availabilityConversationId = conversationId;
+            voiceAvailability = null;
+            if (conversationId === null) {
+                const unavailable = {
+                    available: false,
+                    error_code: 'conversation_required',
+                    reason: 'Select a conversation to check browser voice availability.'
+                };
+                applyVoiceAvailability(false, unavailable.reason, unavailable.error_code);
+                return unavailable;
+            }
+
+            const pendingReason = isIncognitoConversationActive()
+                ? 'Browser voice calls are unavailable in incognito chats.'
+                : 'Checking browser voice availability…';
+            applyVoiceAvailability(
+                false,
+                pendingReason,
+                isIncognitoConversationActive() ? 'conversation_incognito' : 'availability_pending'
+            );
+
+            try {
+                const response = await secureFetch(
+                    `/api/conversations/${conversationId}/elevenlabs/availability`
+                );
+                if (!response) {
+                    throw new Error('No response received');
+                }
+                const payload = await response.json();
+                if (requestSequence !== availabilityRequestSequence
+                    || !isSameConversation(getSelectedConversationId(), conversationId)) {
+                    return null;
+                }
+                if (!response.ok) {
+                    const reason = payload.reason || payload.message || payload.error
+                        || 'Browser voice availability could not be checked.';
+                    voiceAvailability = {
+                        available: false,
+                        error_code: payload.error_code || 'availability_check_failed',
+                        reason
+                    };
+                } else {
+                    voiceAvailability = payload;
+                }
+                applyVoiceAvailability(
+                    Boolean(voiceAvailability.available),
+                    voiceAvailability.reason,
+                    voiceAvailability.error_code
+                );
+                return voiceAvailability;
+            } catch (error) {
+                console.error('Error checking ElevenLabs availability:', error);
+                if (requestSequence !== availabilityRequestSequence) {
+                    return null;
+                }
+                voiceAvailability = {
+                    available: false,
+                    error_code: 'availability_check_failed',
+                    reason: 'Browser voice availability could not be checked. Check your connection and try again.'
+                };
+                applyVoiceAvailability(false, voiceAvailability.reason, voiceAvailability.error_code);
+                return voiceAvailability;
+            }
+        }
+
+        window.syncElevenLabsVoiceAvailability = () => syncVoiceAvailability(true);
 
         function clearCallBinding() {
             activeSessionId = null;
@@ -401,17 +483,18 @@
                 }
                 if (!response.ok) {
                     let detail = 'Could not get ElevenLabs configuration.';
+                    let errorPayload = null;
                     try {
-                        const payload = await response.json();
-                        if (payload && payload.error) {
-                            detail = payload.error;
+                        errorPayload = await response.json();
+                        if (errorPayload && (errorPayload.reason || errorPayload.message || errorPayload.error)) {
+                            detail = errorPayload.reason || errorPayload.message || errorPayload.error;
                         }
                     } catch (_) {
                         // ignore
                     }
                     const helper = response.status === 402
                         ? 'Add credit to your account and try again.'
-                        : 'Verify that the prompt has an assigned agent.';
+                        : detail;
                     setState('error', detail, { helper: helper });
                     return null;
                 }
@@ -888,14 +971,6 @@
         });
 
         voiceButton.addEventListener('click', async () => {
-            syncVoiceAvailability();
-            if (isIncognitoConversationActive()) {
-                return;
-            }
-            // Block voice calls on locked conversations
-            if (typeof isCurrentConversationLocked !== 'undefined' && isCurrentConversationLocked) {
-                return;
-            }
             const isVisible = !overlay.classList.contains('hidden');
             if (isVisible) {
                 if (currentState === 'active' || currentState === 'connecting' || currentState === 'updating') {
@@ -903,6 +978,10 @@
                 }
                 await cancelPendingCompletion();
                 setOverlayVisible(false);
+                return;
+            }
+            const availability = await syncVoiceAvailability(true);
+            if (!availability || !availability.available) {
                 return;
             }
             setOverlayVisible(true);
@@ -931,7 +1010,7 @@
         });
         setOverlayVisible(false);
         updateMuteUI();
-        syncVoiceAvailability();
+        void syncVoiceAvailability(true);
         if (incognitoBadge && typeof MutationObserver !== 'undefined') {
             const observer = new MutationObserver(syncVoiceAvailability);
             observer.observe(incognitoBadge, {

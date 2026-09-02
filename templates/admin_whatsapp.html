@@ -76,6 +76,7 @@
         </table>
         {% if not webhook_status.match %}
         <form method="post" action="/admin/whatsapp" class="mt-3">
+            <input type="hidden" name="csrf_token" value="{{ admin_csrf_token }}">
             <input type="hidden" name="action" value="fix_webhook">
             <button type="submit" class="btn btn-warning btn-sm">
                 <i class="fas fa-wrench me-1"></i> Fix Webhook URL
@@ -93,6 +94,7 @@
         <i class="fas fa-cog"></i> Configuration
     </div>
     <form method="post" action="/admin/whatsapp" data-form-guard>
+        <input type="hidden" name="csrf_token" value="{{ admin_csrf_token }}">
         <input type="hidden" name="action" value="save_config">
         <div class="mb-3">
             <label class="form-label" for="unknown_user_message">Unknown User Message</label>
@@ -110,6 +112,13 @@
                 <label class="form-check-label" for="require_phone_verification">Require phone verification for WhatsApp access</label>
             </div>
             <p class="text-muted small mt-1">When enabled, only users who have verified their phone number via SMS can use WhatsApp.</p>
+        </div>
+        <div class="mb-3">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="whatsapp_retain_voice_notes" name="whatsapp_retain_voice_notes" value="1" {% if whatsapp_retain_voice_notes %}checked{% endif %}>
+                <label class="form-check-label" for="whatsapp_retain_voice_notes">Store original WhatsApp voice-note audio</label>
+            </div>
+            <p class="text-muted small mt-1">Disabled by default for privacy. When enabled, original audio is kept in private storage so its owner can replay or retranscribe it from the chat. Retranscription and an optional LLM comparison are billed to that user. This applies only to voice notes received after saving; existing audio is not changed.</p>
         </div>
         <button type="submit" class="btn btn-primary">
             <i class="fas fa-save me-1"></i> Save Configuration

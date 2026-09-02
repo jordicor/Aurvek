@@ -1,5 +1,6 @@
 import orjson
 import pytest
+from unittest.mock import AsyncMock
 
 from ai_runtime.providers import xai
 
@@ -88,3 +89,44 @@ async def test_xai_responses_converts_messages_and_streams_text_delta(monkeypatc
     assert parsed[0] == {"content": "hello"}
     assert captured["json"]["input"][0] == {"role": "system", "content": "system"}
     assert captured["json"]["input"][1]["content"] == [{"type": "input_text", "text": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_xai_responses_preserves_final_encrypted_output_for_tool_continuation(monkeypatch):
+    final_output = [
+        {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque-state"},
+        {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": '{"q":"docs"}'},
+    ]
+    payload = "\n\n".join([
+        'event: response.reasoning_text.delta\ndata: {"delta":"plan"}',
+        'event: response.reasoning_text.done\ndata: {}',
+        'event: response.output_item.added\ndata: {"item":{"type":"function_call","call_id":"call_1","name":"lookup"}}',
+        'event: response.function_call_arguments.delta\ndata: {"delta":"{\\"q\\":\\"docs\\"}"}',
+        f'event: response.completed\ndata: {orjson.dumps({"response": {"usage": {}, "output": final_output}}).decode()}',
+        "data: [DONE]",
+        "",
+    ])
+    captured = {}
+    monkeypatch.setattr(xai.aiohttp, "ClientSession", lambda *args, **kwargs: _FakeSession(payload, captured))
+    monkeypatch.setattr(xai, "record_provider_success_for_label", AsyncMock())
+
+    chunks = [
+        chunk async for chunk in xai.call_xai_responses_api(
+            messages=[{"role": "user", "content": "hi"}],
+            model="grok-4.3",
+            temperature=0.7,
+            max_tokens=100,
+            prompt="system",
+            conversation_id=123,
+            current_user=_User(),
+            request=None,
+            user_api_key="test",
+            tools=[{"type": "function", "name": "lookup"}],
+        )
+    ]
+
+    events = [_sse_payload(chunk) for chunk in chunks if chunk.startswith("data: {")]
+    tool_call = next(event["tool_call"] for event in events if "tool_call" in event)
+    assert captured["json"]["include"] == ["reasoning.encrypted_content"]
+    assert tool_call["response_output_items"] == final_output
+    assert {"thinking": "plan", "type": "thinking"} in events

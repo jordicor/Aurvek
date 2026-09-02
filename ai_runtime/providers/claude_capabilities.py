@@ -2,7 +2,11 @@
 
 
 _ADAPTIVE_CAPABLE_MODEL_MARKERS = (
+    "fable-5",
+    "mythos-5",
+    "mythos-preview",
     "opus-5",
+    "sonnet-5",
     "opus-4-8",
     "opus-4.8",
     "opus-4-7",
@@ -14,7 +18,11 @@ _ADAPTIVE_CAPABLE_MODEL_MARKERS = (
 )
 
 _ADAPTIVE_ONLY_OPUS_MARKERS = (
+    "fable-5",
+    "mythos-5",
+    "mythos-preview",
     "opus-5",
+    "sonnet-5",
     "opus-4-8",
     "opus-4.8",
     "opus-4-7",

@@ -1,11 +1,14 @@
 import asyncio
-import io
+from dataclasses import dataclass
+import math
+from pathlib import Path
+import tempfile
 
 import aiohttp
 import httpx
 import requests
 from fastapi import HTTPException
-from pydub import AudioSegment
+from pydub.utils import mediainfo_json
 
 from billing.usage_reservations import (
     BillingReservationError,
@@ -38,6 +41,49 @@ _STT_PROVIDER_SERVICE_KEYS = {
 
 class BillableSTTProviderError(RuntimeError):
     """The provider completed billable work but no transcript was usable."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalTranscriptionResult:
+    text: str
+    provider: str
+    model: str
+    duration_seconds: float
+
+
+def _probe_audio_duration_seconds(audio_content: bytes) -> float:
+    """Probe compressed audio metadata without decoding it to PCM in memory."""
+    with tempfile.TemporaryDirectory(prefix="aurvek-stt-") as temp_dir:
+        audio_path = Path(temp_dir) / "audio.bin"
+        audio_path.write_bytes(audio_content)
+        info = mediainfo_json(str(audio_path))
+
+    candidates = [
+        (info.get("format") or {}).get("duration"),
+        *(
+            stream.get("duration")
+            for stream in info.get("streams", [])
+            if isinstance(stream, dict) and stream.get("codec_type") == "audio"
+        ),
+    ]
+    for candidate in candidates:
+        try:
+            duration = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(duration) and duration > 0:
+            return duration
+    raise ValueError("Audio duration could not be determined")
+
+
+async def download_external_audio(media_url: str) -> bytes:
+    """Download provider media once so it can be transcribed and retained."""
+    response = await asyncio.to_thread(requests.get, media_url, timeout=(10, 300))
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Error downloading audio file")
+    if not response.content:
+        raise HTTPException(status_code=400, detail="No audio")
+    return response.content
 
 
 async def get_stt_billing_config(
@@ -270,27 +316,60 @@ async def transcribe_external_audio(
     audio_content: bytes = None,
     user_agent: str = None,
 ):
+    result = await transcribe_external_audio_detailed(
+        user_id=user_id,
+        media_url=media_url,
+        audio_content=audio_content,
+        user_agent=user_agent,
+    )
+    return result.text
+
+
+async def transcribe_external_audio_detailed(
+    *,
+    user_id: int,
+    media_url: str = None,
+    audio_content: bytes = None,
+    user_agent: str = None,
+    preferred_engine: str | None = None,
+    duration_seconds: float | None = None,
+) -> ExternalTranscriptionResult:
     if media_url:
-        response = await asyncio.to_thread(requests.get, media_url, timeout=(5, 30))
-        if response.status_code != 200:
-            raise HTTPException(status_code=400, detail="Error downloading audio file")
-        audio_content = response.content
+        audio_content = await download_external_audio(media_url)
 
     if not audio_content:
         raise HTTPException(status_code=400, detail="No audio")
 
-    audio_segment = await asyncio.to_thread(
-        AudioSegment.from_file,
-        io.BytesIO(audio_content),
-    )
-    audio_duration = audio_segment.duration_seconds
-    if audio_duration <= 0:
-        raise HTTPException(status_code=400, detail="No audio")
+    if duration_seconds is None:
+        try:
+            audio_duration = await asyncio.to_thread(
+                _probe_audio_duration_seconds,
+                audio_content,
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Audio duration could not be determined",
+            ) from exc
+    else:
+        try:
+            audio_duration = float(duration_seconds)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid audio duration") from exc
+        if not math.isfinite(audio_duration) or audio_duration <= 0:
+            raise HTTPException(status_code=400, detail="Invalid audio duration")
 
     duration_min = audio_duration / 60
-    primary_engine = (
-        "elevenlabs" if str(stt_engine).lower() == "elevenlabs" else "deepgram"
+    configured_engine = (
+        "deepgram" if str(stt_engine).strip().lower() == "deepgram" else "elevenlabs"
     )
+    primary_engine = (
+        str(preferred_engine).strip().lower()
+        if preferred_engine is not None
+        else configured_engine
+    )
+    if primary_engine not in {"deepgram", "elevenlabs"}:
+        raise HTTPException(status_code=400, detail="Unsupported speech-to-text engine")
 
     async def transcribe_with_engine(engine: str):
         if engine == "elevenlabs":
@@ -303,7 +382,7 @@ async def transcribe_external_audio(
     primary_reservation_id = await reserve_stt_attempt(
         user_id=user_id,
         engine=primary_engine,
-        configured_engine=primary_engine,
+        configured_engine=configured_engine,
         duration_min=duration_min,
         context=f"external {primary_engine}",
     )
@@ -315,16 +394,18 @@ async def transcribe_external_audio(
             primary_error,
             context=f"failed external {primary_engine}",
         )
-        if not isinstance(primary_error, Exception) or not stt_fallback_enabled:
+        if (
+            not isinstance(primary_error, Exception)
+            or not stt_fallback_enabled
+            or primary_engine == "elevenlabs"
+        ):
             raise
 
-        fallback_engine = (
-            "deepgram" if primary_engine == "elevenlabs" else "elevenlabs"
-        )
+        fallback_engine = "elevenlabs"
         fallback_reservation_id = await reserve_stt_attempt(
             user_id=user_id,
             engine=fallback_engine,
-            configured_engine=primary_engine,
+            configured_engine=configured_engine,
             duration_min=duration_min,
             context=f"external fallback {fallback_engine}",
         )
@@ -349,13 +430,23 @@ async def transcribe_external_audio(
             fallback_reservation_id,
             context=f"external fallback {fallback_engine}",
         )
-        return prompt
+        return ExternalTranscriptionResult(
+            text=prompt,
+            provider=fallback_engine,
+            model="scribe_v2",
+            duration_seconds=audio_duration,
+        )
 
     await settle_stt_attempt(
         primary_reservation_id,
         context=f"external {primary_engine}",
     )
-    return prompt
+    return ExternalTranscriptionResult(
+        text=prompt,
+        provider=primary_engine,
+        model="nova-2" if primary_engine == "deepgram" else "scribe_v2",
+        duration_seconds=audio_duration,
+    )
 
 
 async def transcribe_external_request(request, audio=None, user_id: int = None, media_url: str = None):

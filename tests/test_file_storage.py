@@ -159,6 +159,162 @@ async def test_pending_pdf_block_includes_retry_file_hash(mock_db, tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_pending_audio_uses_detected_mime_and_persists_audio_kind(
+    mock_db, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(file_storage, "FILE_BLOB_ROOT", tmp_path / "file_blobs")
+    async with mock_db() as conn:
+        await _seed_user_conversation(conn, user_id=31, conversation_id=41)
+
+    audio_data = b"OggS\x00voice-note-bytes"
+    pending = await file_storage.create_pending_audio_attachment(
+        user_id=31,
+        conversation_id=41,
+        data=audio_data,
+        filename="../untrusted-name.exe",
+        mime_detected="audio/ogg",
+        declared_mime="application/octet-stream",
+    )
+
+    async with mock_db() as conn:
+        row = await (
+            await conn.execute(
+                """
+                SELECT fb.kind, fb.mime_detected, fb.storage_key,
+                       fa.attachment_type, fa.original_filename,
+                       fa.declared_mime, fa.status
+                FROM FILE_ATTACHMENTS AS fa
+                JOIN FILE_BLOBS AS fb ON fb.id = fa.blob_id
+                WHERE fa.public_id = ?
+                """,
+                (pending.public_id,),
+            )
+        ).fetchone()
+
+    assert pending.kind == "audio"
+    assert pending.size_bytes == len(audio_data)
+    assert row["kind"] == "audio"
+    assert row["attachment_type"] == "audio"
+    assert row["mime_detected"] == "audio/ogg"
+    assert row["declared_mime"] == "application/octet-stream"
+    assert row["original_filename"] == "untrusted-name.exe"
+    assert not row["storage_key"].lower().endswith(".exe")
+    assert row["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_finalize_pending_audio_is_idempotent_only_for_same_message(
+    mock_db, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(file_storage, "FILE_BLOB_ROOT", tmp_path / "file_blobs")
+    async with mock_db() as conn:
+        await _seed_user_conversation(conn, user_id=32, conversation_id=42)
+        await conn.executemany(
+            """
+            INSERT INTO MESSAGES (id, conversation_id, user_id, message, type, date)
+            VALUES (?, 42, 32, 'voice note', 'user', '2026-09-02 10:00:00')
+            """,
+            ((420,), (421,)),
+        )
+        await conn.commit()
+
+    pending = await file_storage.create_pending_audio_attachment(
+        user_id=32,
+        conversation_id=42,
+        data=b"OggS\x00idempotent-audio",
+        filename="voice.ogg",
+        mime_detected="audio/ogg",
+    )
+
+    async with mock_db() as conn:
+        await file_storage.finalize_pending_attachment(
+            conn,
+            pending.public_id,
+            message_id=420,
+            conversation_id=42,
+            user_id=32,
+            require_kind="audio",
+        )
+        # A webhook retry for the same persisted message must be a no-op success.
+        await file_storage.finalize_pending_attachment(
+            conn,
+            pending.public_id,
+            message_id=420,
+            conversation_id=42,
+            user_id=32,
+            require_kind="audio",
+        )
+        with pytest.raises(ValueError):
+            await file_storage.finalize_pending_attachment(
+                conn,
+                pending.public_id,
+                message_id=421,
+                conversation_id=42,
+                user_id=32,
+                require_kind="audio",
+            )
+        await conn.commit()
+
+    async with mock_db() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT status, message_id FROM FILE_ATTACHMENTS WHERE public_id = ?",
+                (pending.public_id,),
+            )
+        ).fetchone()
+
+    assert (row["status"], row["message_id"]) == ("active", 420)
+
+
+@pytest.mark.asyncio
+async def test_finalize_pending_attachment_rejects_scope_and_kind_mismatches(
+    mock_db, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(file_storage, "FILE_BLOB_ROOT", tmp_path / "file_blobs")
+    async with mock_db() as conn:
+        await _seed_user_conversation(conn, user_id=33, conversation_id=43)
+        await _seed_user_conversation(conn, user_id=34, conversation_id=44)
+        await conn.execute(
+            """
+            INSERT INTO MESSAGES (id, conversation_id, user_id, message, type, date)
+            VALUES (430, 43, 33, 'voice note', 'user', '2026-09-02 10:00:00')
+            """
+        )
+        await conn.commit()
+
+    pending = await file_storage.create_pending_audio_attachment(
+        user_id=33,
+        conversation_id=43,
+        data=b"OggS\x00scoped-audio",
+        filename="voice.ogg",
+        mime_detected="audio/ogg",
+    )
+
+    async with mock_db() as conn:
+        for mismatch in (
+            {"user_id": 34, "conversation_id": 43, "require_kind": "audio"},
+            {"user_id": 33, "conversation_id": 44, "require_kind": "audio"},
+            {"user_id": 33, "conversation_id": 43, "require_kind": "image"},
+        ):
+            with pytest.raises(ValueError):
+                await file_storage.finalize_pending_attachment(
+                    conn,
+                    pending.public_id,
+                    message_id=430,
+                    **mismatch,
+                )
+
+        row = await (
+            await conn.execute(
+                "SELECT status, message_id FROM FILE_ATTACHMENTS WHERE public_id = ?",
+                (pending.public_id,),
+            )
+        ).fetchone()
+
+    assert (row["status"], row["message_id"]) == ("pending", None)
+
+
+@pytest.mark.asyncio
 async def test_missing_ready_blob_file_fails_fast(mock_db, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(file_storage, "FILE_BLOB_ROOT", tmp_path / "file_blobs")
     async with mock_db() as conn:
@@ -272,15 +428,22 @@ async def test_discard_stale_pending_attachments_prunes_after_restart_gap(mock_d
         text_content="stale pending",
         filename="stale-again.txt",
     )
+    long_running_audio = await file_storage.create_pending_audio_attachment(
+        user_id=6,
+        conversation_id=10,
+        data=b"long-running-audio",
+        filename="voice-note.ogg",
+        mime_detected="audio/ogg",
+    )
 
     async with mock_db() as conn:
         await conn.execute(
             """
             UPDATE FILE_ATTACHMENTS
             SET created_at = datetime('now', '-180 minutes')
-            WHERE public_id IN (?, ?)
+            WHERE public_id IN (?, ?, ?)
             """,
-            (pending.public_id, second_pending.public_id),
+            (pending.public_id, second_pending.public_id, long_running_audio.public_id),
         )
         await conn.commit()
 
@@ -291,5 +454,5 @@ async def test_discard_stale_pending_attachments_prunes_after_restart_gap(mock_d
         blob_count = await (await conn.execute("SELECT COUNT(*) FROM FILE_BLOBS")).fetchone()
 
     assert pruned == 2
-    assert attachment_count[0] == 0
-    assert blob_count[0] == 0
+    assert attachment_count[0] == 1
+    assert blob_count[0] == 1

@@ -24,13 +24,25 @@
 {% endblock %}
 
 {% block content %}
+{% if voice_canonicalization_conflicts %}
+<div class="alert alert-warning" role="alert">
+    <strong>Canonical voice migration needs attention.</strong>
+    {% for conflict in voice_canonicalization_conflicts %}
+    <div>
+        Prompt {{ conflict.prompt_name or conflict.prompt_id_snapshot }}:
+        legacy voice <code>{{ conflict.legacy_voice_code }}</code>
+        ({{ conflict.reason }}).
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
 <!-- Stats -->
 <div class="stats-row">
     <span class="stat-badge">
         <i class="fas fa-robot"></i> <strong>{{ agents|length }}</strong> Agents
     </span>
     <span class="stat-badge">
-        <i class="fas fa-link"></i> <strong>{{ mappings|length }}</strong> Prompt Overrides
+        <i class="fas fa-link"></i> <strong>{{ mappings|length }}</strong> Prompt Agent Mappings
     </span>
 </div>
 
@@ -123,10 +135,10 @@
     </div>
 </div>
 
-<!-- Prompt Overrides Section -->
+<!-- Prompt Agent Mappings Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-sliders-h"></i> Prompt Overrides
+        <i class="fas fa-sliders-h"></i> Prompt Agent Mappings
     </div>
     <form method="post" action="/admin/elevenlabs-agents/mapping">
         <div class="flex-row">
@@ -151,13 +163,8 @@
                     </select>
                 </div>
             </div>
-            <div class="flex-column">
-                <div class="mb-3">
-                    <label class="form-label" for="voice_id">Voice Override</label>
-                    <input class="form-control" id="voice_id" name="voice_id" placeholder="Optional voice ID">
-                </div>
-            </div>
         </div>
+        <p class="form-text">Voice always comes from the prompt's canonical voice setting.</p>
         <div class="mt-2">
             <button type="submit" class="btn btn-primary">
                 <i class="fas fa-save me-1"></i> Save Mapping
@@ -173,7 +180,7 @@
                 <tr>
                     <th>Prompt</th>
                     <th>Agent</th>
-                    <th>Voice</th>
+                    <th>Canonical Voice</th>
                     <th class="text-end">Actions</th>
                 </tr>
             </thead>
@@ -182,7 +189,22 @@
                 <tr>
                     <td><strong>{{ mapping.prompt_name or ('Prompt ' ~ mapping.prompt_id) }}</strong></td>
                     <td><code>{{ mapping.agent_id }}</code></td>
-                    <td>{{ mapping.voice_id or '-' }}</td>
+                    <td>
+                        {% if mapping.canonical_voice_code %}
+                        <code>{{ mapping.canonical_voice_code }}</code>
+                        <small class="text-muted d-block">
+                            {{ mapping.canonical_voice_provider }}{% if mapping.canonical_voice_inherited %} · inherited global default{% endif %}
+                        </small>
+                        {% else %}
+                        <span class="text-muted">Canonical voice unresolved</span>
+                        {% endif %}
+                        <span class="badge {{ 'bg-success' if mapping.webrtc_compatible else 'bg-danger' }} mt-1">
+                            {{ 'WebRTC compatible' if mapping.webrtc_compatible else 'WebRTC incompatible' }}
+                        </span>
+                        <small class="d-block mt-1 {{ 'text-muted' if mapping.webrtc_compatible else 'text-danger' }}">
+                            {{ mapping.compatibility_reason }}
+                        </small>
+                    </td>
                     <td class="text-end table-actions">
                         <form method="post" action="/admin/elevenlabs-agents/mapping" class="d-inline">
                             <input type="hidden" name="prompt_id" value="{{ mapping.prompt_id }}">

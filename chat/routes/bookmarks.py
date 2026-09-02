@@ -7,6 +7,7 @@ from database import get_db_connection
 from models import User
 
 from chat.services.message_rendering import process_message
+from integrations.messaging_voice_notes.service import load_message_channel_provenance
 
 router = APIRouter()
 
@@ -66,6 +67,9 @@ async def get_bookmarked_messages(
             (current_user.id,),
         )
         messages = await cursor.fetchall()
+        channel_provenance = await load_message_channel_provenance(
+            [int(message["id"]) for message in messages]
+        )
 
         messages_list = []
         for msg in messages:
@@ -75,7 +79,7 @@ async def get_bookmarked_messages(
                 current_user,
                 media_owner_username=msg["username"],
             )
-            messages_list.append({
+            message_data = {
                 "id": msg["id"],
                 "conversation_id": msg["conversation_id"],
                 "user_id": msg["user_id"],
@@ -85,6 +89,8 @@ async def get_bookmarked_messages(
                 "date": msg["date_utc"],
                 "is_bookmarked": True,
                 "chat_name": msg["chat_name"],
-            })
+            }
+            message_data.update(channel_provenance.get(int(msg["id"]), {}))
+            messages_list.append(message_data)
 
     return JSONResponse(content=messages_list)

@@ -26,7 +26,50 @@ from chat.services.attachment_uploads import ATTACHMENT_UPLOAD_CHUNK_SIZE_BYTES
 from chat.services.avatar_urls import get_signed_bot_avatar_urls
 from chat.services.deletion import purge_stale_incognito_conversations_for_user
 from chat.services.privacy import ensure_conversation_privacy_schema
+from chat.services.conversation_channels import (
+    channel_summary_with_legacy,
+    get_conversation_channel_summaries,
+    has_messaging_channel,
+    legacy_external_platform,
+)
 from integrations.devices.service import get_conversation_binding_summaries
+from request_security import ensure_csrf_token
+
+
+_INITIAL_CONVERSATION_COLUMNS = """
+    c.id, c.user_id, c.start_date, c.chat_name,
+    NULL as external_platform,
+    c.locked, l.model as llm_model,
+    COALESCE(p.disable_web_search, 0) as web_search_disabled,
+    COALESCE(p.force_web_search, 0) as web_search_forced,
+    p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+    COALESCE(p.is_paid, 0) as is_paid,
+    c.last_activity, c.llm_id, l.machine, c.role_id,
+    c.folder_id, COALESCE(c.is_incognito, 0) as is_incognito
+"""
+
+
+def _requested_conversation_id(request) -> int | None:
+    raw_value = request.query_params.get("conversation_id")
+    if not raw_value or not raw_value.isascii() or not raw_value.isdecimal():
+        return None
+    parsed = int(raw_value)
+    return parsed if parsed > 0 else None
+
+
+async def _load_requested_conversation_row(cursor, user_id: int, conversation_id: int):
+    await cursor.execute(
+        f"""
+        SELECT {_INITIAL_CONVERSATION_COLUMNS}
+        FROM conversations c
+        JOIN llm l ON c.llm_id = l.id
+        LEFT JOIN prompts p ON c.role_id = p.id
+        WHERE c.id = ? AND c.user_id = ?
+          AND COALESCE(c.hidden_from_history, 0) = 0
+        """,
+        (conversation_id, user_id),
+    )
+    return await cursor.fetchone()
 
 
 async def handle_recent_conversation(current_user: User, recent_conversation):
@@ -44,6 +87,8 @@ async def handle_recent_conversation(current_user: User, recent_conversation):
 
 async def handle_get_request(request, user_id, current_user, conn, admin_view=False):
     effective_user_id = user_id if user_id is not None else current_user.id
+    requested_conversation_id = _requested_conversation_id(request)
+    requested_or_zero = requested_conversation_id or 0
 
     await ensure_conversation_privacy_schema()
     if not admin_view and effective_user_id == current_user.id:
@@ -53,6 +98,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
     # intersection from this user's decryptable live catalog; a linked boolean would
     # leak models available only to another account. Fail-safe HIDE on every error.
     gptsub_models: list[str] = []
+    gptsub_reasoning: dict[str, dict] = {}
     try:
         gptsub_feature_enabled = await get_subscription_auth_enabled()
         if gptsub_feature_enabled:
@@ -70,8 +116,16 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                     for model in saved_models
                     if isinstance(model, str) and model and len(model) <= 128
                 ]
+            saved_reasoning = linked_blob.get("model_reasoning", {}) if linked_blob else {}
+            if isinstance(saved_reasoning, dict):
+                gptsub_reasoning = {
+                    model: value
+                    for model, value in saved_reasoning.items()
+                    if model in gptsub_models and isinstance(value, dict)
+                }
     except Exception:
         gptsub_models = []
+        gptsub_reasoning = {}
 
     async with conn.cursor() as cursor:
         await cursor.execute(
@@ -117,11 +171,17 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             LEFT JOIN Prompts p2 ON ud.current_prompt_id = p2.id
             LEFT JOIN USER_ALTER_EGOS ae ON ud.current_alter_ego_id = ae.id
             WHERE u.id = ?
-              AND (ep.value IS NULL OR ep.value = '')
-            ORDER BY c.last_activity DESC, c.id DESC
+              AND ((ep.value IS NULL OR ep.value = '') OR c.id = ?)
+            ORDER BY CASE WHEN c.id = ? THEN 0 ELSE 1 END,
+                     c.last_activity DESC, c.id DESC
             LIMIT 1
             """,
-            (effective_user_id, effective_user_id),
+            (
+                effective_user_id,
+                effective_user_id,
+                requested_or_zero,
+                requested_or_zero,
+            ),
         )
 
         full_data = await cursor.fetchone()
@@ -139,6 +199,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 full_data["new_chat_model_type"],
             ],
             gptsub_models=gptsub_models,
+            gptsub_reasoning=gptsub_reasoning,
         )
         llm_models = [dict(row) for row in llm_model_rows]
         llm_models.sort(key=lambda m: (m.get("machine", ""), m.get("display_name") or m.get("model", "")))
@@ -211,63 +272,35 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
         initial_ext_exclude = ""
         initial_ext_exclude_params = []
 
-        await cursor.execute(
-            """
-            SELECT json_extract(u.external_platforms, '$.whatsapp.conversation_id') as whatsapp_conv_id,
-                   json_extract(u.external_platforms, '$.telegram.conversation_id') as telegram_conv_id
-            FROM user_details u
-            WHERE u.user_id = ?
-            """,
-            (effective_user_id,),
+        channel_summaries = await get_conversation_channel_summaries(
+            effective_user_id, conn=conn
         )
-        init_ext_row = await cursor.fetchone()
-
-        init_ext_ids = []
-        if init_ext_row:
-            for platform, key in [("whatsapp", "whatsapp_conv_id"), ("telegram", "telegram_conv_id")]:
-                conv_id = init_ext_row[key]
-                if conv_id is not None:
-                    init_ext_ids.append((platform, conv_id))
+        init_ext_ids = sorted(channel_summaries)
 
         if init_ext_ids:
             placeholders = ",".join(["?" for _ in init_ext_ids])
             initial_ext_exclude = f" AND c.id NOT IN ({placeholders})"
-            initial_ext_exclude_params = [eid for _, eid in init_ext_ids]
+            initial_ext_exclude_params = list(init_ext_ids)
 
-            for platform, conv_id in init_ext_ids:
-                await cursor.execute(
-                    """
-                    SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
-                           c.locked, l.model as llm_model,
-                           COALESCE(p.disable_web_search, 0) as web_search_disabled,
-                           COALESCE(p.force_web_search, 0) as web_search_forced,
-                           p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                           COALESCE(p.is_paid, 0) as is_paid,
-                           c.last_activity, c.llm_id, l.machine, c.role_id
-                    FROM conversations c
-                    JOIN llm l ON c.llm_id = l.id
-                    LEFT JOIN prompts p ON c.role_id = p.id
-                    WHERE c.id = ? AND c.user_id = ?
-                      AND (c.folder_id IS NULL OR c.folder_id = 0)
-                      AND COALESCE(c.hidden_from_history, 0) = 0
-                    """,
-                    (platform, conv_id, effective_user_id),
-                )
-                ext_conv = await cursor.fetchone()
-                if ext_conv:
-                    initial_ext_conversations.append(ext_conv)
+            await cursor.execute(
+                f"""
+                SELECT {_INITIAL_CONVERSATION_COLUMNS}
+                FROM conversations c
+                JOIN llm l ON c.llm_id = l.id
+                LEFT JOIN prompts p ON c.role_id = p.id
+                WHERE c.id IN ({placeholders}) AND c.user_id = ?
+                  AND COALESCE(c.hidden_from_history, 0) = 0
+                ORDER BY c.last_activity DESC, c.id DESC
+                """,
+                [*init_ext_ids, effective_user_id],
+            )
+            initial_ext_conversations = list(await cursor.fetchall())
 
-        init_normal_limit = 25 - len(initial_ext_conversations)
+        # Pinned external conversations do not consume the normal-chat page.
+        init_normal_limit = 25
         await cursor.execute(
             f"""
-            SELECT c.id, c.user_id, c.start_date, c.chat_name,
-                   NULL as external_platform,
-                   c.locked, l.model as llm_model,
-                   COALESCE(p.disable_web_search, 0) as web_search_disabled,
-                   COALESCE(p.force_web_search, 0) as web_search_forced,
-                   p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                   COALESCE(p.is_paid, 0) as is_paid,
-                   c.last_activity, c.llm_id, l.machine, c.role_id
+            SELECT {_INITIAL_CONVERSATION_COLUMNS}
             FROM conversations c
             JOIN llm l ON c.llm_id = l.id
             LEFT JOIN prompts p ON c.role_id = p.id
@@ -281,9 +314,33 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
         conversations_rows = await cursor.fetchall()
 
         all_init_conversations = list(initial_ext_conversations) + list(conversations_rows)
+        requested_is_selected = (
+            requested_conversation_id is not None
+            and int(full_data["conversation_id"] or 0) == requested_conversation_id
+        )
+        if requested_is_selected and not any(
+            int(row[0]) == requested_conversation_id
+            for row in all_init_conversations
+        ):
+            requested_row = await _load_requested_conversation_row(
+                cursor,
+                effective_user_id,
+                requested_conversation_id,
+            )
+            if requested_row is not None:
+                all_init_conversations.append(requested_row)
+
         binding_summaries = await get_conversation_binding_summaries(
             effective_user_id,
-            [row[0] for row in all_init_conversations if not row[4]],
+            [
+                row[0]
+                for row in all_init_conversations
+                if not has_messaging_channel(
+                    channel_summary_with_legacy(
+                        channel_summaries.get(int(row[0])), row[4]
+                    )
+                )
+            ],
         )
         initial_conversations = [
             {
@@ -291,7 +348,17 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 "user_id": row[1],
                 "start_date": row[2],
                 "chat_name": row[3] if row[3] else "New Chat",
-                "external_platform": row[4],
+                "external_platform": legacy_external_platform(
+                    channel_summary_with_legacy(
+                        channel_summaries.get(int(row[0])), row[4]
+                    )
+                ),
+                "external_channels": channel_summary_with_legacy(
+                    channel_summaries.get(int(row[0])), row[4]
+                )["external_channels"],
+                "phone_binding": channel_summary_with_legacy(
+                    channel_summaries.get(int(row[0])), row[4]
+                )["phone_binding"],
                 "locked": bool(row[5]) if row[5] is not None else False,
                 "llm_model": row[6],
                 "web_search_allowed": not bool(row[7]),
@@ -304,8 +371,16 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 "llm_id": row[14],
                 "machine": row[15],
                 "prompt_id": row[16],
+                "folder_id": row[17],
+                "is_incognito": bool(row[18]),
                 "external_bindings": (
-                    None if row[4] else binding_summaries.get(int(row[0]))
+                    None
+                    if has_messaging_channel(
+                        channel_summary_with_legacy(
+                            channel_summaries.get(int(row[0])), row[4]
+                        )
+                    )
+                    else binding_summaries.get(int(row[0]))
                 ),
             }
             for row in all_init_conversations
@@ -349,6 +424,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             "max_chat_image_dimension": MAX_CHAT_IMAGE_DIMENSION,
             "attachment_upload_chunk_size_bytes": ATTACHMENT_UPLOAD_CHUNK_SIZE_BYTES,
             "marketplace": _get_marketplace_template_flags(),
+            "telephony_csrf_token": ensure_csrf_token(request),
         }
 
     return templates.TemplateResponse("/chat/chat.html", context)

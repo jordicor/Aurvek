@@ -19,7 +19,7 @@ async def _record_memory_turn_best_effort(
     *,
     user_id: int,
     conversation_id: int,
-    assistant_content: Any,
+    assistant_content: Any | None,
     user_content: Any | None = None,
     prompt_id: int | str | None = None,
     assistant_message_id: int | None = None,
@@ -33,97 +33,134 @@ async def _record_memory_turn_best_effort(
             return False
         if provider == "mem0" and incognito:
             return False
+        from integrations.telephony.purge_state import (
+            PhoneMemoryWriteBlocked,
+            phone_memory_operation_lease,
+        )
 
-        if provider == "atagia":
-            preferences = await get_user_memory_preferences(user_id, "atagia")
-            if preferences.get("remember_across_chats") is False:
-                return False
-            provider_prompt_id = None if preferences.get("memory_scope") == "global" else prompt_id
-            await record_memory_conversation_link(
-                provider="atagia",
-                conversation_id=conversation_id,
-                user_id=user_id,
-                metadata={"prompt_id": str(provider_prompt_id) if provider_prompt_id is not None else None},
-            )
-            if user_message_id is not None:
-                await _link_atagia_message_best_effort(
-                    message_id=user_message_id,
-                    atagia_message_id=_current_atagia_user_message_id.get(),
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="user",
-                )
-            if assistant_message_id is None:
-                return False
-            recorded = await _record_atagia_assistant_response(
-                user_id=user_id,
-                conversation_id=conversation_id,
-                content=assistant_content,
-                prompt_id=provider_prompt_id,
-                message_id=assistant_message_id,
-                source_seq=assistant_message_id,
-                incognito=incognito,
-            )
-            if recorded:
-                await _link_atagia_message_best_effort(
-                    message_id=assistant_message_id,
-                    atagia_message_id=_aurvek_atagia_message_id(assistant_message_id),
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="assistant",
-                )
-            return recorded
+        try:
+            async with phone_memory_operation_lease(
+                conversation_id, provider=provider, operation="record_turn"
+            ) as provider_lease:
+                if provider == "atagia":
+                    preferences = await get_user_memory_preferences(user_id, "atagia")
+                    if preferences.get("remember_across_chats") is False:
+                        return False
+                    provider_prompt_id = (
+                        None
+                        if preferences.get("memory_scope") == "global"
+                        else prompt_id
+                    )
+                    await record_memory_conversation_link(
+                        provider="atagia",
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        metadata={
+                            "prompt_id": (
+                                str(provider_prompt_id)
+                                if provider_prompt_id is not None
+                                else None
+                            )
+                        },
+                    )
+                    if user_message_id is not None:
+                        await _link_atagia_message_best_effort(
+                            message_id=user_message_id,
+                            atagia_message_id=_current_atagia_user_message_id.get(),
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            role="user",
+                        )
+                    if assistant_message_id is None:
+                        return False
+                    await provider_lease.mark_provider_started()
+                    recorded = await _record_atagia_assistant_response(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        content=assistant_content,
+                        prompt_id=provider_prompt_id,
+                        message_id=assistant_message_id,
+                        source_seq=assistant_message_id,
+                        incognito=incognito,
+                    )
+                    if not recorded:
+                        raise RuntimeError("Atagia recording outcome is ambiguous")
+                    if recorded:
+                        await _link_atagia_message_best_effort(
+                            message_id=assistant_message_id,
+                            atagia_message_id=_aurvek_atagia_message_id(
+                                assistant_message_id
+                            ),
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            role="assistant",
+                        )
+                    return recorded
 
-        if provider == "mem0":
-            preferences = await get_user_memory_preferences(user_id, "mem0")
-            if preferences.get("remember_across_chats") is False:
-                return False
-            await record_memory_conversation_link(
-                provider="mem0",
-                conversation_id=conversation_id,
-                user_id=user_id,
-                metadata={"prompt_id": str(prompt_id) if prompt_id is not None else None},
-            )
-            mem0 = await get_mem0_provider()
-            result = await mem0.add_turn(
-                user_id=user_id,
-                conversation_id=conversation_id,
-                user_text=_message_text_for_memory(user_content).strip() if user_content is not None else None,
-                assistant_text=_message_text_for_memory(assistant_content).strip(),
-                prompt_id=prompt_id,
-                message_id=assistant_message_id,
-                user_message_id=user_message_id,
-                occurred_at=occurred_at,
-                incognito=incognito,
-            )
-            if not result:
-                return False
-            provider_event_id = _extract_provider_event_id(result)
-            if user_message_id is not None:
-                await record_memory_message_link(
+                if provider != "mem0":
+                    return False
+                preferences = await get_user_memory_preferences(user_id, "mem0")
+                if preferences.get("remember_across_chats") is False:
+                    return False
+                await record_memory_conversation_link(
                     provider="mem0",
-                    message_id=user_message_id,
-                    provider_message_id=_mem0_provider_message_id(user_message_id, result),
-                    provider_event_id=provider_event_id,
                     conversation_id=conversation_id,
                     user_id=user_id,
-                    role="user",
-                    metadata=result,
+                    metadata={
+                        "prompt_id": str(prompt_id) if prompt_id is not None else None
+                    },
                 )
-            if assistant_message_id is not None:
-                await record_memory_message_link(
-                    provider="mem0",
+                mem0 = await get_mem0_provider()
+                await provider_lease.mark_provider_started()
+                result = await mem0.add_turn(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    user_text=_message_text_for_memory(user_content).strip()
+                    if user_content is not None
+                    else None,
+                    assistant_text=(
+                        _message_text_for_memory(assistant_content).strip()
+                        if assistant_content is not None
+                        else None
+                    ),
+                    prompt_id=prompt_id,
                     message_id=assistant_message_id,
-                    provider_message_id=_mem0_provider_message_id(assistant_message_id, result),
-                    provider_event_id=provider_event_id,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="assistant",
-                    metadata=result,
+                    user_message_id=user_message_id,
+                    occurred_at=occurred_at,
+                    incognito=incognito,
                 )
-            return True
-
-        return False
+                if not result:
+                    raise RuntimeError("Mem0 recording outcome is ambiguous")
+                provider_event_id = _extract_provider_event_id(result)
+                if user_message_id is not None:
+                    await record_memory_message_link(
+                        provider="mem0",
+                        message_id=user_message_id,
+                        provider_message_id=_mem0_provider_message_id(
+                            user_message_id, result
+                        ),
+                        provider_event_id=provider_event_id,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        role="user",
+                        metadata=result,
+                    )
+                if assistant_message_id is not None:
+                    await record_memory_message_link(
+                        provider="mem0",
+                        message_id=assistant_message_id,
+                        provider_message_id=_mem0_provider_message_id(
+                            assistant_message_id, result
+                        ),
+                        provider_event_id=provider_event_id,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        role="assistant",
+                        metadata=result,
+                    )
+                return True
+        except PhoneMemoryWriteBlocked:
+            return False
     except Exception:
         logger.warning(
             "[memory] Failed to record turn for conversation_id=%s",
@@ -149,7 +186,9 @@ async def _purge_memory_conversation_best_effort(
             from atagia_bridge import AtagiaBridge
             from atagia_config import bridge_config_from_mapping, get_atagia_config
 
-            config = bridge_config_from_mapping(await get_atagia_config(), enabled_override=True)
+            config = bridge_config_from_mapping(
+                await get_atagia_config(), enabled_override=True
+            )
             bridge = AtagiaBridge(config)
             try:
                 prompt_purged = await bridge.purge_conversation(

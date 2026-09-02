@@ -4,16 +4,24 @@
 # and the main async generator that feeds Aurvek's SSE transport.
 
 import asyncio
+import inspect
 import math
 import os
 import re
 import time
+from contextlib import nullcontext
 from typing import Optional
 from uuid import uuid4
 
 import httpx
 import orjson
 
+from ai_runtime.channel_turns import StaleChannelTurnError
+from ai_runtime.context.message_provenance import (
+    merge_internal_turn_context,
+    prepare_trusted_history_context,
+    render_current_input_context,
+)
 from database import get_db_connection
 from log_config import logger
 from integrations.delivery import deliver_to_platform, send_platform_error
@@ -983,6 +991,7 @@ async def generate_via_gransabio(
     max_tokens=4000,
     http_client: Optional[httpx.AsyncClient] = None,
     strip_device_action_blocks: bool = False,
+    channel_context=None,
 ):
     """Async generator yielding Aurvek-format SSE chunks.
 
@@ -1521,30 +1530,37 @@ async def generate_via_gransabio(
         # --- 13. Save to DB ---
         if save_to_db:
             try:
+                from ai_runtime.channel_turns import bind_channel_turn
                 from ai_runtime.persistence.messages import save_content_to_db
 
-                save_result = await save_content_to_db(
-                    content,
-                    input_tokens,
-                    billing_output_tokens,
-                    total_tokens,
-                    conversation_id,
-                    user_id,
-                    "gransabio-pipeline",
-                    user_message=user_message,
-                    prompt_id=prompt_id,
-                    watchdog_config=watchdog_config,
-                    watchdog_hint_active=watchdog_hint_active,
-                    watchdog_hint_eval_id=watchdog_hint_eval_id,
-                    llm_id=gs_llm_id,
-                    byok=byok,
-                    override_api_cost=api_cost,
-                    strip_device_action_blocks=strip_device_action_blocks,
-                    billing_reservation_id=ai_reservation_id,
-                    billing_only_accumulated_usage=bool(
-                        ai_reservation_id and result_usage.get("persisted")
-                    ),
+                binding = (
+                    bind_channel_turn(channel_context)
+                    if channel_context is not None
+                    else nullcontext()
                 )
+                with binding:
+                    save_result = await save_content_to_db(
+                        content,
+                        input_tokens,
+                        billing_output_tokens,
+                        total_tokens,
+                        conversation_id,
+                        user_id,
+                        "gransabio-pipeline",
+                        user_message=user_message,
+                        prompt_id=prompt_id,
+                        watchdog_config=watchdog_config,
+                        watchdog_hint_active=watchdog_hint_active,
+                        watchdog_hint_eval_id=watchdog_hint_eval_id,
+                        llm_id=gs_llm_id,
+                        byok=byok,
+                        override_api_cost=api_cost,
+                        strip_device_action_blocks=strip_device_action_blocks,
+                        billing_reservation_id=ai_reservation_id,
+                        billing_only_accumulated_usage=bool(
+                            ai_reservation_id and result_usage.get("persisted")
+                        ),
+                    )
 
                 # save_content_to_db returns (user_msg_id, bot_msg_id) or (None, None)
                 if not (
@@ -1559,6 +1575,19 @@ async def generate_via_gransabio(
                 user_message_id, bot_message_id = save_result
                 yield f'data: {orjson.dumps({"message_ids": {"user": user_message_id, "bot": bot_message_id}}).decode()}\n\n'
 
+            except StaleChannelTurnError:
+                try:
+                    await _settle_gransabio_result_usage(
+                        result_usage,
+                        reservation_id=ai_reservation_id,
+                        user_id=user_id,
+                        prompt_id=prompt_id,
+                    )
+                except BillingReservationError:
+                    logger.exception(
+                        "Could not settle stale GranSabio result billing"
+                    )
+                raise
             except Exception as exc:
                 logger.error("GranSabio save_content_to_db failed: %s", exc, exc_info=True)
                 yield error_sse(f"Failed to save result: {exc}")
@@ -1703,14 +1732,18 @@ async def _load_context_messages(conversation_id: int) -> list[dict]:
     ).strftime("%Y-%m-%d %H:%M:%S.%f")
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(
-            "SELECT message, type FROM MESSAGES WHERE conversation_id = ? AND date >= ? "
+            "SELECT id, message, type FROM MESSAGES WHERE conversation_id = ? AND date >= ? "
             "ORDER BY id ASC, date ASC",
             (conversation_id, context_start),
         )
         raw_context = await cursor.fetchall()
 
     context_dicts = [
-        {"message": parse_stored_message(custom_unescape(msg[0])), "type": msg[1]}
+        {
+            "id": int(msg[0]),
+            "message": parse_stored_message(custom_unescape(msg[1])),
+            "type": msg[2],
+        }
         for msg in raw_context
     ]
     return flatten_multi_ai_context(context_dicts)
@@ -1725,7 +1758,90 @@ async def _send_platform_error(platform: str, ctx: dict, error_msg: str):
     await send_platform_error(platform, ctx, error_msg)
 
 
-async def process_gransabio_external(
+async def _recover_external_stale_user_turn(
+    *,
+    channel_context,
+    conversation_id: int,
+    user_id: int,
+    user_message: str,
+    prompt_id: int | None = None,
+) -> bool:
+    """Persist/link only the inbound text after GranSabio loses foreground."""
+    if user_id <= 0:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                "SELECT user_id FROM CONVERSATIONS WHERE id = ?",
+                (conversation_id,),
+            )
+            row = await cursor.fetchone()
+        if not row:
+            logger.error(
+                "GranSabio external conv=%d cannot resolve stale inbound owner",
+                conversation_id,
+            )
+            return False
+        user_id = int(row[0])
+
+    recovery = getattr(channel_context, "recover_stale_context", None)
+    if recovery is None:
+        logger.warning(
+            "GranSabio external conv=%d stale turn has no recovery context",
+            conversation_id,
+        )
+        return False
+    try:
+        recovered_context = recovery(channel_context)
+        if inspect.isawaitable(recovered_context):
+            recovered_context = await recovered_context
+        if recovered_context is None or not recovered_context.ingest_only:
+            logger.warning(
+                "GranSabio external conv=%d stale turn could not prove active phone ownership",
+                conversation_id,
+            )
+            return False
+
+        from ai_runtime.channel_turns import bind_channel_turn
+        from ai_runtime.persistence.messages import save_content_to_db
+
+        with bind_channel_turn(recovered_context):
+            user_message_id, _ = await save_content_to_db(
+                None,
+                0,
+                0,
+                0,
+                conversation_id,
+                user_id,
+                "gransabio-pipeline",
+                user_message=user_message,
+                prompt_id=prompt_id,
+            )
+        if user_message_id is None:
+            logger.error(
+                "GranSabio external conv=%d stale inbound was not persisted",
+                conversation_id,
+            )
+            return False
+        logger.info(
+            "GranSabio external conv=%d queued stale inbound message_id=%d",
+            conversation_id,
+            user_message_id,
+        )
+        return True
+    except StaleChannelTurnError:
+        logger.warning(
+            "GranSabio external conv=%d foreground changed again during recovery",
+            conversation_id,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "GranSabio external conv=%d could not recover stale inbound",
+            conversation_id,
+        )
+        return False
+
+
+async def _process_gransabio_external_inner(
     conversation_id: int,
     user_id: int,
     user_message: str,
@@ -1733,6 +1849,7 @@ async def process_gransabio_external(
     platform_context: dict,
     http_client: Optional[httpx.AsyncClient] = None,
     estimated_timeout: int = 3600,
+    foreground_epoch: int | None = None,
 ):
     """Background task for GranSabio on external channels (Telegram/WhatsApp).
 
@@ -1742,12 +1859,96 @@ async def process_gransabio_external(
     Works in both Dramatiq worker (separate process) and asyncio.create_task (same process).
     No dependency on FastAPI Request, Depends(), or JWT auth chain.
     """
+    if foreground_epoch is None:
+        logger.warning(
+            "GranSabio external [%s] conv=%d cancelled: legacy job has no foreground epoch",
+            platform,
+            conversation_id,
+        )
+        return
+    try:
+        foreground_epoch = int(foreground_epoch)
+    except (TypeError, ValueError):
+        logger.warning(
+            "GranSabio external [%s] conv=%d cancelled: invalid foreground epoch",
+            platform,
+            conversation_id,
+        )
+        return
+
     logger.info(
         "GranSabio external [%s] conv=%d user=%d starting",
         platform, conversation_id, user_id,
     )
 
+    from integrations.telephony.channel_context import (
+        restore_non_phone_generation_context,
+    )
+    from integrations.telephony.foreground import (
+        ForegroundCommitGuard,
+        ForegroundCoordinator,
+    )
+
+    foreground_coordinator = ForegroundCoordinator()
+    external_guard = ForegroundCommitGuard(
+        conversation_id=int(conversation_id),
+        epoch=foreground_epoch,
+        expected_owner="non_phone",
+    )
+    external_channel_context = restore_non_phone_generation_context(
+        conversation_id=conversation_id,
+        channel=platform,
+        foreground_epoch=foreground_epoch,
+        coordinator=foreground_coordinator,
+    )
+    message_provenance = platform_context.get("message_provenance")
+    if isinstance(message_provenance, dict):
+        from integrations.messaging_voice_notes.service import (
+            attach_message_channel_provenance,
+        )
+
+        external_channel_context = attach_message_channel_provenance(
+            external_channel_context,
+            message_provenance,
+        )
+    prompt_id = None
+    turn_persisted = False
+    recovery_user_message = user_message
+
+    async def foreground_is_current(*, recover_inbound: bool = True) -> bool:
+        if await foreground_coordinator.commit_guard_is_current(external_guard):
+            return True
+        if recover_inbound:
+            await _recover_external_stale_user_turn(
+                channel_context=external_channel_context,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                user_message=recovery_user_message,
+                prompt_id=prompt_id,
+            )
+        logger.info(
+            "GranSabio external [%s] conv=%d suppressed after foreground changed",
+            platform,
+            conversation_id,
+        )
+        return False
+
+    async def guarded_platform_error(error_message: str) -> bool:
+        if not await foreground_is_current(recover_inbound=not turn_persisted):
+            return False
+        await _send_platform_error(platform, platform_context, error_message)
+        return True
+
+    async def guarded_platform_delivery(text: str) -> bool:
+        if not await foreground_is_current(recover_inbound=not turn_persisted):
+            return False
+        await _deliver_to_platform(platform, platform_context, text)
+        return True
+
     try:
+        if not await foreground_is_current():
+            return
+
         # --- 1. Resolve user_id from conversation if needed (Dramatiq passes 0) ---
         if user_id == 0:
             async with get_db_connection(readonly=True) as conn:
@@ -1764,7 +1965,7 @@ async def process_gransabio_external(
         from ai_runtime.context.assembly import check_own_only_gransabio
         own_only_err = await check_own_only_gransabio(user_id, conversation_id)
         if own_only_err:
-            await _send_platform_error(platform, platform_context, own_only_err)
+            await guarded_platform_error(own_only_err)
             return
 
         # --- 2. Load prompt info ---
@@ -1784,7 +1985,7 @@ async def process_gransabio_external(
 
         if not prompt_row:
             logger.error("GranSabio external: no prompt info for conv=%d", conversation_id)
-            await _send_platform_error(platform, platform_context, "Conversation configuration not found.")
+            await guarded_platform_error("Conversation configuration not found.")
             return
 
         (prompt_id, enable_moderation, gransabio_config_raw, gransabio_enabled,
@@ -1802,15 +2003,15 @@ async def process_gransabio_external(
         from ai_runtime.context.assembly import apply_rate_limit
         rate_ok, rate_err = await apply_rate_limit(user_id)
         if not rate_ok:
-            await _send_platform_error(platform, platform_context, rate_err or "Rate limit exceeded.")
+            await guarded_platform_error(rate_err or "Rate limit exceeded.")
             return
 
         # --- 5. Input moderation ---
         from ai_runtime.context.assembly import run_input_moderation
         flagged, _categories = await run_input_moderation(user_message, None, bool(enable_moderation))
         if flagged:
-            await _deliver_to_platform(
-                platform, platform_context,
+            recovery_user_message = "[Blocked Message]"
+            await guarded_platform_delivery(
                 "Sorry, but your message has been blocked for violating our usage policies.",
             )
             return
@@ -1823,6 +2024,10 @@ async def process_gransabio_external(
         context_messages_dicts = await _load_context_messages(conversation_id)
 
         from ai_runtime.context.assembly import build_full_prompt_context
+        trusted_turn_context = merge_internal_turn_context(
+            external_channel_context.provenance.get("internal_turn_context"),
+            render_current_input_context(external_channel_context),
+        )
         prompt_ctx = await build_full_prompt_context(
             user_id=user_id,
             prompt_id=prompt_id,
@@ -1830,6 +2035,7 @@ async def process_gransabio_external(
             user_message=user_message,
             context_messages=context_messages_dicts,
             user_api_keys=None,  # External channels don't have user API keys
+            internal_turn_context=trusted_turn_context,
         )
         if prompt_ctx.get("atagia_context_active"):
             context_messages_dicts = []
@@ -1840,10 +2046,19 @@ async def process_gransabio_external(
         # --- 8. Handle watchdog takeover if build_full_prompt_context detected one ---
         if prompt_ctx["action"] in ("takeover", "takeover_lock"):
             from ai_runtime.persistence.messages import save_content_to_db
-            from ai_runtime.watchdog.takeover import watchdog_takeover_response_requestfree
+            from ai_runtime.watchdog.takeover import (
+                _settle_or_refund_takeover_reservation,
+                watchdog_takeover_response_requestfree,
+            )
 
             # Include current user message in context (not yet saved to DB)
-            ctx_with_current = list(prompt_ctx["takeover_context_messages"] or [])
+            takeover_prompt, trusted_takeover_context = (
+                await prepare_trusted_history_context(
+                    prompt_ctx["original_prompt"],
+                    prompt_ctx["takeover_context_messages"] or [],
+                )
+            )
+            ctx_with_current = list(trusted_takeover_context)
             ctx_with_current.append({"type": "user", "message": user_message})
 
             accumulated = []
@@ -1869,6 +2084,8 @@ async def process_gransabio_external(
                     ),
                 )
             try:
+                if not await foreground_is_current():
+                    return
                 async for chunk in watchdog_takeover_response_requestfree(
                     directive=prompt_ctx["takeover_directive"] or "Redirect the conversation appropriately.",
                     watchdog_config=takeover_wd_config,
@@ -1876,7 +2093,7 @@ async def process_gransabio_external(
                     user_id=user_id,
                     conversation_id=conversation_id,
                     prompt_id=prompt_id or 0,
-                    original_prompt=prompt_ctx["original_prompt"],
+                    original_prompt=takeover_prompt,
                     user_level=prompt_ctx["user_level"],
                     source=takeover_source,
                     billing_context=takeover_billing,
@@ -1892,6 +2109,15 @@ async def process_gransabio_external(
 
                 takeover_text = "".join(accumulated).strip()
                 if takeover_text:
+                    if (
+                        takeover_billing.get("reservation_id")
+                        and not takeover_billing.get("usage_accumulated")
+                    ):
+                        await guarded_platform_error(
+                            "Billing usage was not confirmed for the watchdog response. "
+                            "Content not delivered."
+                        )
+                        return
                     # Resolve the actual watchdog LLM for proper DB attribution
                     from common import get_llm_info
                     wd_llm_id = takeover_wd_config.get("llm_id")
@@ -1899,34 +2125,56 @@ async def process_gransabio_external(
                     wd_model = wd_llm["model"] if wd_llm else "watchdog-takeover"
 
                     # Persist and bill BEFORE delivering
-                    db_result = await save_content_to_db(
-                        takeover_text,
-                        takeover_billing.get("input_tokens", 0),
-                        takeover_billing.get("output_tokens", 0),
-                        takeover_billing.get("input_tokens", 0)
-                        + takeover_billing.get("output_tokens", 0),
-                        conversation_id, user_id,
-                        wd_model, user_message=user_message,
-                        prompt_id=prompt_id, llm_id=wd_llm_id,
-                        byok=bool(takeover_billing.get("byok")),
-                        billing_reservation_id=takeover_billing.get("reservation_id"),
+                    from ai_runtime.channel_turns import bind_channel_turn
+
+                    binding = (
+                        bind_channel_turn(external_channel_context)
+                        if external_channel_context is not None
+                        else nullcontext()
                     )
-                    if db_result and db_result[0]:
-                        await _deliver_to_platform(platform, platform_context, takeover_text)
+                    with binding:
+                        db_result = await save_content_to_db(
+                            takeover_text,
+                            takeover_billing.get("input_tokens", 0),
+                            takeover_billing.get("output_tokens", 0),
+                            takeover_billing.get("input_tokens", 0)
+                            + takeover_billing.get("output_tokens", 0),
+                            conversation_id, user_id,
+                            wd_model, user_message=user_message,
+                            prompt_id=prompt_id, llm_id=wd_llm_id,
+                            byok=bool(takeover_billing.get("byok")),
+                            billing_reservation_id=takeover_billing.get("reservation_id"),
+                            billing_only_accumulated_usage=bool(
+                                takeover_billing.get("reservation_id")
+                            ),
+                        )
+                    if db_result and db_result[0] and db_result[1]:
+                        turn_persisted = True
+                        if not await guarded_platform_delivery(takeover_text):
+                            return
                     else:
-                        await _send_platform_error(platform, platform_context,
-                            "Billing failed for watchdog response. Content not delivered.")
+                        await guarded_platform_error(
+                            "Billing failed for watchdog response. Content not delivered."
+                        )
                         return
             finally:
                 takeover_reservation_id = takeover_billing.get("reservation_id")
                 if takeover_reservation_id:
-                    try:
-                        await refund_fixed_usage(takeover_reservation_id)
-                    except BillingReservationError:
-                        logger.exception(
-                            "Could not release unfinished external takeover reservation %s",
-                            takeover_reservation_id,
-                        )
+                    await _settle_or_refund_takeover_reservation(
+                        reservation_id=takeover_reservation_id,
+                        user_id=user_id,
+                        input_cost_per_million=takeover_billing.get(
+                            "input_cost_per_million", 0
+                        ),
+                        output_cost_per_million=takeover_billing.get(
+                            "output_cost_per_million", 0
+                        ),
+                        prompt_id=prompt_id,
+                        byok=bool(takeover_billing.get("byok")),
+                        provider_usage_observed=bool(
+                            takeover_billing.get("provider_usage_observed")
+                        ),
+                    )
 
             if not should_lock_gs:
                 await _finalize_takeover(
@@ -1942,6 +2190,10 @@ async def process_gransabio_external(
 
         # Normal flow: extract assembled prompt fields
         full_prompt = prompt_ctx["full_prompt"]
+        full_prompt, context_messages_dicts = await prepare_trusted_history_context(
+            full_prompt,
+            context_messages_dicts,
+        )
         watchdog_config = prompt_ctx["watchdog_config"]
         watchdog_hint_active = prompt_ctx["watchdog_hint_active"]
         watchdog_hint_eval_id = prompt_ctx["watchdog_hint_eval_id"]
@@ -1955,7 +2207,7 @@ async def process_gransabio_external(
         admin_config = await get_gransabio_config()
 
         if admin_config.get("gransabio_enabled") != "true":
-            await _send_platform_error(platform, platform_context, "GranSabio is currently disabled.")
+            await guarded_platform_error("GranSabio is currently disabled.")
             return
 
         # Parse prompt-level gransabio config
@@ -1965,8 +2217,7 @@ async def process_gransabio_external(
                 prompt_config = {}
         except orjson.JSONDecodeError:
             logger.error("Invalid GranSabio config JSON for prompt %s", prompt_id)
-            await _send_platform_error(
-                platform, platform_context,
+            await guarded_platform_error(
                 "Invalid GranSabio configuration for this prompt. Contact admin.",
             )
             return
@@ -1974,6 +2225,8 @@ async def process_gransabio_external(
         # Accumulate content from the generator
         accumulated_text = []
 
+        if not await foreground_is_current():
+            return
         async for chunk_str in generate_via_gransabio(
             message=user_message,
             context_messages=context_messages_dicts,
@@ -1991,6 +2244,7 @@ async def process_gransabio_external(
             watchdog_hint_active=watchdog_hint_active,
             watchdog_hint_eval_id=watchdog_hint_eval_id,
             http_client=http_client,
+            channel_context=external_channel_context,
         ):
             # Parse SSE chunks to extract content
             if isinstance(chunk_str, str):
@@ -2001,11 +2255,16 @@ async def process_gransabio_external(
                             content = data.get("content", "")
                             if content and isinstance(content, str):
                                 accumulated_text.append(content)
+                            message_ids = data.get("message_ids")
+                            if isinstance(message_ids, dict):
+                                turn_persisted = bool(
+                                    message_ids.get("user") and message_ids.get("bot")
+                                )
                             # Check for errors
                             error = data.get("error", "")
                             if error:
                                 logger.error("GranSabio external generation error: %s", error)
-                                await _send_platform_error(platform, platform_context, error)
+                                await guarded_platform_error(error)
                                 return
                         except (orjson.JSONDecodeError, ValueError):
                             pass
@@ -2013,32 +2272,125 @@ async def process_gransabio_external(
         final_content = "".join(accumulated_text).strip()
 
         # --- 10. Deliver result to platform ---
-        if final_content:
-            await _deliver_to_platform(platform, platform_context, final_content)
+        if final_content and turn_persisted:
+            if not await guarded_platform_delivery(final_content):
+                return
             logger.info(
                 "GranSabio external [%s] conv=%d completed, content length=%d",
                 platform, conversation_id, len(final_content),
             )
-        else:
+        elif not final_content:
             logger.warning(
                 "GranSabio external [%s] conv=%d: no content generated",
                 platform, conversation_id,
             )
-            await _send_platform_error(
-                platform, platform_context,
+            await guarded_platform_error(
                 "Sorry, GranSabio could not generate a response. Please try again.",
             )
+        else:
+            logger.error(
+                "GranSabio external [%s] conv=%d produced content without durable message IDs",
+                platform,
+                conversation_id,
+            )
+            await guarded_platform_error(
+                "Sorry, GranSabio could not save the response. Please try again."
+            )
 
+    except StaleChannelTurnError:
+        logger.info(
+            "GranSabio external [%s] conv=%d suppressed after foreground changed",
+            platform,
+            conversation_id,
+        )
+        if not turn_persisted:
+            await _recover_external_stale_user_turn(
+                channel_context=external_channel_context,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                user_message=recovery_user_message,
+                prompt_id=prompt_id,
+            )
+        return
     except Exception as exc:
         logger.error(
             "GranSabio external [%s] conv=%d failed: %s",
             platform, conversation_id, exc,
             exc_info=True,
         )
-        # Best-effort error delivery
-        await _send_platform_error(
-            platform, platform_context,
-            "Sorry, an error occurred while processing your message. Please try again.",
+        # Best-effort, but still fenced, error delivery.
+        await guarded_platform_error(
+            "Sorry, an error occurred while processing your message. Please try again."
+        )
+
+
+async def _discard_gransabio_pending_voice_note(
+    platform_context: dict,
+    *,
+    platform: str,
+) -> None:
+    """Release an uncommitted retained audio ref after every background exit."""
+    provenance = platform_context.get("message_provenance")
+    if not isinstance(provenance, dict):
+        return
+    voice_note = provenance.get("voice_note")
+    if not isinstance(voice_note, dict):
+        return
+    attachment_ref = voice_note.get("audio_attachment_ref")
+    if not attachment_ref:
+        return
+    try:
+        user_id = int(provenance["user_id"])
+        conversation_id = int(provenance["conversation_id"])
+    except (KeyError, TypeError, ValueError):
+        logger.error(
+            "GranSabio external [%s] cannot scope pending voice-note cleanup",
+            platform,
+        )
+        return
+
+    try:
+        from file_storage import discard_pending_attachments_for_user
+
+        await discard_pending_attachments_for_user(
+            [str(attachment_ref)],
+            user_id=user_id,
+            conversation_id=conversation_id,
+            reason=f"{platform}_gransabio_finished_without_audio_commit",
+        )
+    except Exception:
+        logger.exception(
+            "GranSabio external [%s] could not release pending voice-note audio",
+            platform,
+        )
+
+
+async def process_gransabio_external(
+    conversation_id: int,
+    user_id: int,
+    user_message: str,
+    platform: str,
+    platform_context: dict,
+    http_client: Optional[httpx.AsyncClient] = None,
+    estimated_timeout: int = 3600,
+    foreground_epoch: int | None = None,
+):
+    """Run GranSabio and always release audio that never reached persistence."""
+    try:
+        return await _process_gransabio_external_inner(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            user_message=user_message,
+            platform=platform,
+            platform_context=platform_context,
+            http_client=http_client,
+            estimated_timeout=estimated_timeout,
+            foreground_epoch=foreground_epoch,
+        )
+    finally:
+        await _discard_gransabio_pending_voice_note(
+            platform_context,
+            platform=platform,
         )
 
 

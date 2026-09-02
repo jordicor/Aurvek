@@ -46,10 +46,165 @@ from security_config import is_forbidden_prompt_name
 from marketplace.config import marketplace_creator_tools_enabled, marketplace_discovery_enabled
 from marketplace.landing.cache import invalidate_landing_cache
 from marketplace.services.entitlements import user_has_prompt_access as user_has_prompt_entitlement_access
+from ai_runtime.reasoning import (
+    ReasoningValidationError,
+    parse_reasoning_selection,
+    resolve_and_validate,
+)
+from llm_catalog import normalize_capabilities
 
 router = APIRouter()
 
 _PERSONAL_SUBSCRIPTION_MACHINE = "GPTSub"
+_PHONE_BLOCKED_MACHINES = frozenset({"GPTSub", "GranSabio"})
+_OPENAI_REALTIME_VOICES = frozenset(
+    {
+        "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer",
+        "verse", "marin", "cedar",
+    }
+)
+
+
+async def _shared_llm_configuration(llm_id: int) -> tuple[dict, dict]:
+    """Load one enabled shared model and its normalized capabilities."""
+
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            """
+            SELECT id,machine,model,provider_key,provider_model_id,
+                   raw_metadata_json,capabilities_json,manual_overrides_json,
+                   COALESCE(enabled,1) AS enabled
+            FROM LLM WHERE id=?
+            """,
+            (int(llm_id),),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=400, detail="Selected AI model does not exist")
+    item = dict(row)
+    if not bool(item["enabled"]):
+        raise HTTPException(status_code=400, detail="Selected AI model is disabled")
+    if item["machine"] in _PHONE_BLOCKED_MACHINES:
+        raise HTTPException(
+            status_code=400,
+            detail="This AI model cannot be assigned to a shared prompt",
+        )
+
+    def decode(value: str | None) -> dict:
+        if not value:
+            return {}
+        try:
+            parsed = orjson.loads(value)
+        except (orjson.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    capabilities = normalize_capabilities(
+        item.get("provider_key") or item.get("machine"),
+        item.get("provider_model_id") or item.get("model"),
+        decode(item.get("raw_metadata_json")),
+        decode(item.get("capabilities_json")),
+        decode(item.get("manual_overrides_json")),
+    )
+    return item, capabilities
+
+
+async def _validated_reasoning_json(
+    *,
+    llm_id: int | None,
+    mode: str | None,
+    budget_tokens: int | None,
+    inherit_value: str,
+    field_label: str,
+) -> str | None:
+    if not isinstance(mode, str):
+        mode = getattr(mode, "default", inherit_value)
+    if not isinstance(mode, str):
+        mode = inherit_value
+    if not isinstance(budget_tokens, int) or isinstance(budget_tokens, bool):
+        budget_tokens = None
+    normalized_mode = str(mode or inherit_value).strip().lower()
+    if normalized_mode == inherit_value:
+        return None
+    if llm_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_label} requires a specific AI model",
+        )
+    _, capabilities = await _shared_llm_configuration(int(llm_id))
+    try:
+        selection = resolve_and_validate(
+            {
+                "mode": normalized_mode,
+                **(
+                    {"budget_tokens": budget_tokens}
+                    if budget_tokens is not None
+                    else {}
+                ),
+            },
+            capabilities,
+        )
+    except ReasoningValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_label}: {exc}",
+        ) from exc
+    return orjson.dumps(selection.to_dict()).decode("utf-8")
+
+
+async def _validate_phone_ai_selection(
+    *,
+    phone_llm_id: int | None,
+    phone_reasoning_mode: str | None,
+    phone_reasoning_budget_tokens: int | None,
+    phone_realtime_voice: str | None,
+    inherited_llm_id: int | None,
+) -> tuple[int | None, str | None, str | None]:
+    if not isinstance(phone_llm_id, int) or isinstance(phone_llm_id, bool):
+        phone_llm_id = None
+    if not isinstance(phone_realtime_voice, str):
+        phone_realtime_voice = None
+    capabilities: dict | None = None
+    if phone_llm_id is not None:
+        _, capabilities = await _shared_llm_configuration(phone_llm_id)
+        runtime = capabilities.get("runtime", {})
+        if "phone" not in runtime.get("channels", []):
+            raise HTTPException(
+                status_code=400,
+                detail="Selected AI model is not available for phone calls",
+            )
+
+    reasoning_json = await _validated_reasoning_json(
+        llm_id=phone_llm_id or inherited_llm_id,
+        mode=phone_reasoning_mode,
+        budget_tokens=phone_reasoning_budget_tokens,
+        inherit_value="inherit",
+        field_label="Phone thinking",
+    )
+    runtime_kind = (
+        capabilities.get("runtime", {}).get("kind")
+        if capabilities is not None
+        else "standard"
+    )
+    if runtime_kind == "openai_realtime":
+        realtime_voice = str(phone_realtime_voice or "marin").strip().lower()
+        if realtime_voice not in _OPENAI_REALTIME_VOICES:
+            raise HTTPException(
+                status_code=400,
+                detail="Select a supported OpenAI Realtime voice",
+            )
+    else:
+        realtime_voice = None
+    return phone_llm_id, reasoning_json, realtime_voice
+
+
+def _reasoning_selection_for_template(value: str | None) -> dict:
+    if not value:
+        return {"mode": "default"}
+    try:
+        return parse_reasoning_selection(orjson.loads(value)).to_dict()
+    except (orjson.JSONDecodeError, TypeError, ReasoningValidationError):
+        return {"mode": "default"}
 
 
 async def _validate_prompt_llm_selection(
@@ -89,7 +244,10 @@ async def _validate_prompt_llm_selection(
     placeholders = ",".join("?" for _ in selected_ids)
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(
-            f"SELECT id, machine FROM LLM WHERE id IN ({placeholders})",
+            f"""
+            SELECT id, machine, model, COALESCE(enabled,1) AS enabled
+            FROM LLM WHERE id IN ({placeholders})
+            """,
             tuple(selected_ids),
         )
         rows = await cursor.fetchall()
@@ -103,6 +261,16 @@ async def _validate_prompt_llm_selection(
                 "Personal ChatGPT subscription models cannot be forced or shared "
                 "through a prompt. Each user selects them after connecting their account."
             ),
+        )
+    if any(not bool(row["enabled"]) for row in rows):
+        raise HTTPException(status_code=400, detail="Selected AI model is disabled")
+    if any(
+        str(row["model"] or "").strip().lower().startswith("gpt-realtime-2.1")
+        for row in rows
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI Realtime models can only be assigned to phone calls",
         )
 
 
@@ -118,6 +286,67 @@ async def _watchdog_llm_machine(llm_id: int) -> str:
             "Personal ChatGPT subscription models cannot run as a shared watchdog"
         )
     return machine
+
+
+async def _resolve_submitted_prompt_voice(
+    conn,
+    *,
+    voice_code: str,
+    catalog_id: Optional[int],
+) -> int:
+    """Resolve one structurally valid catalogue voice without guessing by code."""
+
+    async with conn.cursor() as cursor:
+        if isinstance(catalog_id, int) and not isinstance(catalog_id, bool):
+            await cursor.execute(
+                """
+                SELECT v.id,v.voice_code,v.tts_service,
+                       COALESCE(v.deprecated,0) AS deprecated,
+                       s.name AS service_name
+                FROM Voices v
+                LEFT JOIN Services s ON s.id=v.tts_service
+                WHERE v.id=?
+                """,
+                (catalog_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Voice not found")
+            if str(row["voice_code"] or "") != str(voice_code or ""):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Selected voice identity no longer matches the catalogue",
+                )
+        else:
+            await cursor.execute(
+                """
+                SELECT v.id,v.voice_code,v.tts_service,
+                       COALESCE(v.deprecated,0) AS deprecated,
+                       s.name AS service_name
+                FROM Voices v
+                LEFT JOIN Services s ON s.id=v.tts_service
+                WHERE v.voice_code=? ORDER BY v.id
+                """,
+                (voice_code,),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                raise HTTPException(status_code=404, detail="Voice not found")
+            if len(rows) != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Voice code is ambiguous; select an exact catalogue voice",
+                )
+            row = rows[0]
+
+    if (
+        bool(row["deprecated"])
+        or not str(row["voice_code"] or "").strip()
+        or row["tts_service"] is None
+        or not str(row["service_name"] or "").strip()
+    ):
+        raise HTTPException(status_code=409, detail="Selected voice is unavailable")
+    return int(row["id"])
 
 
 async def can_user_access_prompt(user: User, prompt_id: int, cursor) -> bool:
@@ -395,7 +624,16 @@ async def create_prompt(request: Request, current_user: User = Depends(get_curre
     if not await current_user.is_admin and not await current_user.is_user:
         raise HTTPException(status_code=403, detail="Access denied")
     async with get_db_connection(readonly=True) as conn:
-        async with conn.execute("SELECT voice_code, name FROM Voices") as cursor:
+        async with conn.execute(
+            """
+            SELECT v.voice_code,v.name FROM Voices v
+            JOIN Services s ON s.id=v.tts_service
+            WHERE COALESCE(v.deprecated,0)=0
+              AND TRIM(COALESCE(v.voice_code,''))<>''
+              AND TRIM(COALESCE(s.name,''))<>''
+            ORDER BY v.id
+            """
+        ) as cursor:
             voices = await cursor.fetchall()
         context = await get_template_context(request, current_user)
         context["voices"] = voices
@@ -411,6 +649,7 @@ async def create_prompt_post(
     prompt: str = Form(...),
     description: str = Form(...),
     sample_voice_id: str = Form(...),
+    sample_voice_catalog_id: Optional[int] = Form(None),
     public: bool = Form(False),
     image: UploadFile = File(None),
     category_ids: str = Form(""),
@@ -419,8 +658,14 @@ async def create_prompt_post(
     markup_per_mtokens: float = Form(0.0),
     llm_mode: str = Form("any"),
     forced_llm_id: Optional[int] = Form(None),
+    forced_reasoning_mode: str = Form("default"),
+    forced_reasoning_budget_tokens: Optional[int] = Form(None),
     hide_llm_name: bool = Form(False),
     allowed_llms: Optional[str] = Form(None),
+    phone_llm_id: Optional[int] = Form(None),
+    phone_reasoning_mode: str = Form("inherit"),
+    phone_reasoning_budget_tokens: Optional[int] = Form(None),
+    phone_realtime_voice: Optional[str] = Form(None),
     disable_web_search: bool = Form(False),
     force_web_search: bool = Form(False),
     enable_moderation: bool = Form(False),
@@ -451,6 +696,24 @@ async def create_prompt_post(
         raise HTTPException(status_code=400, detail="This name is not available. Please choose a different name.")
 
     await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms)
+    forced_reasoning_json = await _validated_reasoning_json(
+        llm_id=forced_llm_id if llm_mode == "forced" else None,
+        mode=forced_reasoning_mode,
+        budget_tokens=forced_reasoning_budget_tokens,
+        inherit_value="default",
+        field_label="Prompt thinking",
+    )
+    (
+        phone_llm_id,
+        phone_reasoning_json,
+        phone_realtime_voice,
+    ) = await _validate_phone_ai_selection(
+        phone_llm_id=phone_llm_id,
+        phone_reasoning_mode=phone_reasoning_mode,
+        phone_reasoning_budget_tokens=phone_reasoning_budget_tokens,
+        phone_realtime_voice=phone_realtime_voice,
+        inherited_llm_id=forced_llm_id if llm_mode == "forced" else None,
+    )
 
     # Parse and validate watchdog_config
     watchdog_config_json = None
@@ -544,15 +807,11 @@ async def create_prompt_post(
         try:
             await conn.execute("BEGIN TRANSACTION")
 
-            # Find the voice_id from the sample_voice_id
-            cursor = await conn.execute(
-                "SELECT id FROM Voices WHERE voice_code = ?",
-                (sample_voice_id,)
+            voice_id = await _resolve_submitted_prompt_voice(
+                conn,
+                voice_code=sample_voice_id,
+                catalog_id=sample_voice_catalog_id,
             )
-            row = await cursor.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Voice not found")
-            voice_id = row['id']
 
             # Process pricing fields
             is_paid_bool = bool(is_paid)
@@ -583,13 +842,17 @@ async def create_prompt_post(
             # Insert the new prompt with the found voice_id and pricing fields
             cursor = await conn.execute(
                 """INSERT INTO Prompts (name, prompt, description, voice_id, created_by_user_id, created_at, public,
-                   is_paid, markup_per_mtokens, forced_llm_id, hide_llm_name, disable_web_search, force_web_search,
+                   is_paid, markup_per_mtokens, forced_llm_id, forced_reasoning_json,
+                   phone_llm_id, phone_reasoning_json, phone_realtime_voice,
+                   hide_llm_name, disable_web_search, force_web_search,
                    enable_moderation, watchdog_config, allowed_llms,
                    extensions_enabled, extensions_auto_advance, extensions_free_selection,
                    gransabio_enabled, gransabio_config)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (name, prompt, description, voice_id, current_user.id, created_at, public,
-                 is_paid_bool, actual_markup, actual_forced_llm_id, actual_hide_llm_name, disable_web_search, force_web_search,
+                 is_paid_bool, actual_markup, actual_forced_llm_id, forced_reasoning_json,
+                 phone_llm_id, phone_reasoning_json, phone_realtime_voice,
+                 actual_hide_llm_name, disable_web_search, force_web_search,
                  enable_moderation, watchdog_config_json, actual_allowed_llms,
                  extensions_enabled, extensions_auto_advance, extensions_free_selection,
                  gransabio_enabled, gransabio_config)
@@ -609,6 +872,9 @@ async def create_prompt_post(
                 )
 
             await conn.execute("COMMIT")
+        except HTTPException:
+            await conn.execute("ROLLBACK")
+            raise
         except Exception as e:
             await conn.execute("ROLLBACK")
             raise HTTPException(status_code=500, detail=f"Error creating prompt: {str(e)}")
@@ -643,7 +909,8 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
                                           allow_in_packs, pack_notice_period_days,
                                           allowed_llms, extensions_enabled, extensions_auto_advance, extensions_free_selection,
                                           purchase_price,
-                                          gransabio_enabled, gransabio_config
+                                          gransabio_enabled, gransabio_config,
+                                          forced_reasoning_json
                                    FROM Prompts WHERE id = ?""", (prompt_id,)) as cursor:
             prompt = await cursor.fetchone()
         
@@ -672,13 +939,37 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
         if not (is_admin or is_owner or is_editor):
             raise HTTPException(status_code=403, detail="Access denied")
         
-        # Get the voice_code corresponding to voice_id
-        async with conn.execute("SELECT voice_code FROM Voices WHERE id = ?", (prompt[3],)) as cursor:
-            voice_code_result = await cursor.fetchone()
-            voice_code = voice_code_result[0] if voice_code_result else None
+        # Keep the editor usable when the current voice needs repair.  Target
+        # validation remains strict in the atomic phone-settings activation.
+        if prompt[3] is None:
+            async with conn.execute(
+                """
+                SELECT id,voice_code FROM Voices
+                WHERE COALESCE(is_default,0)=1 ORDER BY id
+                """
+            ) as cursor:
+                default_voices = await cursor.fetchall()
+            current_voice = default_voices[0] if len(default_voices) == 1 else None
+        else:
+            async with conn.execute(
+                "SELECT id,voice_code FROM Voices WHERE id=?",
+                (prompt[3],),
+            ) as cursor:
+                current_voice = await cursor.fetchone()
+        voice_catalog_id = current_voice[0] if current_voice else prompt[3]
+        voice_code = current_voice[1] if current_voice else None
         
         # Get voices
-        async with conn.execute("SELECT id, name FROM Voices") as cursor:
+        async with conn.execute(
+            """
+            SELECT v.id,v.name FROM Voices v
+            JOIN Services s ON s.id=v.tts_service
+            WHERE COALESCE(v.deprecated,0)=0
+              AND TRIM(COALESCE(v.voice_code,''))<>''
+              AND TRIM(COALESCE(s.name,''))<>''
+            ORDER BY v.id
+            """
+        ) as cursor:
             voices = await cursor.fetchall()
         
         # Get users who are admins or users (elevated role)
@@ -722,12 +1013,15 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
         prompt_image_url = f"{CLOUDFLARE_BASE_URL}{image_base_url}?token={token}"
 
     context = await get_template_context(request, current_user)
+    from request_security import ensure_csrf_token
+
     context.update({
         "prompt_id": prompt_id,
         "prompt_name": prompt[0],
         "prompt_text": prompt[1],
         "description": prompt[2],
         "voice_code": voice_code,
+        "voice_catalog_id": voice_catalog_id,
         "image_url": prompt_image_url,
         "created_by_user_id": prompt[5],
         "current_owner_id": current_owner_id,
@@ -764,8 +1058,10 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
         # GranSabio config
         "gransabio_enabled": bool(prompt[22]) if prompt[22] else False,
         "gransabio_config": _parse_gransabio_config_for_template(prompt[23]),
+        "forced_reasoning_selection": _reasoning_selection_for_template(prompt[24]),
         # Welcome message (pre-loaded, no extra HTTP request)
         "welcome_message_content": welcome_message_content,
+        "phone_settings_csrf_token": ensure_csrf_token(request),
     })
     return templates.TemplateResponse("prompts/edit_prompt.html", context)
 
@@ -775,10 +1071,12 @@ async def update_prompt(
     request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user),
+    csrf_token: str = Form(""),
     name: str = Form(...),
     prompt: str = Form(...),
     description: str = Form(...),
     sample_voice_id: str = Form(...),
+    sample_voice_catalog_id: Optional[int] = Form(None),
     public: bool = Form(False),
     image: Optional[UploadFile] = File(None),
     editor_ids: Optional[str] = Form(None),
@@ -789,6 +1087,8 @@ async def update_prompt(
     markup_per_mtokens: float = Form(0.0),
     llm_mode: str = Form("any"),
     forced_llm_id: Optional[int] = Form(None),
+    forced_reasoning_mode: str = Form("default"),
+    forced_reasoning_budget_tokens: Optional[int] = Form(None),
     hide_llm_name: bool = Form(False),
     allowed_llms: Optional[str] = Form(None),
     disable_web_search: bool = Form(False),
@@ -811,6 +1111,15 @@ async def update_prompt(
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
 
+    from request_security import validate_mutation_request
+
+    csrf_rejection = validate_mutation_request(
+        request,
+        supplied_token=csrf_token,
+    )
+    if csrf_rejection is not None:
+        return csrf_rejection
+
     if (
         public
         or bool(is_paid)
@@ -832,6 +1141,13 @@ async def update_prompt(
             raise HTTPException(status_code=400, detail="This name is not available. Please choose a different name.")
 
     await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms)
+    forced_reasoning_json = await _validated_reasoning_json(
+        llm_id=forced_llm_id if llm_mode == "forced" else None,
+        mode=forced_reasoning_mode,
+        budget_tokens=forced_reasoning_budget_tokens,
+        inherit_value="default",
+        field_label="Prompt thinking",
+    )
 
     # Parse and validate watchdog_config
     watchdog_config_json = None
@@ -955,16 +1271,47 @@ async def update_prompt(
         await process_prompt_image_upload(prompt_id, image, prompt_info, current_user)
 
     async with get_db_connection() as conn:
+        selected_voice_id = await _resolve_submitted_prompt_voice(
+            conn,
+            voice_code=sample_voice_id,
+            catalog_id=sample_voice_catalog_id,
+        )
         async with conn.cursor() as cursor:
-            # Find the voice_id from the sample_voice_id
+            # A prompt with no explicit voice inherits the one global default.
+            # Posting that visible default back from the editor must preserve
+            # inheritance instead of becoming a false phone-voice change.
             await cursor.execute(
-                "SELECT id FROM Voices WHERE voice_code = ?",
-                (sample_voice_id,)
+                """
+                SELECT p.voice_id AS configured_voice_id,
+                       (
+                           SELECT CASE WHEN COUNT(*)=1 THEN MIN(id) END
+                           FROM Voices WHERE COALESCE(is_default,0)=1
+                       ) AS default_voice_id
+                FROM Prompts p WHERE p.id=?
+                """,
+                (prompt_id,),
             )
-            row = await cursor.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Voice not found")
-            voice_id = row['id']
+            voice_state = await cursor.fetchone()
+            if voice_state is None:
+                raise HTTPException(status_code=404, detail="Prompt not found")
+            configured_voice_id = voice_state["configured_voice_id"]
+            default_voice_id = voice_state["default_voice_id"]
+            if configured_voice_id is None:
+                if default_voice_id is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Voice is unavailable until exactly one global "
+                            "default voice is selected."
+                        ),
+                    )
+                voice_id = (
+                    None
+                    if int(selected_voice_id) == int(default_voice_id)
+                    else int(selected_voice_id)
+                )
+            else:
+                voice_id = int(selected_voice_id)
 
             # Process pricing fields
             is_paid_bool = bool(is_paid)
@@ -1036,21 +1383,45 @@ async def update_prompt(
             # Update the prompt information including pricing, pack, and extension fields
             await cursor.execute(
                 """UPDATE Prompts SET name = ?, prompt = ?, description = ?, voice_id = ?, public = ?,
-                   is_paid = ?, markup_per_mtokens = ?, forced_llm_id = ?, hide_llm_name = ?, disable_web_search = ?,
+                   is_paid = ?, markup_per_mtokens = ?, forced_llm_id = ?, forced_reasoning_json = ?,
+                   hide_llm_name = ?, disable_web_search = ?,
                    force_web_search = ?, enable_moderation = ?, watchdog_config = ?,
                    allow_in_packs = ?, pack_notice_period_days = ?,
                    allowed_llms = ?, extensions_enabled = ?, extensions_auto_advance = ?, extensions_free_selection = ?,
                    purchase_price = ?,
                    gransabio_enabled = ?, gransabio_config = ?
-                   WHERE id = ?""",
+                   WHERE id = ?
+                     AND (
+                         voice_id IS ?
+                         OR NOT EXISTS (
+                             SELECT 1 FROM PROMPT_PHONE_SETTINGS phone_settings
+                             WHERE phone_settings.prompt_id = Prompts.id
+                               AND (
+                                   phone_settings.active_audio_revision IS NOT NULL
+                                   OR phone_settings.pending_audio_revision IS NOT NULL
+                               )
+                         )
+                     )""",
                 (name, prompt, description, voice_id, public,
-                 is_paid_bool, actual_markup, actual_forced_llm_id, actual_hide_llm_name, disable_web_search,
+                 is_paid_bool, actual_markup, actual_forced_llm_id, forced_reasoning_json,
+                 actual_hide_llm_name, disable_web_search,
                  force_web_search, enable_moderation, watchdog_config_json,
                  allow_in_packs, pack_notice_period_days,
                  actual_allowed_llms, extensions_enabled, extensions_auto_advance, extensions_free_selection,
                  actual_purchase_price,
-                 gransabio_enabled, gransabio_config, prompt_id)
+                 gransabio_enabled, gransabio_config, prompt_id, voice_id)
             )
+            if cursor.rowcount != 1:
+                await cursor.execute("SELECT 1 FROM PROMPTS WHERE id = ?", (prompt_id,))
+                if await cursor.fetchone() is None:
+                    raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "This prompt has active phone audio. Change its voice through "
+                        "the atomic phone-audio activation flow."
+                    ),
+                )
 
             # If extensions were just disabled, clean active_extension_id from all conversations
             if not extensions_enabled:

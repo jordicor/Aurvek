@@ -47,6 +47,9 @@ class FakeElement {
         this.disabled = false;
         this.innerHTML = '';
         this.style = {};
+        this.dataset = {};
+        this.attributes = {};
+        this.hidden = false;
         this.listeners = new Map();
         this.icon = { className: '' };
         this.textContent = '';
@@ -58,7 +61,9 @@ class FakeElement {
 
     appendChild() {}
     focus() {}
-    setAttribute() {}
+    setAttribute(name, value) {
+        this.attributes[name] = String(value);
+    }
 
     querySelector(selector) {
         return selector === 'i' ? this.icon : null;
@@ -80,7 +85,7 @@ function response(data, status = 200) {
     };
 }
 
-function createHarness({ rejectStart = false } = {}) {
+function createHarness({ rejectStart = false, availability = null } = {}) {
     const ids = [
         'plus-voice-call',
         'voice-overlay',
@@ -94,6 +99,7 @@ function createHarness({ rejectStart = false } = {}) {
         'voice-overlay-prompt-name',
         'voice-helper-text',
         'voice-overlay-caption',
+        'voice-call-availability-reason',
         'message-text',
         'send-button',
         'chat-files',
@@ -115,6 +121,18 @@ function createHarness({ rejectStart = false } = {}) {
 
     async function secureFetch(url, options = {}) {
         requests.push({ url: String(url), options });
+        const availabilityMatch = String(url).match(
+            /^\/api\/conversations\/(\d+)\/elevenlabs\/availability$/
+        );
+        if (availabilityMatch) {
+            return response(availability || {
+                available: true,
+                error_code: null,
+                reason: null,
+                provider: 'elevenlabs',
+                voice: 'voice-canonical'
+            });
+        }
         const configMatch = String(url).match(
             /^\/api\/conversations\/(\d+)\/elevenlabs\/config$/
         );
@@ -231,6 +249,7 @@ test('a call keeps its original conversation after navigating to another chat', 
 
     const operationRequests = harness.requests.filter(
         request => !request.url.endsWith('/elevenlabs/config')
+            && !request.url.endsWith('/elevenlabs/availability')
     );
     assert.deepEqual(
         operationRequests.map(request => request.url),
@@ -275,4 +294,66 @@ test('a provider handle is closed when binding fails before startSession resolve
         harness.requests.filter(request => request.url.endsWith('/elevenlabs/session')).length,
         1
     );
+});
+
+test('canonical availability disables the voice button and exposes its exact reason', async () => {
+    const reason = 'ElevenLabs cannot reproduce the canonical openai voice exactly.';
+    const harness = createHarness({
+        availability: {
+            available: false,
+            error_code: 'elevenlabs_webrtc_voice_incompatible',
+            reason,
+            provider: 'openai',
+            voice: 'alloy'
+        }
+    });
+
+    await harness.context.window.syncElevenLabsVoiceAvailability();
+
+    const button = harness.elements['plus-voice-call'];
+    const visibleReason = harness.elements['voice-call-availability-reason'];
+    assert.equal(button.disabled, true);
+    assert.equal(button.hidden, false);
+    assert.equal(button.title, reason);
+    assert.equal(button.dataset.availabilityCode, 'elevenlabs_webrtc_voice_incompatible');
+    assert.equal(visibleReason.hidden, false);
+    assert.equal(visibleReason.textContent, reason);
+
+    await button.trigger('click');
+    assert.equal(
+        harness.requests.filter(request => request.url.endsWith('/elevenlabs/config')).length,
+        0
+    );
+});
+
+test('availability synchronizes when the selected conversation changes', async () => {
+    const harness = createHarness();
+    await harness.context.window.syncElevenLabsVoiceAvailability();
+
+    harness.context.currentConversationId = 202;
+    await harness.context.window.syncElevenLabsVoiceAvailability();
+
+    const availabilityUrls = harness.requests
+        .map(request => request.url)
+        .filter(url => url.endsWith('/elevenlabs/availability'));
+    assert.equal(availabilityUrls.at(-1), '/api/conversations/202/elevenlabs/availability');
+    assert.equal(harness.elements['plus-voice-call'].disabled, false);
+});
+
+test('incognito availability hides the WebRTC control', async () => {
+    const harness = createHarness({
+        availability: {
+            available: false,
+            error_code: 'conversation_incognito',
+            reason: 'Browser voice calls are unavailable in incognito chats.',
+            provider: null,
+            voice: null
+        }
+    });
+
+    await harness.context.window.syncElevenLabsVoiceAvailability();
+
+    assert.equal(harness.elements['plus-voice-call'].disabled, true);
+    assert.equal(harness.elements['plus-voice-call'].hidden, true);
+    assert.equal(harness.elements['voice-call-availability-reason'].hidden, true);
 });

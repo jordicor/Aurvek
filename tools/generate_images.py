@@ -30,7 +30,7 @@ from billing.usage_reservations import (
     settle_fixed_usage,
 )
 from rediscfg import redis_client, broker
-from common import Cost
+from common import Cost, get_runtime_request_url
 from database import get_db_connection
 from storage_quota import StorageQuotaExceededError, ensure_generation_headroom
 from log_config import logger
@@ -928,7 +928,7 @@ async def handle_generate_image(function_arguments, messages, model, temperature
         )
 
         is_whatsapp = await is_whatsapp_conversation(conversation_id)
-        request_url = str(request.url)
+        request_url = get_runtime_request_url(request)
 
         # Storage-quota soft pre-check: a generation may START only while the
         # owner is strictly under quota. Runs BEFORE any billing reservation so

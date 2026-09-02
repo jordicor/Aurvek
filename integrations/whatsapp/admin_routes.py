@@ -1,3 +1,5 @@
+from typing import Any
+
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -16,9 +18,60 @@ from database import get_db_connection
 from integrations.whatsapp.service import get_phone_user_not_found, set_phone_user_not_found
 from log_config import logger
 from models import User
+from request_security import (
+    ensure_csrf_token,
+    validate_mutation_request,
+)
 
 
 router = APIRouter()
+
+
+async def _load_active_whatsapp_users(conn: Any) -> list[dict[str, Any]]:
+    """Return configured WhatsApp users with activity keyed by user identity."""
+
+    cursor = await conn.execute(
+        """
+        SELECT u.id, u.username, u.phone_number, ud.external_platforms,
+               MAX(w.timestamp) AS last_message
+        FROM USERS u
+        JOIN USER_DETAILS ud ON u.id = ud.user_id
+        LEFT JOIN WHATSAPP_LOG w ON w.user_id = u.id
+        WHERE ud.external_platforms IS NOT NULL
+          AND ud.external_platforms != ''
+        GROUP BY u.id, u.username, u.phone_number, ud.external_platforms
+        ORDER BY LOWER(u.username), u.id
+        """
+    )
+    rows = await cursor.fetchall()
+    whatsapp_users = []
+    for row in rows:
+        try:
+            platforms = orjson.loads(row[3])
+        except (orjson.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(platforms, dict):
+            continue
+        whatsapp = platforms.get("whatsapp")
+        if not isinstance(whatsapp, dict) or not whatsapp:
+            continue
+
+        phone = str(row[2] or "")
+        phone_display = (
+            phone[:4] + "***" + phone[-4:]
+            if len(phone) > 8
+            else phone
+        )
+        whatsapp_users.append(
+            {
+                "username": row[1],
+                "phone_display": phone_display,
+                "conversation_id": whatsapp.get("conversation_id", "N/A"),
+                "answer_mode": whatsapp.get("answer", "text"),
+                "last_message": row[4] or None,
+            }
+        )
+    return whatsapp_users
 
 
 # ============================================================================
@@ -59,9 +112,15 @@ async def admin_whatsapp(request: Request, current_user: User = Depends(get_curr
     unknown_user_message = get_phone_user_not_found()
     welcome_message = ""
     require_phone_verification = False
+    retain_voice_notes = False
     try:
         async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.execute("SELECT key, value FROM SYSTEM_CONFIG WHERE key IN ('whatsapp_unknown_user_message', 'whatsapp_welcome_message', 'whatsapp_require_phone_verification')")
+            cursor = await conn.execute(
+                "SELECT key, value FROM SYSTEM_CONFIG WHERE key IN "
+                "('whatsapp_unknown_user_message', 'whatsapp_welcome_message', "
+                "'whatsapp_require_phone_verification', "
+                "'whatsapp_retain_voice_notes')"
+            )
             rows = await cursor.fetchall()
             for row in rows:
                 if row[0] == 'whatsapp_unknown_user_message':
@@ -70,6 +129,8 @@ async def admin_whatsapp(request: Request, current_user: User = Depends(get_curr
                     welcome_message = row[1] or ""
                 elif row[0] == 'whatsapp_require_phone_verification':
                     require_phone_verification = row[1] == '1'
+                elif row[0] == 'whatsapp_retain_voice_notes':
+                    retain_voice_notes = str(row[1] or "").strip() == '1'
     except Exception as e:
         logger.error(f"Failed to load WhatsApp config from SYSTEM_CONFIG: {e}")
 
@@ -77,44 +138,9 @@ async def admin_whatsapp(request: Request, current_user: User = Depends(get_curr
     whatsapp_users = []
     try:
         async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.execute("""
-                SELECT u.username, u.phone_number, ud.external_platforms
-                FROM USERS u
-                JOIN USER_DETAILS ud ON u.id = ud.user_id
-                WHERE ud.external_platforms IS NOT NULL AND ud.external_platforms != ''
-            """)
-            rows = await cursor.fetchall()
-            for row in rows:
-                try:
-                    platforms = orjson.loads(row[2])
-                    wa = platforms.get('whatsapp')
-                    if wa:
-                        phone = row[1] or ""
-                        # Mask phone for privacy: show first 4 and last 4 chars
-                        if len(phone) > 8:
-                            phone_display = phone[:4] + "***" + phone[-4:]
-                        else:
-                            phone_display = phone
-
-                        # Get last message timestamp
-                        last_msg_cursor = await conn.execute(
-                            "SELECT MAX(timestamp) FROM WHATSAPP_LOG WHERE phone_number = ?",
-                            (row[1],)
-                        )
-                        last_msg_row = await last_msg_cursor.fetchone()
-                        last_message = last_msg_row[0] if last_msg_row and last_msg_row[0] else None
-
-                        whatsapp_users.append({
-                            "username": row[0],
-                            "phone_display": phone_display,
-                            "conversation_id": wa.get("conversation_id", "N/A"),
-                            "answer_mode": wa.get("answer", "text"),
-                            "last_message": last_message
-                        })
-                except (orjson.JSONDecodeError, TypeError):
-                    continue
+            whatsapp_users = await _load_active_whatsapp_users(conn)
     except Exception:
-        pass  # WHATSAPP_LOG table might not exist yet
+        logger.exception("Failed to load active WhatsApp users")
 
     # Get today's stats
     stats = {"messages_today": 0, "active_users_today": 0, "text_count": 0, "voice_count": 0}
@@ -153,8 +179,10 @@ async def admin_whatsapp(request: Request, current_user: User = Depends(get_curr
         "unknown_user_message": unknown_user_message,
         "welcome_message": welcome_message,
         "require_phone_verification": require_phone_verification,
+        "whatsapp_retain_voice_notes": retain_voice_notes,
         "stats": stats,
         "webhook_status": webhook_status,
+        "admin_csrf_token": ensure_csrf_token(request),
     })
     return templates.TemplateResponse("admin_whatsapp.html", context)
 
@@ -167,12 +195,21 @@ async def admin_whatsapp_save(request: Request, current_user: User = Depends(get
         raise HTTPException(status_code=403, detail="Access denied")
 
     form = await request.form()
+    csrf_rejection = validate_mutation_request(
+        request,
+        supplied_token=form.get("csrf_token"),
+    )
+    if csrf_rejection is not None:
+        return csrf_rejection
     action = form.get("action")
 
     if action == "save_config":
         unknown_msg = form.get("unknown_user_message", "").strip()
         welcome_msg = form.get("welcome_message", "").strip()
         require_verification = "1" if form.get("require_phone_verification") else "0"
+        retain_voice_notes = (
+            "1" if form.get("whatsapp_retain_voice_notes") == "1" else "0"
+        )
 
         try:
             async with get_db_connection() as conn:
@@ -191,6 +228,11 @@ async def admin_whatsapp_save(request: Request, current_user: User = Depends(get
                     VALUES ('whatsapp_require_phone_verification', ?, 'Require phone verification for WhatsApp', CURRENT_TIMESTAMP)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
                 """, (require_verification,))
+                await conn.execute("""
+                    INSERT INTO SYSTEM_CONFIG (key, value, description, updated_at)
+                    VALUES ('whatsapp_retain_voice_notes', ?, 'Retain original WhatsApp voice-note audio for future playback and processing', CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """, (retain_voice_notes,))
                 await conn.commit()
 
             # Update the in-memory variable for unknown user message

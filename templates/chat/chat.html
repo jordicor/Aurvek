@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta http-equiv="X-XSS-Protection" content="1; mode=block">
+    <meta name="aurvek-csrf-token" content="{{ telephony_csrf_token }}">
     <title>Chat - AURVEK</title>
 
     <!-- Theme detection - sets data-theme for skeleton CSS -->
@@ -58,6 +59,9 @@
     <!-- Theme CSS is now loaded dynamically by theme-loader.js -->
     <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/chat-common.css') }}">
     <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/voice-call.css') }}">
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/phone-call.css') }}">
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/phone-history.css') }}">
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/voice-note-retranscription.css') }}">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -541,10 +545,10 @@
                                 </button>
                             </div>
                             <div class="plus-menu-section" id="plus-ai-section">
-                                <button type="button" class="plus-menu-item" id="plus-thinking-tokens" style="display: none;">
+                                <button type="button" class="plus-menu-item" id="plus-reasoning">
                                     <i class="fas fa-brain"></i>
-                                    <span class="plus-menu-label">Thinking tokens</span>
-                                    <span class="plus-menu-badge" id="thinking-tokens-badge">Off</span>
+                                    <span class="plus-menu-label">Razonamiento</span>
+                                    <span class="plus-menu-badge" id="reasoning-badge">Predeterminado</span>
                                 </button>
                                 <button type="button" class="plus-menu-item" id="plus-web-search" style="display: none;">
                                     <i class="fas fa-globe"></i>
@@ -556,6 +560,12 @@
                                 <button type="button" class="plus-menu-item" id="plus-voice-call" title="AI voice assistant">
                                     <i class="voice-wave-icon"></i>
                                     <span class="plus-menu-label">AI Voice</span>
+                                    <span id="voice-call-availability-reason" class="voice-call-availability-reason" role="status" hidden></span>
+                                </button>
+                                <button type="button" class="plus-menu-item" id="plus-phone-call" title="Ask Aurvek to call your account phone">
+                                    <i class="fas fa-phone" aria-hidden="true"></i>
+                                    <span class="plus-menu-label">Call me</span>
+                                    <span id="phone-call-menu-state" class="phone-call-menu-state" role="status"></span>
                                 </button>
                             </div>
                             <div class="plus-menu-section" id="plus-multi-ai-section" style="display: none;">
@@ -566,24 +576,17 @@
                                 </button>
                             </div>
                         </div>
-                        <!-- Thinking tokens popup (standalone, position: fixed in CSS) -->
-                        <div id="thinking-tokens-control">
-                            <div id="thinking-tokens-popup" class="thinking-tokens-popup" style="display: none;">
-                                <h4>Thinking Tokens Budget</h4>
-                                <p>Adjust thinking tokens for deeper reasoning (Claude 3.7/4+ only)</p>
-                                <input type="range" id="thinking-tokens-slider" min="0" max="20000" value="0" step="1000">
-                                <div class="thinking-tokens-value">
-                                    <span id="thinking-tokens-display">Off</span>
-                                    <input type="number" id="thinking-tokens-input" min="0" max="128000" value="0" step="1000">
+                        <!-- Reasoning popup (standalone, position: fixed in CSS) -->
+                        <div id="reasoning-control">
+                            <div id="reasoning-popup" class="thinking-tokens-popup" style="display: none;">
+                                <h4>Razonamiento</h4>
+                                <p id="reasoning-description">Capacidad no catalogada; se usará el valor del proveedor.</p>
+                                <div id="reasoning-modes" class="thinking-tokens-presets"></div>
+                                <div id="reasoning-custom-value" class="thinking-tokens-value" hidden>
+                                    <label for="reasoning-budget-input">Tokens</label>
+                                    <input type="number" id="reasoning-budget-input" required>
                                 </div>
-                                <div class="thinking-tokens-presets">
-                                    <button class="preset-btn" data-value="0">Off</button>
-                                    <button class="preset-btn" data-value="2000">Low</button>
-                                    <button class="preset-btn" data-value="8000">Medium</button>
-                                    <button class="preset-btn" data-value="20000">High</button>
-                                    <button class="preset-btn" data-value="50000">Very High</button>
-                                </div>
-                                <button id="thinking-tokens-apply" class="btn btn-sm btn-primary">Apply</button>
+                                <button id="reasoning-apply" class="btn btn-sm btn-primary" hidden>Aplicar</button>
                             </div>
                         </div>
                     </div>
@@ -665,6 +668,87 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" id="multi-ai-disable-btn">Disable</button>
                     <button type="button" class="btn btn-primary" id="multi-ai-apply-btn" disabled>Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Native PSTN telephone channel. This is intentionally separate from the browser microphone overlay. -->
+    <div class="modal fade" id="phoneCallModal" tabindex="-1" aria-labelledby="phoneCallModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content phone-call-modal-content">
+                <div class="modal-header">
+                    <div>
+                        <h5 class="modal-title" id="phoneCallModalLabel">
+                            <i class="fas fa-phone" aria-hidden="true"></i>
+                            Call me
+                        </h5>
+                        <p class="phone-call-subtitle">Aurvek will use this conversation when it calls you.</p>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close call controls"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="phone-call-status" class="phone-call-status" role="status" aria-live="polite"></div>
+
+                    <section class="phone-call-target-card" aria-labelledby="phone-call-target-title">
+                        <div class="phone-call-target-icon" aria-hidden="true">
+                            <i class="fas fa-mobile-screen-button"></i>
+                        </div>
+                        <div class="phone-call-target-copy">
+                            <h6 id="phone-call-target-title">Your phone</h6>
+                            <p id="phone-call-target" class="phone-call-muted">Checking your phone number…</p>
+                            <p id="phone-call-move-note" class="phone-call-muted" hidden></p>
+                        </div>
+                        <div class="phone-call-target-actions">
+                            <a id="phone-call-profile-link" class="btn btn-sm btn-outline-primary" href="/settings#profile" hidden>Open Settings</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="/settings#calls">
+                                <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
+                                View call history
+                            </a>
+                        </div>
+                    </section>
+
+                    <section id="phone-action-section" class="phone-call-section" aria-labelledby="phone-action-title" hidden>
+                        <h6 id="phone-action-title">When should we call?</h6>
+                        <p class="phone-call-muted">The prompt, history and voice from this conversation will be used.</p>
+
+                        <div id="phone-active-card" class="phone-call-state-card is-active" hidden>
+                            <div class="phone-call-state-main">
+                                <strong id="phone-active-title">Preparing call</strong>
+                                <span id="phone-active-summary" class="phone-call-state-detail"></span>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-danger" id="phone-hangup">Hang up</button>
+                        </div>
+
+                        <button type="button" class="btn btn-success phone-call-now" id="phone-call-now">
+                            <i class="fas fa-phone-volume" aria-hidden="true"></i>
+                            Call now
+                        </button>
+
+                        <form id="phone-schedule-form" class="phone-schedule-form">
+                            <label class="form-label" for="phone-schedule-at">Schedule for later</label>
+                            <div class="phone-schedule-row">
+                                <input type="datetime-local" class="form-control" id="phone-schedule-at" required>
+                                <button type="submit" class="btn btn-primary" id="phone-schedule-submit">Schedule</button>
+                            </div>
+                            <div class="form-text">Uses your current time zone.</div>
+                        </form>
+
+                        <div id="phone-scheduled-card" class="phone-call-state-card is-scheduled" hidden>
+                            <div class="phone-call-state-main">
+                                <strong>Scheduled call</strong>
+                                <span id="phone-scheduled-summary" class="phone-call-state-detail"></span>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-danger" id="phone-cancel-scheduled">Cancel</button>
+                        </div>
+
+                        <div class="phone-call-assignment-control" id="phone-conversation-assignment-control" hidden>
+                            <button type="button" class="btn phone-call-assignment-action" id="phone-conversation-assignment">
+                                <i id="phone-conversation-assignment-icon" class="fas fa-phone" aria-hidden="true"></i>
+                                <span id="phone-conversation-assignment-label">Use this conversation for phone calls</span>
+                            </button>
+                        </div>
+                    </section>
                 </div>
             </div>
         </div>
@@ -754,8 +838,10 @@
     <script src="{{ get_static_url('/static/js/chat/utils.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/fileHandling.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/audio.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/chat/voice-note-retranscription.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/main.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/chat.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/chat/phone-history.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/warmup.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/message-search.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/folders.js') }}"></script>
@@ -763,6 +849,7 @@
     <script src="{{ get_static_url('/static/js/nekoglass-controls.js') }}"></script>
     <script src="/sdk/elevenlabs-client.js"></script>
     <script src="{{ get_static_url('/static/js/chat/voice-call.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/chat/phone-call.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/wellbeing.js') }}"></script>
     <script>
         // CDN Configuration for JavaScript

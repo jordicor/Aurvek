@@ -42,7 +42,7 @@ PUBLIC_ID_PREFIX = "att_"
 THUMB_VARIANT = "thumb_256"
 ALLOWED_VARIANTS = {None, "", "fullsize", THUMB_VARIANT}
 
-_FILE_STORAGE_SCHEMA_VERSION = 1
+_FILE_STORAGE_SCHEMA_VERSION = 2
 _file_storage_schema_ready: set[tuple[str, int]] = set()
 _file_storage_schema_lock = asyncio.Lock()
 _DEFAULT_DATABASE_CONNECTION_FACTORY = database.get_db_connection
@@ -375,6 +375,155 @@ async def create_pending_image_attachment(
     return PendingAttachment(public_id, block, blob_id, "image", filename, len(data))
 
 
+async def create_pending_audio_attachment(
+    *,
+    user_id: int,
+    conversation_id: int,
+    data: bytes,
+    filename: str,
+    mime_detected: str,
+    declared_mime: str | None = None,
+) -> PendingAttachment:
+    """Store one private audio upload as a quota-accounted pending attachment.
+
+    ``mime_detected`` is authoritative for the physical extension.  The
+    caller-supplied filename is retained only as display metadata, so an
+    untrusted suffix can never influence the storage path.
+    """
+    if not data:
+        raise ValueError("Audio attachment data cannot be empty")
+    normalized_mime = (mime_detected or "").split(";", 1)[0].strip().lower()
+    if not normalized_mime.startswith("audio/") and normalized_mime != "application/ogg":
+        raise ValueError("Detected MIME type is not audio")
+
+    stored_mime = (mime_detected or normalized_mime).strip()
+    extension = _extension_for_mime(stored_mime, default=".bin")
+    filename = _clean_filename(filename, f"voice-note{extension}")
+    quota_error: StorageQuotaExceededError | None = None
+    async with database.get_db_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            await ensure_file_storage_schema(conn)
+            blob_id = await _get_or_create_blob(
+                conn,
+                data=data,
+                kind="audio",
+                mime_detected=stored_mime,
+                extension=extension,
+            )
+            quota_error = await _enforce_upload_quota(
+                conn, user_id=user_id, blob_id=blob_id, size_bytes=len(data)
+            )
+            if quota_error is None:
+                public_id = _new_public_id()
+                await _insert_attachment(
+                    conn,
+                    public_id=public_id,
+                    blob_id=blob_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    message_id=None,
+                    attachment_type="audio",
+                    original_filename=filename,
+                    display_name=filename,
+                    declared_mime=declared_mime or stored_mime,
+                    status="pending",
+                )
+                await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+    if quota_error is not None:
+        await _drop_rejected_upload_blob(blob_id, quota_error)
+
+    block = {
+        "type": "audio_file",
+        "audio_file": {
+            "attachment_ref": public_id,
+            "url": attachment_content_url(public_id),
+            "filename": filename,
+            "mime_type": stored_mime,
+        },
+    }
+    return PendingAttachment(public_id, block, blob_id, "audio", filename, len(data))
+
+
+async def finalize_pending_attachment(
+    conn: aiosqlite.Connection,
+    public_id: str,
+    message_id: int,
+    conversation_id: int,
+    user_id: int,
+    require_kind: str | None = None,
+) -> None:
+    """Bind one pending attachment to its message without widening its scope.
+
+    Repeating the exact same binding is a successful no-op.  An active
+    attachment can never be rebound to another message, and a caller cannot
+    cross either the user or conversation boundary.
+    """
+    await ensure_file_storage_schema(conn)
+    cursor = await conn.execute(
+        """
+        SELECT fa.user_id, fa.conversation_id, fa.message_id, fa.status,
+               fa.attachment_type, fb.kind AS blob_kind
+        FROM FILE_ATTACHMENTS AS fa
+        JOIN FILE_BLOBS AS fb ON fb.id = fa.blob_id
+        WHERE fa.public_id = ?
+        """,
+        (public_id,),
+    )
+    attachment = await cursor.fetchone()
+    if attachment is None:
+        raise ValueError("Pending attachment was not found")
+    if (
+        int(attachment["user_id"]) != int(user_id)
+        or int(attachment["conversation_id"]) != int(conversation_id)
+    ):
+        raise ValueError("Pending attachment does not belong to this user and conversation")
+    if require_kind is not None and (
+        str(attachment["attachment_type"]) != require_kind
+        or str(attachment["blob_kind"]) != require_kind
+    ):
+        raise ValueError(f"Pending attachment is not of required kind: {require_kind}")
+
+    message_cursor = await conn.execute(
+        """
+        SELECT 1
+        FROM MESSAGES
+        WHERE id = ? AND conversation_id = ? AND user_id = ?
+        """,
+        (message_id, conversation_id, user_id),
+    )
+    if await message_cursor.fetchone() is None:
+        raise ValueError("Target message does not belong to this user and conversation")
+
+    current_message_id = attachment["message_id"]
+    if attachment["status"] == "active":
+        if current_message_id is not None and int(current_message_id) == int(message_id):
+            return
+        raise ValueError("Attachment is already active for another message")
+    if attachment["status"] != "pending":
+        raise ValueError("Attachment is not pending")
+    if current_message_id is not None and int(current_message_id) != int(message_id):
+        raise ValueError("Pending attachment is already bound to another message")
+
+    update_cursor = await conn.execute(
+        """
+        UPDATE FILE_ATTACHMENTS
+        SET message_id = ?, status = 'active'
+        WHERE public_id = ?
+          AND user_id = ?
+          AND conversation_id = ?
+          AND status = 'pending'
+          AND (message_id IS NULL OR message_id = ?)
+        """,
+        (message_id, public_id, user_id, conversation_id, message_id),
+    )
+    if update_cursor.rowcount != 1:
+        raise ValueError("Pending attachment changed before it could be finalized")
+
+
 async def finalize_message_attachments(
     conn: aiosqlite.Connection,
     *,
@@ -487,8 +636,11 @@ async def discard_pending_attachments_for_user(
     return discarded
 
 
-async def discard_stale_pending_attachments(max_age_minutes: int = 120) -> int:
-    """Delete old pending attachment refs left behind by interrupted uploads."""
+async def discard_stale_pending_attachments(
+    max_age_minutes: int = 120,
+    audio_max_age_minutes: int = 1_440,
+) -> int:
+    """Delete abandoned refs while allowing long background audio pipelines."""
     blob_ids: list[int] = []
     discarded_count = 0
     async with database.get_db_connection() as conn:
@@ -498,9 +650,15 @@ async def discard_stale_pending_attachments(max_age_minutes: int = 120) -> int:
             SELECT blob_id
             FROM FILE_ATTACHMENTS
             WHERE status = 'pending'
-              AND created_at < datetime('now', ?)
+              AND (
+                    (attachment_type != 'audio' AND created_at < datetime('now', ?))
+                 OR (attachment_type = 'audio' AND created_at < datetime('now', ?))
+              )
             """,
-            (f"-{int(max_age_minutes)} minutes",),
+            (
+                f"-{int(max_age_minutes)} minutes",
+                f"-{int(audio_max_age_minutes)} minutes",
+            ),
         )
         rows = await cursor.fetchall()
         discarded_count = len(rows)
@@ -509,9 +667,15 @@ async def discard_stale_pending_attachments(max_age_minutes: int = 120) -> int:
             """
             DELETE FROM FILE_ATTACHMENTS
             WHERE status = 'pending'
-              AND created_at < datetime('now', ?)
+              AND (
+                    (attachment_type != 'audio' AND created_at < datetime('now', ?))
+                 OR (attachment_type = 'audio' AND created_at < datetime('now', ?))
+              )
             """,
-            (f"-{int(max_age_minutes)} minutes",),
+            (
+                f"-{int(max_age_minutes)} minutes",
+                f"-{int(audio_max_age_minutes)} minutes",
+            ),
         )
         await conn.commit()
     if blob_ids:
@@ -926,6 +1090,65 @@ async def delete_attachment_and_rewrite_message(
     return True
 
 
+async def clone_active_attachment_for_branch(
+    conn: aiosqlite.Connection,
+    *,
+    source_public_id: str,
+    old_message_id: int,
+    new_message_id: int,
+    new_conversation_id: int,
+    user_id: int,
+    require_kind: str | None = None,
+    legacy_block_index: int | None = None,
+) -> str | None:
+    """Clone one active attachment reference onto a branch message.
+
+    The physical blob remains deduplicated.  The new branch gets its own opaque
+    attachment id, and both the source and target message scopes are verified
+    before the reference is inserted.
+    """
+    target_cursor = await conn.execute(
+        """
+        SELECT 1
+        FROM MESSAGES
+        WHERE id = ? AND conversation_id = ? AND user_id = ?
+        """,
+        (new_message_id, new_conversation_id, user_id),
+    )
+    if await target_cursor.fetchone() is None:
+        raise ValueError(
+            "Branch target message does not belong to this user and conversation"
+        )
+
+    source = await resolve_attachment_for_user(
+        conn,
+        public_id=source_public_id,
+        user_id=user_id,
+        message_id=old_message_id,
+        require_kind=require_kind,
+    )
+    if not source:
+        return None
+
+    new_ref = _new_public_id()
+    await _insert_attachment(
+        conn,
+        public_id=new_ref,
+        blob_id=int(source["blob_id"]),
+        user_id=user_id,
+        conversation_id=new_conversation_id,
+        message_id=new_message_id,
+        attachment_type=str(source["attachment_type"]),
+        original_filename=str(source["original_filename"]),
+        display_name=source.get("display_name"),
+        declared_mime=source.get("declared_mime"),
+        legacy_url=source.get("legacy_url"),
+        legacy_block_index=legacy_block_index,
+        status="active",
+    )
+    return new_ref
+
+
 async def clone_attachments_for_branch(
     conn: aiosqlite.Connection,
     *,
@@ -1070,7 +1293,7 @@ async def _ensure_schema_on_connection(conn: aiosqlite.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sha256 TEXT NOT NULL,
             size_bytes INTEGER NOT NULL,
-            kind TEXT NOT NULL CHECK(kind IN ('image', 'pdf', 'text')),
+            kind TEXT NOT NULL CHECK(kind IN ('image', 'pdf', 'text', 'audio')),
             mime_detected TEXT NOT NULL,
             storage_key TEXT NOT NULL UNIQUE,
             page_count INTEGER,
@@ -1110,7 +1333,7 @@ async def _ensure_schema_on_connection(conn: aiosqlite.Connection) -> None:
             user_id INTEGER NOT NULL,
             conversation_id INTEGER NOT NULL,
             message_id INTEGER,
-            attachment_type TEXT NOT NULL CHECK(attachment_type IN ('image', 'pdf', 'text')),
+            attachment_type TEXT NOT NULL CHECK(attachment_type IN ('image', 'pdf', 'text', 'audio')),
             original_filename TEXT NOT NULL,
             display_name TEXT,
             declared_mime TEXT,
@@ -1526,7 +1749,23 @@ def _extension_for_mime(mime_type: str | None, *, default: str) -> str:
         return ".jpg"
     if mime_type == "text/plain; charset=utf-8":
         return ".txt"
-    ext = mimetypes.guess_extension(mime_type.split(";", 1)[0].strip())
+    base_mime = mime_type.split(";", 1)[0].strip().lower()
+    audio_extensions = {
+        "application/ogg": ".ogg",
+        "audio/aac": ".aac",
+        "audio/flac": ".flac",
+        "audio/mp4": ".m4a",
+        "audio/mpeg": ".mp3",
+        "audio/ogg": ".ogg",
+        "audio/opus": ".opus",
+        "audio/wav": ".wav",
+        "audio/webm": ".webm",
+        "audio/x-m4a": ".m4a",
+        "audio/x-wav": ".wav",
+    }
+    if base_mime in audio_extensions:
+        return audio_extensions[base_mime]
+    ext = mimetypes.guess_extension(base_mime)
     if ext:
         return ext
     return default
@@ -1539,6 +1778,8 @@ def _default_extension_for_kind(kind: str) -> str:
         return ".txt"
     if kind == "image":
         return ".webp"
+    if kind == "audio":
+        return ".bin"
     return ".bin"
 
 

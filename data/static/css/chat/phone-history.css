@@ -1,0 +1,237 @@
+.message-phone-provenance {
+    align-items: center;
+    background: color-mix(in srgb, var(--primary-color, #4f8cff) 14%, transparent);
+    border: 0;
+    border-radius: 999px;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    font-size: 0.7rem;
+    gap: 0.3rem;
+    margin: 0 0 0.35rem;
+    opacity: 0.78;
+    padding: 0.15rem 0.48rem;
+}
+
+.message-phone-provenance:hover,
+.message-phone-provenance:focus-visible {
+    opacity: 1;
+    outline: 2px solid color-mix(in srgb, var(--primary-color, #4f8cff) 55%, transparent);
+    outline-offset: 2px;
+}
+
+.message-channel-provenance {
+    --message-channel-accent: var(--primary-color, #4f8cff);
+    align-items: center;
+    background: color-mix(in srgb, var(--message-channel-accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--message-channel-accent) 32%, transparent);
+    border-radius: 999px;
+    color: inherit;
+    display: inline-flex;
+    font-size: 0.7rem;
+    font-weight: 600;
+    gap: 0.3rem;
+    line-height: 1.35;
+    margin: 0 0 0.35rem;
+    padding: 0.12rem 0.48rem;
+    vertical-align: middle;
+}
+
+.message-phone-provenance + .message-channel-provenance {
+    margin-left: 0.3rem;
+}
+
+.message-channel-provenance-whatsapp {
+    --message-channel-accent: #25d366;
+}
+
+.message-channel-provenance-telegram {
+    --message-channel-accent: #229ed9;
+}
+
+.message-channel-kind {
+    align-items: center;
+    border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    display: inline-flex;
+    gap: 0.22rem;
+    margin-left: 0.04rem;
+    padding-left: 0.34rem;
+}
+
+.message-channel-provenance i {
+    line-height: 1;
+}
+
+.message-info .message-audio-action {
+    border-radius: 0.2rem;
+}
+
+.message-info .message-audio-action:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--primary-color, #4f8cff) 65%, transparent);
+    outline-offset: 3px;
+}
+
+.message-info .message-audio-action.audio-playback-error {
+    color: var(--bs-danger, #dc3545);
+}
+
+.message-phone-state {
+    border-left: 1px solid currentColor;
+    font-size: 0.65rem;
+    margin-left: 0.08rem;
+    opacity: 0.82;
+    padding-left: 0.32rem;
+    text-transform: capitalize;
+}
+
+.phone-history-marker {
+    align-items: center;
+    color: var(--bs-secondary-color, #8b93a1);
+    display: grid;
+    font-size: 0.76rem;
+    gap: 0.65rem;
+    grid-template-columns: minmax(1rem, 1fr) auto minmax(1rem, 1fr);
+    margin: 0.55rem 0;
+    text-align: center;
+}
+
+.phone-history-marker-rule {
+    border-top: 1px solid currentColor;
+    opacity: 0.32;
+}
+
+.phone-history-marker-label {
+    align-items: center;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.38rem;
+    justify-content: center;
+}
+
+.phone-history-marker time,
+.phone-history-no-transcript {
+    opacity: 0.78;
+}
+
+.phone-history-call-state {
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.phone-history-no-transcript {
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 0.05rem 0.35rem;
+}
+
+.phone-history-detail-button {
+    background: transparent;
+    border: 0;
+    color: var(--bs-link-color, #6ea8fe);
+    font: inherit;
+    padding: 0.05rem 0.2rem;
+    text-decoration: underline;
+    text-underline-offset: 0.15rem;
+}
+
+.phone-history-detail-button:focus-visible {
+    border-radius: 0.2rem;
+    outline: 2px solid currentColor;
+}
+
+.phone-history-detail-content {
+    background: var(--bs-body-bg, #171a20);
+    color: var(--bs-body-color, #f4f5f7);
+}
+
+.phone-history-summary {
+    display: grid;
+    gap: 0.55rem 1rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+}
+
+.phone-history-field {
+    min-width: 0;
+}
+
+.phone-history-field dt {
+    color: var(--bs-secondary-color, #9ba3af);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+}
+
+.phone-history-field dd {
+    margin: 0.1rem 0 0;
+    overflow-wrap: anywhere;
+}
+
+.phone-history-detail-section {
+    border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    margin-top: 1rem;
+    padding-top: 1rem;
+}
+
+.phone-history-timeline,
+.phone-history-costs {
+    margin: 0;
+    padding-left: 1.25rem;
+}
+
+.phone-history-timeline li {
+    align-items: baseline;
+    display: flex;
+    gap: 0.8rem;
+    justify-content: space-between;
+    margin: 0.35rem 0;
+}
+
+.phone-history-timeline time {
+    color: var(--bs-secondary-color, #9ba3af);
+    font-size: 0.82rem;
+    text-align: right;
+}
+
+.phone-history-audio-track {
+    align-items: center;
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: minmax(5rem, auto) 1fr;
+    margin-top: 0.65rem;
+}
+
+.phone-history-audio-track audio {
+    max-width: 100%;
+    width: 100%;
+}
+
+@media (max-width: 640px) {
+    .phone-history-marker {
+        grid-template-columns: 1fr;
+    }
+
+    .phone-history-marker-rule {
+        display: none;
+    }
+
+    .phone-history-summary {
+        grid-template-columns: 1fr;
+    }
+
+    .phone-history-timeline li,
+    .phone-history-audio-track {
+        align-items: start;
+        grid-template-columns: 1fr;
+    }
+
+    .phone-history-timeline li {
+        display: grid;
+        gap: 0.1rem;
+    }
+
+    .phone-history-timeline time {
+        text-align: left;
+    }
+}

@@ -90,6 +90,9 @@ tools/sync_github/output/
 # Codex internal working dir
 .codex
 
+# Local Codex production maintenance helpers
+.codex_*_prod.py
+
 # Local benchmark experiment (not shipped)
 semi_agentic_demo/
 

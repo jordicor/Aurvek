@@ -23,6 +23,22 @@ def _sanitize_watchdog_directive(text: str, max_len: int = 2000) -> str:
     cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", cleaned)
     return cleaned.strip()[:max_len]
 
+
+def prepare_pre_watchdog_and_model_prompt(
+    prompt_base: str,
+    internal_turn_context: str | None = None,
+) -> tuple[str, str]:
+    """Attach trusted ephemeral channel context to both consumers identically.
+
+    Normal channels pass no context and retain the previous prompt byte-for-byte.
+    Phone runtime can pass its deterministic clock block; the pre-watchdog and
+    the main model then reason from the same elapsed/remaining/mode state.
+    """
+    if not internal_turn_context or not str(internal_turn_context).strip():
+        return prompt_base, prompt_base
+    combined = f"{prompt_base.rstrip()}\n\n{str(internal_turn_context).strip()}"
+    return combined, combined
+
 def _build_escalated_hint_block(hint: str, severity: str, consecutive_count: int) -> str:
     """Build the watchdog hint block with escalating urgency based on how many
     consecutive hints the AI has ignored."""

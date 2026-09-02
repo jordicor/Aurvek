@@ -141,6 +141,7 @@ parameterized==0.9.0
 parso==0.8.3
 passlib==1.7.4
 pillow==10.3.0
+phonenumbers>=9.0.38,<10.0
 platformdirs==4.0.0
 pooch==1.8.0
 preshed==3.0.9

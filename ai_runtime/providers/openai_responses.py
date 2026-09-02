@@ -4,6 +4,22 @@ from ai_runtime.errors import _extract_human_error_message, _human_exception_err
 from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
+from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
+
+
+def _responses_reasoning_payload(
+    reasoning_selection: ReasoningSelection | dict | str | None,
+) -> dict | None:
+    """Translate an already validated neutral choice for the Responses API."""
+
+    if reasoning_selection is None:
+        return None
+    selection = parse_reasoning_selection(reasoning_selection)
+    if selection.mode == "default":
+        return None
+    # ``none`` is the Responses spelling for the neutral ``off`` control.
+    effort = "none" if selection.mode == "off" else selection.mode
+    return {"effort": effort, "summary": "auto"}
 
 def _convert_messages_for_responses_api(messages: list) -> list:
     """Convert Chat Completions message content blocks to Responses API format.
@@ -101,7 +117,8 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                                   pending_attachment_refs: Optional[list[str]] = None,
                                   perf_trace=None,
                                   strip_device_action_blocks: bool = False,
-                                  billing_reservation_id: str | None = None):
+                                  billing_reservation_id: str | None = None,
+                                  reasoning_selection: ReasoningSelection | dict | str | None = None):
     """
     OpenAI Responses API call function. Replaces call_gpt_api for all OpenAI calls.
     Uses /v1/responses endpoint with semantic SSE events instead of Chat Completions.
@@ -136,6 +153,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
         "stream": True,
         "store": False,
     }
+    reasoning = _responses_reasoning_payload(reasoning_selection)
+    if reasoning is not None:
+        data["reasoning"] = reasoning
 
     # System prompt goes in 'instructions' (top-level, not in input array)
     if prompt:
@@ -153,6 +173,8 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
     if tools:
         data["tools"] = list(tools)
         data["tool_choice"] = "auto"
+        # Needed verbatim in a later function-call continuation for reasoning models.
+        data["include"] = ["reasoning.encrypted_content"]
 
     headers = {
         "Content-Type": "application/json",
@@ -166,6 +188,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
     input_tokens = output_tokens = total_tokens = 0
     citations = []
     truncated = False
+    thinking_open = False
+    response_output_items: list[dict] = []
+    function_output_item: dict | None = None
 
     logger.info(f"call_gpt_responses_api -> model: {model}, tools: {len(tools) if tools else 0}")
     if perf_trace:
@@ -259,6 +284,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                             if etype == "response.output_text.delta":
                                 delta = event_data.get("delta", "")
                                 if delta:
+                                    if thinking_open:
+                                        thinking_open = False
+                                        yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
                                     if not first_text_marked and perf_trace:
                                         event = perf_trace.sse("openai_first_text_delta")
                                         if event:
@@ -266,6 +294,28 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                                         first_text_marked = True
                                     content += delta
                                     yield f"data: {orjson.dumps({'content': delta}).decode()}\n\n"
+
+                            # OpenAI exposes a compact reasoning summary separately from
+                            # answer text.  Keep it in the product's existing SSE contract.
+                            elif etype in {
+                                "response.reasoning_summary_text.delta",
+                                "response.reasoning.delta",
+                                "response.reasoning_text.delta",
+                            }:
+                                delta = event_data.get("delta", "")
+                                if delta:
+                                    if not thinking_open:
+                                        thinking_open = True
+                                        yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+                                    yield f"data: {orjson.dumps({'thinking': delta, 'type': 'thinking'}).decode()}\n\n"
+
+                            elif etype in {
+                                "response.reasoning_summary_text.done",
+                                "response.reasoning.done",
+                                "response.reasoning_text.done",
+                            } and thinking_open:
+                                thinking_open = False
+                                yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
 
                             # --- Web search status ---
                             elif etype == "response.web_search_call.in_progress":
@@ -280,13 +330,18 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                             # --- Function call handling ---
                             elif etype == "response.output_item.added":
                                 item = event_data.get("item", {})
+                                if isinstance(item, dict):
+                                    response_output_items.append(item)
                                 if item.get("type") == "function_call":
                                     function_name = item.get("name", "")
                                     tool_call_id = item.get("call_id", "")
                                     function_arguments = ""
+                                    function_output_item = item
 
                             elif etype == "response.function_call_arguments.delta":
                                 function_arguments += event_data.get("delta", "")
+                                if function_output_item is not None:
+                                    function_output_item["arguments"] = function_arguments
 
                             elif etype == "response.function_call_arguments.done":
                                 # Function call arguments are complete
@@ -307,6 +362,11 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                             # --- Completion ---
                             elif etype == "response.completed":
                                 resp = event_data.get("response", {})
+                                final_output = resp.get("output")
+                                if isinstance(final_output, list):
+                                    # Added events may contain partial stubs.  The completed
+                                    # response is authoritative and includes encrypted state.
+                                    response_output_items = final_output
                                 incomplete_reason = (resp.get("incomplete_details") or {}).get("reason")
                                 if not truncated and (resp.get("status") == "incomplete" or incomplete_reason in {"max_output_tokens", "max_tokens"}):
                                     truncated = True
@@ -420,6 +480,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
             yield f"data: {orjson.dumps(_provider_error_payload('OpenAI (GPT)', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             error_yielded = True
 
+    if thinking_open:
+        yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+
     # Emit citations if any were collected (native web search)
     if citations:
         yield f"data: {orjson.dumps({'type': 'web_search_citations', 'citations': citations}).decode()}\n\n"
@@ -460,7 +523,7 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
         logger.debug(f"[call_gpt_responses_api] Tool call args: {parsed_args}")
 
         await record_provider_success_for_label("OpenAI (GPT)", model=model, byok=byok)
-        yield f"data: {orjson.dumps({'tool_call': {'name': function_name, 'arguments': parsed_args, 'id': tool_call_id, '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'tool_call': {'name': function_name, 'arguments': parsed_args, 'id': tool_call_id, 'response_output_items': response_output_items, '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return
 

@@ -2,6 +2,7 @@ from ai_runtime.dependencies import *
 from ai_runtime.attachments.media import hydrate_image_for_context
 from ai_runtime.attachments.pdf import hydrate_pdf_for_context
 from ai_runtime.attachments.text_files import text_file_block_to_text_for_context
+from ai_runtime.reasoning_tags import strip_tagged_thinking_prefix
 
 def filter_invalid_context_messages(context_messages: list) -> list:
     """Remove messages with empty/null/whitespace-only content from context.
@@ -10,6 +11,15 @@ def filter_invalid_context_messages(context_messages: list) -> list:
     filtered = []
     for msg in context_messages:
         message_content = msg.get('message') if isinstance(msg, dict) else msg['message']
+        if (
+            isinstance(msg, dict)
+            and msg.get('type') == 'bot'
+            and isinstance(message_content, str)
+        ):
+            clean_content = strip_tagged_thinking_prefix(message_content)
+            if clean_content != message_content:
+                msg = {**msg, 'message': clean_content}
+                message_content = clean_content
         if message_content is None:
             logger.warning(f"Filtered out message with None content (type={msg.get('type', '?')})")
             continue
@@ -199,7 +209,9 @@ async def _format_messages_for_provider(
         return contents
 
     elif machine == "O1":
-        combined_message_content = f"{full_prompt}\n\n{message}"
+        # ``full_prompt`` is passed separately to the O1 provider as a
+        # privileged developer message.  Never duplicate it into user content.
+        combined_message_content = str(message)
         for msg in context_messages:
             msg_content = msg["message"]
             if isinstance(msg_content, list):

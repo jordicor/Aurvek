@@ -399,6 +399,107 @@ async def test_transcribe_audio_decode_runs_in_worker(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_transcribe_audio_defaults_to_elevenlabs_when_engine_is_unset(
+    monkeypatch,
+) -> None:
+    async def reserve_stt_attempt(**_kwargs):
+        return "reservation"
+
+    async def settle_stt_attempt(*_args, **_kwargs):
+        return None
+
+    async def transcribe_with_elevenlabs(**_kwargs):
+        return "scribe transcript"
+
+    async def must_not_use_deepgram(**_kwargs):
+        raise AssertionError("Deepgram must require an explicit selection")
+
+    monkeypatch.setattr(
+        voice_io,
+        "AudioSegment",
+        SimpleNamespace(
+            from_file=lambda *_args, **_kwargs: SimpleNamespace(
+                duration_seconds=1.0
+            )
+        ),
+    )
+    monkeypatch.setattr(voice_io, "stt_engine", None)
+    monkeypatch.setattr(voice_io, "stt_fallback_enabled", False)
+    monkeypatch.setattr(voice_io, "get_browser", lambda _user_agent: "chrome")
+    monkeypatch.setattr(voice_io, "reserve_stt_attempt", reserve_stt_attempt)
+    monkeypatch.setattr(voice_io, "settle_stt_attempt", settle_stt_attempt)
+    monkeypatch.setattr(
+        voice_io,
+        "transcribe_with_elevenlabs",
+        transcribe_with_elevenlabs,
+    )
+    monkeypatch.setattr(
+        voice_io,
+        "transcribe_with_deepgram",
+        must_not_use_deepgram,
+    )
+
+    result = await voice_io.transcribe(
+        SimpleNamespace(headers={}),
+        audio=UploadFile(filename="voice.webm", file=io.BytesIO(b"audio")),
+        user_id=31,
+    )
+
+    assert result == "scribe transcript"
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_primary_never_falls_back_to_deepgram(
+    monkeypatch,
+) -> None:
+    deepgram_called = False
+
+    async def reserve_stt_attempt(**_kwargs):
+        return "reservation"
+
+    async def finalize_failed_stt_attempt(*_args, **_kwargs):
+        return None
+
+    async def fail_elevenlabs(**_kwargs):
+        raise RuntimeError("synthetic Scribe failure")
+
+    async def track_deepgram(**_kwargs):
+        nonlocal deepgram_called
+        deepgram_called = True
+        return "must not be returned"
+
+    monkeypatch.setattr(
+        voice_io,
+        "AudioSegment",
+        SimpleNamespace(
+            from_file=lambda *_args, **_kwargs: SimpleNamespace(
+                duration_seconds=1.0
+            )
+        ),
+    )
+    monkeypatch.setattr(voice_io, "stt_engine", "elevenlabs")
+    monkeypatch.setattr(voice_io, "stt_fallback_enabled", True)
+    monkeypatch.setattr(voice_io, "get_browser", lambda _user_agent: "chrome")
+    monkeypatch.setattr(voice_io, "reserve_stt_attempt", reserve_stt_attempt)
+    monkeypatch.setattr(
+        voice_io,
+        "finalize_failed_stt_attempt",
+        finalize_failed_stt_attempt,
+    )
+    monkeypatch.setattr(voice_io, "transcribe_with_elevenlabs", fail_elevenlabs)
+    monkeypatch.setattr(voice_io, "transcribe_with_deepgram", track_deepgram)
+
+    with pytest.raises(HTTPException, match="synthetic Scribe failure"):
+        await voice_io.transcribe(
+            SimpleNamespace(headers={}),
+            audio=UploadFile(filename="voice.webm", file=io.BytesIO(b"audio")),
+            user_id=31,
+        )
+
+    assert deepgram_called is False
+
+
+@pytest.mark.asyncio
 async def test_tts_decode_combine_and_export_run_as_one_worker_block(
     tmp_path,
     monkeypatch,
@@ -436,6 +537,9 @@ async def test_tts_decode_combine_and_export_run_as_one_worker_block(
         yield b"first"
         yield b"second"
 
+    async def select_elevenlabs_key(_voice_id):
+        return "synthetic-elevenlabs-key"
+
     output_path = tmp_path / "cache.ogg"
     monkeypatch.setattr(
         tts_tools,
@@ -451,6 +555,11 @@ async def test_tts_decode_combine_and_export_run_as_one_worker_block(
         SimpleNamespace(from_file=fake_from_file),
     )
     monkeypatch.setattr(tts_tools, "get_tts_profile", get_tts_profile)
+    monkeypatch.setattr(
+        tts_tools,
+        "_select_elevenlabs_key",
+        select_elevenlabs_key,
+    )
     monkeypatch.setattr(tts_tools, "format_to_pydub", lambda _format: "mp3")
     monkeypatch.setattr(
         tts_tools,
@@ -471,6 +580,10 @@ async def test_tts_decode_combine_and_export_run_as_one_worker_block(
         current_user=DummyUser(),
         is_whatsapp=True,
         sample_voice_id="sample-voice",
+        resolved_sample_voice=tts_tools.PreviewVoice(
+            voice_code="sample-voice",
+            provider="elevenlabs",
+        ),
     )
 
     assert result == (str(output_path), None)

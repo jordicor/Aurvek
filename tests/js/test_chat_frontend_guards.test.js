@@ -964,3 +964,55 @@ test('chat template drops jQuery and defers ordered head dependencies', () => {
         assert.match(source, new RegExp(`<script defer src="[^"]*${escaped}"`));
     }
 });
+
+test('reasoning control resolves capabilities by exact llm id', () => {
+    const source = fs.readFileSync(chatPath, 'utf8');
+    const template = fs.readFileSync(chatTemplatePath, 'utf8');
+    const controlSource = extract(
+        source,
+        'function initializeReasoningControl()',
+        '// Web Search Toggle (Plus Menu Item)'
+    );
+    const sendMessageSource = extract(
+        source,
+        'function sendMessage(',
+        'function updateMessageId('
+    );
+
+    assert.match(controlSource, /model\?\.capabilities\?\.reasoning/);
+    assert.match(controlSource, /\$\{currentConversationId\}:\$\{llmId\}/);
+    assert.match(controlSource, /\$\{currentConversationId\}:multi:\$\{llmIds\.join\(','\)\}/);
+    assert.match(controlSource, /filter\(mode => mode !== 'custom'\)/);
+    assert.match(controlSource, /budget\.step \?\? 1/);
+    assert.doesNotMatch(controlSource, /chat-model|Claude|textContent\s*\.includes/i);
+    assert.match(controlSource, /mode !== 'custom' \|\| hasValidCustomBudget/);
+    assert.match(sendMessageSource, /formData\.append\('reasoning_mode', reasoningSelection\.mode\)/);
+    assert.match(sendMessageSource, /reasoningSelection\?\.mode === 'custom'/);
+    assert.match(sendMessageSource, /formData\.append\('reasoning_budget_tokens'/);
+    assert.doesNotMatch(sendMessageSource, /thinking_budget_tokens/);
+    assert.match(template, /id="plus-reasoning"/);
+    assert.match(template, /id="reasoning-budget-input"/);
+});
+
+test('Multi-AI excludes GPTSub candidates from the picker and visibility count', () => {
+    const source = fs.readFileSync(chatPath, 'utf8');
+    const managerSource = extract(
+        source,
+        'class MultiAiManager {',
+        '// Initialize model selector, extension selector, and multi-ai manager'
+    );
+    const populateSource = extract(
+        managerSource,
+        '    populateModels() {',
+        '    onCheckboxChange(event) {'
+    );
+    const visibilitySource = extract(
+        managerSource,
+        '    updateVisibility() {',
+        '    getModelIds() {'
+    );
+
+    assert.match(populateSource, /window\.availableModels\.filter\(m => m\.machine !== 'GPTSub'\)/);
+    assert.match(visibilitySource, /m\.machine !== 'GPTSub'/);
+    assert.match(visibilitySource, /multiAiCandidates\.filter\(m => allowedLlms\.includes\(m\.id\)\)/);
+});

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import io
 import os
 from datetime import datetime, timezone
@@ -44,10 +43,13 @@ from rediscfg import redis_client
 from tasks import generate_mp3_task, generate_pdf_task
 from tools.tts import (
     get_file_path,
-    get_voice_code_from_conversation,
+    get_tts_cache_digest,
+    get_voice_from_conversation,
     handle_tts_request,
     process_text_for_tts,
+    resolve_playback_voice,
 )
+from tools.tts_config import get_tts_profile
 from tools.tts_load_balancer import get_elevenlabs_key
 
 router = APIRouter()
@@ -152,15 +154,15 @@ async def get_tts_audio_endpoint(request: Request, current_user: User = Depends(
 
     try:
         if author == "user":
-            voice_id = current_user.voice_code if current_user.voice_code else "nMPrFLO7QElx9wTR0JGo"
+            voice = await resolve_playback_voice(current_user.voice_code)
         elif author == "bot":
-            voice_id = await get_voice_code_from_conversation(conversation_id, current_user)
+            voice = await get_voice_from_conversation(conversation_id, current_user)
         else:
-            voice_id = "nMPrFLO7QElx9wTR0JGo"
+            voice = await resolve_playback_voice(None)
 
         text_processed = process_text_for_tts(text)
-        hash_input = f"{text_processed}_{voice_id}"
-        hash_digest = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()
+        profile = await get_tts_profile("webchat")
+        hash_digest = get_tts_cache_digest(text_processed, voice, profile)
         _, full_path_opus = get_file_path(hash_digest)
 
         if os.path.exists(full_path_opus):
@@ -413,9 +415,9 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
 
         duration_min = audio_duration / 60
         primary_engine = (
-            "elevenlabs"
-            if str(stt_engine).lower() == "elevenlabs"
-            else "deepgram"
+            "deepgram"
+            if str(stt_engine).strip().lower() == "deepgram"
+            else "elevenlabs"
         )
         user_agent = request.headers.get("user-agent")
 
@@ -442,7 +444,11 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
                 primary_error,
                 context=f"failed {primary_engine}",
             )
-            if not isinstance(primary_error, Exception) or not stt_fallback_enabled:
+            if (
+                not isinstance(primary_error, Exception)
+                or not stt_fallback_enabled
+                or primary_engine == "elevenlabs"
+            ):
                 raise
 
             logger.warning(
@@ -450,9 +456,7 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
                 primary_engine,
                 primary_error,
             )
-            fallback_engine = (
-                "deepgram" if primary_engine == "elevenlabs" else "elevenlabs"
-            )
+            fallback_engine = "elevenlabs"
             fallback_reservation_id = await reserve_stt_attempt(
                 user_id=user_id,
                 engine=fallback_engine,

@@ -214,10 +214,10 @@ Creators get their own public storefront page within AURVEK:
 - WebSocket streaming for real-time playback
 - Multi-key load balancer with health scoring
 
-**Speech-to-Text** -- Dual engine with auto-fallback:
-- Deepgram Nova-2 (primary)
-- ElevenLabs Scribe v2 (fallback)
-- Automatic engine switching on failure
+**Speech-to-Text**:
+- ElevenLabs Scribe v2 is the default engine
+- Deepgram remains available only when explicitly selected for a legacy deployment
+- ElevenLabs never falls back to Deepgram
 
 **Export**:
 - **PDF**: ReportLab with full Markdown rendering (tables, code blocks, emojis, nested lists), embedded images, document metadata

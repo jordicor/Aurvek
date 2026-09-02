@@ -444,9 +444,19 @@ async def serve_attachment_file(
         raise HTTPException(status_code=404, detail="Attachment variant not found")
     media_type = "image/webp" if variant == THUMB_VARIANT else attachment.get("mime_detected")
     filename = attachment.get("original_filename") or path.name
+    response_headers = (
+        {"Cache-Control": "private, no-store, max-age=0"}
+        if attachment.get("attachment_type") == "audio"
+        else None
+    )
     if download:
-        return FileResponse(path, media_type=media_type, filename=filename)
-    return FileResponse(path, media_type=media_type)
+        return FileResponse(
+            path,
+            media_type=media_type,
+            filename=filename,
+            headers=response_headers,
+        )
+    return FileResponse(path, media_type=media_type, headers=response_headers)
 
 
 @router.get("/api/attachments/{public_id}/content")

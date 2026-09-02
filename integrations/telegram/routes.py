@@ -14,6 +14,7 @@ from common import (
     TELEGRAM_WEBHOOK_SECRET,
 )
 from database import get_db_connection
+from file_storage import create_pending_audio_attachment, discard_pending_attachments
 from integrations.conversations import (
     can_use_platform,
     change_response_mode,
@@ -23,12 +24,19 @@ from integrations.conversations import (
     set_external_conversation,
 )
 from integrations.delivery import chunk_telegram_response as _chunk_telegram_response
-from integrations.media import transcribe_external_audio
+from integrations.media import transcribe_external_audio_detailed
+from integrations.messaging_voice_notes.service import (
+    attach_message_channel_provenance,
+    get_voice_note_retention_enabled,
+)
+from integrations.telephony.channel_context import capture_non_phone_channel_turn
 from log_config import logger
 from prompt_access import get_user_accessible_prompts
 from prompts import can_user_access_prompt
+from storage_quota import StorageQuotaExceededError
 from tools.tts import handle_tts_request
 
+from ai_runtime.channel_turns import StaleChannelTurnError
 from ai_runtime.messages import process_save_message, storage_quota_notice_from_response
 
 
@@ -39,6 +47,162 @@ router = APIRouter()
 _telegram_rate_limits: dict[str, list[float]] = {}
 _telegram_rate_limit_notices: dict[str, float] = {}
 _telegram_global_timestamps: list[float] = []
+
+
+def _telegram_external_message_id(
+    *, update_id: int | None, chat_id: int | str, message_id: int | None
+) -> str | None:
+    """Return an idempotency key that is unique across every Telegram chat."""
+    if update_id is not None:
+        return f"update:{int(update_id)}"
+    if message_id is not None:
+        return f"chat:{chat_id}:message:{int(message_id)}"
+    return None
+
+
+async def _discard_voice_note_attachment(
+    voice_note: dict | None,
+    reason: str,
+) -> None:
+    attachment_ref = (
+        voice_note.get("audio_attachment_ref")
+        if isinstance(voice_note, dict)
+        else None
+    )
+    if not attachment_ref:
+        return
+    try:
+        await discard_pending_attachments([str(attachment_ref)], reason)
+    except Exception:
+        logger.exception("Could not discard pending Telegram voice-note audio")
+
+
+async def _prepare_telegram_voice(
+    *,
+    user_id: int,
+    conversation_id: int,
+    audio_content: bytes,
+    mime_type: str,
+) -> tuple[str, dict]:
+    """Optionally retain and transcribe one Telegram voice message."""
+    attachment_ref = None
+    retention_status = "disabled"
+
+    if await get_voice_note_retention_enabled("telegram"):
+        try:
+            pending = await create_pending_audio_attachment(
+                user_id=int(user_id),
+                conversation_id=int(conversation_id),
+                data=audio_content,
+                filename="telegram-voice-note",
+                mime_detected=mime_type or "audio/ogg",
+                declared_mime=mime_type or None,
+            )
+        except StorageQuotaExceededError:
+            retention_status = "quota_skipped"
+            logger.info(
+                "Telegram voice-note retention skipped because user %s is over quota",
+                user_id,
+            )
+        except Exception:
+            retention_status = "failed"
+            logger.exception(
+                "Could not retain Telegram voice-note audio for conversation %s",
+                conversation_id,
+            )
+        else:
+            attachment_ref = pending.public_id
+            retention_status = "stored"
+
+    try:
+        transcription = await transcribe_external_audio_detailed(
+            user_id=int(user_id),
+            audio_content=audio_content,
+        )
+    except Exception:
+        if attachment_ref:
+            await _discard_voice_note_attachment(
+                {"audio_attachment_ref": attachment_ref},
+                "telegram_transcription_failed",
+            )
+        raise
+
+    voice_note = {
+        "transcript": transcription.text,
+        "stt_provider": transcription.provider,
+        "stt_model": transcription.model,
+        "duration_seconds": transcription.duration_seconds,
+        "retention_status": retention_status,
+        "audio_attachment_ref": attachment_ref,
+    }
+    return transcription.text, voice_note
+
+
+async def _release_telegram_retry_marker(update_id: int | None) -> None:
+    """Let Telegram retry an update whose inbound turn was not persisted."""
+    if update_id is None:
+        return
+    try:
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "DELETE FROM TELEGRAM_PROCESSED_UPDATES WHERE update_id = ?",
+                (update_id,),
+            )
+            await conn.commit()
+    except Exception:
+        logger.exception("Could not release Telegram retry marker %s", update_id)
+
+
+async def _telegram_retry_response(update_id: int | None) -> JSONResponse:
+    await _release_telegram_retry_marker(update_id)
+    return JSONResponse(
+        content={"ok": False, "error": "inbound_not_persisted"},
+        status_code=503,
+    )
+
+
+async def _buffer_telegram_runtime_output(body_iterator):
+    """Consume a runtime stream without making any Telegram delivery."""
+    accumulated_text = ""
+    terminal = None
+    persistence_error = False
+    durable_message_ids = False
+
+    try:
+        async for chunk in body_iterator:
+            if chunk is None:
+                persistence_error = True
+                continue
+            chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+            for line in chunk_str.split("\n"):
+                if line[:5] != "data:":
+                    continue
+                try:
+                    data = orjson.loads(line[5:].strip())
+                except orjson.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get("persistence_error") is True:
+                    persistence_error = True
+                if data.get("terminal"):
+                    terminal = str(data["terminal"])
+                    continue
+                message_ids = data.get("message_ids")
+                if isinstance(message_ids, dict):
+                    durable_message_ids = bool(
+                        message_ids.get("user") and message_ids.get("bot")
+                    )
+                content = data.get("content", "")
+                if isinstance(content, str):
+                    accumulated_text += content
+    except Exception:
+        logger.exception("Telegram runtime stream failed before durable completion")
+        persistence_error = True
+
+    if persistence_error:
+        durable_message_ids = False
+    return accumulated_text, terminal, persistence_error, durable_message_ids
 
 
 # ============================================================================
@@ -144,6 +308,7 @@ async def telegram_webhook(request: Request):
     _telegram_rate_limits[user_key] = user_timestamps
 
     # --- User lookup ---
+    voice_note_metadata = None
     try:
         current_user = await get_user_from_telegram_chat_id(chat_id)
 
@@ -589,9 +754,11 @@ async def telegram_webhook(request: Request):
             try:
                 file_info = await async_telegram.get_file(voice["file_id"])
                 media_bytes = await async_telegram.download_file(file_info["file_path"])
-                transcribed_text = await transcribe_external_audio(
+                transcribed_text, voice_note_metadata = await _prepare_telegram_voice(
                     user_id=current_user.id,
+                    conversation_id=conversation_id,
                     audio_content=media_bytes,
+                    mime_type=str(voice.get("mime_type") or "audio/ogg"),
                 )
             except Exception as e:
                 logger.error(f"Error transcribing Telegram voice: {e}")
@@ -618,11 +785,48 @@ async def telegram_webhook(request: Request):
 
         user_message = transcribed_text if transcribed_text else text
         if not user_message and not files_list:
+            await _discard_voice_note_attachment(
+                voice_note_metadata,
+                "telegram_empty_message",
+            )
             return JSONResponse(content={"ok": True})
+
+        if voice_note_metadata is not None:
+            content_kind = "voice_note"
+        elif files_list:
+            content_kind = "mixed" if text else "image"
+        else:
+            content_kind = "text"
+
+        external_message_id = _telegram_external_message_id(
+            update_id=update_id,
+            chat_id=chat_id,
+            message_id=message.get("message_id"),
+        )
+        message_provenance = {
+            "channel": "telegram",
+            "conversation_id": int(conversation_id),
+            "user_id": int(current_user.id),
+            "external_message_id": external_message_id,
+            "content_kind": content_kind,
+            "response_mode": answer_mode,
+        }
+        if voice_note_metadata is not None:
+            message_provenance["voice_note"] = voice_note_metadata
 
         # Log incoming message
         msg_type = "audio" if transcribed_text else ("image" if files_list else "text")
         await _log_telegram('in', current_user.id, chat_id, msg_type, answer_mode)
+
+        foreground_turn = await capture_non_phone_channel_turn(
+            conversation_id=conversation_id,
+            channel="telegram",
+            connection_factory=get_db_connection,
+        )
+        channel_context = attach_message_channel_provenance(
+            foreground_turn.context,
+            message_provenance,
+        )
 
         # --- GranSabio check: if enabled, process in background ---
         async with get_db_connection(readonly=True) as conn_gs:
@@ -633,11 +837,24 @@ async def telegram_webhook(request: Request):
                 "WHERE c.id = ?", (conversation_id,)
             )
             gs_result = await gs_row.fetchone()
-        is_gransabio = bool((gs_result or [0])[0])
+        is_gransabio = (
+            bool((gs_result or [0])[0])
+            and not foreground_turn.decision.phone_active
+        )
 
         if is_gransabio:
             # Reject file attachments for GranSabio (text only)
             if files_list:
+                if not await foreground_turn.is_current():
+                    await _discard_voice_note_attachment(
+                        voice_note_metadata,
+                        "telegram_stale_before_gransabio",
+                    )
+                    return await _telegram_retry_response(update_id)
+                await _discard_voice_note_attachment(
+                    voice_note_metadata,
+                    "telegram_gransabio_file_rejected",
+                )
                 await async_telegram.send_message(
                     chat_id, "File attachments are not supported with GranSabio mode. Please send text only."
                 )
@@ -651,6 +868,16 @@ async def telegram_webhook(request: Request):
 
             admin_config = await get_gransabio_config()
             if admin_config.get("gransabio_enabled") != "true":
+                if not await foreground_turn.is_current():
+                    await _discard_voice_note_attachment(
+                        voice_note_metadata,
+                        "telegram_stale_before_gransabio",
+                    )
+                    return await _telegram_retry_response(update_id)
+                await _discard_voice_note_attachment(
+                    voice_note_metadata,
+                    "telegram_gransabio_disabled",
+                )
                 await async_telegram.send_message(chat_id, "GranSabio is currently disabled.")
                 return JSONResponse(content={"ok": True})
 
@@ -662,6 +889,7 @@ async def telegram_webhook(request: Request):
                 "chat_id": chat_id,
                 "answer_mode": answer_mode,
                 "conversation_id": conversation_id,
+                "message_provenance": message_provenance,
             }
 
             if GRANSABIO_USE_DRAMATIQ:
@@ -673,6 +901,7 @@ async def telegram_webhook(request: Request):
                         "telegram",
                         orjson.dumps(platform_context).decode(),
                         estimated_timeout,
+                        foreground_turn.decision.commit_guard.epoch,
                     ),
                     time_limit=28_800_000,
                 )
@@ -686,6 +915,7 @@ async def telegram_webhook(request: Request):
                         platform="telegram",
                         platform_context=platform_context,
                         estimated_timeout=estimated_timeout,
+                        foreground_epoch=foreground_turn.decision.commit_guard.epoch,
                     )
                 )
 
@@ -705,32 +935,36 @@ async def telegram_webhook(request: Request):
                 full_response=False,
                 is_whatsapp=True,  # Same non-streaming behavior as WhatsApp
                 thinking_budget_tokens=None,
+                channel_context=channel_context,
             ),
         )
 
         quota_notice = storage_quota_notice_from_response(response)
 
         if isinstance(response, StreamingResponse):
-            accumulated_text = ""
-            async for chunk in response.body_iterator:
-                chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
+            (
+                accumulated_text,
+                runtime_terminal,
+                persistence_error,
+                durable_message_ids,
+            ) = await _buffer_telegram_runtime_output(response.body_iterator)
 
-                for line in chunk_str.split('\n'):
-                    if line[:5] == 'data:':
-                        try:
-                            data = orjson.loads(line[5:].strip())
-                            content = data.get('content', '')
+            if runtime_terminal == "queued_for_active_phone":
+                return JSONResponse(content={"ok": True})
 
-                            if isinstance(content, list):
-                                # Image/audio content - skip for now in Telegram
-                                pass
-                            else:
-                                accumulated_text += content
-                        except orjson.JSONDecodeError:
-                            pass
+            if (
+                runtime_terminal == "stale_channel_turn"
+                or persistence_error
+                or not durable_message_ids
+            ):
+                await _discard_voice_note_attachment(
+                    voice_note_metadata,
+                    "telegram_message_not_persisted",
+                )
+                return await _telegram_retry_response(update_id)
 
             # Send the accumulated response
-            if accumulated_text.strip():
+            if accumulated_text.strip() and not persistence_error:
                 if answer_mode == "voice":
                     try:
                         audio_path, error = await handle_tts_request(
@@ -762,9 +996,13 @@ async def telegram_webhook(request: Request):
                     for chunk in _chunk_telegram_response(accumulated_text):
                         await async_telegram.send_message(chat_id, chunk)
 
-            if quota_notice:
+            if quota_notice and not persistence_error:
                 await async_telegram.send_message(chat_id, quota_notice)
         else:
+            await _discard_voice_note_attachment(
+                voice_note_metadata,
+                "telegram_message_not_persisted",
+            )
             # Handle non-streaming responses (rate limit, insufficient balance, etc.)
             if quota_notice:
                 # Media-only message rejected for lack of storage: tell the user.
@@ -784,7 +1022,21 @@ async def telegram_webhook(request: Request):
 
         return JSONResponse(content={"ok": True})
 
+    except StaleChannelTurnError:
+        await _discard_voice_note_attachment(
+            voice_note_metadata,
+            "telegram_stale_channel_turn",
+        )
+        logger.info(
+            "Telegram response suppressed because phone foreground changed for conversation %s",
+            conversation_id,
+        )
+        return await _telegram_retry_response(update_id)
     except Exception as e:
+        await _discard_voice_note_attachment(
+            voice_note_metadata,
+            "telegram_webhook_failed",
+        )
         logger.error(f"Telegram webhook error: {e}", exc_info=True)
         try:
             await async_telegram.send_message(

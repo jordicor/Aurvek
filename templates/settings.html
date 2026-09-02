@@ -2,6 +2,10 @@
 
 {% block title %}Settings - AURVEK{% endblock %}
 
+{% block head_extra %}
+<meta name="aurvek-csrf-token" content="{{ telephony_csrf_token }}">
+{% endblock %}
+
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/css/intlTelInput.css">
@@ -292,6 +296,56 @@
     .settings-tabs { margin-bottom: 0; }
     .tab-pane { padding-top: 0.5rem; }
 
+    /* --- Calls tab --- */
+    .settings-calls-list {
+        display: grid;
+        gap: 0.75rem;
+    }
+    .settings-call-item {
+        align-items: center;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        display: flex;
+        gap: 1rem;
+        justify-content: space-between;
+        padding: 0.9rem 1rem;
+    }
+    .settings-call-main { min-width: 0; }
+    .settings-call-title {
+        color: var(--text-primary);
+        font-weight: 600;
+        margin: 0;
+    }
+    .settings-call-meta {
+        color: var(--text-muted);
+        font-size: 0.82rem;
+        margin: 0.2rem 0 0;
+    }
+    .settings-call-actions {
+        align-items: center;
+        display: flex;
+        flex: 0 0 auto;
+        gap: 0.6rem;
+    }
+    .settings-call-status {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        border-radius: 999px;
+        color: var(--text-primary);
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 0.25rem 0.55rem;
+        white-space: nowrap;
+    }
+    @media (max-width: 640px) {
+        .settings-call-item,
+        .settings-call-actions {
+            align-items: stretch;
+            flex-direction: column;
+        }
+        .settings-call-actions .btn { width: 100%; }
+    }
+
     /* --- Memory section --- */
     .memory-settings-card {
         padding: 18px;
@@ -433,6 +487,11 @@
         </button>
     </li>
     <li class="nav-item" role="presentation">
+        <button class="nav-link" id="calls-tab" data-bs-toggle="tab" data-bs-target="#calls" type="button" role="tab" aria-controls="calls" aria-selected="false">
+            <i class="fas fa-phone me-1"></i> Calls
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
         <button class="nav-link" id="usage-tab" data-bs-toggle="tab" data-bs-target="#usage" type="button" role="tab" aria-controls="usage" aria-selected="false">
             <i class="fas fa-chart-bar me-1"></i> Usage & Billing
         </button>
@@ -476,7 +535,7 @@
                         </div>
                         <div class="mb-3">
                             <label for="phone" class="form-label">Phone Number</label>
-                            <input type="tel" class="form-control" id="phone" name="phone_number" value="{{ user_data['phone_number'] }}" data-original="{{ user_data['phone_number'] }}">
+                            <input type="tel" class="form-control" id="phone" name="phone_number" value="{{ user_data['phone_number'] }}" data-original="{{ user_data['phone_number'] }}" data-phone-verified="{{ 'true' if user_data['phone_verified'] else 'false' }}">
                             <button type="button" class="btn btn-secondary mt-2" id="sendCodeButton" style="display: none;">Send Verification Code</button>
                         </div>
                         <div class="mb-3" id="verificationCodeContainer" style="display: none;">
@@ -879,6 +938,20 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- ==================== Calls Tab ==================== -->
+    <div class="tab-pane fade" id="calls" role="tabpanel" aria-labelledby="calls-tab">
+        <div class="section-container">
+            <div class="section-title">
+                <i class="fas fa-phone me-2"></i>Calls
+            </div>
+            <p class="text-muted">Recent calls made through your Aurvek conversations.</p>
+            <div id="settings-calls-status" class="text-muted py-3" role="status" aria-live="polite">
+                Select this tab to load your calls.
+            </div>
+            <div id="settings-calls-list" class="settings-calls-list"></div>
         </div>
     </div>
 

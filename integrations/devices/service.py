@@ -24,6 +24,7 @@ from chat.services.file_inputs import validate_and_compress_image
 from chat.services.conversations import create_conversation_core
 from common import MAX_IMAGE_UPLOAD_SIZE, decrypt_api_key
 from database import get_db_connection
+from integrations.telephony.channel_context import capture_non_phone_channel_turn
 from integrations.devices.schemas import (
     BASIC_CAPABILITIES,
     DEVICE_RESPONSE_MODES,
@@ -790,6 +791,16 @@ async def fail_incoming_message_event(
         await conn.commit()
 
 
+async def release_retryable_incoming_message_event(*, event_id: int) -> None:
+    """Remove a transient reservation so the same external id can retry."""
+    async with get_db_connection() as conn:
+        await conn.execute(
+            "DELETE FROM EXTERNAL_DEVICE_EVENTS WHERE id = ? AND status = 'processing'",
+            (event_id,),
+        )
+        await conn.commit()
+
+
 async def record_outgoing_reply_event(
     *,
     device_id: int,
@@ -1137,9 +1148,13 @@ def extract_structured_actions(reply: str, capabilities: dict) -> tuple[str, lis
     return clean_reply, actions
 
 
-async def _streaming_response_to_reply(response: StreamingResponse) -> str:
+async def _streaming_response_to_reply(
+    response: StreamingResponse,
+) -> tuple[str, str | None]:
     reply_parts: list[str] = []
     errors: list[str] = []
+    terminal: str | None = None
+    durable_message_ids = False
     buffer = ""
 
     async for chunk in response.body_iterator:
@@ -1158,16 +1173,35 @@ async def _streaming_response_to_reply(response: StreamingResponse) -> str:
             except orjson.JSONDecodeError:
                 logger.debug("[devices] Could not parse SSE payload from runtime")
                 continue
+            runtime_terminal = data.get("terminal")
+            if runtime_terminal in {
+                "queued_for_active_phone",
+                "stale_channel_turn",
+            }:
+                terminal = str(runtime_terminal)
+                continue
+            if data.get("persistence_error") is True:
+                terminal = "persistence_error"
+                continue
             if "error" in data:
                 errors.append(str(data.get("message") or data.get("error") or "Runtime error"))
                 continue
+            message_ids = data.get("message_ids")
+            if isinstance(message_ids, dict):
+                durable_message_ids = bool(
+                    message_ids.get("user") and message_ids.get("bot")
+                )
             content = data.get("content")
             if isinstance(content, str):
                 reply_parts.append(content)
 
     if errors:
         raise DeviceRuntimeError("runtime_error", errors[-1], 502)
-    return "".join(reply_parts).strip()
+    if terminal is None and not durable_message_ids:
+        terminal = "persistence_error"
+    if terminal is not None:
+        return "", terminal
+    return "".join(reply_parts).strip(), terminal
 
 
 async def _json_response_error(response: JSONResponse) -> DeviceRuntimeError:
@@ -1387,6 +1421,11 @@ async def handle_device_text_message(
 
         groups = await get_device_groups(device.id)
         prefixed_text = f"{device_context_header(device, groups)}\n{text}"
+        foreground_turn = await capture_non_phone_channel_turn(
+            conversation_id=conversation_id,
+            channel="device",
+            connection_factory=get_db_connection,
+        )
         response = await serialize_user_billing_response(
             owner.id,
             process_save_message(
@@ -1401,6 +1440,7 @@ async def handle_device_text_message(
                 user_api_keys=await load_user_api_keys(device.user_id),
                 prevalidated=True,
                 strip_device_action_blocks=True,
+                channel_context=foreground_turn.context,
             ),
         )
 
@@ -1409,14 +1449,40 @@ async def handle_device_text_message(
         if not isinstance(response, StreamingResponse):
             raise DeviceRuntimeError("runtime_error", "Unexpected runtime response", 502)
 
-        raw_reply = await _streaming_response_to_reply(response)
+        raw_reply, runtime_terminal = await _streaming_response_to_reply(response)
+        latency_ms = int((monotonic() - started) * 1000)
+        if runtime_terminal == "queued_for_active_phone":
+            await complete_incoming_message_event(
+                event_id=event_id,
+                reply="",
+                actions=[],
+                latency_ms=latency_ms,
+            )
+            event_completed = True
+            return {
+                "success": True,
+                "conversation_id": conversation_id,
+                "reply": "",
+                "actions": [],
+                "terminal": runtime_terminal,
+            }
+        if runtime_terminal in {"stale_channel_turn", "persistence_error"}:
+            await release_retryable_incoming_message_event(event_id=event_id)
+            event_id = None
+            raise DeviceRuntimeError(
+                "foreground_changed"
+                if runtime_terminal == "stale_channel_turn"
+                else "persistence_error",
+                "The inbound turn was not persisted; retry with the same message id",
+                503,
+            )
+
         reply, actions = extract_structured_actions(raw_reply, device.capabilities)
         await sanitize_last_device_reply_in_db(
             conversation_id=conversation_id,
             raw_reply=raw_reply,
             clean_reply=reply,
         )
-        latency_ms = int((monotonic() - started) * 1000)
         await complete_incoming_message_event(
             event_id=event_id,
             reply=reply,

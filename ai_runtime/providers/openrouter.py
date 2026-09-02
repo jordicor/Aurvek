@@ -1,6 +1,26 @@
 from ai_runtime.dependencies import *
 from ai_runtime.providers.claude_capabilities import claude_omits_temperature
 from ai_runtime.providers.openai_chat import call_llm_api
+from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
+
+
+def _openrouter_reasoning_payload(
+    reasoning_selection: ReasoningSelection | dict | str | None,
+) -> dict | None:
+    """Translate the neutral contract to OpenRouter's normalized object."""
+
+    if reasoning_selection is None:
+        return None
+    selection = parse_reasoning_selection(reasoning_selection)
+    if selection.mode == "default":
+        return None
+    if selection.mode == "off":
+        return {"enabled": False}
+    if selection.mode == "auto":
+        return {"enabled": True}
+    if selection.mode == "custom":
+        return {"enabled": True, "max_tokens": selection.budget_tokens}
+    return {"enabled": True, "effort": selection.mode}
 
 async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, conversation_id, current_user, request, user_message=None, user_api_key=None, tools=None,
                               input_token_fallback=None,
@@ -9,7 +29,8 @@ async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, 
                               llm_id=None, save_to_db: bool = True, web_search_mode=None, byok: bool = False, api_model=None,
                               pending_attachment_refs: Optional[list[str]] = None,
                               strip_device_action_blocks: bool = False,
-                              billing_reservation_id: str | None = None):
+                              billing_reservation_id: str | None = None,
+                              reasoning_selection: ReasoningSelection | dict | str | None = None):
     """
     Call OpenRouter unified API - 100% OpenAI compatible.
 
@@ -42,6 +63,7 @@ async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, 
         "HTTP-Referer": f"https://{os.getenv('PRIMARY_APP_DOMAIN', 'localhost')}",
         "X-Title": "AURVEK AI Chat"
     }
+    reasoning = _openrouter_reasoning_payload(reasoning_selection)
 
     async for chunk in call_llm_api(
         messages,
@@ -69,6 +91,7 @@ async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, 
         save_to_db=save_to_db,
         web_search_mode=web_search_mode,
         byok=byok,
+        extra_body={"reasoning": reasoning} if reasoning is not None else None,
         api_model=api_model,
         omit_temperature=claude_omits_temperature(api_model or model),
         pending_attachment_refs=pending_attachment_refs,

@@ -3,7 +3,7 @@ import zlib
 from typing import List, Optional
 
 import orjson
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from auth import get_current_user, unauthenticated_response
@@ -23,7 +23,15 @@ from common import (
 )
 from database import get_db_connection
 from integrations.conversations import is_whatsapp_conversation
+from integrations.telephony.channel_context import capture_non_phone_channel_turn
 from ai_runtime.messages import process_save_message
+from ai_runtime.reasoning import (
+    ReasoningValidationError,
+    parse_reasoning_selection,
+    resolve_and_validate,
+    selection_from_legacy_thinking_budget,
+)
+from ai_runtime.reasoning_tags import strip_tagged_thinking_prefix
 from ai_runtime.multi_ai.service import process_multi_ai_message
 from ai_runtime.provider_health import provider_from_machine, touch_provider_activity
 from log_config import logger
@@ -36,9 +44,60 @@ from chat.services.message_rendering import (
     process_message,
 )
 from chat.services.message_requests import validate_message_request
+from chat.services.phone_history import load_phone_history_page
+from integrations.messaging_voice_notes.service import load_message_channel_provenance
 from chat.services.privacy import delete_message_rows, ensure_conversation_privacy_schema
 
 router = APIRouter()
+
+
+def _reasoning_selection_from_form(
+    reasoning_mode: str | None,
+    reasoning_budget_tokens: int | None,
+    thinking_budget_tokens: int | None,
+):
+    """Parse the new request fields, with one temporary legacy translation."""
+    if reasoning_mode is not None or reasoning_budget_tokens is not None:
+        return parse_reasoning_selection(
+            {
+                "mode": reasoning_mode or "default",
+                **(
+                    {"budget_tokens": reasoning_budget_tokens}
+                    if reasoning_budget_tokens is not None
+                    else {}
+                ),
+            }
+        )
+    return selection_from_legacy_thinking_budget(thinking_budget_tokens)
+
+
+async def _request_reasoning_capabilities(
+    *, machine: str, model: str, capabilities_json, user_id: int
+):
+    try:
+        capabilities = orjson.loads(capabilities_json) if capabilities_json else {}
+    except (orjson.JSONDecodeError, TypeError):
+        capabilities = {}
+    if not isinstance(capabilities, dict):
+        capabilities = {}
+
+    if machine == "GPTSub":
+        account_capabilities = None
+        try:
+            from subscription_auth.reasoning import user_model_reasoning_capabilities
+
+            account_capabilities = await user_model_reasoning_capabilities(user_id, model)
+        except Exception:
+            logger.warning(
+                "Could not resolve GPTSub reasoning capabilities for user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+        capabilities = {
+            **capabilities,
+            "reasoning": account_capabilities or {"behavior": "unknown"},
+        }
+    return capabilities
 
 
 @router.get("/api/conversations/{conversation_id}/messages")
@@ -235,6 +294,22 @@ async def get_messages(
         **extensions_data,
     }
 
+    phone_history = await load_phone_history_page(
+        get_db_connection,
+        conversation_id=conversation_id,
+        owner_user_id=current_user.id,
+        message_ids=[int(row["message_id"]) for row in rows],
+        newest_page=before_id is None,
+        allow_admin=is_user_admin,
+    )
+    phone_history_payload = phone_history.public_payload()
+    channel_provenance = await load_message_channel_provenance(
+        [int(row["message_id"]) for row in rows if row["message_id"] is not None]
+    )
+    has_phone_history = bool(
+        phone_history_payload["calls"] or phone_history_payload["markers"]
+    )
+
     if is_user_admin:
         async with get_db_connection(readonly=True) as admin_conn:
             admin_cursor = await admin_conn.execute(
@@ -254,14 +329,22 @@ async def get_messages(
             conversation_info["total_tokens"] = stats["total_tokens"]
 
     if not rows:
-        return JSONResponse(content={
+        response_content = {
             "conversation_info": conversation_info,
             "messages": [],
             "has_more": False,
-        })
+        }
+        if has_phone_history:
+            response_content["phone_history"] = phone_history_payload
+        return JSONResponse(content=response_content)
 
     render_rows = [
-        (row, custom_unescape(row["message"]))
+        (
+            row,
+            strip_tagged_thinking_prefix(custom_unescape(row["message"]))
+            if row["type"] == "bot"
+            else custom_unescape(row["message"]),
+        )
         for row in rows
         if row["message_id"] is not None
     ]
@@ -298,6 +381,12 @@ async def get_messages(
                 "llm_machine": row["llm_machine"],
                 "llm_model": row["llm_model"],
             }
+            phone_metadata = phone_history.message_metadata.get(
+                int(row["message_id"])
+            )
+            if phone_metadata is not None:
+                msg_data.update(phone_metadata)
+            msg_data.update(channel_provenance.get(int(row["message_id"]), {}))
             if row["citations_json"]:
                 try:
                     msg_data["citations"] = orjson.loads(row["citations_json"])
@@ -306,11 +395,14 @@ async def get_messages(
             messages_list.append(msg_data)
 
     messages_list.reverse()
-    return JSONResponse(content={
+    response_content = {
         "conversation_info": conversation_info,
         "messages": messages_list,
         "has_more": has_more,
-    })
+    }
+    if has_phone_history:
+        response_content["phone_history"] = phone_history_payload
+    return JSONResponse(content=response_content)
 
 
 @router.get("/api/conversations/{conversation_id}/provider-health")
@@ -362,6 +454,8 @@ async def save_message(
     file: List[Optional[UploadFile]] = File(None),
     full_response: bool = Form(False),
     is_whatsapp: bool = Form(False),
+    reasoning_mode: Optional[str] = Form(None),
+    reasoning_budget_tokens: Optional[int] = Form(None),
     thinking_budget_tokens: Optional[int] = Form(None),
     multi_ai_models: Optional[str] = Form(None),
     pdf_page_start: Optional[int] = Form(None),
@@ -374,25 +468,10 @@ async def save_message(
     if current_user is None:
         return unauthenticated_response()
 
-    # The browser must name the exact model identity it rendered. Model names
-    # are not unique across providers (for example GPT and GPTSub can expose
-    # the same model string), and another tab may change the conversation
-    # between render and send. Reject stale/legacy clients before any upload,
-    # billing, persistence, or provider work.
-    if not multi_ai_models and (expected_llm_id is None or expected_llm_id <= 0):
-        return JSONResponse(
-            content={
-                "success": False,
-                "error_code": "expected_llm_id_required",
-                "message": "Reload the conversation so Aurvek can confirm the selected AI model.",
-            },
-            status_code=428,
-        )
-
     async with get_db_connection(readonly=True) as conn:
         identity_cursor = await conn.execute(
             """
-            SELECT c.locked, c.llm_id, l.machine, l.model
+            SELECT c.locked, c.llm_id, l.machine, l.model, l.capabilities_json
             FROM CONVERSATIONS c
             JOIN LLM l ON l.id = c.llm_id
             WHERE c.id = ? AND c.user_id = ?
@@ -406,72 +485,6 @@ async def save_message(
             content={"success": False, "message": "Conversation is locked."},
             status_code=403,
         )
-    if not multi_ai_models and int(conversation_identity[1]) != expected_llm_id:
-        return JSONResponse(
-            content={
-                "success": False,
-                "error_code": "conversation_model_changed",
-                "message": "The AI model changed in another session. Review it and send again.",
-                "llm_id": int(conversation_identity[1]),
-                "model": conversation_identity["model"],
-            },
-            status_code=409,
-        )
-
-    user_api_keys = None
-    user_keys_header = request.headers.get("X-User-API-Keys")
-    if user_keys_header:
-        try:
-            user_api_keys = orjson.loads(base64.b64decode(user_keys_header))
-            logger.debug("User API keys received from header")
-        except Exception as exc:
-            logger.warning("Failed to parse user API keys from header: %s", exc)
-
-    if not user_api_keys and current_user:
-        try:
-            async with get_db_connection(readonly=True) as conn:
-                cursor = await conn.cursor()
-                await cursor.execute(
-                    "SELECT user_api_keys FROM USER_DETAILS WHERE user_id = ?",
-                    (current_user.id,),
-                )
-                result = await cursor.fetchone()
-                if result and result[0]:
-                    keys_json = decrypt_api_key(result[0])
-                    if keys_json:
-                        user_api_keys = orjson.loads(keys_json)
-                        logger.debug("User API keys loaded from server storage")
-        except Exception as exc:
-            logger.warning("Failed to load user API keys from server: %s", exc)
-
-    api_key_mode = await get_user_api_key_mode(current_user.id)
-    if api_key_mode == API_KEY_MODE_OWN_ONLY and not user_api_keys:
-        # A linked ChatGPT subscription is also a user-owned credential. Resolve
-        # the owned conversation's provider before applying the generic API-key
-        # requirement; multi-AI remains unsupported for GPTSub and is not exempt.
-        gptsub_request_allowed = False
-        if not multi_ai_models:
-            if conversation_identity["machine"] == "GPTSub":
-                try:
-                    from subscription_auth.gate import gptsub_allowed
-
-                    gptsub_request_allowed = await gptsub_allowed(
-                        current_user,
-                        model=conversation_identity["model"],
-                    )
-                except Exception:
-                    gptsub_request_allowed = False
-
-        if not gptsub_request_allowed:
-            return JSONResponse(
-                content={
-                    "error": "api_keys_required",
-                    "message": "Your account requires you to configure your own API keys to use AI services.",
-                    "action": "configure_api_keys",
-                    "redirect": "/profile/api-credentials",
-                },
-                status_code=403,
-            )
 
     guard_response = await validate_message_request(
         request=request,
@@ -486,7 +499,148 @@ async def save_message(
     except ValueError as exc:
         return JSONResponse(content={"success": False, "message": str(exc)}, status_code=400)
 
-    if multi_ai_models:
+    foreground_turn = await capture_non_phone_channel_turn(
+        conversation_id=conversation_id,
+        channel="web",
+        connection_factory=get_db_connection,
+    )
+
+    # Exact model identity fences inference in concurrent browser tabs.  It is
+    # irrelevant when the phone owns foreground and this request only persists
+    # the authenticated inbound turn.
+    if not foreground_turn.decision.phone_active and not multi_ai_models:
+        if expected_llm_id is None or expected_llm_id <= 0:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error_code": "expected_llm_id_required",
+                    "message": "Reload the conversation so Aurvek can confirm the selected AI model.",
+                },
+                status_code=428,
+            )
+        if int(conversation_identity[1]) != expected_llm_id:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error_code": "conversation_model_changed",
+                    "message": "The AI model changed in another session. Review it and send again.",
+                    "llm_id": int(conversation_identity[1]),
+                    "model": conversation_identity["model"],
+                },
+                status_code=409,
+            )
+
+    requested_reasoning = None
+    if not foreground_turn.decision.phone_active:
+        try:
+            requested_reasoning = _reasoning_selection_from_form(
+                reasoning_mode,
+                reasoning_budget_tokens,
+                thinking_budget_tokens,
+            )
+        except ReasoningValidationError as exc:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error_code": "invalid_reasoning_selection",
+                    "message": str(exc),
+                },
+                status_code=422,
+            )
+
+    parsed_model_ids = None
+    if multi_ai_models and not foreground_turn.decision.phone_active:
+        try:
+            parsed_model_ids = orjson.loads(multi_ai_models)
+        except orjson.JSONDecodeError:
+            return JSONResponse(content={"error": "Invalid multi_ai_models format"}, status_code=400)
+        if (
+            not isinstance(parsed_model_ids, list)
+            or len(parsed_model_ids) < 2
+            or len(parsed_model_ids) > 4
+            or not all(isinstance(model_id, int) for model_id in parsed_model_ids)
+        ):
+            return JSONResponse(content={"error": "Multi-AI requires 2-4 model IDs"}, status_code=400)
+
+    if not foreground_turn.decision.phone_active and not multi_ai_models:
+        try:
+            reasoning_capabilities = await _request_reasoning_capabilities(
+                machine=conversation_identity["machine"],
+                model=conversation_identity["model"],
+                capabilities_json=conversation_identity["capabilities_json"],
+                user_id=current_user.id,
+            )
+            requested_reasoning = resolve_and_validate(
+                requested_reasoning,
+                reasoning_capabilities,
+            )
+        except ReasoningValidationError as exc:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error_code": "invalid_reasoning_selection",
+                    "message": str(exc),
+                },
+                status_code=422,
+            )
+
+    # API credentials are an inference gate, not an inbound-message gate.  A
+    # phone-owned conversation still accepts and queues the authenticated web
+    # turn even when the account could not start a new provider request.
+    user_api_keys = None
+    if not foreground_turn.decision.phone_active:
+        user_keys_header = request.headers.get("X-User-API-Keys")
+        if user_keys_header:
+            try:
+                user_api_keys = orjson.loads(base64.b64decode(user_keys_header))
+                logger.debug("User API keys received from header")
+            except Exception as exc:
+                logger.warning("Failed to parse user API keys from header: %s", exc)
+
+        if not user_api_keys:
+            try:
+                async with get_db_connection(readonly=True) as conn:
+                    cursor = await conn.cursor()
+                    await cursor.execute(
+                        "SELECT user_api_keys FROM USER_DETAILS WHERE user_id = ?",
+                        (current_user.id,),
+                    )
+                    result = await cursor.fetchone()
+                    if result and result[0]:
+                        keys_json = decrypt_api_key(result[0])
+                        if keys_json:
+                            user_api_keys = orjson.loads(keys_json)
+                            logger.debug("User API keys loaded from server storage")
+            except Exception as exc:
+                logger.warning("Failed to load user API keys from server: %s", exc)
+
+        api_key_mode = await get_user_api_key_mode(current_user.id)
+        if api_key_mode == API_KEY_MODE_OWN_ONLY and not user_api_keys:
+            # A linked ChatGPT subscription is also a user-owned credential.
+            gptsub_request_allowed = False
+            if not multi_ai_models and conversation_identity["machine"] == "GPTSub":
+                try:
+                    from subscription_auth.gate import gptsub_allowed
+
+                    gptsub_request_allowed = await gptsub_allowed(
+                        current_user,
+                        model=conversation_identity["model"],
+                    )
+                except Exception:
+                    gptsub_request_allowed = False
+
+            if not gptsub_request_allowed:
+                return JSONResponse(
+                    content={
+                        "error": "api_keys_required",
+                        "message": "Your account requires you to configure your own API keys to use AI services.",
+                        "action": "configure_api_keys",
+                        "redirect": "/profile/api-credentials",
+                    },
+                    status_code=403,
+                )
+
+    if multi_ai_models and not foreground_turn.decision.phone_active:
         async with get_db_connection(readonly=True) as conn_gs_check:
             gs_row = await conn_gs_check.execute(
                 "SELECT COALESCE(ep.gransabio_enabled, 0) FROM CONVERSATIONS c "
@@ -503,12 +657,6 @@ async def save_message(
             )
 
         try:
-            parsed_model_ids = orjson.loads(multi_ai_models)
-            if not isinstance(parsed_model_ids, list) or len(parsed_model_ids) < 2 or len(parsed_model_ids) > 4:
-                return JSONResponse(content={"error": "Multi-AI requires 2-4 model IDs"}, status_code=400)
-            if not all(isinstance(mid, int) for mid in parsed_model_ids):
-                return JSONResponse(content={"error": "Invalid model IDs"}, status_code=400)
-
             is_whatsapp_conv = bool(is_whatsapp)
             if not is_whatsapp_conv:
                 try:
@@ -549,8 +697,9 @@ async def save_message(
                         current_user=current_user,
                         user_message=multi_user_message,
                         model_ids=parsed_model_ids,
-                        thinking_budget_tokens=thinking_budget_tokens,
+                        reasoning_selection=requested_reasoning,
                         user_api_keys=user_api_keys,
+                        channel_context=foreground_turn.context,
                     ),
                 ),
                 media_type="text/event-stream",
@@ -612,7 +761,7 @@ async def save_message(
             files=files,
             full_response=full_response,
             is_whatsapp=is_whatsapp,
-            thinking_budget_tokens=thinking_budget_tokens,
+            reasoning_selection=requested_reasoning,
             user_api_keys=user_api_keys,
             prevalidated=True,
             pdf_page_start=pdf_page_start,
@@ -620,5 +769,6 @@ async def save_message(
             pdf_retry_token=pdf_retry_token,
             attachment_refs=parsed_attachment_refs,
             expected_llm_id=expected_llm_id,
+            channel_context=foreground_turn.context,
         ),
     )

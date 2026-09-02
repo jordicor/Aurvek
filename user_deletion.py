@@ -360,6 +360,14 @@ async def delete_user_account(
             result.summary = _ACTIVE_USAGE_SUMMARY
             return result
 
+        if await _has_active_phone_call(conn, uid):
+            result.status = "blocked"
+            result.reason_codes = ["active_phone_call"]
+            result.summary = (
+                "An active or unresolved phone call must be ended before account deletion."
+            )
+            return result
+
         is_admin, admin_summary = await _is_admin_account(conn, uid, user_row["role_id"])
         result.blocking_tables = await _financial_blocks(conn, uid)
         result.atagia_link_count = await _atagia_link_count(conn, uid)
@@ -485,6 +493,15 @@ async def delete_user_account(
                     result.status = "blocked"
                     result.reason_codes = ["active_usage"]
                     result.summary = _ACTIVE_USAGE_SUMMARY
+                    return result
+                if await _has_active_phone_call(conn, uid):
+                    await conn.rollback()
+                    result.status = "blocked"
+                    result.reason_codes = ["active_phone_call"]
+                    result.summary = (
+                        "An active or unresolved phone call must be ended before "
+                        "account deletion."
+                    )
                     return result
                 # Re-read conversation ids inside the write transaction: a
                 # conversation created after capture must not strand the USERS FK.
@@ -692,6 +709,23 @@ async def _has_active_reservation(conn: aiosqlite.Connection, user_id: int) -> b
         "WHERE status = 'active' AND (user_id = ? OR billing_account_id = ?) "
         "LIMIT 1",
         (user_id, user_id),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def _has_active_phone_call(conn: aiosqlite.Connection, user_id: int) -> bool:
+    """Fail closed before account cascades can orphan an active provider call."""
+
+    if not await _table_exists(conn, "PHONE_CALLS"):
+        return False
+    cursor = await conn.execute(
+        """
+        SELECT 1 FROM PHONE_CALLS
+        WHERE owner_user_id=? AND deleted_at IS NULL
+          AND status NOT IN ('completed','busy','no_answer','machine','failed','canceled')
+        LIMIT 1
+        """,
+        (int(user_id),),
     )
     return await cursor.fetchone() is not None
 

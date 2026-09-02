@@ -247,49 +247,65 @@ async def _sync_one_mem0_message(
     role = _role_for_message_type(str(row["type"]))
     text = _message_text_for_memory_sync(row["message"]).strip()
     summary.processed_messages += 1
-    if not text:
-        summary.skipped_messages += 1
-        await _update_sync_state("mem0", conversation_id, message_id)
-        return
-    preferences = await get_user_memory_preferences(user_id, "mem0")
-    if preferences.get("remember_across_chats") is False:
-        summary.skipped_messages += 1
-        await _update_sync_state("mem0", conversation_id, message_id)
-        return
 
-    result = await provider.add_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        role=role,
-        text=text,
-        occurred_at=row["date"],
-        prompt_id=row["prompt_id"],
-        message_id=message_id,
-        incognito=False,
+    from integrations.telephony.purge_state import (
+        PhoneMemoryWriteBlocked,
+        phone_memory_operation_lease,
     )
-    if result is None:
-        summary.failed_messages += 1
-        _add_recent_error(summary, f"message {message_id}: Mem0 add failed")
-        return
 
-    async with database.get_db_connection() as conn:
-        await _ensure_schema(conn)
-        changed = await _insert_message_link(
-            conn,
+    try:
+        async with phone_memory_operation_lease(
+            conversation_id,
             provider="mem0",
-            message_id=message_id,
-            provider_message_id=_mem0_provider_message_id(message_id, result),
-            provider_event_id=_extract_provider_event_id(result),
-            conversation_id=conversation_id,
-            user_id=user_id,
-            role=role,
-            source="backfill",
-            metadata=result,
-        )
-        await conn.commit()
+            operation="history_sync",
+        ) as provider_lease:
+            if not text:
+                summary.skipped_messages += 1
+                await _update_sync_state("mem0", conversation_id, message_id)
+                return
+            preferences = await get_user_memory_preferences(user_id, "mem0")
+            if preferences.get("remember_across_chats") is False:
+                summary.skipped_messages += 1
+                await _update_sync_state("mem0", conversation_id, message_id)
+                return
+            await provider_lease.mark_provider_started()
+            result = await provider.add_message(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                role=role,
+                text=text,
+                occurred_at=row["date"],
+                prompt_id=row["prompt_id"],
+                message_id=message_id,
+                incognito=False,
+            )
+            if not result:
+                raise RuntimeError("Mem0 add outcome is ambiguous")
+            async with database.get_db_connection() as conn:
+                await _ensure_schema(conn)
+                changed = await _insert_message_link(
+                    conn,
+                    provider="mem0",
+                    message_id=message_id,
+                    provider_message_id=_mem0_provider_message_id(message_id, result),
+                    provider_event_id=_extract_provider_event_id(result),
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role=role,
+                    source="backfill",
+                    metadata=result,
+                )
+                await conn.commit()
+            await _update_sync_state("mem0", conversation_id, message_id)
+    except PhoneMemoryWriteBlocked:
+        summary.skipped_messages += 1
+        return
+    except Exception as exc:
+        summary.failed_messages += 1
+        _add_recent_error(summary, f"message {message_id}: {exc}")
+        return
     summary.linked_messages += 1 if changed else 0
     summary.skipped_messages += 0 if changed else 1
-    await _update_sync_state("mem0", conversation_id, message_id)
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

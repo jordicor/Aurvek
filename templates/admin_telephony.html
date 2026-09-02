@@ -1,0 +1,466 @@
+{% extends 'base_admin.html' %}
+{% block title %}Phone Calls - AURVEK{% endblock %}
+{% block page_title %}Phone Calls{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">Native phone channel: configuration, numbers, and operations</p>{% endblock %}
+
+{% block alerts %}
+{% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+<div id="telephony-feedback" class="alert d-none" role="alert"></div>
+{% endblock %}
+
+{% block content %}
+{% if telephony %}
+{% set readiness_reason_labels = {
+    'twilio_credentials_missing': 'Twilio credentials are missing.',
+    'elevenlabs_stt_credential_missing': 'The ElevenLabs credential for Scribe is missing.',
+    'public_domain_missing_or_invalid': 'The public phone callback domain is missing or invalid.',
+    'number_inventory_not_synchronized': 'The Twilio number inventory has not been synchronized.',
+    'outbound_default_number_missing': 'An outbound default number must be configured.',
+    'inbound_voice_webhook_drift': 'One or more inbound Voice webhooks have drifted.',
+    'canonical_default_voice_missing': 'A canonical default voice must be configured.',
+    'canonical_default_voice_invalid': 'The canonical default voice is invalid.',
+    'canonical_tts_credential_missing': 'The canonical TTS credential is missing.',
+    'technical_notices_incomplete': 'Technical notices are incomplete.',
+    'global_audio_bundle_not_ready': 'The global audio bundle is not ready.',
+    'phone_billing_rates_missing': 'Phone billing rates are incomplete.',
+    'ffmpeg_unavailable': 'FFmpeg is unavailable.'
+} %}
+<div class="stats-row">
+    <span class="stat-badge">
+        {% if telephony.readiness.ready_for_enable %}
+        <i class="fas fa-check-circle" style="color:var(--success)"></i> Enablement readiness: Ready
+        {% else %}
+        <i class="fas fa-exclamation-circle" style="color:var(--danger)"></i> Enablement readiness: Blocked
+        {% endif %}
+    </span>
+    <span class="stat-badge"><i class="fas fa-phone"></i> <strong>{{ telephony.operation.calls|length }}</strong> recent calls</span>
+    <span class="stat-badge"><i class="fas fa-calendar"></i> <strong>{{ telephony.operation.jobs|length }}</strong> visible jobs</span>
+    <span class="stat-badge"><i class="fas fa-sim-card"></i> <strong>{{ telephony.numbers|length }}</strong> numbers</span>
+</div>
+
+{% if not telephony.readiness.ready_for_enable %}
+<div class="alert alert-warning">
+    <strong>{{ 'The channel is enabled, but readiness checks are failing.' if telephony.config.enabled else 'The channel cannot be enabled yet.' }}</strong>
+    <ul class="mb-0 mt-2">
+        {% for reason in telephony.readiness.blocking_reasons %}
+        <li>{{ readiness_reason_labels.get(reason, reason|replace('_', ' ')|capitalize) }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-heartbeat"></i> Status and callbacks</div>
+    <div class="row g-3">
+        <div class="col-md-6">
+            <table class="table table-sm mb-0"><tbody>
+                <tr><td>Twilio account</td><td>{{ 'configured' if telephony.credentials.twilio_account_present else 'missing' }}</td></tr>
+                <tr><td>Twilio credential</td><td>{{ 'configured' if telephony.credentials.twilio_credential_present else 'missing' }}</td></tr>
+                <tr><td>ElevenLabs Scribe</td><td>{{ 'configured' if telephony.credentials.elevenlabs_stt_present else 'missing' }}</td></tr>
+                <tr><td>Canonical TTS</td><td>{{ 'configured' if telephony.credentials.canonical_tts_present else 'missing' }}</td></tr>
+            </tbody></table>
+        </div>
+        <div class="col-md-6">
+            {% if telephony.callbacks.configured %}
+            <div class="small text-muted">Voice webhook</div><code>{{ telephony.callbacks.voice_inbound }}</code>
+            <div class="small text-muted mt-2">Media Stream</div><code>{{ telephony.callbacks.media_stream }}</code>
+            {% else %}
+            <div class="alert alert-warning mb-0">{{ telephony.callbacks.error }}</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-receipt"></i> Phone billing rates</div>
+    <p class="text-muted">Aurvek does not assume prices or countries. Each rate must reflect the provider's actual contract and, when charging the user, link to a billing service.</p>
+    {% if telephony.readiness.missing_billing_rates %}<div class="alert alert-warning"><strong>Missing:</strong> {{ telephony.readiness.missing_billing_rates|join(', ') }}</div>{% endif %}
+    <form id="billing-rate-form" class="row g-2 align-items-end">
+        <div class="col-md-2"><label class="form-label" for="billing_provider">Provider</label><input class="form-control" id="billing_provider" value="twilio" required></div>
+        <div class="col-md-2"><label class="form-label" for="billing_component">Component</label><select class="form-select" id="billing_component"><option>pstn</option><option>transport</option><option>stt</option><option>tts</option><option>amd</option><option>recording</option></select></div>
+        <div class="col-md-2"><label class="form-label" for="billing_direction">PSTN direction</label><select class="form-select" id="billing_direction"><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select></div>
+        <div class="col-md-1"><label class="form-label" for="billing_from_country">Origin</label><input class="form-control" id="billing_from_country" maxlength="2" placeholder="US" required></div>
+        <div class="col-md-1"><label class="form-label" for="billing_to_country">Destination</label><input class="form-control" id="billing_to_country" maxlength="2" placeholder="US" required></div>
+        <div class="col-md-2"><label class="form-label" for="billing_unit">Unit</label><select class="form-select" id="billing_unit"><option value="minute">minute</option><option value="character">character</option><option value="call">call</option></select></div>
+        <div class="col-md-2"><label class="form-label" for="billing_currency">Currency</label><input class="form-control" id="billing_currency" maxlength="8" value="USD" required></div>
+        <div class="col-md-2"><label class="form-label" for="billing_provider_rate">Provider cost/unit</label><input class="form-control" id="billing_provider_rate" type="number" min="0" step="any" required></div>
+        <div class="col-md-2"><label class="form-label" for="billing_customer_rate">Customer charge/unit</label><input class="form-control" id="billing_customer_rate" type="number" min="0" step="any" required></div>
+        <div class="col-md-2"><label class="form-label" for="billing_service_id">Service ID</label><input class="form-control" id="billing_service_id" type="number" min="1"><div class="form-text">Required when the customer charge is greater than zero.</div></div>
+        <div class="col-md-2 form-check form-switch ms-3"><input class="form-check-input" id="billing_active" type="checkbox" checked><label class="form-check-label" for="billing_active">Active</label></div>
+        <div class="col-md-2"><button class="btn btn-primary" type="submit">Save rate</button></div>
+    </form>
+    <div class="table-wrapper mt-3"><table class="table table-sm"><thead><tr><th>Provider/component</th><th>Scope</th><th>Unit</th><th>Provider</th><th>Customer</th><th>Service</th><th>Status</th></tr></thead><tbody>
+    {% for rate in telephony.billing.rates %}<tr><td>{{ rate.provider }} / {{ rate.component_type }}</td><td>{% if rate.component_type == 'pstn' %}{{ rate.direction }} · {{ rate.from_country }} → {{ rate.to_country }}{% else %}Non-geographic{% endif %}</td><td>{{ rate.unit }}</td><td>{{ rate.provider_rate_per_unit }} {{ rate.currency }}</td><td>{{ rate.customer_rate_per_unit }} {{ rate.currency }}</td><td>{{ rate.service_name or rate.service_id or '—' }}</td><td>{{ 'active' if rate.active else 'inactive' }}</td></tr>{% else %}<tr><td colspan="7" class="text-center text-muted">No rates configured.</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="stats-row mt-2">{% for item in telephony.billing.stats_30_days %}<span class="stat-badge">{{ item.state }}: <strong>{{ item['items'] }}</strong> · provider {{ item.final_provider_cost }} · customer {{ item.final_customer_charge }} {{ item.currency }}{% if item.platform_absorbed_items %} · absorbed {{ item.platform_absorbed_items }}{% endif %}</span>{% endfor %}</div>
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-cogs"></i> Global configuration</div>
+    <form id="telephony-config-form">
+        <div class="row g-3">
+            <div class="col-md-3 form-check form-switch ms-3">
+                <input class="form-check-input" type="checkbox" id="telephony_enabled" {% if telephony.config.enabled %}checked{% elif not telephony.readiness.ready_for_enable %}disabled{% endif %}>
+                <label class="form-check-label" for="telephony_enabled">Channel enabled</label>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_max_call_seconds">Maximum call duration (seconds)</label>
+                <input class="form-control" type="number" min="60" max="86400" id="telephony_max_call_seconds" value="{{ telephony.config.max_call_seconds }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_stt_language">Global STT language</label>
+                <input class="form-control" id="telephony_stt_language" value="{{ telephony.config.stt_language }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_endpointing_ms">End-of-speech pause (ms)</label>
+                <input class="form-control" type="number" min="300" max="3000" id="telephony_endpointing_ms" value="{{ telephony.config.endpointing_ms }}">
+                <div class="form-text">Increase for slow speech; each prompt can inherit or adjust it.</div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_barge_in_confirmation_ms">Interruption confirmation (ms)</label>
+                <input class="form-control" type="number" min="100" max="2000" id="telephony_barge_in_confirmation_ms" value="{{ telephony.config.barge_in_confirmation_ms }}">
+                <div class="form-text">Baseline used to adjust each prompt's sensitivity.</div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_allowed_countries">Outbound countries (comma-separated ISO codes)</label>
+                <input class="form-control" id="telephony_allowed_countries" value="{{ telephony.config.allowed_countries|join(',') }}">
+                <div class="form-text">Explicit configuration; never inferred from IP.</div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_silence_check_seconds">Silence warning (seconds)</label>
+                <input class="form-control" type="number" min="0" max="14400" id="telephony_silence_check_seconds" value="{{ telephony.config.silence_check_seconds }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_silence_hangup_seconds">Hang up after warning (seconds)</label>
+                <input class="form-control" type="number" min="0" max="14400" id="telephony_silence_hangup_seconds" value="{{ telephony.config.silence_hangup_seconds }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_scheduler_jitter_seconds">Dispatcher jitter (seconds)</label>
+                <input class="form-control" type="number" min="1" max="60" id="telephony_scheduler_jitter_seconds" value="{{ telephony.config.scheduler_jitter_seconds }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="telephony_max_concurrent_dispatches">Concurrent dispatches</label>
+                <input class="form-control" type="number" min="1" max="100" id="telephony_max_concurrent_dispatches" value="{{ telephony.config.max_concurrent_dispatches }}">
+                <div class="form-text">Global limit; each conversation remains limited to one.</div>
+            </div>
+            <div class="col-md-3 pt-4">
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="telephony_recording_default" {% if telephony.config.recording_default %}checked{% endif %}><label class="form-check-label" for="telephony_recording_default">Recording by default</label></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="telephony_amd_default" {% if telephony.config.amd_default %}checked{% endif %}><label class="form-check-label" for="telephony_amd_default">AMD by default</label></div>
+            </div>
+        </div>
+        <button class="btn btn-primary mt-3" type="submit"><i class="fas fa-save me-1"></i> Save configuration</button>
+    </form>
+</div>
+
+<div class="section-container">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div class="section-title mb-0"><i class="fas fa-sim-card"></i> Twilio numbers</div>
+        <button class="btn btn-outline-primary btn-sm" type="button" id="sync-numbers"><i class="fas fa-sync me-1"></i> Sync inventory</button>
+    </div>
+    <div class="table-wrapper"><table class="table align-middle"><thead><tr>
+        <th>Number</th><th>Country/region</th><th>Capabilities</th><th>Status</th><th>Voice webhook</th><th>Bindings</th><th>Action</th>
+    </tr></thead><tbody>
+    {% for number in telephony.numbers %}
+        <tr data-number-id="{{ number.id }}">
+            <td><strong>{{ number.e164 }}</strong><br><small class="text-muted">{{ number.friendly_name or '—' }}</small>{% if not number.provider_present %}<br><span class="badge bg-danger">missing from Twilio</span>{% elif not number.voice_capable %}<br><span class="badge bg-warning text-dark">no Voice capability</span>{% endif %}</td>
+            <td>{{ number.iso_country or '—' }}{% if number.region %} / {{ number.region }}{% endif %}</td>
+            <td>{% for key, value in number.capabilities.items() %}{% if value %}<span class="badge bg-secondary me-1">{{ key }}</span>{% endif %}{% endfor %}</td>
+            <td>
+                <div class="form-check"><input class="form-check-input number-enabled" type="checkbox" {% if number.enabled %}checked{% elif not number.provider_present %}disabled{% endif %}> enabled</div>
+                <div class="form-check"><input class="form-check-input number-inbound" type="checkbox" {% if number.inbound_enabled %}checked{% elif not number.provider_present or not number.voice_capable or not telephony.readiness.inbound_configuration_ready %}disabled{% endif %}> inbound</div>
+                <div class="form-check"><input class="form-check-input number-default" type="checkbox" {% if number.is_outbound_default %}checked{% elif not number.provider_present or not number.voice_capable or not telephony.readiness.canonical_voice_valid %}disabled{% endif %}> outbound default</div>
+            </td>
+            <td>
+                {% if number.webhooks_match %}<span class="badge bg-success">correct</span>{% else %}<span class="badge bg-warning text-dark">drift/not configured</span>{% endif %}
+                <div class="small text-muted">The stored URL is not exposed.</div>
+                {% if number.inbound_enabled %}<label class="small"><input class="number-repair" type="checkbox"> repair when saving</label>{% endif %}
+            </td>
+            <td>{{ number.explicit_binding_count }}</td>
+            <td><button type="button" class="btn btn-outline-primary btn-sm save-number">Save</button></td>
+        </tr>
+    {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">No synced inventory.</td></tr>
+    {% endfor %}
+    </tbody></table></div>
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-volume-up"></i> Global voice, greetings, and notices</div>
+    <p class="text-muted">A revision is activated only after its complete audio bundle has finished. Phrases are literal.</p>
+    {% if not telephony.audio_publisher_registered %}<div class="alert alert-warning">The global renderer is not registered yet; saving will fail safely without changing the active revision.</div>{% endif %}
+    <form id="global-audio-form">
+        <div class="mb-3"><label class="form-label" for="global_voice_id">Default canonical voice</label>
+            <select class="form-select" id="global_voice_id" required><option value="">Select…</option>{% for voice in telephony.voices %}{% if voice.available %}<option value="{{ voice.id }}" {% if voice.is_default %}selected{% endif %}>{{ voice.name }} ({{ voice.provider }})</option>{% endif %}{% endfor %}</select>
+        </div>
+        <div class="row g-3">
+            {% for direction in ['inbound','outbound'] %}
+            {% set items = telephony.global_audio.greetings[direction] %}
+            <div class="col-md-6">
+                <label class="form-label" for="{{ direction }}_greetings">{{ 'Inbound' if direction == 'inbound' else 'Outbound' }} greetings (one per line)</label>
+                <textarea class="form-control" id="{{ direction }}_greetings" rows="5">{% for item in items %}{{ item.literal_text }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+                <div class="row mt-2"><div class="col"><select class="form-select" id="{{ direction }}_mode"><option value="random" {% if not items|selectattr('fixed')|list %}selected{% endif %}>Random</option><option value="fixed" {% if items|selectattr('fixed')|list %}selected{% endif %}>Fixed</option></select></div><div class="col"><input class="form-control" type="number" min="1" id="{{ direction }}_fixed_index" placeholder="Fixed phrase number" value="{% for item in items %}{% if item.fixed %}{{ loop.index }}{% endif %}{% endfor %}"></div></div>
+            </div>
+            {% endfor %}
+        </div>
+        <hr>
+        <div class="row g-3">
+            {% for key, text in telephony.global_audio.notices.items() %}
+            <div class="col-md-6"><label class="form-label" for="notice_{{ key }}"><code>{{ key }}</code></label><textarea class="form-control technical-notice" data-key="{{ key }}" id="notice_{{ key }}" rows="2">{{ text }}</textarea></div>
+            {% endfor %}
+        </div>
+        <button class="btn btn-primary mt-3" type="submit" {% if not telephony.audio_publisher_registered %}disabled{% endif %}><i class="fas fa-wave-square me-1"></i> Generate and activate revision</button>
+    </form>
+    <div class="small text-muted mt-3">Active: {{ telephony.global_audio.active_revision or 'none' }} · Latest definition: {{ telephony.global_audio.latest_definition_revision or 'none' }}</div>
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-exclamation-triangle"></i> Attention and diagnostics</div>
+    <div class="stats-row">{% for key, value in telephony.diagnostics.attention.items() %}<span class="stat-badge">{{ key }} <strong>{{ value }}</strong></span>{% endfor %}</div>
+    <div class="row"><div class="col-md-6"><strong>Latest valid webhook</strong><pre class="small">{{ telephony.diagnostics.last_webhooks.valid or '—' }}</pre></div><div class="col-md-6"><strong>Latest invalid webhook</strong><pre class="small">{{ telephony.diagnostics.last_webhooks.invalid or '—' }}</pre></div></div>
+    <button class="btn btn-outline-primary btn-sm" type="button" id="resync-diagnostics"><i class="fas fa-sync me-1"></i> Resync diagnostics</button>
+    {% if telephony.diagnostics.purge_jobs %}
+    <div class="table-wrapper mt-3"><table class="table table-sm"><thead><tr><th>Purge</th><th>Scope</th><th>Attempt</th><th>Error</th><th></th></tr></thead><tbody>
+    {% for purge in telephony.diagnostics.purge_jobs %}<tr><td><code>{{ purge.id }}</code></td><td>{{ purge.purge_scope }}</td><td>{{ purge.attempt_count }}</td><td>Requires manual reconciliation</td><td><button class="btn btn-outline-warning btn-sm retry-purge" data-job-id="{{ purge.id }}" data-attempt="{{ purge.attempt_count }}">Retry</button></td></tr>{% endfor %}
+    </tbody></table></div>
+    {% endif %}
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-phone-volume"></i> Recent calls</div>
+    <form class="row g-2 mb-3 operation-filters" data-resource="calls">
+        <div class="col-md-2"><input class="form-control form-control-sm" name="status" placeholder="Status"></div><div class="col-md-2"><input class="form-control form-control-sm" name="line_id" type="number" min="1" placeholder="Line ID"></div><div class="col-md-2"><input class="form-control form-control-sm" name="contact_id" type="number" min="1" placeholder="Contact ID"></div><div class="col-md-2"><input class="form-control form-control-sm" name="owner_user_id" type="number" min="1" placeholder="Owner user ID"></div><div class="col-md-2"><input class="form-control form-control-sm" name="conversation_id" type="number" min="1" placeholder="Conversation"></div><div class="col-md-2"><button class="btn btn-outline-primary btn-sm" type="submit">Filter</button></div>
+    </form>
+    <div class="table-wrapper"><table class="table table-sm"><thead><tr><th>ID</th><th>Conversation</th><th>Contact</th><th>Direction</th><th>Status</th><th>Duration</th><th>Cost</th><th>Actions</th></tr></thead><tbody id="calls-operation-body">
+    {% for call in telephony.operation.calls %}<tr><td><code>{{ call.id }}</code></td><td>#{{ call.conversation_id }}</td><td>{{ call.contact_name or '—' }}</td><td>{{ call.direction }}</td><td>{{ call.status }}</td><td>{{ call.duration_seconds or 0 }} s</td><td>{{ call.final_cost if call.final_cost is not none else call.estimated_cost }} {{ call.currency }}</td><td><button class="btn btn-outline-primary btn-sm call-detail" data-call-id="{{ call.id }}">Details</button>{% if call.can_retry_hangup %} <button class="btn btn-outline-warning btn-sm retry-hangup" data-call-id="{{ call.id }}">Retry hang-up</button>{% elif call.status in ['created','dispatching','queued','initiated','ringing','in_progress'] %} <button class="btn btn-outline-danger btn-sm hangup-call" data-call-id="{{ call.id }}">Hang up</button>{% endif %}</td></tr>{% else %}<tr><td colspan="8" class="text-center text-muted">No calls.</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="operation-pager mt-2" id="calls-operation-pager"></div>
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-calendar-alt"></i> Scheduled jobs or jobs requiring attention</div>
+    <form class="row g-2 mb-3 operation-filters" data-resource="jobs">
+        <div class="col-md-2"><input class="form-control form-control-sm" name="status" placeholder="Status"></div><div class="col-md-2"><input class="form-control form-control-sm" name="line_id" type="number" min="1" placeholder="Line ID"></div><div class="col-md-2"><input class="form-control form-control-sm" name="contact_id" type="number" min="1" placeholder="Contact ID"></div><div class="col-md-2"><input class="form-control form-control-sm" name="owner_user_id" type="number" min="1" placeholder="Owner user ID"></div><div class="col-md-2"><input class="form-control form-control-sm" name="conversation_id" type="number" min="1" placeholder="Conversation"></div><div class="col-md-2"><button class="btn btn-outline-primary btn-sm" type="submit">Filter</button></div>
+    </form>
+    <div class="table-wrapper"><table class="table table-sm"><thead><tr><th>ID</th><th>Conversation</th><th>Contact</th><th>UTC time/time zone</th><th>Status</th><th>Error/actions</th></tr></thead><tbody id="jobs-operation-body">
+    {% for job in telephony.operation.jobs %}<tr><td><code>{{ job.id }}</code></td><td>#{{ job.conversation_id }}</td><td>{{ job.contact_name or '—' }}</td><td>{{ job.scheduled_at_utc }}<br><small>{{ job.timezone_name }}</small></td><td>{{ job.status }}</td><td>{{ job.last_error_code or '—' }} {{ job.last_error_detail or '' }}{% if job.status == 'scheduled' %}<br><button class="btn btn-outline-danger btn-sm cancel-job" data-job-id="{{ job.id }}">Cancel</button> <button class="btn btn-outline-primary btn-sm reschedule-job" data-job-id="{{ job.id }}">Reschedule</button>{% endif %}</td></tr>{% else %}<tr><td colspan="6" class="text-center text-muted">No visible jobs.</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="operation-pager mt-2" id="jobs-operation-pager"></div>
+</div>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-vial"></i> Paid test call</div>
+    <p class="text-muted">Creates one immediate job for a conversation that already has a phone binding. This panel does not place the call directly; the normal dispatcher preserves billing and exclusion controls.</p>
+    <div class="alert {{ 'alert-warning' if telephony.paid_test_call.ready else 'alert-danger' }} py-2">
+        Gate: <strong>{{ 'enabled' if telephony.paid_test_call.enabled else 'disabled' }}</strong> ·
+        exact destinations: {{ telephony.paid_test_call.configured_destination_count }}
+        {% if telephony.paid_test_call.destinations_redacted %}({{ telephony.paid_test_call.destinations_redacted | join(', ') }}){% endif %}
+        {% if telephony.paid_test_call.configuration_error %}<br>{{ telephony.paid_test_call.configuration_error }}{% endif %}
+    </div>
+    <form id="paid-test-call-form" class="row g-2 align-items-end"><div class="col-md-4"><label class="form-label" for="paid_test_conversation">Conversation ID</label><input class="form-control" id="paid_test_conversation" type="number" min="1" required></div><div class="col-md-4"><label class="form-label" for="paid_test_key">Idempotency key</label><input class="form-control" id="paid_test_key" minlength="8" maxlength="128" required></div><div class="col-md-4"><button class="btn btn-warning" type="submit" {% if not telephony.paid_test_call.ready %}disabled{% endif %}>Schedule paid test call</button></div></form>
+</div>
+
+<dialog id="phone-call-detail" aria-labelledby="phone-call-detail-title" style="width:min(900px,95vw);max-height:90vh;overflow:auto"><h2 id="phone-call-detail-title" class="h5">Call details</h2><div id="phone-call-detail-content"></div><form method="dialog" class="mt-3"><button class="btn btn-secondary">Close</button></form></dialog>
+
+<div class="section-container">
+    <div class="section-title"><i class="fas fa-dollar-sign"></i> Costs over the last 30 days</div>
+    <div class="table-wrapper"><table class="table table-sm"><thead><tr><th>Component</th><th>Items</th><th>Provider</th><th>Charge</th><th>Currency</th></tr></thead><tbody>{% for cost in telephony.operation.costs_30_days %}<tr><td>{{ cost.component_type }}</td><td>{{ cost['items'] }}</td><td>{{ cost.provider_cost }}</td><td>{{ cost.customer_charge }}</td><td>{{ cost.currency }}</td></tr>{% else %}<tr><td colspan="5" class="text-center text-muted">No recorded costs.</td></tr>{% endfor %}</tbody></table></div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts_inline %}
+{% if telephony %}
+<script>
+const telephonyCsrf = {{ telephony_csrf_token | tojson }};
+const feedback = document.getElementById('telephony-feedback');
+
+function showFeedback(message, ok) {
+    feedback.className = `alert ${ok ? 'alert-success' : 'alert-danger'}`;
+    feedback.textContent = message;
+    feedback.scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+async function telephonyMutation(url, options = {}) {
+    const response = await fetch(url, {
+        ...options,
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-GPTSub-CSRF': telephonyCsrf, ...(options.headers || {})}
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || body.message || 'The operation could not be completed.');
+    return body;
+}
+
+document.getElementById('telephony-config-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!window.confirm('Save this configuration and reconcile the phone runtime?')) return;
+    const countries = document.getElementById('telephony_allowed_countries').value.split(',').map(value => value.trim().toUpperCase()).filter(Boolean);
+    const payload = {
+        telephony_enabled: document.getElementById('telephony_enabled').checked,
+        telephony_transport: 'media_streams', telephony_stt_provider: 'elevenlabs', telephony_stt_model: 'scribe_v2_realtime',
+        telephony_stt_language: document.getElementById('telephony_stt_language').value.trim(),
+        telephony_endpointing_ms: Number(document.getElementById('telephony_endpointing_ms').value),
+        telephony_barge_in_confirmation_ms: Number(document.getElementById('telephony_barge_in_confirmation_ms').value),
+        telephony_max_call_seconds: Number(document.getElementById('telephony_max_call_seconds').value),
+        telephony_allowed_countries: countries,
+        telephony_recording_default: document.getElementById('telephony_recording_default').checked,
+        telephony_amd_default: document.getElementById('telephony_amd_default').checked,
+        telephony_reconnect_attempts: {{ telephony.config.reconnect_attempts }},
+        telephony_silence_check_seconds: Number(document.getElementById('telephony_silence_check_seconds').value),
+        telephony_silence_hangup_seconds: Number(document.getElementById('telephony_silence_hangup_seconds').value),
+        telephony_scheduler_jitter_seconds: Number(document.getElementById('telephony_scheduler_jitter_seconds').value),
+        telephony_max_concurrent_dispatches: Number(document.getElementById('telephony_max_concurrent_dispatches').value)
+    };
+    try { await telephonyMutation('/admin/telephony/config', {method: 'POST', body: JSON.stringify(payload)}); showFeedback('Configuration saved.', true); }
+    catch (error) { showFeedback(error.message, false); }
+});
+
+document.getElementById('billing_component').addEventListener('change', (event) => {
+    const units = {pstn: 'minute', transport: 'minute', stt: 'minute', tts: 'character', amd: 'call', recording: 'minute'};
+    document.getElementById('billing_unit').value = units[event.target.value];
+    const geographic = event.target.value === 'pstn';
+    for (const id of ['billing_direction', 'billing_from_country', 'billing_to_country']) {
+        const input = document.getElementById(id); input.disabled = !geographic;
+        input.required = geographic;
+        if (!geographic) input.value = '';
+    }
+});
+
+document.getElementById('billing-rate-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!window.confirm('Save this billing rate?')) return;
+    const serviceValue = document.getElementById('billing_service_id').value;
+    const payload = {
+        provider: document.getElementById('billing_provider').value.trim().toLowerCase(), component_type: document.getElementById('billing_component').value,
+        direction: document.getElementById('billing_direction').value, from_country: document.getElementById('billing_from_country').value.trim().toUpperCase(), to_country: document.getElementById('billing_to_country').value.trim().toUpperCase(),
+        unit: document.getElementById('billing_unit').value, provider_rate_per_unit: Number(document.getElementById('billing_provider_rate').value), customer_rate_per_unit: Number(document.getElementById('billing_customer_rate').value),
+        currency: document.getElementById('billing_currency').value.trim().toUpperCase(), service_id: serviceValue ? Number(serviceValue) : null, active: document.getElementById('billing_active').checked
+    };
+    try { await telephonyMutation('/admin/telephony/billing-rates', {method: 'POST', body: JSON.stringify(payload)}); showFeedback('Billing rate saved.', true); window.location.reload(); }
+    catch (error) { showFeedback(error.message, false); }
+});
+
+document.getElementById('sync-numbers').addEventListener('click', async () => {
+    if (!window.confirm('Sync the Twilio number inventory?')) return;
+    try { const result = await telephonyMutation('/admin/telephony/numbers/sync', {method: 'POST', body: '{}'}); showFeedback(`${result.synced} numbers synced.`, true); window.location.reload(); }
+    catch (error) { showFeedback(error.message, false); }
+});
+
+document.querySelectorAll('.save-number').forEach(button => button.addEventListener('click', async () => {
+    const row = button.closest('tr'); const id = row.dataset.numberId;
+    const enabled = row.querySelector('.number-enabled').checked;
+    const affected = Number(row.children[5].textContent.trim()) || 0;
+    const bindingLabel = affected === 1 ? 'binding' : 'bindings';
+    const bindingReference = affected === 1 ? 'that binding' : 'those bindings';
+    const confirmAffected = !enabled && affected > 0 ? window.confirm(`This line is assigned to ${affected} ${bindingLabel}. Disable it and block future outbound calls using ${bindingReference} until reviewed?`) : false;
+    if (!enabled && affected > 0 && !confirmAffected) return;
+    if (!window.confirm("Save this number's configuration?")) return;
+    const payload = {enabled, inbound_enabled: row.querySelector('.number-inbound').checked, is_outbound_default: row.querySelector('.number-default').checked, confirm_affected_bindings: confirmAffected, repair_webhook: Boolean(row.querySelector('.number-repair')?.checked)};
+    try { await telephonyMutation(`/admin/telephony/numbers/${id}`, {method: 'PATCH', body: JSON.stringify(payload)}); showFeedback('Number updated.', true); window.location.reload(); }
+    catch (error) { showFeedback(error.message, false); }
+}));
+
+function greetingPayload(direction) {
+    const phrases = document.getElementById(`${direction}_greetings`).value.split('\n').map(value => value.trim()).filter(Boolean).map(literal_text => ({literal_text, enabled: true}));
+    const mode = document.getElementById(`${direction}_mode`).value;
+    const fixed = Number(document.getElementById(`${direction}_fixed_index`).value);
+    return {mode, phrases, fixed_index: mode === 'fixed' ? fixed - 1 : null};
+}
+
+document.getElementById('global-audio-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const notices = {};
+    if (!window.confirm('Generate and activate this global audio revision?')) return;
+    document.querySelectorAll('.technical-notice').forEach(element => { notices[element.dataset.key] = element.value.trim(); });
+    const payload = {voice_id: Number(document.getElementById('global_voice_id').value), inbound: greetingPayload('inbound'), outbound: greetingPayload('outbound'), notices};
+    try { await telephonyMutation('/admin/telephony/global-audio', {method: 'POST', body: JSON.stringify(payload)}); showFeedback('Global audio revision generated and activated.', true); window.location.reload(); }
+    catch (error) { showFeedback(error.message, false); }
+});
+
+document.getElementById('resync-diagnostics').addEventListener('click', async () => {
+    if (!window.confirm('Reconcile the runtime, inventory, and readiness checks without retrying calls?')) return;
+    try { await telephonyMutation('/admin/telephony/diagnostics/resync', {method: 'POST', body: JSON.stringify({confirmed: true})}); showFeedback('Diagnostics resynced.', true); window.location.reload(); }
+    catch (error) { showFeedback(error.message, false); }
+});
+
+document.querySelectorAll('.retry-purge').forEach(button => button.addEventListener('click', async () => {
+    if (!window.confirm('Retry this purge job after confirming the underlying issue has been reconciled?')) return;
+    try { await telephonyMutation(`/admin/telephony/purge-jobs/${encodeURIComponent(button.dataset.jobId)}/retry`, {method: 'POST', body: JSON.stringify({expected_attempt_count: Number(button.dataset.attempt), resolution: 'reconcile_by_purge'})}); showFeedback('Purge rescheduled.', true); window.location.reload(); }
+    catch (error) { showFeedback(error.message, false); }
+}));
+
+function textCell(row, value) {
+    const cell = document.createElement('td'); cell.textContent = value == null || value === '' ? '—' : String(value); row.appendChild(cell); return cell;
+}
+
+function actionButton(label, className, attribute, value) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = `btn btn-sm ${className}`; button.textContent = label; button.dataset[attribute] = value; return button;
+}
+
+function renderOperations(resource, page) {
+    const body = document.getElementById(`${resource}-operation-body`); body.replaceChildren();
+    for (const item of page.items) {
+        const row = document.createElement('tr'); textCell(row, item.id); textCell(row, `#${item.conversation_id}`); textCell(row, item.contact_name);
+        if (resource === 'calls') {
+            textCell(row, item.direction); textCell(row, item.status); textCell(row, `${item.duration_seconds || 0} s`); textCell(row, `${item.final_cost ?? item.estimated_cost} ${item.currency}`);
+            const actions = document.createElement('td'); actions.appendChild(actionButton('Details', 'btn-outline-primary call-detail', 'callId', item.id));
+            if (item.can_retry_hangup) actions.appendChild(actionButton('Retry hang-up', 'btn-outline-warning retry-hangup ms-1', 'callId', item.id));
+            else if (['created','dispatching','queued','initiated','ringing','in_progress'].includes(item.status)) actions.appendChild(actionButton('Hang up', 'btn-outline-danger hangup-call ms-1', 'callId', item.id)); row.appendChild(actions);
+        } else {
+            textCell(row, `${item.scheduled_at_utc} (${item.timezone_name})`); textCell(row, item.status); const actions = textCell(row, `${item.last_error_code || ''} ${item.last_error_detail || ''}`.trim());
+            if (item.status === 'scheduled') { actions.appendChild(document.createElement('br')); actions.appendChild(actionButton('Cancel', 'btn-outline-danger cancel-job', 'jobId', item.id)); actions.appendChild(actionButton('Reschedule', 'btn-outline-primary reschedule-job ms-1', 'jobId', item.id)); }
+        }
+        body.appendChild(row);
+    }
+    if (!page.items.length) { const row = document.createElement('tr'); const cell = textCell(row, 'No results.'); cell.colSpan = resource === 'calls' ? 8 : 6; body.appendChild(row); }
+    const pager = document.getElementById(`${resource}-operation-pager`); pager.replaceChildren();
+    const label = document.createElement('span'); label.className = 'small text-muted me-2'; label.textContent = `${page.offset + (page.items.length ? 1 : 0)}–${page.offset + page.items.length} of ${page.total}`; pager.appendChild(label);
+    const previous = actionButton('Previous', 'btn-outline-secondary operation-page', 'offset', Math.max(0, page.offset - page.limit)); previous.dataset.resource = resource; previous.disabled = page.offset === 0; pager.appendChild(previous);
+    const next = actionButton('Next', 'btn-outline-secondary operation-page ms-1', 'offset', page.next_offset == null ? page.offset : page.next_offset); next.dataset.resource = resource; next.disabled = page.next_offset == null; pager.appendChild(next);
+}
+
+async function fetchOperations(form, offset = 0) {
+    const params = new URLSearchParams({resource: form.dataset.resource, offset: String(offset)});
+    for (const [key, value] of new FormData(form).entries()) if (String(value).trim()) params.set(key, String(value).trim());
+    const response = await fetch(`/admin/telephony/operations?${params}`, {credentials: 'same-origin'}); const body = await response.json(); if (!response.ok) throw new Error(body.detail || 'Could not apply the filters.'); renderOperations(form.dataset.resource, body);
+}
+
+document.querySelectorAll('.operation-filters').forEach(form => form.addEventListener('submit', async event => {
+    event.preventDefault(); try { await fetchOperations(form); } catch (error) { showFeedback(error.message, false); }
+}));
+
+function appendDetailSection(container, title, items, formatter) {
+    const heading = document.createElement('h3'); heading.className = 'h6 mt-3'; heading.textContent = title; container.appendChild(heading);
+    const list = document.createElement('ul'); list.className = 'list-group';
+    for (const item of items) { const line = document.createElement('li'); line.className = 'list-group-item'; formatter(line, item); list.appendChild(line); }
+    if (!items.length) { const line = document.createElement('li'); line.className = 'list-group-item text-muted'; line.textContent = 'No data.'; list.appendChild(line); } container.appendChild(list);
+}
+
+async function showCallDetail(callId) {
+    const response = await fetch(`/admin/telephony/calls/${encodeURIComponent(callId)}`, {credentials: 'same-origin'}); const detail = await response.json(); if (!response.ok) throw new Error(detail.detail || 'Could not load the call details.');
+    const container = document.getElementById('phone-call-detail-content'); container.replaceChildren(); const summary = document.createElement('p'); summary.textContent = `${detail.call.id} · conversation #${detail.call.conversation_id} · ${detail.call.status} · ${detail.call.duration_seconds || 0}s`; container.appendChild(summary);
+    appendDetailSection(container, 'Timeline', detail.events, (line, item) => { line.textContent = `${item.received_at} · ${item.event_type} · ${item.signature_valid ? 'valid' : 'invalid'} signature · ${JSON.stringify(item.payload)}`; });
+    appendDetailSection(container, 'Transcript', detail.transcript, (line, item) => { line.textContent = `${item.date} · ${item.participant} · ${item.message} · delivery=${item.delivery_state}${item.interrupted ? ` · interrupted (${item.played_ms || 0}ms)` : ''}`; });
+    appendDetailSection(container, 'Recordings', detail.recordings, (line, item) => { line.append(document.createTextNode(`${item.status} · ${item.duration_seconds || 0}s `)); for (const track of item.tracks) { const link = document.createElement('a'); link.className = 'btn btn-outline-secondary btn-sm ms-1'; link.textContent = track; link.href = `/admin/telephony/calls/${encodeURIComponent(callId)}/recording?track=${encodeURIComponent(track)}`; link.target = '_blank'; link.rel = 'noopener'; line.appendChild(link); } });
+    appendDetailSection(container, 'Costs', detail.costs, (line, item) => { line.textContent = `${item.component_type} · ${item.quantity} ${item.unit} · provider ${item.provider_cost} · customer ${item.customer_charge} ${item.currency || ''} · ${item.state}`; });
+    document.getElementById('phone-call-detail').showModal();
+}
+
+document.addEventListener('click', async event => {
+    const page = event.target.closest('.operation-page'); if (page) { const form = document.querySelector(`.operation-filters[data-resource="${page.dataset.resource}"]`); try { await fetchOperations(form, Number(page.dataset.offset)); } catch (error) { showFeedback(error.message, false); } return; }
+    const detail = event.target.closest('.call-detail'); if (detail) { try { await showCallDetail(detail.dataset.callId); } catch (error) { showFeedback(error.message, false); } return; }
+    const hangup = event.target.closest('.hangup-call,.retry-hangup'); if (hangup) { const retry = hangup.classList.contains('retry-hangup'); if (!window.confirm(retry ? 'Explicitly retry the unresolved hang-up?' : 'Hang up this active call?')) return; try { await telephonyMutation(`/admin/telephony/calls/${encodeURIComponent(hangup.dataset.callId)}/hangup${retry ? '/retry' : ''}`, {method: 'POST', body: JSON.stringify({confirmed: true})}); showFeedback('Hang-up request recorded.', true); window.location.reload(); } catch (error) { showFeedback(error.message, false); } return; }
+    const cancel = event.target.closest('.cancel-job'); if (cancel) { if (!window.confirm('Cancel this scheduled job?')) return; try { await telephonyMutation(`/admin/telephony/jobs/${encodeURIComponent(cancel.dataset.jobId)}/cancel`, {method: 'POST', body: JSON.stringify({confirmed: true})}); showFeedback('Job canceled.', true); window.location.reload(); } catch (error) { showFeedback(error.message, false); } return; }
+    const reschedule = event.target.closest('.reschedule-job'); if (reschedule) { const scheduledAt = window.prompt('New local ISO date/time (YYYY-MM-DDTHH:MM)'); if (!scheduledAt) return; const timezoneName = window.prompt('IANA time zone (for example, America/New_York)'); if (!timezoneName) return; const foldText = window.prompt('DST fold for an ambiguous time: leave blank, 0, or 1', ''); if (foldText === null) return; if (foldText !== '' && !['0','1'].includes(foldText)) { showFeedback('Fold must be blank, 0, or 1.', false); return; } if (!window.confirm('Reschedule this job to the specified time?')) return; try { await telephonyMutation(`/admin/telephony/jobs/${encodeURIComponent(reschedule.dataset.jobId)}/reschedule`, {method: 'POST', body: JSON.stringify({confirmed: true, scheduled_at: scheduledAt, timezone_name: timezoneName, fold: foldText === '' ? null : Number(foldText)})}); showFeedback('Job rescheduled.', true); window.location.reload(); } catch (error) { showFeedback(error.message, false); } }
+});
+
+document.getElementById('paid-test-call-form').addEventListener('submit', async event => {
+    event.preventDefault(); if (!window.confirm('This test may place a real call and incur real charges. Continue?')) return;
+    const payload = {confirm_paid_call: true, conversation_id: Number(document.getElementById('paid_test_conversation').value), idempotency_key: document.getElementById('paid_test_key').value.trim()};
+    try { const result = await telephonyMutation('/admin/telephony/test-call', {method: 'POST', body: JSON.stringify(payload)}); showFeedback(result.created ? `Job ${result.job_id} created.` : `Job ${result.job_id} already existed; no duplicate was created.`, true); }
+    catch (error) { showFeedback(error.message, false); }
+});
+</script>
+{% endif %}
+{% endblock %}

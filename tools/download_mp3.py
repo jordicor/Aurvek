@@ -3,18 +3,26 @@
 import os
 import sys
 import logging
-import asyncio
-import aiosqlite
 from datetime import datetime, timezone
-import hashlib
 from pydub import AudioSegment
 from io import BytesIO
 from dotenv import load_dotenv
 
 # Import necessary functions from tts.py
-from tools.tts import process_text_for_tts, insert_tts_break, get_tts_generator
+from tools.tts import (
+    get_tts_generator_for_voice,
+    insert_tts_break,
+    process_text_for_tts,
+)
 from tools.tts_config import get_tts_profile, format_to_pydub
-from common import Cost, generate_user_hash, has_sufficient_balance, cost_tts, refund_tts, cache_directory, users_directory, elevenlabs_key, openai_key, tts_engine, get_balance, deduct_balance, load_service_costs
+from ai_runtime.voice_resolution import (
+    CanonicalVoice,
+    CanonicalVoiceResolutionError,
+    resolve_catalog_voice,
+    resolve_default_voice,
+    resolve_prompt_voice,
+)
+from common import Cost, generate_user_hash, has_sufficient_balance, cost_tts, refund_tts
 from database import get_db_connection
 from storage_quota import record_generated_file
 
@@ -38,19 +46,74 @@ if not DB_NAME:
 # Global Variables
 BASE_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'users')
 
+
+async def _resolve_export_voices(conversation, conn) -> tuple[CanonicalVoice, CanonicalVoice]:
+    """Resolve both speakers without falling back to the global TTS engine."""
+    bot_voice = await resolve_prompt_voice(conversation["role_id"], conn=conn)
+    user_voice_code = str(conversation["user_voice_code"] or "").strip()
+    if user_voice_code:
+        user_voice = await resolve_catalog_voice(user_voice_code, conn=conn)
+        if user_voice is None:
+            raise CanonicalVoiceResolutionError(
+                "user_voice_not_catalogued",
+                "The account voice selected for MP3 export is not in the voice catalogue.",
+            )
+    else:
+        user_voice = await resolve_default_voice(conn=conn)
+    return bot_voice, user_voice
+
+
+async def _refund_mp3_charges(user_id: int, charges: dict[str, int]) -> bool:
+    all_refunded = True
+    for provider, characters in charges.items():
+        if not await refund_tts(user_id, characters, provider=provider):
+            all_refunded = False
+            logger.critical(
+                "REFUND FAILED user_id=%s provider=%s chars=%d -- manual review needed",
+                user_id,
+                provider,
+                characters,
+            )
+    return all_refunded
+
+
+async def _charge_mp3_providers(
+    user_id: int,
+    characters_by_provider: dict[str, int],
+) -> dict[str, int] | None:
+    """Reserve all provider charges, compensating earlier reservations on failure."""
+    total_cost = 0.0
+    for provider, characters in characters_by_provider.items():
+        rate, service_id = Cost.get_tts_service(provider)
+        if service_id is None:
+            logger.error("MP3 TTS billing is not configured for provider=%s", provider)
+            return None
+        total_cost += rate * characters
+
+    if not await has_sufficient_balance(user_id, total_cost):
+        return None
+
+    charged: dict[str, int] = {}
+    for provider, characters in characters_by_provider.items():
+        if not await cost_tts(user_id, characters, provider=provider):
+            await _refund_mp3_charges(user_id, charged)
+            return None
+        charged[provider] = characters
+    return charged
+
 async def generate_and_save_mp3(conversation_id: int, user_id: int, is_admin: bool):
     logger.debug(f"Starting MP3 generation for conversation_id: {conversation_id}")
-    async with aiosqlite.connect(f"file:db/{DB_NAME}?mode=ro", uri=True) as conn:
-        conn.row_factory = aiosqlite.Row
-
+    async with get_db_connection(readonly=True) as conn:
         # Verify permissions and conversation existence
         query_convo = """
-            SELECT c.id, u.username, llm.machine, llm.model, p.name AS prompt_name, v.voice_code
+            SELECT c.id, c.role_id, u.username, llm.machine, llm.model,
+                   p.name AS prompt_name, uv.voice_code AS user_voice_code
             FROM conversations c
             JOIN users u ON c.user_id = u.id
+            LEFT JOIN USER_DETAILS ud ON ud.user_id = c.user_id
+            LEFT JOIN VOICES uv ON uv.id = ud.voice_id
             LEFT JOIN llm ON c.llm_id = llm.id
             LEFT JOIN prompts p ON c.role_id = p.id
-            LEFT JOIN voices v ON p.voice_id = v.id
             WHERE c.id = ? AND (c.user_id = ? OR ?)
         """
         async with conn.execute(query_convo, (conversation_id, user_id, is_admin)) as cursor:
@@ -58,6 +121,8 @@ async def generate_and_save_mp3(conversation_id: int, user_id: int, is_admin: bo
             if not conversation:
                 logger.warning(f"Unauthorized access or conversation not found for conversation_id: {conversation_id}")
                 return
+
+        bot_voice, user_voice = await _resolve_export_voices(conversation, conn)
 
         # Get messages
         query_messages = """
@@ -69,9 +134,6 @@ async def generate_and_save_mp3(conversation_id: int, user_id: int, is_admin: bo
             messages = await cursor.fetchall()
 
     # Generate MP3
-    bot_voice_id = conversation['voice_code']
-    user_voice_id = "nMPrFLO7QElx9wTR0JGo"  # Default voice for user
-
     # Load TTS profile for MP3 export context
     profile = await get_tts_profile("mp3")
 
@@ -80,48 +142,42 @@ async def generate_and_save_mp3(conversation_id: int, user_id: int, is_admin: bo
     # a real per-character cost on the platform key, so the user must be billed
     # exactly like the WebSocket TTS path (fail-fast pre-check, then charge-first
     # / refund-on-failure). The subscription (text-only) option never frees this.
-    prepared_messages = []  # list of (voice_id, chunks)
-    total_characters = 0
+    prepared_messages = []  # list of (CanonicalVoice, chunks)
+    characters_by_provider: dict[str, int] = {}
     for message in messages:
         text = process_text_for_tts(message['message'])
-        total_characters += len(text)
         chunks = await insert_tts_break(text)
-        voice_id = bot_voice_id if message['type'] == 'bot' else user_voice_id
-        prepared_messages.append((voice_id, chunks))
+        voice = bot_voice if message['type'] == 'bot' else user_voice
+        prepared_messages.append((voice, chunks))
+        if text:
+            characters_by_provider[voice.provider] = (
+                characters_by_provider.get(voice.provider, 0) + len(text)
+            )
 
-    if total_characters == 0:
+    if not any(characters_by_provider.values()):
         logger.warning("No text to synthesize for MP3 export of conversation_id: %s", conversation_id)
         return
 
-    # Fail-fast: block before regenerating any audio if the user cannot afford it.
-    tts_cost = Cost.TTS_COST_PER_CHARACTER * total_characters
-    if not await has_sufficient_balance(user_id, tts_cost):
+    charged = await _charge_mp3_providers(user_id, characters_by_provider)
+    if charged is None:
         logger.warning(
-            "Insufficient balance for MP3 export: user_id=%s conversation_id=%s cost=%.6f",
-            user_id, conversation_id, tts_cost,
-        )
-        return
-
-    # Charge before generation -- atomic transaction (mirrors tools/tts.py).
-    if not await cost_tts(user_id, total_characters):
-        logger.warning(
-            "cost_tts charge failed for MP3 export: user_id=%s conversation_id=%s",
+            "TTS reservation failed for MP3 export: user_id=%s conversation_id=%s",
             user_id, conversation_id,
         )
         return
 
     async def _refund_mp3_charge():
-        if not await refund_tts(user_id, total_characters):
-            logger.critical(
-                "REFUND FAILED user_id=%s chars=%d conversation_id=%s -- manual review needed",
-                user_id, total_characters, conversation_id,
-            )
+        await _refund_mp3_charges(user_id, charged)
 
     try:
         audio_segments = []
-        for voice_id, chunks in prepared_messages:
-            audio_generator = get_tts_generator(tts_engine, voice_id, chunks, profile=profile)
-            audio_input_format = format_to_pydub(profile.output_format) if tts_engine == 'elevenlabs' else 'mp3'
+        for voice, chunks in prepared_messages:
+            audio_generator = get_tts_generator_for_voice(voice, chunks, profile=profile)
+            audio_input_format = (
+                format_to_pydub(profile.output_format)
+                if voice.provider == 'elevenlabs'
+                else 'mp3'
+            )
             async for audio_chunk in audio_generator:
                 audio_segment = AudioSegment.from_file(BytesIO(audio_chunk), format=audio_input_format)
                 audio_segments.append(audio_segment)

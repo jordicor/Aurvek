@@ -1,10 +1,14 @@
 import asyncio
+import inspect
 import math
 
 from ai_runtime.dependencies import *
 from billing.usage_reservations import (
+    ai_reservation_provider_started,
     BillingReservationError,
     InsufficientBalanceError,
+    VariableBillingRates,
+    estimate_customer_charge_from_api_cost,
     estimate_structured_billing_tokens,
     estimate_structured_usage_tokens,
     get_user_billing_availability,
@@ -34,6 +38,16 @@ from ai_runtime.attachments.pdf import (
 from ai_runtime.attachments.text_files import text_file_block_to_text_for_context
 from ai_runtime.memory.context import _context_messages_for_memory_provider, _resolve_memory_context
 from ai_runtime.perf_trace import ChatPerfTrace
+from ai_runtime.reasoning import (
+    ReasoningSelection,
+    ReasoningValidationError,
+    parse_reasoning_selection,
+    resolve_and_validate,
+)
+from integrations.telephony.openai_realtime_billing import (
+    OpenAIRealtimePreflight,
+    calculate_openai_realtime_preflight,
+)
 from memory.health import get_user_memory_health_snapshot, should_surface_memory_health
 from ai_runtime.billing import assert_billable_claude_system_key
 from ai_runtime.config import (
@@ -55,10 +69,28 @@ from ai_runtime.context.formatting import (
     parse_stored_message,
 )
 from ai_runtime.context.history import apply_no_memory_context_budget
+from ai_runtime.context.message_provenance import (
+    merge_internal_turn_context,
+    prepare_trusted_history_context,
+    render_current_input_context,
+)
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
 from ai_runtime.context.warmup import (
     _build_warmup_cache_key_from_state,
     _copy_warmup_context_messages,
+)
+from ai_runtime.channel_turns import (
+    ChannelContext,
+    DuplicateChannelTurnError,
+    StaleChannelTurnError,
+    bind_channel_turn,
+    channel_turn_registry,
+    current_channel_turn,
+)
+from ai_runtime.persistence.messages import (
+    persistence_error_payload,
+    save_content_to_db,
+    save_interrupted_channel_turn,
 )
 from ai_runtime.providers.claude import call_claude_api
 from ai_runtime.providers.gemini import call_gemini_api
@@ -74,6 +106,7 @@ from ai_runtime.tooling.execution import (
     TOOL_CALL_SERIALIZATION_BYTES_PER_OUTPUT_TOKEN,
     TOOL_RESULT_MAX_BYTES,
     _build_tool_response_messages,
+    finish_pending_realtime_tool_output,
     handle_function_call,
     truncate_tool_result_for_ai,
 )
@@ -84,8 +117,14 @@ from ai_runtime.tooling.formatters import (
     tools_for_openai_responses,
     tools_for_xai_responses,
 )
-from ai_runtime.watchdog.prompting import _build_escalated_hint_block, _sanitize_watchdog_directive
+from ai_runtime.watchdog.prompting import (
+    _build_escalated_hint_block,
+    _sanitize_watchdog_directive,
+    prepare_pre_watchdog_and_model_prompt,
+)
 from ai_runtime.watchdog.takeover import watchdog_takeover_response
+from integrations.telephony.tooling import phone_tools_for_context
+from llm_catalog import normalize_capabilities
 
 
 # --- Storage-quota skip signalling ------------------------------------------
@@ -155,6 +194,70 @@ STORAGE_QUOTA_USAGE_HEADER = "X-Storage-Quota-Usage-Bytes"
 STORAGE_QUOTA_LIMIT_HEADER = "X-Storage-Quota-Limit-Bytes"
 
 
+def _ingest_terminal_payload(user_message_id: int | None) -> dict:
+    if user_message_id is None:
+        return persistence_error_payload()
+    return {
+        "terminal": "queued_for_active_phone",
+        "message_id": int(user_message_id),
+    }
+
+
+def _stale_channel_terminal_payload(*, persistence_error: bool = False) -> dict:
+    payload = {"terminal": "stale_channel_turn"}
+    if persistence_error:
+        payload.update(persistence_error_payload())
+    return payload
+
+
+def _has_trusted_realtime_phone_bridge(context: ChannelContext) -> bool:
+    """Accept the native route only with the server-created phone bridge."""
+
+    bridge = context.provenance.get("openai_realtime_bridge")
+    return bool(
+        context.channel == "phone"
+        and context.persistence == "deferred"
+        and getattr(
+            bridge,
+            "_aurvek_internal_realtime_bridge",
+            False,
+        )
+        is True
+    )
+
+
+async def _openai_realtime_customer_preflight(
+    *,
+    model: str,
+    text_input_tokens: int,
+    captured_pcmu_bytes: int,
+    byok: bool,
+    user_id: int,
+    prompt_id: int | None,
+) -> tuple[OpenAIRealtimePreflight, float, float]:
+    """Convert Realtime raw bounds into customer input/output charges."""
+
+    estimate = calculate_openai_realtime_preflight(
+        model=model,
+        text_input_tokens=text_input_tokens,
+        captured_pcmu_bytes=captured_pcmu_bytes,
+        byok=byok,
+    )
+    maximum_input_charge = await estimate_customer_charge_from_api_cost(
+        user_id=user_id,
+        prompt_id=prompt_id,
+        api_cost=estimate.input_api_cost,
+        maximum_tokens=estimate.markup_tokens,
+    )
+    maximum_output_rate = await estimate_customer_charge_from_api_cost(
+        user_id=user_id,
+        prompt_id=prompt_id,
+        api_cost=estimate.output_api_cost_per_token,
+        maximum_tokens=1,
+    )
+    return estimate, maximum_input_charge, maximum_output_rate
+
+
 def _storage_quota_skip_headers(exc: StorageQuotaExceededError) -> dict[str, str]:
     return {
         STORAGE_QUOTA_SKIP_HEADER: "1",
@@ -211,8 +314,97 @@ def _resolve_tool_call_billing_usage(
         )
     return input_tokens, output_tokens
 
+
+async def _load_prompt_runtime_policy(conn, prompt_id: int | None) -> dict:
+    empty = {
+        "forced_llm_id": None,
+        "forced_reasoning_json": None,
+        "phone_llm_id": None,
+        "phone_reasoning_json": None,
+    }
+    if prompt_id is None:
+        return empty
+    try:
+        cursor = await conn.execute(
+            """
+            SELECT forced_llm_id,forced_reasoning_json,
+                   phone_llm_id,phone_reasoning_json
+            FROM PROMPTS WHERE id=?
+            """,
+            (int(prompt_id),),
+        )
+        row = await cursor.fetchone()
+    except Exception as exc:
+        # Compatibility for a process started briefly before this additive
+        # migration is applied, and for narrow legacy-schema test databases.
+        if "no such column" in str(exc).lower():
+            return empty
+        raise
+    if row is None:
+        return empty
+    return {
+        key: row[index]
+        for index, key in enumerate(empty)
+    }
+
+
+def _stored_reasoning_selection(value) -> ReasoningSelection:
+    if value is None:
+        return ReasoningSelection()
+    try:
+        decoded = orjson.loads(value) if isinstance(value, (str, bytes)) else value
+    except orjson.JSONDecodeError as exc:
+        raise ReasoningValidationError("stored prompt reasoning is invalid") from exc
+    return parse_reasoning_selection(decoded)
+
+
+async def _load_phone_runtime_llm(conn, llm_id: int) -> dict | None:
+    cursor = await conn.execute(
+        """
+        SELECT id,machine,model,
+               COALESCE(input_token_cost,0),COALESCE(output_token_cost,0),
+               COALESCE(max_output_tokens,0),capabilities_json,
+               COALESCE(enabled,1),provider_key,provider_model_id,
+               raw_metadata_json,manual_overrides_json
+        FROM LLM WHERE id=?
+        """,
+        (int(llm_id),),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    values = tuple(row)
+
+    def object_value(value):
+        if not value:
+            return {}
+        try:
+            decoded = orjson.loads(value) if isinstance(value, (str, bytes)) else value
+        except orjson.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    capabilities = normalize_capabilities(
+        values[8] or values[1],
+        values[9] or values[2],
+        object_value(values[10]),
+        object_value(values[6]),
+        object_value(values[11]),
+    )
+    return {
+        "id": int(values[0]),
+        "machine": str(values[1] or ""),
+        "model": str(values[2] or ""),
+        "input_token_cost": float(values[3] or 0),
+        "output_token_cost": float(values[4] or 0),
+        "max_output_tokens": int(values[5] or 0),
+        "capabilities": capabilities,
+        "enabled": bool(values[7]),
+    }
+
+
 async def process_save_message(
-    request: Request,
+    request: Request | None,
     conversation_id: int,
     current_user: User,
     text_compressed: Optional[bytes] = None,  # bytes instead of UploadFile
@@ -220,6 +412,7 @@ async def process_save_message(
     files: Optional[List[dict]] = None,  # dict with 'data', 'content_type', 'filename'
     full_response: bool = False,
     is_whatsapp: bool = False,
+    reasoning_selection: ReasoningSelection | dict | str | None = None,
     thinking_budget_tokens: Optional[int] = None,
     user_api_keys: Optional[dict] = None,  # User's custom API keys
     prevalidated: bool = False,
@@ -229,12 +422,47 @@ async def process_save_message(
     attachment_refs: Optional[list[str]] = None,
     strip_device_action_blocks: bool = False,
     expected_llm_id: Optional[int] = None,
+    runtime_llm_id: Optional[int] = None,
+    channel_context: ChannelContext | None = None,
 ):
     """
     Pure business logic function for processing and saving messages.
     No FastAPI dependencies (Form, File, Depends).
     """
     logger.debug("enters into process_save_message")
+    if channel_context is None:
+        channel_context = ChannelContext(
+            channel="whatsapp" if is_whatsapp else "web",
+            persistence="immediate",
+        )
+    runtime_kind = "standard"
+    if runtime_llm_id is not None:
+        if channel_context.channel != "phone":
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error_code": "runtime_model_override_forbidden",
+                    "message": "A runtime model override is available only for phone turns.",
+                },
+                status_code=403,
+            )
+        if isinstance(runtime_llm_id, bool):
+            return JSONResponse(
+                content={"success": False, "message": "Invalid runtime model."},
+                status_code=400,
+            )
+        try:
+            runtime_llm_id = int(runtime_llm_id)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                content={"success": False, "message": "Invalid runtime model."},
+                status_code=400,
+            )
+        if runtime_llm_id <= 0:
+            return JSONResponse(
+                content={"success": False, "message": "Invalid runtime model."},
+                status_code=400,
+            )
     perf_trace = ChatPerfTrace.from_request(request)
     perf_trace.mark("process_start", conversation_id=conversation_id, user_id=current_user.id)
 
@@ -254,7 +482,7 @@ async def process_save_message(
         guard_response = await validate_message_request(
             request=request,
             current_user=current_user,
-            is_whatsapp=is_whatsapp,
+            is_whatsapp=(is_whatsapp or channel_context.channel != "web"),
         )
         if guard_response is not None:
             return guard_response
@@ -356,7 +584,7 @@ async def process_save_message(
                        WHERE m.conversation_id = c.id
                    ) AS last_message_id,
                    L.machine, L.model, COALESCE(L.input_token_cost, 0), COALESCE(L.output_token_cost, 0),
-                   COALESCE(L.max_output_tokens, 0),
+                   COALESCE(L.max_output_tokens, 0), L.capabilities_json,
                    COALESCE(ep.enable_moderation, 0) AS enable_moderation,
                    COALESCE(ep.is_paid, 0) AS is_paid,
                    COALESCE(ep.gransabio_enabled, 0) AS gransabio_enabled,
@@ -384,11 +612,13 @@ async def process_save_message(
                 input_token_cost,
                 output_token_cost,
                 llm_max_output_tokens,
+                llm_capabilities_json,
                 enable_moderation,
                 prompt_is_paid,
                 gransabio_enabled_col,
                 conversation_incognito,
             ) = conversation_row
+            conversation_model_fence_id = int(conversation_llm_id)
             perf_trace.mark(
                 "conversation_loaded",
                 llm_id=conversation_llm_id,
@@ -413,7 +643,11 @@ async def process_save_message(
         # business-logic read so a concurrent tab cannot switch the provider
         # after the route-level admission check. Direct platform integrations
         # intentionally omit this optional precondition.
-        if expected_llm_id is not None and int(conversation_llm_id) != int(expected_llm_id):
+        if (
+            not channel_context.ingest_only
+            and expected_llm_id is not None
+            and conversation_model_fence_id != int(expected_llm_id)
+        ):
             return JSONResponse(
                 content={
                     'success': False,
@@ -424,6 +658,182 @@ async def process_save_message(
                 },
                 status_code=409,
             )
+
+        prompt_runtime_policy = await _load_prompt_runtime_policy(
+            conn_ro,
+            effective_prompt_id,
+        )
+        if runtime_llm_id is not None:
+            configured_phone_llm_id = prompt_runtime_policy["phone_llm_id"]
+            authorized_runtime_llm_id = (
+                conversation_model_fence_id
+                if configured_phone_llm_id is None
+                else int(configured_phone_llm_id)
+            )
+            if int(runtime_llm_id) != authorized_runtime_llm_id:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "phone_runtime_model_changed",
+                        "message": "The prompt phone model changed after this call was captured.",
+                    },
+                    status_code=409,
+                )
+            runtime_model = await _load_phone_runtime_llm(conn_ro, runtime_llm_id)
+            if runtime_model is None:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "phone_runtime_model_unavailable",
+                        "message": "The phone runtime model is unavailable.",
+                    },
+                    status_code=409,
+                )
+            runtime_kind = (
+                runtime_model["capabilities"].get("runtime") or {}
+            ).get("kind")
+            if (
+                runtime_kind == "openai_realtime"
+                and not channel_context.ingest_only
+                and not _has_trusted_realtime_phone_bridge(channel_context)
+            ):
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "native_phone_runtime_required",
+                        "message": "This phone model must use its native realtime runtime.",
+                    },
+                    status_code=422,
+                )
+            if runtime_kind not in {"standard", "openai_realtime"}:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "phone_runtime_model_unavailable",
+                        "message": "The phone runtime model is unavailable.",
+                    },
+                    status_code=409,
+                )
+            if (
+                not runtime_model["enabled"]
+                or runtime_model["machine"] in {"GPTSub", "GranSabio"}
+            ):
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "phone_runtime_model_unavailable",
+                        "message": "The phone runtime model is unavailable.",
+                    },
+                    status_code=409,
+                )
+            # From this point onward the existing provider, token budgeting,
+            # billing and persistence path must use the effective phone model.
+            conversation_llm_id = int(runtime_model["id"])
+            machine = runtime_model["machine"]
+            model = runtime_model["model"]
+            input_token_cost = runtime_model["input_token_cost"]
+            output_token_cost = runtime_model["output_token_cost"]
+            llm_max_output_tokens = runtime_model["max_output_tokens"]
+            llm_capabilities_json = orjson.dumps(
+                runtime_model["capabilities"]
+            ).decode("utf-8")
+            perf_trace.mark(
+                "phone_runtime_model_resolved",
+                conversation_llm_id=conversation_model_fence_id,
+                runtime_llm_id=conversation_llm_id,
+                machine=machine,
+                model=model,
+            )
+        elif not channel_context.ingest_only:
+            # A non-default prompt selection is authoritative for ordinary
+            # turns. ``default`` deliberately leaves the caller's per-turn
+            # choice untouched.
+            try:
+                forced_selection = _stored_reasoning_selection(
+                    prompt_runtime_policy["forced_reasoning_json"]
+                )
+            except ReasoningValidationError as exc:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "invalid_reasoning_selection",
+                        "message": str(exc),
+                    },
+                    status_code=422,
+                )
+            if (
+                prompt_runtime_policy["forced_reasoning_json"] is not None
+                and prompt_runtime_policy["forced_llm_id"] is None
+            ):
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "invalid_prompt_reasoning",
+                        "message": "Forced reasoning requires a forced prompt model.",
+                    },
+                    status_code=409,
+                )
+            if forced_selection.mode != "default":
+                forced_llm_id = prompt_runtime_policy["forced_llm_id"]
+                if (
+                    forced_llm_id is None
+                    or int(forced_llm_id) != conversation_model_fence_id
+                ):
+                    return JSONResponse(
+                        content={
+                            "success": False,
+                            "error_code": "invalid_prompt_reasoning",
+                            "message": "Forced reasoning does not match the conversation model.",
+                        },
+                        status_code=409,
+                    )
+                reasoning_selection = forced_selection
+
+        if not channel_context.ingest_only:
+            try:
+                try:
+                    llm_capabilities = (
+                        orjson.loads(llm_capabilities_json)
+                        if llm_capabilities_json
+                        else {}
+                    )
+                except (orjson.JSONDecodeError, TypeError):
+                    llm_capabilities = {}
+                if not isinstance(llm_capabilities, dict):
+                    llm_capabilities = {}
+                if machine == "GPTSub":
+                    account_capabilities = None
+                    try:
+                        from subscription_auth.reasoning import user_model_reasoning_capabilities
+
+                        account_capabilities = await user_model_reasoning_capabilities(
+                            current_user.id,
+                            model,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not resolve GPTSub reasoning capabilities for user_id=%s",
+                            current_user.id,
+                            exc_info=True,
+                        )
+                    llm_capabilities = {
+                        **llm_capabilities,
+                        "reasoning": account_capabilities or {"behavior": "unknown"},
+                    }
+                reasoning_selection = resolve_and_validate(
+                    reasoning_selection,
+                    llm_capabilities,
+                    legacy_thinking_budget_tokens=thinking_budget_tokens,
+                )
+            except ReasoningValidationError as exc:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error_code": "invalid_reasoning_selection",
+                        "message": str(exc),
+                    },
+                    status_code=422,
+                )
 
         # GPTSub is deliberately text-only. Reject both direct uploads and pending
         # attachment references immediately after the ownership check, before the
@@ -616,13 +1026,19 @@ async def process_save_message(
                         )
                     input_tokens += _estimate_pdf_input_tokens_for_preflight(page_count_for_cost, machine)
 
-        billing_availability = await get_user_billing_availability(current_user.id)
+        billing_availability = (
+            {"available": 0.0}
+            if channel_context.ingest_only
+            else await get_user_billing_availability(current_user.id)
+        )
         current_balance = billing_availability["available"]
         billing_preflight_amount = 0.0
         model_output_cap, output_limit_fallback_used = _model_output_cap(llm_max_output_tokens)
 
         # GranSabio early detection
-        gransabio_enabled_early = bool(gransabio_enabled_col)
+        gransabio_enabled_early = (
+            bool(gransabio_enabled_col) and not channel_context.bypass_gransabio
+        )
 
         # Reset stop_signals for non-GranSabio (deferred until after DB query).
         # GranSabio resets inside generate_via_gransabio() after lock acquisition.
@@ -674,7 +1090,9 @@ async def process_save_message(
             from common import resolve_api_key_for_provider, get_user_api_key_mode, API_KEY_MODE_SYSTEM_ONLY, BYOK_MIN_BALANCE_PAID_PROMPT
             api_key_mode_preflight = await get_user_api_key_mode(current_user.id)
             preflight_provider = "OpenRouter" if pdf_redirect_will_happen else machine
-            if machine == "GPTSub":
+            if channel_context.ingest_only:
+                is_byok = True
+            elif machine == "GPTSub":
                 # GPTSub uses the user's ChatGPT subscription: text inference is free and
                 # requires no API key, so it skips the resolver entirely and falls through
                 # to the free-BYOK path (no balance for a free prompt). The authoritative
@@ -711,9 +1129,10 @@ async def process_save_message(
 
             if is_byok:
                 # BYOK: no API cost to platform. Only need balance for paid prompt markup.
-                if prompt_is_paid and current_balance < BYOK_MIN_BALANCE_PAID_PROMPT:
+                if (prompt_is_paid and not channel_context.ingest_only
+                        and current_balance < BYOK_MIN_BALANCE_PAID_PROMPT):
                     return await _attachment_error_response('Insufficient balance for creator markup.', status_code=402)
-                if prompt_is_paid:
+                if prompt_is_paid and not channel_context.ingest_only:
                     billing_preflight_amount = BYOK_MIN_BALANCE_PAID_PROMPT
                 # For free prompts with BYOK, no balance needed at all
                 output_tokens = model_output_cap
@@ -831,7 +1250,7 @@ async def process_save_message(
         else:
             async with conn_ro.execute(
                 '''
-                SELECT message, type
+                SELECT id, message, type
                 FROM messages
                 WHERE conversation_id = ?
                 AND date >= ?
@@ -841,7 +1260,11 @@ async def process_save_message(
                 context_messages = await cursor.fetchall()
 
             context_messages_dicts = [
-                {"message": parse_stored_message(custom_unescape(msg[0])), "type": msg[1]}
+                {
+                    "id": int(msg[0]),
+                    "message": parse_stored_message(custom_unescape(msg[1])),
+                    "type": msg[2],
+                }
                 for msg in context_messages
             ]
             context_messages_dicts = flatten_multi_ai_context(context_messages_dicts)
@@ -1267,7 +1690,51 @@ async def process_save_message(
                             pass
                     logger.error(f"[process_save_message] - Unexpected error updating chat_name: {exc}")
 
-    async def stream_response():
+    async def _recover_stale_as_ingest(
+        *,
+        recovery_user_message,
+        recovery_attachment_refs,
+    ) -> dict:
+        recovery_callback = channel_context.recover_stale_context
+        if recovery_callback is None:
+            return _stale_channel_terminal_payload()
+        try:
+            recovered_context = recovery_callback(channel_context)
+            if inspect.isawaitable(recovered_context):
+                recovered_context = await recovered_context
+            if recovered_context is None or not recovered_context.ingest_only:
+                return _stale_channel_terminal_payload()
+            with bind_channel_turn(recovered_context):
+                user_message_id, _ = await save_content_to_db(
+                    None,
+                    0,
+                    0,
+                    0,
+                    conversation_id,
+                    current_user.id,
+                    model,
+                    user_message=recovery_user_message,
+                    prompt_id=effective_prompt_id,
+                    llm_id=conversation_llm_id,
+                    pending_attachment_refs=recovery_attachment_refs,
+                )
+            if user_message_id is None:
+                return _stale_channel_terminal_payload(persistence_error=True)
+            return _ingest_terminal_payload(user_message_id)
+        except StaleChannelTurnError:
+            logger.info(
+                "Channel foreground changed again while recovering conversation %s",
+                conversation_id,
+            )
+            return _stale_channel_terminal_payload()
+        except Exception:
+            logger.exception(
+                "Could not recover stale channel turn for conversation %s",
+                conversation_id,
+            )
+            return _stale_channel_terminal_payload(persistence_error=True)
+
+    async def _stream_response_impl():
         yield ": stream-ready\n\n"
         for event in perf_trace.pop_sse():
             yield event
@@ -1275,72 +1742,69 @@ async def process_save_message(
         if updated_chat_name:
             yield f"data: {orjson.dumps({'updated_chat_name': updated_chat_name}).decode()}\n\n"
 
-        current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-
         # Save the user's message and handle the flagged case
         if message_flagged:
             await discard_pending_attachments(pending_attachment_refs, "moderation_blocked")
-            # Save the user's message and the AI's response to the database
-            async with conversation_write_lock(conversation_id):
-                async with get_db_connection() as conn:
-                    transaction_started = False
-                    try:
-                        await conn.execute("BEGIN IMMEDIATE")
-                        transaction_started = True
-                        # Save user's message
-                        blocked_message = "[Blocked Message]"
-                        user_insert_query = '''
-                            INSERT INTO messages (conversation_id, user_id, message, type, date)
-                            VALUES (?, ?, ?, ?, ?)
-                        '''
-                        await conn.execute(
-                            user_insert_query,
-                            (conversation_id, current_user.id, blocked_message, 'user', current_time)
-                        )
-
-                        # Prepare the rejection message
-                        rejection_message = "*Sorry, but your message has been blocked for violating our usage policies.*"
-
-                        # Save AI's response
-                        bot_insert_query = '''
-                            INSERT INTO messages
-                            (conversation_id, user_id, message, type, date)
-                            VALUES (?, ?, ?, ?, ?)
-                        '''
-                        await conn.execute(
-                            bot_insert_query,
-                            (conversation_id, current_user.id, rejection_message, 'bot', current_time)
-                        )
-
-                        # Update conversation last_activity for sort ordering
-                        await conn.execute("UPDATE CONVERSATIONS SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
-
-                        await conn.commit()
-                    except Exception as e:
-                        if transaction_started:
-                            try:
-                                await conn.rollback()
-                            except Exception:
-                                pass
-                        logger.error(f"[process_save_message] - Error saving messages to database: {e}")
-
+            blocked_message = "[Blocked Message]"
+            rejection_message = "*Sorry, but your message has been blocked for violating our usage policies.*"
             try:
-                await record_chat_turn(
-                    user_id=current_user.id,
-                    conversation_id=conversation_id,
-                    user_message=blocked_message,
-                    assistant_message=rejection_message,
-                )
-            except Exception:
-                logger.warning(
-                    "[wellbeing] Failed to record moderated chat turn for conversation_id=%s",
+                user_message_id, bot_message_id = await save_content_to_db(
+                    rejection_message,
+                    0,
+                    0,
+                    0,
                     conversation_id,
-                    exc_info=True,
+                    current_user.id,
+                    model,
+                    user_message=blocked_message,
+                    prompt_id=effective_prompt_id,
+                    llm_id=conversation_llm_id,
+                    persistence_only=True,
                 )
+            except StaleChannelTurnError:
+                payload = await _recover_stale_as_ingest(
+                    recovery_user_message=blocked_message,
+                    recovery_attachment_refs=None,
+                )
+                yield f"data: {orjson.dumps(payload).decode()}\n\n"
+                return
+
+            if channel_context.ingest_only:
+                yield f"data: {orjson.dumps(_ingest_terminal_payload(user_message_id)).decode()}\n\n"
+                return
 
             # Yield the rejection message
             yield f"data: {orjson.dumps({'content': rejection_message}).decode()}\n\n"
+            yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
         else:
+            if channel_context.ingest_only:
+                try:
+                    user_message_id, _ = await save_content_to_db(
+                        None,
+                        0,
+                        0,
+                        0,
+                        conversation_id,
+                        current_user.id,
+                        model,
+                        user_message=message_to_save,
+                        prompt_id=effective_prompt_id,
+                        llm_id=conversation_llm_id,
+                        pending_attachment_refs=pending_attachment_refs,
+                    )
+                    yield f"data: {orjson.dumps(_ingest_terminal_payload(user_message_id)).decode()}\n\n"
+                except StaleChannelTurnError:
+                    payload = await _recover_stale_as_ingest(
+                        recovery_user_message=message_to_save,
+                        recovery_attachment_refs=pending_attachment_refs,
+                    )
+                    yield f"data: {orjson.dumps(payload).decode()}\n\n"
+                finally:
+                    await discard_pending_attachments(
+                        discardable_attachment_refs, "ingest_only_finished"
+                    )
+                return
+
             # Proceed to get AI response
             try:
                 response_stream = get_ai_response(
@@ -1355,7 +1819,7 @@ async def process_save_message(
                     user_message=message_to_save,
                     input_token_fallback=input_tokens,
                     skip_context_pdfs=skip_context_pdfs_for_retry,
-                    thinking_budget_tokens=thinking_budget_tokens,
+                    reasoning_selection=reasoning_selection,
                     user_api_keys=user_api_keys,
                     llm_id=conversation_llm_id,
                     byok=is_byok,
@@ -1365,14 +1829,77 @@ async def process_save_message(
                     billing_preflight_amount=billing_preflight_amount,
                     input_token_cost_per_million=input_token_cost,
                     output_token_cost_per_million=output_token_cost,
+                    allow_gransabio=not channel_context.bypass_gransabio,
+                    internal_turn_context=channel_context.provenance.get(
+                        "internal_turn_context"
+                    ),
+                    runtime_kind=runtime_kind,
                 )
                 async for chunk in _stream_with_sse_keepalives(response_stream):
                     yield chunk
+            except StaleChannelTurnError:
+                payload = await _recover_stale_as_ingest(
+                    recovery_user_message=message_to_save,
+                    recovery_attachment_refs=pending_attachment_refs,
+                )
+                yield f"data: {orjson.dumps(payload).decode()}\n\n"
+                return
             except asyncio.CancelledError:
                 logger.info("Client disconnected")
                 raise
             finally:
                 await discard_pending_attachments(discardable_attachment_refs, "stream_finished")
+
+    channel_handle = None
+    if channel_context.persistence == "deferred":
+        try:
+            channel_handle = await channel_turn_registry.register(channel_context)
+        except DuplicateChannelTurnError as exc:
+            await discard_pending_attachments(
+                discardable_attachment_refs, "duplicate_channel_turn"
+            )
+            return JSONResponse(
+                content={"success": False, "error_code": "duplicate_channel_turn", "message": str(exc)},
+                status_code=409,
+            )
+
+        fallback_user_message = (
+            "[Blocked Message]" if message_flagged else message_to_save
+        )
+        fallback_attachments = None if message_flagged else pending_attachment_refs
+
+        async def persist_interruption(confirmation, on_database_commit):
+            return await save_interrupted_channel_turn(
+                confirmation,
+                context=channel_context,
+                conversation_id=conversation_id,
+                user_id=current_user.id,
+                model=model,
+                user_message=fallback_user_message,
+                prompt_id=effective_prompt_id,
+                llm_id=conversation_llm_id,
+                pending_attachment_refs=fallback_attachments,
+                on_database_commit=on_database_commit,
+                persistence_only=bool(message_flagged),
+            )
+
+        channel_handle.register_interruption_fallback(persist_interruption)
+
+    async def stream_response():
+        try:
+            if channel_handle is not None:
+                channel_handle.bind_owner_task()
+            with bind_channel_turn(channel_context, channel_handle):
+                async for chunk in _stream_response_impl():
+                    yield chunk
+        finally:
+            if channel_handle is not None:
+                await channel_handle.close_unfinished(
+                    "Provider ended before publishing or persisting the channel turn"
+                )
+                await channel_turn_registry.unregister(
+                    channel_handle.key, channel_handle
+                )
 
     quota_skip_headers = (
         _storage_quota_skip_headers(storage_quota_skip)
@@ -1384,6 +1911,60 @@ async def process_save_message(
         media_type='text/event-stream',
         headers=quota_skip_headers,
     )
+
+async def _settle_or_refund_ai_reservation(
+    *,
+    reservation_id: str,
+    user_id: int,
+    input_cost_per_million: float,
+    output_cost_per_million: float,
+    prompt_id: int | None,
+    byok: bool,
+) -> None:
+    """Capture accumulated provider usage or release a genuinely unused hold.
+
+    A failed settlement must remain active for stale reconciliation. Refunding
+    it here could discard exact provider cost already accumulated by a
+    multi-response runtime such as OpenAI Realtime.
+    """
+    try:
+        captured = await settle_accumulated_ai_reservation_usage(
+            reservation_id=reservation_id,
+            user_id=user_id,
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million,
+            prompt_id=prompt_id,
+            byok=byok,
+        )
+    except BillingReservationError:
+        logger.exception(
+            "Could not capture unfinished AI usage %s",
+            reservation_id,
+        )
+        return
+
+    if captured:
+        return
+    try:
+        if await ai_reservation_provider_started(
+            reservation_id=reservation_id,
+            user_id=user_id,
+        ):
+            return
+    except BillingReservationError:
+        logger.exception(
+            "Could not inspect unfinished AI provider usage %s",
+            reservation_id,
+        )
+        return
+    try:
+        await refund_fixed_usage(reservation_id)
+    except BillingReservationError:
+        logger.exception(
+            "Could not release unfinished AI reservation %s",
+            reservation_id,
+        )
+
 
 async def get_ai_response(
     message,
@@ -1398,6 +1979,7 @@ async def get_ai_response(
     user_message=None,
     input_token_fallback=None,
     skip_context_pdfs: bool = False,
+    reasoning_selection: ReasoningSelection | None = None,
     thinking_budget_tokens=None,
     user_api_keys: Optional[dict] = None,
     llm_id=None,
@@ -1409,7 +1991,19 @@ async def get_ai_response(
     billing_preflight_amount: float = 0.0,
     input_token_cost_per_million: float | None = None,
     output_token_cost_per_million: float | None = None,
+    allow_gransabio: bool = True,
+    internal_turn_context: str | None = None,
+    runtime_kind: str = "standard",
 ):
+    if runtime_kind not in {"standard", "openai_realtime"}:
+        raise ValueError("Unsupported AI runtime kind")
+    bound_input_turn = current_channel_turn()
+    internal_turn_context = merge_internal_turn_context(
+        internal_turn_context,
+        render_current_input_context(
+            bound_input_turn.context if bound_input_turn is not None else None
+        ),
+    )
     logger.info(f"*** Enters {machine}")
     logger.debug(f"Parameters received: conversation_id={conversation_id}, model={model}, max_tokens={max_tokens}")
     #logger.info(f"message en get_ai_response: {message}")
@@ -1417,6 +2011,7 @@ async def get_ai_response(
     user_id = current_user.id
     ai_reservation_id = None
     ai_reserved_maximum = 0.0
+    realtime_tool_pending = False
     logger.debug(f"User ID: {user_id}")
     context_messages = flatten_multi_ai_context(context_messages)
     context_messages = filter_invalid_context_messages(context_messages)
@@ -1581,6 +2176,15 @@ async def get_ai_response(
                                     )
                                     prompt_base += extensions_context
 
+                    # Trusted per-turn phone clock/deadline state is ephemeral
+                    # and must be identical for the pre-watchdog and main model.
+                    prompt_base, pre_watchdog_prompt_context = (
+                        prepare_pre_watchdog_and_model_prompt(
+                            prompt_base or "",
+                            internal_turn_context,
+                        )
+                    )
+
                     # --- Watchdog: read config and pending hint ---
                     watchdog_config = None
                     prompt_id = effective_role_id
@@ -1625,7 +2229,7 @@ async def get_ai_response(
                                         conversation_id=conversation_id,
                                         user_id=user_id,
                                         user_api_keys=user_api_keys or {},
-                                        ai_prompt_context=prompt_base,
+                                        ai_prompt_context=pre_watchdog_prompt_context,
                                     )
                                     pre_action = pre_result.get("action", "pass")
                                     pre_hint = pre_result.get("hint", "")
@@ -1633,14 +2237,20 @@ async def get_ai_response(
 
                                     if pre_action in ("takeover", "takeover_lock"):
                                         # Takeover: yield from watchdog_takeover_response, then return
+                                        takeover_prompt, takeover_context = (
+                                            await prepare_trusted_history_context(
+                                                prompt_base,
+                                                context_messages,
+                                            )
+                                        )
                                         async for chunk in watchdog_takeover_response(
                                             conversation_id=conversation_id,
                                             prompt_id=prompt_id,
                                             user_id=user_id,
                                             watchdog_config=pre_watchdog_config,
-                                            original_prompt=prompt_base,
+                                            original_prompt=takeover_prompt,
                                             directive=pre_hint or "Redirect the conversation appropriately.",
-                                            context_messages=context_messages,
+                                            context_messages=takeover_context,
                                             user_message=user_message,
                                             message=message,
                                             should_lock=(pre_action == "takeover_lock"),
@@ -1715,14 +2325,20 @@ async def get_ai_response(
                                         if not approve:
                                             can_lock_post = False
                                             logger.info("Lock Judge rejected takeover lock for conv=%d: %s", conversation_id, judge_reason)
+                                    takeover_prompt, takeover_context = (
+                                        await prepare_trusted_history_context(
+                                            prompt_base,
+                                            context_messages,
+                                        )
+                                    )
                                     async for chunk in watchdog_takeover_response(
                                         conversation_id=conversation_id,
                                         prompt_id=prompt_id,
                                         user_id=user_id,
                                         watchdog_config=post_watchdog_config,
-                                        original_prompt=prompt_base,
+                                        original_prompt=takeover_prompt,
                                         directive=sanitized_hint,
-                                        context_messages=context_messages,
+                                        context_messages=takeover_context,
                                         user_message=user_message,
                                         message=message,
                                         should_lock=can_lock_post,
@@ -1780,6 +2396,12 @@ async def get_ai_response(
                     context_messages = _context_messages_for_memory_provider(
                         context_messages,
                         memory_decision,
+                    )
+                    full_prompt, context_messages = (
+                        await prepare_trusted_history_context(
+                            full_prompt,
+                            context_messages,
+                        )
                     )
                     memory_health = get_user_memory_health_snapshot(
                         memory_decision.provider,
@@ -1957,7 +2579,9 @@ async def get_ai_response(
                     api_messages = gemini_contents
 
                 elif machine == "O1":
-                    combined_message_content = f"{full_prompt}\n\n{message}"
+                    # The provider receives ``full_prompt`` separately as a
+                    # privileged developer message.
+                    combined_message_content = str(message)
                     for msg in context_messages:
                         msg_content = msg['message']
                         if isinstance(msg_content, list):
@@ -2047,7 +2671,7 @@ async def get_ai_response(
                 # =============================================================
                 # GranSabio routing - intercept before normal provider routing
                 # =============================================================
-                if gransabio_enabled:
+                if gransabio_enabled and allow_gransabio:
                     from gransabio_service import generate_via_gransabio
                     from gransabio_config import get_gransabio_config
 
@@ -2105,7 +2729,20 @@ async def get_ai_response(
 
                 # Filter tools based on web search settings
                 # Priority: disable_web_search > force_web_search > user preference > mode selection
-                filtered_tools = tools
+                filtered_tools = list(tools)
+                if (
+                    runtime_kind == "openai_realtime"
+                    and web_search_mode == "native"
+                ):
+                    # Realtime accepts function tools, not the Responses API's
+                    # hosted web_search item.  Keep Aurvek's existing search
+                    # tool available for the same prompt/user preference.
+                    web_search_mode = "perplexity"
+                bound_channel = current_channel_turn()
+                if bound_channel is not None:
+                    filtered_tools.extend(
+                        phone_tools_for_context(bound_channel.context)
+                    )
                 if not bool(getattr(current_user, "can_generate_images", False)):
                     filtered_tools = [
                         tool
@@ -2122,7 +2759,9 @@ async def get_ai_response(
                     if not web_search_mode or web_search_mode == 'none':
                         web_search_mode = 'native'
                     if web_search_mode == 'native':
-                        if machine in NATIVE_SEARCH_PROVIDERS:
+                        if runtime_kind == "openai_realtime":
+                            web_search_mode = "perplexity"
+                        elif machine in NATIVE_SEARCH_PROVIDERS:
                             filtered_tools = [t for t in filtered_tools if t['function']['name'] != 'query_perplexity']
                         else:
                             web_search_mode = 'perplexity'
@@ -2141,7 +2780,21 @@ async def get_ai_response(
                 if not (extensions_enabled and extensions_auto_advance and has_extensions):
                     filtered_tools = [t for t in filtered_tools if t.get("function", {}).get("name") != "advanceExtension"]
 
-                if machine == "Gemini":
+                if runtime_kind == "openai_realtime":
+                    if machine != "GPT":
+                        raise ValueError(
+                            "OpenAI Realtime requires an OpenAI model"
+                        )
+                    from ai_runtime.providers.openai_realtime_phone import (
+                        call_openai_realtime_phone_api,
+                    )
+
+                    api_func = call_openai_realtime_phone_api
+                    provider_tools = tools_for_openai_responses(
+                        filtered_tools,
+                        None,
+                    )
+                elif machine == "Gemini":
                     api_func = call_gemini_api
                     provider_tools = tools_for_gemini(filtered_tools)
                 elif machine == "O1":
@@ -2206,7 +2859,16 @@ async def get_ai_response(
                     "byok": byok,
                     "pending_attachment_refs": pending_attachment_refs,
                     "strip_device_action_blocks": strip_device_action_blocks,
+                    "reasoning_selection": reasoning_selection,
                 }
+                if runtime_kind == "openai_realtime":
+                    kwargs["realtime_bridge"] = (
+                        bound_channel.context.provenance.get(
+                            "openai_realtime_bridge"
+                        )
+                        if bound_channel is not None
+                        else None
+                    )
 
                 # Add tools if available for this provider
                 if provider_tools:
@@ -2220,9 +2882,6 @@ async def get_ai_response(
                     )
                     if event:
                         yield event
-
-                if machine == "Claude" and thinking_budget_tokens:
-                    kwargs["thinking_budget_tokens"] = thinking_budget_tokens
 
                 # PDF redirect: pass remapped model while preserving BYOK when
                 # the user provided an OpenRouter key.
@@ -2259,12 +2918,21 @@ async def get_ai_response(
                         return
                 else:
                     is_gptsub = False
-                    api_key_mode = await get_user_api_key_mode(current_user.id)
-                    resolved_key, use_system = resolve_api_key_for_provider(
-                        user_api_keys or {},
-                        api_key_mode,
-                        machine
-                    )
+                    if runtime_kind == "openai_realtime":
+                        # The call-scoped WebSocket is authenticated before a
+                        # canonical turn enters this runtime.  It deliberately
+                        # uses the server credential selected by telephony, so
+                        # a later per-turn BYOK choice would only misattribute
+                        # billing without changing the connected provider.
+                        resolved_key, use_system = None, True
+                        byok = False
+                    else:
+                        api_key_mode = await get_user_api_key_mode(current_user.id)
+                        resolved_key, use_system = resolve_api_key_for_provider(
+                            user_api_keys or {},
+                            api_key_mode,
+                            machine
+                        )
 
                     if resolved_key:
                         kwargs["user_api_key"] = resolved_key
@@ -2306,13 +2974,47 @@ async def get_ai_response(
                     ),
                     max(0, int(input_token_fallback or 0)),
                 )
-                billing_rates = await get_variable_billing_rates(
-                    user_id=current_user.id,
-                    prompt_id=prompt_id,
-                    input_cost_per_million=input_token_cost_per_million,
-                    output_cost_per_million=output_token_cost_per_million,
-                    byok=bool(resolved_key) or is_gptsub,
-                )
+                if runtime_kind == "openai_realtime":
+                    realtime_bridge = kwargs.get("realtime_bridge")
+                    captured_pcmu_bytes = getattr(
+                        realtime_bridge,
+                        "captured_input_pcmu_bytes",
+                        None,
+                    )
+                    if (
+                        isinstance(captured_pcmu_bytes, bool)
+                        or not isinstance(captured_pcmu_bytes, int)
+                        or captured_pcmu_bytes <= 0
+                    ):
+                        raise ValueError(
+                            "OpenAI Realtime captured audio size is unavailable"
+                        )
+                    _, maximum_input_charge, maximum_output_rate = (
+                        await _openai_realtime_customer_preflight(
+                            model=model,
+                            text_input_tokens=provider_input_tokens,
+                            captured_pcmu_bytes=captured_pcmu_bytes,
+                            byok=bool(resolved_key) or is_gptsub,
+                            user_id=current_user.id,
+                            prompt_id=prompt_id,
+                        )
+                    )
+                    # Tool continuations may contain mixed text/audio usage.
+                    # Holding both sides at the audio-output customer rate is
+                    # deliberately conservative until exact response usage is
+                    # accumulated by the provider adapter.
+                    billing_rates = VariableBillingRates(
+                        input_per_token=maximum_output_rate,
+                        output_per_token=maximum_output_rate,
+                    )
+                else:
+                    billing_rates = await get_variable_billing_rates(
+                        user_id=current_user.id,
+                        prompt_id=prompt_id,
+                        input_cost_per_million=input_token_cost_per_million,
+                        output_cost_per_million=output_token_cost_per_million,
+                        byok=bool(resolved_key) or is_gptsub,
+                    )
                 fresh_availability = await get_user_billing_availability(
                     current_user.id
                 )
@@ -2326,7 +3028,7 @@ async def get_ai_response(
                         6 * billing_rates.input_per_token
                         + 4 * billing_rates.output_per_token
                     )
-                else:
+                elif runtime_kind != "openai_realtime":
                     maximum_input_charge = (
                         provider_input_tokens * billing_rates.input_per_token
                     )
@@ -2350,6 +3052,14 @@ async def get_ai_response(
                     maximum_input_charge + max_tokens * maximum_output_rate
                 )
                 kwargs["max_tokens"] = max_tokens
+                if (
+                    machine == "Claude"
+                    and reasoning_selection is not None
+                    and reasoning_selection.mode == "custom"
+                    and reasoning_selection.budget_tokens >= max_tokens
+                ):
+                    yield f"data: {orjson.dumps({'error': 'Claude reasoning budget must be lower than the available output-token limit', 'error_code': 'invalid_reasoning_selection'}).decode()}\n\n"
+                    return
                 if perf_trace:
                     event = perf_trace.sse(
                         "provider_call_start",
@@ -2487,6 +3197,7 @@ async def get_ai_response(
 
                 # If a tool call was collected, handle it
                 if collected_tool_call:
+                    realtime_tool_pending = runtime_kind == "openai_realtime"
                     function_name = collected_tool_call['name']
                     function_arguments = collected_tool_call['arguments']
                     initial_tool_input_tokens, initial_tool_output_tokens = (
@@ -2600,10 +3311,13 @@ async def get_ai_response(
                         # 3. Build tool response messages (appends to api_messages in-place)
                         _build_tool_response_messages(api_messages, collected_tool_call, perplexity_result, machine)
 
-                        # 4. Build second_kwargs: same as kwargs but without tools (prevent loops)
-                        #    Also clear web_search_mode so provider functions don't add native search tools
+                        # 4. Preserve Claude's declared tools so its signed tool_use
+                        #    round-trip remains valid, but forbid another tool call.
                         second_kwargs = dict(kwargs)
-                        second_kwargs.pop("tools", None)
+                        if machine == "Claude":
+                            second_kwargs["tool_choice"] = {"type": "none"}
+                        else:
+                            second_kwargs.pop("tools", None)
                         second_kwargs["web_search_mode"] = None
                         second_kwargs["messages"] = api_messages
 
@@ -2665,21 +3379,18 @@ async def get_ai_response(
                             prompt_id
                         ))
 
-                        # 4. Build tool response messages
-                        # For Claude: use plain text instead of tool_use/tool_result blocks.
-                        # Claude's API requires tools defined when tool_use blocks are in messages,
-                        # but keeping tools causes Claude to re-call the tool instead of answering.
-                        # Plain text avoids both problems.
-                        if machine == "Claude":
-                            help_result = truncate_tool_result_for_ai(help_result)
-                            api_messages.append({"role": "assistant", "content": [{"type": "text", "text": f"I looked up platform help information."}]})
-                            api_messages.append({"role": "user", "content": [{"type": "text", "text": f"Here is the platform help result. Use it to answer my question:\n\n{help_result}"}]})
-                        else:
-                            _build_tool_response_messages(api_messages, collected_tool_call, help_result, machine)
+                        # 4. Build the provider-native tool response messages.
+                        _build_tool_response_messages(
+                            api_messages, collected_tool_call, help_result, machine
+                        )
 
-                        # 5. Second pass without tools
+                        # 5. Keep Claude's tool declaration for its signed
+                        #    continuation, while forbidding another tool call.
                         second_kwargs = dict(kwargs)
-                        second_kwargs.pop("tools", None)
+                        if machine == "Claude":
+                            second_kwargs["tool_choice"] = {"type": "none"}
+                        else:
+                            second_kwargs.pop("tools", None)
                         second_kwargs["web_search_mode"] = None
                         second_kwargs["messages"] = api_messages
 
@@ -2704,11 +3415,6 @@ async def get_ai_response(
 
                     else:
                         # === EXISTING FLOW for all other tools ===
-                        if function_name == "atFieldActivate":
-                            follow_up_error = await _extend_for_tool_follow_up()
-                            if follow_up_error:
-                                yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
-                                return
                         async for chunk in handle_function_call(
                             function_name,
                             function_arguments,
@@ -2738,46 +3444,45 @@ async def get_ai_response(
                             watchdog_hint_eval_id=watchdog_hint_eval_id,
                             llm_id=llm_id,
                             byok=byok,
-                            thinking_budget_tokens=thinking_budget_tokens,
+                            reasoning_selection=reasoning_selection,
                             pending_attachment_refs=pending_attachment_refs,
                             strip_device_action_blocks=strip_device_action_blocks,
                             billing_preflight_amount=billing_preflight_amount,
                             billing_reservation_id=ai_reservation_id,
                             billing_first_call_accumulated=bool(ai_reservation_id),
                             billing_followup_hold_amount=additional_hold,
+                            tool_call=collected_tool_call,
+                            provider_tools=provider_tools,
+                            api_func_override=(
+                                api_func
+                                if runtime_kind == "openai_realtime"
+                                else None
+                            ),
                         ):
                             yield chunk
 
+    except StaleChannelTurnError:
+        raise
     except ValueError as ve:
         logger.error(f"[get_ai_response] - Database connection error: {ve}")
+        yield f"data: {orjson.dumps({'terminal': 'persistence_error', **persistence_error_payload()}).decode()}\n\n"
     except Exception as e:
         logger.error(f"[get_ai_response] - Error getting response from {machine}: {e}")
         logger.error(f"[get_ai_response] - Traceback: {traceback.format_exc()}")
-        yield None
+        yield f"data: {orjson.dumps({'terminal': 'persistence_error', **persistence_error_payload()}).decode()}\n\n"
     finally:
+        if realtime_tool_pending:
+            await finish_pending_realtime_tool_output(api_func)
         if ai_reservation_id:
-            try:
-                await settle_accumulated_ai_reservation_usage(
-                    reservation_id=ai_reservation_id,
-                    user_id=current_user.id,
-                    input_cost_per_million=float(
-                        input_token_cost_per_million or 0.0
-                    ),
-                    output_cost_per_million=float(
-                        output_token_cost_per_million or 0.0
-                    ),
-                    prompt_id=prompt_id,
-                    byok=byok,
-                )
-            except BillingReservationError:
-                logger.exception(
-                    "Could not capture unfinished AI usage %s",
-                    ai_reservation_id,
-                )
-            try:
-                await refund_fixed_usage(ai_reservation_id)
-            except BillingReservationError:
-                logger.exception(
-                    "Could not release unfinished AI reservation %s",
-                    ai_reservation_id,
-                )
+            await _settle_or_refund_ai_reservation(
+                reservation_id=ai_reservation_id,
+                user_id=current_user.id,
+                input_cost_per_million=float(
+                    input_token_cost_per_million or 0.0
+                ),
+                output_cost_per_million=float(
+                    output_token_cost_per_million or 0.0
+                ),
+                prompt_id=prompt_id,
+                byok=byok,
+            )

@@ -57,6 +57,28 @@ _VERSION_DOT_BETWEEN_DIGITS = re.compile(r"(\d)\.(\d)")
 _VERSION_DASH_BETWEEN_DIGITS = re.compile(r"(\d)-(\d)")
 _ANTHROPIC_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
+_REASONING_BEHAVIORS = {"unknown", "none", "fixed", "configurable"}
+_REASONING_MODE_ORDER = (
+    "default", "off", "auto", "minimal", "low", "medium", "high",
+    "xhigh", "max", "custom",
+)
+_REASONING_MODES = set(_REASONING_MODE_ORDER)
+_REASONING_MODE_ALIASES = {
+    "adaptive": "auto",
+    "none": "off",
+    "disabled": "off",
+    "disable": "off",
+    "minimum": "minimal",
+    "maximum": "max",
+}
+
+_OPENAI_REALTIME_MODELS = frozenset(
+    {
+        "gpt-realtime-2.1",
+        "gpt-realtime-2.1-mini",
+    }
+)
+
 CATALOG_COLUMNS = """
     id, machine, model, input_token_cost, output_token_cost, vision,
     provider_key, provider_model_id, display_name, description,
@@ -143,6 +165,13 @@ def row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
     data["capabilities"] = _json_loads(data.get("capabilities_json"), {})
     data["raw_metadata"] = _json_loads(data.get("raw_metadata_json"), {})
     data["manual_overrides"] = _json_loads(data.get("manual_overrides_json"), {})
+    data["capabilities"] = normalize_capabilities(
+        data.get("provider_key") or data.get("machine"),
+        data.get("provider_model_id") or data.get("model"),
+        data["raw_metadata"],
+        data["capabilities"],
+        data["manual_overrides"],
+    )
     data["metadata_source"] = (
         data["capabilities"].get("metadata_source")
         or data.get("sync_source")
@@ -165,8 +194,447 @@ def build_capabilities(vision: bool, extra: dict[str, Any] | None = None) -> dic
     return capabilities
 
 
+def _is_openai_realtime_model(provider: str, model: str) -> bool:
+    if provider != "openai":
+        return False
+    return any(
+        model == realtime_model or model.startswith(f"{realtime_model}-")
+        for realtime_model in _OPENAI_REALTIME_MODELS
+    )
+
+
+def normalize_runtime_capability(
+    provider_key: str | None,
+    model_id: str | None,
+) -> dict[str, Any]:
+    """Classify the safe Aurvek runtime surface for one catalog route."""
+
+    provider = normalize_provider_key(provider_key)
+    model = (model_id or "").strip().lower()
+    if _is_openai_realtime_model(provider, model):
+        return {
+            "kind": "openai_realtime",
+            "channels": ["phone"],
+        }
+    return {
+        "kind": "standard",
+        "channels": ["web", "phone"],
+    }
+
+
+def _reasoning_source(value: Any, fallback: str) -> str:
+    return value if value in {"provider_api", "gateway", "curated", "manual"} else fallback
+
+
+def _mode_list(value: Any) -> list[str]:
+    """Extract documented canonical modes without guessing undocumented levels."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    elif isinstance(value, dict):
+        values = []
+        # Anthropic's Models API exposes effort as a map such as
+        # {"low": {"supported": true}, ...}, rather than as a list.
+        for raw_mode, support in value.items():
+            canonical_mode = _REASONING_MODE_ALIASES.get(
+                str(raw_mode).strip().lower(),
+                str(raw_mode).strip().lower(),
+            )
+            if canonical_mode not in _REASONING_MODES:
+                continue
+            if support is True or (
+                isinstance(support, dict) and support.get("supported") is True
+            ):
+                values.append(str(raw_mode))
+        for key in (
+            "modes", "levels", "efforts", "supported_efforts", "thinking_levels",
+            "thinkingLevels", "allowed_values", "values", "effort",
+        ):
+            if key in value:
+                values.extend(_mode_list(value[key]))
+    else:
+        values = []
+
+    modes: list[str] = []
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        mode = _REASONING_MODE_ALIASES.get(raw.strip().lower(), raw.strip().lower())
+        if mode in _REASONING_MODES and mode not in modes:
+            modes.append(mode)
+    return modes
+
+
+def _budget_tokens(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("budget_tokens", "thinking_budget", "thinkingBudget", "budget"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            result = _budget_tokens(nested)
+            if result:
+                return result
+    minimum = _as_int(value.get("min") or value.get("minimum"))
+    maximum = _as_int(value.get("max") or value.get("maximum"))
+    step = _as_int(value.get("step"))
+    if minimum is None or maximum is None or minimum <= 0 or maximum < minimum:
+        return None
+    result = {"min": minimum, "max": maximum}
+    if step and step > 0:
+        result["step"] = step
+    return result
+
+
+def _normalized_reasoning(
+    candidate: Any,
+    *,
+    fallback_source: str,
+) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict):
+        return None
+    behavior = candidate.get("behavior")
+    if behavior not in _REASONING_BEHAVIORS:
+        return None
+    source = _reasoning_source(candidate.get("source"), fallback_source)
+    modes = _mode_list(candidate.get("modes", []))
+    if behavior == "configurable":
+        if "default" not in modes:
+            modes.insert(0, "default")
+        budget = _budget_tokens(candidate.get("budget_tokens"))
+        if budget:
+            if "custom" not in modes:
+                modes.append("custom")
+        else:
+            modes = [mode for mode in modes if mode != "custom"]
+        result: dict[str, Any] = {
+            "behavior": behavior,
+            "modes": modes,
+            "default_mode": candidate.get("default_mode") if candidate.get("default_mode") in modes else "default",
+            "source": source,
+        }
+        if budget:
+            result["budget_tokens"] = budget
+        return result
+    return {
+        "behavior": behavior,
+        "modes": [],
+        "default_mode": "default",
+        "source": source,
+    }
+
+
+def _metadata_reasoning(provider: str, raw_metadata: Any, capabilities: dict[str, Any]) -> dict[str, Any] | None:
+    """Project only documented provider/gateway capability metadata into our contract."""
+    raw = raw_metadata if isinstance(raw_metadata, dict) else {}
+    # Native rows enriched by OpenRouter retain both source payloads. Do not make
+    # native Anthropic/OpenAI routes look configurable from a gateway-only field.
+    if provider != "openrouter" and isinstance(raw.get("provider"), dict):
+        raw = raw["provider"]
+
+    if provider == "openrouter":
+        supported = raw.get("supported_parameters") or capabilities.get("supported_parameters") or []
+        supported_names = {str(value).lower() for value in supported if isinstance(value, str)}
+        reasoning = raw.get("reasoning")
+        if reasoning is False or (isinstance(reasoning, dict) and reasoning.get("supported") is False):
+            return {"behavior": "none", "modes": [], "default_mode": "default", "source": "gateway"}
+        if reasoning is not None or any("reasoning" in name for name in supported_names):
+            modes = _mode_list(reasoning)
+            # OpenRouter documents a normalized effort contract even when an
+            # older catalog payload only lists the `reasoning` parameter.
+            if not modes:
+                modes = ["low", "medium", "high"]
+            mandatory = reasoning.get("mandatory") if isinstance(reasoning, dict) else None
+            if mandatory is False and "off" not in modes:
+                modes.append("off")
+            candidate: dict[str, Any] = {
+                "behavior": "configurable",
+                "modes": ["default", *modes],
+                "source": "gateway",
+            }
+            budget = _budget_tokens(reasoning)
+            if budget:
+                candidate["budget_tokens"] = budget
+            return _normalized_reasoning(candidate, fallback_source="gateway")
+
+    if provider == "anthropic":
+        provider_capabilities = raw.get("capabilities")
+        if not isinstance(provider_capabilities, dict):
+            provider_capabilities = capabilities
+        thinking = provider_capabilities.get("thinking")
+        effort = provider_capabilities.get("effort")
+        if thinking is False or (isinstance(thinking, dict) and thinking.get("supported") is False):
+            return {"behavior": "none", "modes": [], "default_mode": "default", "source": "provider_api"}
+        if thinking is not None or effort is not None:
+            modes = _mode_list(effort)
+            for mode in _mode_list(thinking):
+                if mode not in modes:
+                    modes.append(mode)
+            thinking_types = thinking.get("types") if isinstance(thinking, dict) else None
+            adaptive = (
+                thinking_types.get("adaptive")
+                if isinstance(thinking_types, dict)
+                else None
+            )
+            if (
+                isinstance(adaptive, dict)
+                and adaptive.get("supported") is True
+                and "auto" not in modes
+            ):
+                modes.insert(0, "auto")
+            budget = _budget_tokens(thinking) or _budget_tokens(effort)
+            if modes or budget:
+                candidate = {"behavior": "configurable", "modes": ["default", *modes], "source": "provider_api"}
+                if budget:
+                    candidate["budget_tokens"] = budget
+                return _normalized_reasoning(candidate, fallback_source="provider_api")
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "provider_api"}
+
+    if provider == "google":
+        thinking = raw.get("thinking") if "thinking" in raw else raw.get("thinkingConfig")
+        if thinking is None:
+            thinking = (
+                capabilities.get("thinking")
+                if "thinking" in capabilities
+                else capabilities.get("thinkingConfig")
+            )
+        if thinking is False or (isinstance(thinking, dict) and thinking.get("supported") is False):
+            return {"behavior": "none", "modes": [], "default_mode": "default", "source": "provider_api"}
+        if thinking is not None:
+            modes = _mode_list(thinking)
+            budget = _budget_tokens(thinking)
+            if modes or budget:
+                candidate = {"behavior": "configurable", "modes": ["default", *modes], "source": "provider_api"}
+                if budget:
+                    candidate["budget_tokens"] = budget
+                return _normalized_reasoning(candidate, fallback_source="provider_api")
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "provider_api"}
+    return None
+
+
+def _curated_reasoning(provider: str, model: str, capabilities: dict[str, Any]) -> dict[str, Any] | None:
+    """Small fallback for native catalogs that omit their documented controls."""
+    def configurable(*modes: str) -> dict[str, Any]:
+        return {
+            "behavior": "configurable",
+            "modes": ["default", *modes],
+            "default_mode": "default",
+            "source": "curated",
+        }
+
+    if provider == "openai":
+        if _is_openai_realtime_model(provider, model):
+            return configurable("minimal", "low", "medium", "high", "xhigh")
+        if model.startswith("gpt-4o"):
+            return {"behavior": "none", "modes": [], "default_mode": "default", "source": "curated"}
+        if model.startswith("gpt-5.6"):
+            return configurable("off", "low", "medium", "high", "xhigh", "max")
+        if model.startswith("gpt-5-pro"):
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "curated"}
+        if model.startswith(("gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.2-pro")):
+            return configurable("medium", "high", "xhigh")
+        if model.startswith(("gpt-5.2-codex", "gpt-5.3-codex")):
+            return configurable("low", "medium", "high", "xhigh")
+        if model.startswith(("gpt-5.5", "gpt-5.4", "gpt-5.2")):
+            return configurable("off", "low", "medium", "high", "xhigh")
+        if model.startswith("gpt-5.1"):
+            return configurable("off", "low", "medium", "high")
+        if model == "gpt-5" or model.startswith(("gpt-5-", "gpt-5-mini", "gpt-5-nano")):
+            return configurable("minimal", "low", "medium", "high")
+        if model.startswith(("o1-pro", "o3-pro")):
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "curated"}
+        if model.startswith(("o1", "o3", "o4")):
+            return configurable("low", "medium", "high")
+
+    if provider == "google" and model.startswith("gemini-3"):
+        if "pro" in model or "gemini-3.7-flash" in model:
+            return configurable("low", "medium", "high")
+        if "flash-lite-image" in model:
+            return configurable("minimal", "high")
+        return configurable("minimal", "low", "medium", "high")
+
+    if provider == "google" and model.startswith("gemini-2.5"):
+        if "pro" in model:
+            capability = configurable("auto", "custom")
+            capability["budget_tokens"] = {"min": 128, "max": 32768, "step": 1}
+            return capability
+        capability = configurable("off", "auto", "custom")
+        capability["budget_tokens"] = {
+            "min": 512 if "flash-lite" in model else 1,
+            "max": 24576,
+            "step": 1,
+        }
+        return capability
+
+    if provider == "xai":
+        if "non-reasoning" in model:
+            return {"behavior": "none", "modes": [], "default_mode": "default", "source": "curated"}
+        if "grok-4.20-multi-agent" in model:
+            return configurable("low", "medium", "high", "xhigh")
+        if "grok-4.6" in model:
+            return configurable("low", "medium", "high", "xhigh")
+        if "grok-4.5" in model:
+            return configurable("low", "medium", "high")
+        if "grok-4.3" in model:
+            return configurable("off", "low", "medium", "high")
+        if "-reasoning" in model:
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "curated"}
+
+    if provider == "anthropic":
+        adaptive_markers = (
+            "opus-4-6", "sonnet-4-6", "opus-4-7", "opus-4-8",
+            "opus-5", "sonnet-5", "fable-5", "mythos-5", "mythos-preview",
+        )
+        if any(marker in model for marker in adaptive_markers):
+            modes = ["auto", "low", "medium", "high", "max"]
+            if any(marker in model for marker in ("opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-5", "mythos-5")):
+                modes.insert(-1, "xhigh")
+            if not any(marker in model for marker in ("fable-5", "mythos-5", "mythos-preview")):
+                modes.insert(0, "off")
+            return configurable(*modes)
+
+        manual_markers = (
+            "claude-3-7", "claude-3.7", "sonnet-4", "opus-4", "haiku-4-5",
+        )
+        if any(marker in model for marker in manual_markers):
+            capability = configurable("off", "custom")
+            capability["budget_tokens"] = {"min": 1024, "max": 32000, "step": 1024}
+            return capability
+
+    if provider == "minimax":
+        if model in {"minimax-m3", "m3"}:
+            return configurable("off", "auto")
+        if capabilities.get("thinking"):
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "curated"}
+
+    if provider == "kimi":
+        if "kimi-k3" in model:
+            return configurable("low", "high", "max")
+        if any(marker in model for marker in ("kimi-k2.5", "kimi-k2-5", "kimi-k2.6", "kimi-k2-6")):
+            return configurable("off", "auto")
+        if capabilities.get("thinking"):
+            return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "curated"}
+
+    if provider == "gransabio" and model == "gransabio-pipeline":
+        return {"behavior": "fixed", "modes": [], "default_mode": "default", "source": "curated"}
+    return None
+
+
+def normalize_reasoning_capability(
+    provider_key: str | None,
+    model_id: str | None,
+    raw_metadata: Any,
+    capabilities: dict[str, Any] | None,
+    manual_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the safe, UI-facing reasoning capability for one provider route."""
+    provider = normalize_provider_key(provider_key)
+    current = dict(capabilities or {})
+    overrides = manual_overrides or {}
+    manual = overrides.get("reasoning")
+    if not isinstance(manual, dict):
+        nested = overrides.get("capabilities")
+        manual = nested.get("reasoning") if isinstance(nested, dict) else None
+    current_reasoning = current.get("reasoning")
+    if not isinstance(manual, dict) and isinstance(current_reasoning, dict) and current_reasoning.get("source") == "manual":
+        manual = current_reasoning
+    normalized = _normalized_reasoning(manual, fallback_source="manual")
+    if normalized:
+        normalized["source"] = "manual"
+        return normalized
+
+    model = (model_id or "").strip().lower()
+    projected = _metadata_reasoning(provider, raw_metadata, current)
+    curated = _curated_reasoning(provider, model, current)
+    if (
+        provider == "anthropic"
+        and projected
+        and curated
+        and projected.get("behavior") == "configurable"
+        and curated.get("behavior") == "configurable"
+    ):
+        raw = raw_metadata if isinstance(raw_metadata, dict) else {}
+        if isinstance(raw.get("provider"), dict):
+            raw = raw["provider"]
+        provider_capabilities = raw.get("capabilities")
+        if not isinstance(provider_capabilities, dict):
+            provider_capabilities = current
+        thinking = provider_capabilities.get("thinking")
+        thinking_types = thinking.get("types") if isinstance(thinking, dict) else {}
+        effort = provider_capabilities.get("effort")
+
+        def thinking_type_support(name: str) -> bool | None:
+            value = thinking_types.get(name) if isinstance(thinking_types, dict) else None
+            supported = value.get("supported") if isinstance(value, dict) else value
+            return supported if isinstance(supported, bool) else None
+
+        def effort_support(name: str) -> bool | None:
+            value = effort.get(name) if isinstance(effort, dict) else None
+            supported = value.get("supported") if isinstance(value, dict) else value
+            return supported if isinstance(supported, bool) else None
+
+        combined_modes = set(projected.get("modes", ()))
+        for mode in curated.get("modes", ()):
+            thinking_type = {"off": "disabled", "auto": "adaptive", "custom": "enabled"}.get(mode)
+            if mode in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+                allowed = effort_support(mode) is not False
+            else:
+                allowed = thinking_type is None or thinking_type_support(thinking_type) is not False
+            if allowed:
+                combined_modes.add(mode)
+        for mode, thinking_type in (
+            ("off", "disabled"), ("auto", "adaptive"), ("custom", "enabled")
+        ):
+            if thinking_type_support(thinking_type) is True:
+                combined_modes.add(mode)
+
+        budget = projected.get("budget_tokens") or curated.get("budget_tokens")
+        if not budget:
+            combined_modes.discard("custom")
+        merged = {
+            "behavior": "configurable",
+            "modes": [mode for mode in _REASONING_MODE_ORDER if mode in combined_modes],
+            "default_mode": projected.get("default_mode", "default"),
+            "source": projected.get("source", "provider_api"),
+        }
+        if budget and "custom" in combined_modes:
+            merged["budget_tokens"] = budget
+        normalized = _normalized_reasoning(merged, fallback_source="provider_api")
+        if normalized:
+            return normalized
+    if projected and projected.get("behavior") != "fixed":
+        return projected
+    if curated:
+        return curated
+    if projected:
+        return projected
+    normalized = _normalized_reasoning(current.get("reasoning"), fallback_source="provider_api")
+    if normalized:
+        return normalized
+
+    return {"behavior": "unknown", "modes": [], "default_mode": "default", "source": "manual" if provider == "manual" else "provider_api"}
+
+
+def normalize_capabilities(
+    provider_key: str | None,
+    model_id: str | None,
+    raw_metadata: Any,
+    capabilities: dict[str, Any] | None,
+    manual_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = dict(capabilities or {})
+    result["reasoning"] = normalize_reasoning_capability(
+        provider_key, model_id, raw_metadata, result, manual_overrides
+    )
+    result["runtime"] = normalize_runtime_capability(provider_key, model_id)
+    return result
+
+
 def build_manual_insert_metadata(machine: str, model: str, vision: bool) -> dict[str, Any]:
     provider_key = normalize_provider_key(machine)
+    capabilities = normalize_capabilities(
+        provider_key, model, {}, build_capabilities(vision), {}
+    )
     return {
         "provider_key": provider_key,
         "provider_model_id": model,
@@ -175,7 +643,7 @@ def build_manual_insert_metadata(machine: str, model: str, vision: bool) -> dict
         "sync_source": "manual",
         "sync_status": "manual",
         "raw_metadata_json": "{}",
-        "capabilities_json": _json_dumps(build_capabilities(vision)),
+        "capabilities_json": _json_dumps(capabilities),
         "manual_overrides_json": "{}",
     }
 
@@ -196,7 +664,7 @@ async def get_provider_catalog_view(
         raise LlmCatalogError(f"Provider '{provider}' does not support API sync")
 
     normalized_remote = [
-        _normalize_remote_model(provider, item)
+        _normalize_catalog_remote(provider, _normalize_remote_model(provider, item))
         for item in (remote_models if remote_models is not None else await fetch_remote_models(provider))
     ]
 
@@ -297,7 +765,9 @@ async def get_selector_llms(
     conn: aiosqlite.Connection,
     preserve_ids: list[int] | set[int] | tuple[int, ...] | None = None,
     include_gransabio: bool = False,
+    include_realtime: bool = False,
     gptsub_models: list[str] | set[str] | tuple[str, ...] | None = None,
+    gptsub_reasoning: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the enabled-LLM selector list.
 
@@ -344,16 +814,63 @@ async def get_selector_llms(
     conditions.append("(" + " OR ".join(gptsub_terms) + ")")
 
     where_sql = " AND ".join(conditions)
+    schema_cursor = await conn.execute("PRAGMA table_info(LLM)")
+    columns = {row[1] for row in await schema_cursor.fetchall()}
+    metadata_select = ",\n               ".join(
+        column if column in columns else "NULL AS %s" % column
+        for column in (
+            "provider_key", "provider_model_id", "raw_metadata_json",
+            "capabilities_json", "manual_overrides_json",
+        )
+    )
     cursor = await conn.execute(
         f"""
-        SELECT id, machine, model, vision, enabled, display_name
+        SELECT id, machine, model, vision, enabled, display_name,
+               {metadata_select}
         FROM LLM
         WHERE {where_sql}
         ORDER BY machine, COALESCE(display_name, model)
         """,
         params,
     )
-    return [dict(row) for row in await cursor.fetchall()]
+    result = []
+    for row in await cursor.fetchall():
+        item = dict(row)
+        capabilities = normalize_capabilities(
+            item.get("provider_key") or item.get("machine"),
+            item.get("provider_model_id") or item.get("model"),
+            _json_loads(item.get("raw_metadata_json"), {}),
+            _json_loads(item.get("capabilities_json"), {}),
+            _json_loads(item.get("manual_overrides_json"), {}),
+        )
+        if item.get("machine") == "GPTSub":
+            account_reasoning = _normalized_reasoning(
+                gptsub_reasoning.get(item.get("model"))
+                if isinstance(gptsub_reasoning, dict)
+                else None,
+                fallback_source="provider_api",
+            )
+            capabilities["reasoning"] = account_reasoning or {
+                "behavior": "unknown",
+                "modes": [],
+                "default_mode": "default",
+                "source": "provider_api",
+            }
+        if (
+            not include_realtime
+            and capabilities["runtime"]["kind"] == "openai_realtime"
+        ):
+            continue
+        # This query is the public selector boundary: never forward catalog raw
+        # metadata or unrelated provider-specific capability fields to a client.
+        item["capabilities"] = {
+            "reasoning": capabilities["reasoning"],
+            "runtime": capabilities["runtime"],
+        }
+        for key in ("provider_key", "provider_model_id", "raw_metadata_json", "capabilities_json", "manual_overrides_json"):
+            item.pop(key, None)
+        result.append(item)
+    return result
 
 
 async def fetch_remote_models(provider_key: str) -> list[dict[str, Any]]:
@@ -388,7 +905,7 @@ async def sync_provider(
 
     async with _sync_lock:
         normalized_remote = [
-            _normalize_remote_model(provider, item)
+            _normalize_catalog_remote(provider, _normalize_remote_model(provider, item))
             for item in (remote_models if remote_models is not None else await fetch_remote_models(provider))
         ]
         remote_by_id = {
@@ -405,7 +922,7 @@ async def sync_provider(
 
         cursor = await conn.execute(
             """
-            SELECT id, provider_model_id, model, manual_overrides_json
+            SELECT id, provider_model_id, model, capabilities_json, manual_overrides_json
             FROM LLM
             WHERE provider_key = ? OR machine = ?
             """,
@@ -436,6 +953,7 @@ async def sync_provider(
                 updates = _build_update_payload(
                     remote,
                     overrides,
+                    _json_loads(existing["capabilities_json"], {}),
                     now,
                     enabled=1 if selective_sync else None,
                 )
@@ -938,6 +1456,55 @@ def _normalize_remote_model(provider: str, item: dict[str, Any]) -> dict[str, An
     raise LlmCatalogError(f"Cannot normalize provider '{provider}'")
 
 
+def _normalize_catalog_remote(provider: str, remote: dict[str, Any]) -> dict[str, Any]:
+    """Attach the canonical capability after a provider response is normalized."""
+    result = dict(remote)
+    result["capabilities"] = normalize_capabilities(
+        provider,
+        result.get("provider_model_id") or result.get("model"),
+        result.get("raw_metadata") or {},
+        result.get("capabilities") or {},
+    )
+    return result
+
+
+def _merge_capabilities(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    overrides: dict[str, Any],
+    *,
+    provider_key: str,
+    model_id: str,
+    raw_metadata: Any,
+) -> dict[str, Any]:
+    """Merge nested catalog state without losing modalities or manual reasoning."""
+    if overrides.get("capabilities_json"):
+        return normalize_capabilities(provider_key, model_id, raw_metadata, existing, overrides)
+
+    merged = dict(existing or {})
+    for key, value in (incoming or {}).items():
+        if key in {"input_modalities", "output_modalities"}:
+            old_values = merged.get(key)
+            if isinstance(old_values, list) and isinstance(value, list):
+                merged[key] = list(dict.fromkeys([*old_values, *value]))
+            elif value is not None:
+                merged[key] = value
+        elif key == "vision" and overrides.get("vision"):
+            continue
+        else:
+            merged[key] = value
+
+    existing_reasoning = existing.get("reasoning")
+    if (
+        (overrides.get("reasoning") or (
+            isinstance(existing_reasoning, dict) and existing_reasoning.get("source") == "manual"
+        ))
+        and isinstance(existing_reasoning, dict)
+    ):
+        merged["reasoning"] = existing["reasoning"]
+    return normalize_capabilities(provider_key, model_id, raw_metadata, merged, overrides)
+
+
 def _build_insert_payload(remote: dict[str, Any], now: str, enabled: int) -> dict[str, Any]:
     return {
         "machine": remote["machine"],
@@ -965,6 +1532,7 @@ def _build_insert_payload(remote: dict[str, Any], now: str, enabled: int) -> dic
 def _build_update_payload(
     remote: dict[str, Any],
     overrides: dict[str, Any],
+    existing_capabilities: dict[str, Any],
     now: str,
     enabled: int | None,
 ) -> dict[str, Any]:
@@ -991,11 +1559,16 @@ def _build_update_payload(
         "input_token_cost": remote.get("input_token_cost", 0.0),
         "output_token_cost": remote.get("output_token_cost", 0.0),
         "vision": 1 if remote.get("vision") else 0,
-        "capabilities_json": _json_dumps(remote.get("capabilities") or build_capabilities(remote.get("vision"))),
+        "capabilities_json": _json_dumps(_merge_capabilities(
+            existing_capabilities,
+            remote.get("capabilities") or build_capabilities(remote.get("vision")),
+            overrides,
+            provider_key=remote["provider_key"],
+            model_id=remote["provider_model_id"],
+            raw_metadata=remote.get("raw_metadata") or {},
+        )),
     }
     for field, value in provider_owned.items():
-        if field == "capabilities_json" and overrides.get("vision"):
-            continue
         if not overrides.get(field):
             payload[field] = value
     return payload

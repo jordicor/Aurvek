@@ -15,6 +15,7 @@ from common import (
     validate_twilio_media_url,
 )
 from database import get_db_connection
+from file_storage import create_pending_audio_attachment, discard_pending_attachments
 from integrations.conversations import (
     can_use_platform,
     change_response_mode,
@@ -23,14 +24,24 @@ from integrations.conversations import (
     get_chats_list,
     set_external_conversation,
 )
-from integrations.media import transcribe_external_request
+from integrations.media import (
+    download_external_audio,
+    transcribe_external_audio_detailed,
+)
+from integrations.messaging_voice_notes.service import (
+    attach_message_channel_provenance,
+    get_voice_note_retention_enabled,
+)
+from integrations.telephony.channel_context import capture_non_phone_channel_turn
 from integrations.whatsapp.service import get_phone_user_not_found
 from log_config import logger
 from prompt_access import get_user_accessible_prompts
 from prompts import can_user_access_prompt
 from save_images import get_or_generate_img_token
+from storage_quota import StorageQuotaExceededError
 from tools.tts import handle_tts_request, insert_tts_break
 
+from ai_runtime.channel_turns import StaleChannelTurnError
 from ai_runtime.messages import process_save_message, storage_quota_notice_from_response
 
 
@@ -45,6 +56,171 @@ _whatsapp_rate_limit_notices = {}  # {phone_number: last_notice_timestamp}
 WHATSAPP_RATE_LIMIT_PER_USER = int(os.getenv("WHATSAPP_RATE_LIMIT_PER_USER", "20"))  # messages per minute
 WHATSAPP_RATE_LIMIT_GLOBAL = int(os.getenv("WHATSAPP_RATE_LIMIT_GLOBAL", "200"))  # messages per minute
 _whatsapp_global_timestamps = []
+
+
+def _whatsapp_audio_content_kind(media_type: str | None) -> str:
+    normalized = str(media_type or "").split(";", 1)[0].strip().lower()
+    if any(marker in normalized for marker in ("ogg", "opus", "amr")):
+        return "voice_note"
+    return "audio"
+
+
+async def _discard_voice_note_attachment(
+    voice_note: dict | None,
+    reason: str,
+) -> None:
+    attachment_ref = (
+        voice_note.get("audio_attachment_ref")
+        if isinstance(voice_note, dict)
+        else None
+    )
+    if not attachment_ref:
+        return
+    try:
+        await discard_pending_attachments([str(attachment_ref)], reason)
+    except Exception:
+        logger.exception("Could not discard pending WhatsApp voice-note audio")
+
+
+async def _prepare_whatsapp_audio(
+    *,
+    user_id: int,
+    conversation_id: int,
+    media_url: str,
+    media_type: str,
+    user_agent: str | None,
+) -> tuple[str, dict]:
+    """Download once, optionally retain, and transcribe one inbound audio item."""
+    audio_content = await download_external_audio(media_url)
+    attachment_ref = None
+    retention_status = "disabled"
+
+    if await get_voice_note_retention_enabled("whatsapp"):
+        try:
+            pending = await create_pending_audio_attachment(
+                user_id=int(user_id),
+                conversation_id=int(conversation_id),
+                data=audio_content,
+                filename="whatsapp-voice-note",
+                mime_detected=media_type or "audio/ogg",
+                declared_mime=media_type or None,
+            )
+        except StorageQuotaExceededError:
+            retention_status = "quota_skipped"
+            logger.info(
+                "WhatsApp voice-note retention skipped because user %s is over quota",
+                user_id,
+            )
+        except Exception:
+            retention_status = "failed"
+            logger.exception(
+                "Could not retain WhatsApp voice-note audio for conversation %s",
+                conversation_id,
+            )
+        else:
+            attachment_ref = pending.public_id
+            retention_status = "stored"
+
+    try:
+        transcription = await transcribe_external_audio_detailed(
+            user_id=int(user_id),
+            audio_content=audio_content,
+            user_agent=user_agent,
+        )
+    except Exception:
+        if attachment_ref:
+            await _discard_voice_note_attachment(
+                {"audio_attachment_ref": attachment_ref},
+                "whatsapp_transcription_failed",
+            )
+        raise
+
+    voice_note = {
+        "transcript": transcription.text,
+        "stt_provider": transcription.provider,
+        "stt_model": transcription.model,
+        "duration_seconds": transcription.duration_seconds,
+        "retention_status": retention_status,
+        "audio_attachment_ref": attachment_ref,
+    }
+    return transcription.text, voice_note
+
+
+async def _release_whatsapp_retry_marker(message_sid: str | None) -> None:
+    """Let Twilio retry a webhook whose inbound turn was not persisted."""
+    if not message_sid:
+        return
+    try:
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "DELETE FROM WHATSAPP_PROCESSED_MESSAGES WHERE message_sid = ?",
+                (message_sid,),
+            )
+            await conn.commit()
+    except Exception:
+        logger.exception("Could not release WhatsApp retry marker %s", message_sid)
+
+
+async def _whatsapp_retry_response(message_sid: str | None) -> JSONResponse:
+    await _release_whatsapp_retry_marker(message_sid)
+    return JSONResponse(
+        content={"status": "retry", "error": "inbound_not_persisted"},
+        status_code=503,
+    )
+
+
+async def _buffer_whatsapp_runtime_output(body_iterator):
+    """Consume the whole runtime stream before any irreversible delivery."""
+    buffered_items = []
+    text_parts = []
+    terminal = None
+    persistence_error = False
+    durable_message_ids = False
+
+    def flush_text() -> None:
+        if text_parts:
+            buffered_items.append("".join(text_parts))
+            text_parts.clear()
+
+    try:
+        async for chunk in body_iterator:
+            if chunk is None:
+                persistence_error = True
+                continue
+            chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+            for line in chunk_str.split("\n"):
+                if line[:5] != "data:":
+                    continue
+                try:
+                    data = orjson.loads(line[5:].strip())
+                except orjson.JSONDecodeError:
+                    logger.error("Error decoding WhatsApp runtime JSON: %s", line)
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get("terminal"):
+                    terminal = str(data["terminal"])
+                if data.get("persistence_error") is True:
+                    persistence_error = True
+                message_ids = data.get("message_ids")
+                if isinstance(message_ids, dict):
+                    durable_message_ids = bool(
+                        message_ids.get("user") and message_ids.get("bot")
+                    )
+                content = data.get("content", "")
+                if isinstance(content, (list, dict)):
+                    flush_text()
+                    buffered_items.append(content)
+                elif isinstance(content, str) and content:
+                    text_parts.append(content)
+    except Exception:
+        logger.exception("WhatsApp runtime stream failed before durable completion")
+        persistence_error = True
+
+    flush_text()
+    if persistence_error:
+        durable_message_ids = False
+    return buffered_items, terminal, persistence_error, durable_message_ids
 
 @router.post("/whatsapp")
 async def whatsapp_webhook(request: Request):
@@ -151,6 +327,7 @@ async def whatsapp_webhook(request: Request):
     media_url = media_items[0]["url"] if media_items else None
     media_type = media_items[0]["type"] if media_items else None
 
+    voice_note_metadata = None
     try:
         current_user = await get_user_from_phone_number(from_number)
         if current_user is None:
@@ -490,6 +667,7 @@ async def whatsapp_webhook(request: Request):
                 return {"status": "success"}
 
         transcribed_text = ""
+        audio_content_kind = None
         file_dict = None
         files_list = []  # Support for multiple files
 
@@ -498,9 +676,23 @@ async def whatsapp_webhook(request: Request):
                 m_url = media_item["url"]
                 m_type = media_item["type"]
 
-                if "audio" in m_type:
+                normalized_media_type = str(m_type or "").strip().lower()
+                if "audio" in normalized_media_type or normalized_media_type.startswith("application/ogg"):
                     try:
-                        transcribed_text = await transcribe_external_request(request=request, audio=None, user_id=current_user.id, media_url=m_url)
+                        await _discard_voice_note_attachment(
+                            voice_note_metadata,
+                            "whatsapp_additional_audio_replaced",
+                        )
+                        transcribed_text, voice_note_metadata = (
+                            await _prepare_whatsapp_audio(
+                                user_id=current_user.id,
+                                conversation_id=conversation_id,
+                                media_url=m_url,
+                                media_type=m_type,
+                                user_agent=request.headers.get("user-agent"),
+                            )
+                        )
+                        audio_content_kind = _whatsapp_audio_content_kind(m_type)
                     except Exception as e:
                         logger.error(f"Error transcribing audio: {e}")
                         await async_twilio.send_message(
@@ -523,6 +715,10 @@ async def whatsapp_webhook(request: Request):
                     except Exception as e:
                         logger.error(f"Error downloading image: {e}")
                 elif "pdf" in m_type or "document" in m_type:
+                    await _discard_voice_note_attachment(
+                        voice_note_metadata,
+                        "whatsapp_unsupported_document",
+                    )
                     await async_twilio.send_message(
                         body="Sorry, document attachments are not supported yet. Please send text or images.",
                         from_=to_number,
@@ -531,6 +727,10 @@ async def whatsapp_webhook(request: Request):
                     return {"status": "success", "message": "Unsupported media type"}
                 else:
                     logger.warning(f"Unsupported WhatsApp media type: {m_type}")
+                    await _discard_voice_note_attachment(
+                        voice_note_metadata,
+                        "whatsapp_unsupported_media",
+                    )
                     await async_twilio.send_message(
                         body=f"Sorry, this media type ({m_type}) is not supported. Please send text, images, or audio.",
                         from_=to_number,
@@ -542,7 +742,29 @@ async def whatsapp_webhook(request: Request):
 
         user_message = transcribed_text if transcribed_text else message_body
         if not user_message and not file_dict:
+            await _discard_voice_note_attachment(
+                voice_note_metadata,
+                "whatsapp_empty_message",
+            )
             return {"status": "success", "message": "Empty message ignored"}
+
+        if voice_note_metadata is not None:
+            content_kind = audio_content_kind or "audio"
+        elif files_list:
+            content_kind = "mixed" if message_body else "image"
+        else:
+            content_kind = "text"
+
+        message_provenance = {
+            "channel": "whatsapp",
+            "conversation_id": int(conversation_id),
+            "user_id": int(current_user.id),
+            "external_message_id": message_sid,
+            "content_kind": content_kind,
+            "response_mode": answer_mode,
+        }
+        if voice_note_metadata is not None:
+            message_provenance["voice_note"] = voice_note_metadata
 
         # Log incoming WhatsApp message
         msg_type = "audio" if transcribed_text else ("image" if file_dict else "text")
@@ -672,6 +894,16 @@ async def whatsapp_webhook(request: Request):
         # Prepare files list with all downloaded images
         files = files_list if files_list else None
 
+        foreground_turn = await capture_non_phone_channel_turn(
+            conversation_id=conversation_id,
+            channel="whatsapp",
+            connection_factory=get_db_connection,
+        )
+        channel_context = attach_message_channel_provenance(
+            foreground_turn.context,
+            message_provenance,
+        )
+
         # --- GranSabio check: if enabled, process in background ---
         async with get_db_connection(readonly=True) as conn_gs:
             gs_row = await conn_gs.execute(
@@ -681,11 +913,24 @@ async def whatsapp_webhook(request: Request):
                 "WHERE c.id = ?", (conversation_id,)
             )
             gs_result = await gs_row.fetchone()
-        is_gransabio = bool((gs_result or [0])[0])
+        is_gransabio = (
+            bool((gs_result or [0])[0])
+            and not foreground_turn.decision.phone_active
+        )
 
         if is_gransabio:
             # Reject file attachments for GranSabio (text only)
             if files_list:
+                if not await foreground_turn.is_current():
+                    await _discard_voice_note_attachment(
+                        voice_note_metadata,
+                        "whatsapp_stale_before_gransabio",
+                    )
+                    return await _whatsapp_retry_response(message_sid)
+                await _discard_voice_note_attachment(
+                    voice_note_metadata,
+                    "whatsapp_gransabio_file_rejected",
+                )
                 await async_twilio.send_message(
                     body="File attachments are not supported with GranSabio mode. Please send text only.",
                     from_=to_number, to=from_number,
@@ -700,6 +945,16 @@ async def whatsapp_webhook(request: Request):
 
             admin_config = await get_gransabio_config()
             if admin_config.get("gransabio_enabled") != "true":
+                if not await foreground_turn.is_current():
+                    await _discard_voice_note_attachment(
+                        voice_note_metadata,
+                        "whatsapp_stale_before_gransabio",
+                    )
+                    return await _whatsapp_retry_response(message_sid)
+                await _discard_voice_note_attachment(
+                    voice_note_metadata,
+                    "whatsapp_gransabio_disabled",
+                )
                 await async_twilio.send_message(
                     body="GranSabio is currently disabled.",
                     from_=to_number, to=from_number,
@@ -715,6 +970,7 @@ async def whatsapp_webhook(request: Request):
                 "to_number": to_number,
                 "answer_mode": answer_mode,
                 "conversation_id": conversation_id,
+                "message_provenance": message_provenance,
             }
 
             if GRANSABIO_USE_DRAMATIQ:
@@ -726,6 +982,7 @@ async def whatsapp_webhook(request: Request):
                         "whatsapp",
                         orjson.dumps(platform_context).decode(),
                         estimated_timeout,
+                        foreground_turn.decision.commit_guard.epoch,
                     ),
                     time_limit=28_800_000,
                 )
@@ -739,6 +996,7 @@ async def whatsapp_webhook(request: Request):
                         platform="whatsapp",
                         platform_context=platform_context,
                         estimated_timeout=estimated_timeout,
+                        foreground_epoch=foreground_turn.decision.commit_guard.epoch,
                     )
                 )
 
@@ -757,62 +1015,60 @@ async def whatsapp_webhook(request: Request):
                 full_response=False,
                 is_whatsapp=True,
                 thinking_budget_tokens=None,
+                channel_context=channel_context,
             ),
         )
 
         quota_notice = storage_quota_notice_from_response(response)
 
         if isinstance(response, StreamingResponse):
-            accumulated_text = ""
-            last_full_content = ""
+            (
+                buffered_items,
+                runtime_terminal,
+                persistence_error,
+                durable_message_ids,
+            ) = (
+                await _buffer_whatsapp_runtime_output(response.body_iterator)
+            )
 
-            async def flush_accumulated_text():
-                nonlocal accumulated_text
-                if not accumulated_text.strip():
-                    accumulated_text = ""
-                    return
+            if runtime_terminal == "queued_for_active_phone":
+                return JSONResponse(content={"status": "success"})
 
-                if len(accumulated_text) >= 900:
-                    chunks = await insert_tts_break(accumulated_text, min_length=700, max_length=900, look_ahead=100)
-                    await send_chunks(chunks)
-                else:
-                    await send_chunks([accumulated_text])
-                accumulated_text = ""
+            if (
+                runtime_terminal == "stale_channel_turn"
+                or persistence_error
+                or not durable_message_ids
+            ):
+                await _discard_voice_note_attachment(
+                    voice_note_metadata,
+                    "whatsapp_message_not_persisted",
+                )
+                return await _whatsapp_retry_response(message_sid)
 
-            async for chunk in response.body_iterator:
-                chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
+            if not persistence_error:
+                for item in buffered_items:
+                    if isinstance(item, str) and len(item) >= 900:
+                        chunks = await insert_tts_break(
+                            item,
+                            min_length=700,
+                            max_length=900,
+                            look_ahead=100,
+                        )
+                        await send_chunks(chunks)
+                    else:
+                        await send_chunks([item])
 
-                for line in chunk_str.split('\n'):
-                    if line[:5] == 'data:':
-                        try:
-                            data = orjson.loads(line[5:].strip())
-                            content = data.get('content', '')
-
-                            if isinstance(content, (list, dict)):
-                                await flush_accumulated_text()
-                                await send_chunks([content])
-                            else:
-                                accumulated_text += content
-
-                                if len(accumulated_text) >= 1400:
-                                    chunks = await insert_tts_break(accumulated_text, min_length=900, max_length=1200, look_ahead=100)
-                                    await send_chunks(chunks[:-1])
-                                    accumulated_text = chunks[-1]
-
-                            if content:
-                                last_full_content = accumulated_text
-                        except orjson.JSONDecodeError:
-                            logger.error(f"Error decoding JSON: {line}")
-
-            await flush_accumulated_text()
-
-            if quota_notice:
+            if quota_notice and not persistence_error:
                 await async_twilio.send_message(
                     body=quota_notice,
                     from_=to_number,
                     to=from_number
                 )
         else:
+            await _discard_voice_note_attachment(
+                voice_note_metadata,
+                "whatsapp_message_not_persisted",
+            )
             # Handle non-streaming responses (rate limit, insufficient balance, etc.)
             if quota_notice:
                 # Media-only message rejected for lack of storage: tell the user.
@@ -843,7 +1099,21 @@ async def whatsapp_webhook(request: Request):
             )
             await log_conn.commit()
 
+    except StaleChannelTurnError:
+        await _discard_voice_note_attachment(
+            voice_note_metadata,
+            "whatsapp_stale_channel_turn",
+        )
+        logger.info(
+            "WhatsApp response suppressed because phone foreground changed for conversation %s",
+            conversation_id,
+        )
+        return await _whatsapp_retry_response(message_sid)
     except Exception as e:
+        await _discard_voice_note_attachment(
+            voice_note_metadata,
+            "whatsapp_webhook_failed",
+        )
         logger.error(f"!!! Error in whatsapp_webhook: {e}")
         try:
             error_message = "Sorry, an error occurred while processing your message. Please try again later."

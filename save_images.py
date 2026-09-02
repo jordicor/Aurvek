@@ -21,7 +21,13 @@ from models import User, ConnectionManager
 from log_config import logger
 from auth import hash_password, verify_password, get_user_by_username, get_current_user, create_access_token, get_user_by_id, get_user_from_phone_number
 from auth import get_current_user_from_websocket, get_user_id_from_conversation, get_user_by_token, create_user_info, create_login_response, generate_magic_link
-from common import CLOUDFLARE_FOR_IMAGES, CLOUDFLARE_IMAGE_SUBDOMAIN, CLOUDFLARE_BASE_URL, generate_signed_url_cloudflare
+from common import (
+    CLOUDFLARE_FOR_IMAGES,
+    CLOUDFLARE_IMAGE_SUBDOMAIN,
+    CLOUDFLARE_BASE_URL,
+    generate_signed_url_cloudflare,
+    get_runtime_request_url,
+)
 from common import Cost, generate_user_hash, has_sufficient_balance, cost_tts, cache_directory, users_directory, elevenlabs_key, openai_key, tts_engine, get_balance, deduct_balance, load_service_costs, SECRET_KEY, ALGORITHM, MEDIA_TOKEN_EXPIRE_HOURS
 from database import get_db_connection
 from storage_quota import record_generated_file
@@ -187,14 +193,16 @@ async def save_image_locally(
         token_url_256 = f"{base_url_256}?token={token_256}"
         token_url_fullsize = f"{base_url_fullsize}?token={token_fullsize}"
 
-        # Use provided scheme, host and port or extract them from request object
+        # Use the explicit origin when supplied. Request-free channels (phone)
+        # resolve the configured canonical application origin instead of
+        # fabricating a Starlette Request or trusting an arbitrary host.
         if scheme is None or host is None:
-            if request is not None:
-                scheme = request.url.scheme
-                host = request.url.hostname
-                port = request.url.port
-            else:
-                raise ValueError("Cannot determine scheme and host without request or scheme and host parameters.")
+            runtime_url = urlparse(get_runtime_request_url(request))
+            scheme = runtime_url.scheme
+            host = runtime_url.hostname
+            port = runtime_url.port
+            if not scheme or not host:
+                raise ValueError("Cannot determine a valid runtime image origin.")
 
         image_link_token_256 = f'{CLOUDFLARE_BASE_URL}{token_url_256}'
         image_link_token_fullsize = f'{CLOUDFLARE_BASE_URL}{token_url_fullsize}'

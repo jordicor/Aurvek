@@ -17,6 +17,7 @@ from integrations.elevenlabs.service import (
 from log_config import logger
 from models import User
 from tasks import download_elevenlabs_audio_task
+from ai_runtime.voice_resolution import CanonicalVoiceResolutionError
 from wellbeing_service import get_active_pause, record_activity as record_wellbeing_activity
 
 
@@ -64,6 +65,18 @@ def _insufficient_balance_response() -> JSONResponse:
     return JSONResponse(
         content={"error": human_message, "message": human_message},
         status_code=402,
+    )
+
+
+def _canonical_voice_error_response(exc: CanonicalVoiceResolutionError) -> JSONResponse:
+    return JSONResponse(
+        content={
+            "error": str(exc),
+            "message": str(exc),
+            "error_code": exc.code,
+            "webrtc_compatible": False,
+        },
+        status_code=409,
     )
 
 
@@ -125,11 +138,35 @@ async def get_elevenlabs_config(
     if not await has_sufficient_balance(current_user.id, VOICE_CALL_MIN_BALANCE_TO_START):
         return _insufficient_balance_response()
 
-    config = await elevenlabs_service.get_configuration(conversation_id, current_user.id, is_admin_user)
+    try:
+        config = await elevenlabs_service.get_configuration(
+            conversation_id, current_user.id, is_admin_user
+        )
+    except CanonicalVoiceResolutionError as exc:
+        return _canonical_voice_error_response(exc)
     if not config:
         return JSONResponse(content={"error": "No ElevenLabs agent configured for this conversation"}, status_code=409)
 
     return JSONResponse(content=config)
+
+
+@router.get("/api/conversations/{conversation_id}/elevenlabs/availability")
+async def get_elevenlabs_availability(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    """Return visible WebRTC gating without creating provider-side state."""
+    if current_user is None:
+        return unauthenticated_response()
+
+    availability = await elevenlabs_service.get_webrtc_availability(
+        conversation_id,
+        current_user.id,
+        await _is_admin_user(current_user),
+    )
+    if availability is None:
+        return JSONResponse(content={"error": "Conversation not found"}, status_code=404)
+    return JSONResponse(content=availability)
 
 
 @router.post("/api/conversations/{conversation_id}/elevenlabs/session")
@@ -185,6 +222,8 @@ async def start_elevenlabs_session(
             session_id,
             conversation["user_id"],
         )
+    except CanonicalVoiceResolutionError as exc:
+        return _canonical_voice_error_response(exc)
     except ElevenLabsProviderSessionError:
         logger.warning(
             "[ElevenLabs] Provider metadata rejected for conversation %s",

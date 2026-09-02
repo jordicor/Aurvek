@@ -1406,6 +1406,20 @@ pre.code-block-collapsed {
     background: rgba(128, 128, 128, 0.12);
 }
 
+.plus-menu-item .voice-call-availability-reason {
+    flex: 1 1 100%;
+    margin-left: 28px;
+    color: var(--bs-danger-text-emphasis, #a61e2b);
+    font-size: 0.72rem;
+    line-height: 1.25;
+    text-align: left;
+    white-space: normal;
+}
+
+.plus-menu-item#plus-voice-call {
+    flex-wrap: wrap;
+}
+
 /* Reset theme .input-container i overrides (transform, position, left, top) */
 .plus-menu-item i,
 .plus-menu-item .voice-wave-icon {
@@ -1909,4 +1923,16 @@ pre.code-block-collapsed {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+.conversation-channel-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    margin-right: 0.42rem;
+    flex: 0 0 auto;
+}
+
+.conversation-channel-badges i {
+    font-size: 0.82em;
+    opacity: 0.9;
 }

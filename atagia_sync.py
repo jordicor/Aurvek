@@ -82,7 +82,9 @@ async def record_atagia_message_link(
         return changed
 
 
-async def start_atagia_history_sync(batch_size: int = DEFAULT_BATCH_SIZE) -> dict[str, Any]:
+async def start_atagia_history_sync(
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> dict[str, Any]:
     """Start a process-local background sync run."""
     global _sync_task
     async with _sync_lock:
@@ -244,11 +246,6 @@ async def _sync_one_message(
 
     summary.processed_messages += 1
 
-    if not text:
-        summary.skipped_messages += 1
-        await _update_sync_state(conversation_id, message_id)
-        return
-
     ingest_kwargs = {
         "user_id": user_id,
         "conversation_id": conversation_id,
@@ -263,11 +260,48 @@ async def _sync_one_message(
     }
 
     try:
-        ok = await _ingest_with_transient_retries(
-            bridge,
-            message_id=message_id,
-            ingest_kwargs=ingest_kwargs,
+        from integrations.telephony.purge_state import (
+            PhoneMemoryWriteBlocked,
+            phone_memory_operation_lease,
         )
+
+        async with phone_memory_operation_lease(
+            conversation_id,
+            provider="atagia",
+            operation="history_sync",
+        ) as provider_lease:
+            if not text:
+                summary.skipped_messages += 1
+                await _update_sync_state(conversation_id, message_id)
+                return
+            await provider_lease.mark_provider_started()
+            ok = await _ingest_with_transient_retries(
+                bridge,
+                message_id=message_id,
+                ingest_kwargs=ingest_kwargs,
+            )
+            if not ok:
+                detail = _format_bridge_last_error(bridge)
+                message = "Atagia ingest outcome is ambiguous"
+                if detail:
+                    message = f"{message}: {detail}"
+                raise RuntimeError(message)
+            async with database.get_db_connection() as conn:
+                await _ensure_schema(conn)
+                changed = await _insert_message_link(
+                    conn,
+                    message_id=message_id,
+                    atagia_message_id=_aurvek_atagia_message_id(message_id),
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role=role,
+                    source="backfill",
+                )
+                await conn.commit()
+            await _update_sync_state(conversation_id, message_id)
+    except PhoneMemoryWriteBlocked:
+        summary.skipped_messages += 1
+        return
     except Exception as exc:
         ok = False
         _add_recent_error(summary, f"message {message_id}: {exc}")
@@ -284,22 +318,8 @@ async def _sync_one_message(
             _add_recent_error(summary, f"message {message_id}: {message}")
         return
 
-    async with database.get_db_connection() as conn:
-        await _ensure_schema(conn)
-        changed = await _insert_message_link(
-            conn,
-            message_id=message_id,
-            atagia_message_id=_aurvek_atagia_message_id(message_id),
-            conversation_id=conversation_id,
-            user_id=user_id,
-            role=role,
-            source="backfill",
-        )
-        await conn.commit()
-
     summary.linked_messages += 1 if changed else 0
     summary.skipped_messages += 0 if changed else 1
-    await _update_sync_state(conversation_id, message_id)
 
 
 async def _ingest_with_transient_retries(

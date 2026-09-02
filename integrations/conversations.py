@@ -362,19 +362,16 @@ async def set_external_conversation(
 
         platforms = orjson.loads(ep_row[0]) if ep_row[0] else {}
 
-        loses_current = False
-        for platform_name in list(platforms.keys()):
-            platform_data = platforms.get(platform_name)
-            if not isinstance(platform_data, dict):
-                continue
-            if platform_data.get("conversation_id") == conv_id:
-                if (
-                    platform_name == current_platform
-                    and target_platform != current_platform
-                ):
-                    loses_current = True
-                platform_data.pop("conversation_id", None)
-
+        target_data = platforms.get(target_platform)
+        previous_conversation_id = (
+            target_data.get("conversation_id")
+            if isinstance(target_data, dict)
+            else None
+        )
+        try:
+            normalized_previous_conversation_id = int(previous_conversation_id)
+        except (TypeError, ValueError):
+            normalized_previous_conversation_id = None
         if target_platform not in platforms or not isinstance(platforms.get(target_platform), dict):
             platforms[target_platform] = {}
         platforms[target_platform]["conversation_id"] = conv_id
@@ -390,17 +387,32 @@ async def set_external_conversation(
         await conn.commit()
 
         platform_label = "WhatsApp" if target_platform == "whatsapp" else "Telegram"
-        if loses_current:
+        affected_conversation_ids = [conv_id]
+        if (
+            normalized_previous_conversation_id is not None
+            and normalized_previous_conversation_id > 0
+            and normalized_previous_conversation_id != conv_id
+        ):
+            affected_conversation_ids.append(normalized_previous_conversation_id)
+
+        if (
+            normalized_previous_conversation_id
+            and normalized_previous_conversation_id != conv_id
+        ):
             message = (
-                f'Moved conversation #{conv_id} "{conv_name}" to {platform_label}. '
-                "Your next message here will start a new conversation."
+                f'Moved {platform_label} to conversation #{conv_id} "{conv_name}".'
             )
         elif target_platform != current_platform:
             message = f'Assigned conversation #{conv_id} "{conv_name}" to {platform_label}.'
         else:
             message = f'Switched to conversation #{conv_id} "{conv_name}" on {platform_label}.'
 
-        return {"success": True, "error": None, "message": message}
+        return {
+            "success": True,
+            "error": None,
+            "message": message,
+            "affected_conversation_ids": affected_conversation_ids,
+        }
 
     return await _run_begin_immediate("set_external_conversation", _work)
 

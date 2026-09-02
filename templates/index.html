@@ -2,6 +2,10 @@
 
 {% block title %}Home - AURVEK{% endblock %}
 
+{% block head_extra %}
+<meta name="aurvek-admin-csrf-token" content="{{ admin_csrf_token }}">
+{% endblock %}
+
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 <style>
@@ -264,6 +268,7 @@
                         <div class="d-flex flex-column">
                             <a href="/admin/whatsapp" class="dashboard-card-link" style="color: #25D366;"><i class="fab fa-whatsapp" style="color: #25D366;"></i> WhatsApp</a>
                             <a href="/admin/telegram" class="dashboard-card-link" style="color: #0088cc;"><i class="fab fa-telegram" style="color: #0088cc;"></i> Telegram</a>
+                            <a href="/admin/telephony" class="dashboard-card-link"><i class="fas fa-phone-alt"></i> Phone Calls</a>
                             <a href="/admin/devices" class="dashboard-card-link"><i class="fas fa-microchip"></i> Devices</a>
                             <a href="/admin/pricing" class="dashboard-card-link"><i class="fas fa-tags"></i> Admin Pricing</a>
                             <a href="/admin/ranking" class="dashboard-card-link"><i class="fas fa-sort-amount-down"></i> Ranking Config</a>
@@ -355,10 +360,21 @@
             'Enable Cloudflare development mode for all configured zones?',
             async () => {
                 const button = document.getElementById('cloudflareCacheButton');
+                const csrfToken = document.querySelector(
+                    'meta[name="aurvek-admin-csrf-token"]'
+                )?.content;
+                if (!csrfToken) {
+                    NotificationModal.error(
+                        'Cloudflare Cache',
+                        'Request security is unavailable. Reload the page and try again.'
+                    );
+                    return;
+                }
                 button.disabled = true;
                 try {
                     const response = await secureFetch('/admin/disable-cloudflare-cache', {
                         method: 'POST',
+                        headers: {'X-GPTSub-CSRF': csrfToken},
                     });
                     if (!response) return;
                     const data = await response.json();

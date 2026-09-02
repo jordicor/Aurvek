@@ -12,9 +12,18 @@ from ai_runtime.providers.openai_responses import call_gpt_responses_api
 from ai_runtime.providers.openrouter import call_openrouter_api
 from ai_runtime.providers.xai import call_xai_responses_api
 from ai_runtime.watchdog.prompting import _sanitize_watchdog_directive
+from ai_runtime.channel_turns import current_channel_turn
+from ai_runtime.tooling.formatters import (
+    tools_for_claude,
+    tools_for_gemini,
+    tools_for_openai,
+    tools_for_openai_responses,
+    tools_for_xai_responses,
+)
 from billing.usage_reservations import (
     BillingReservationError,
     InsufficientBalanceError,
+    accumulate_ai_reservation_usage,
     estimate_structured_billing_tokens,
     get_user_billing_availability,
     get_variable_billing_rates,
@@ -22,6 +31,7 @@ from billing.usage_reservations import (
     reserve_ai_usage,
     settle_accumulated_ai_reservation_usage,
 )
+from integrations.telephony.tooling import phone_tools_for_context
 
 TAKEOVER_PROMPT_TEMPLATE = """You are taking over this conversation on behalf of the regular AI assistant.
 A supervisor system detected an issue that requires your intervention.
@@ -46,6 +56,111 @@ TAKEOVER_SECURITY_SUFFIX = """
 - Never acknowledge being a different AI or replacement.
 - If the user asks about system changes, deflect naturally in character.
 ==========================="""
+
+
+def _takeover_phone_tools(machine: str) -> tuple[list | None, frozenset[str]]:
+    """Expose only current-turn phone control, never the general tool catalog."""
+
+    bound = current_channel_turn()
+    native = phone_tools_for_context(bound.context if bound is not None else None)
+    names = frozenset(
+        str(tool.get("function", {}).get("name") or "") for tool in native
+    ) - {""}
+    if not native or machine == "O1":
+        return None, frozenset()
+    if machine == "Gemini":
+        return tools_for_gemini(native), names
+    if machine == "GPT":
+        return tools_for_openai_responses(native), names
+    if machine == "Claude":
+        return tools_for_claude(native), names
+    if machine == "xAI":
+        return tools_for_xai_responses(native), names
+    if machine in {"OpenRouter", "MiniMax", "Kimi"}:
+        return tools_for_openai(native), names
+    return None, frozenset()
+
+
+def _takeover_tool_chunk(chunk: Any) -> tuple[str, dict | None]:
+    if not isinstance(chunk, str) or not chunk.startswith("data: "):
+        return "content", None
+    try:
+        payload = orjson.loads(chunk[6:].strip())
+    except orjson.JSONDecodeError:
+        return "content", None
+    if payload.get("tool_call_pending"):
+        return "pending", None
+    tool_call = payload.get("tool_call")
+    if isinstance(tool_call, dict):
+        return "tool", tool_call
+    return "content", None
+
+
+async def _execute_takeover_phone_tool(
+    tool_call: dict,
+    *,
+    pre_tool_content: str,
+    api_messages: list,
+    wd_model: str,
+    wd_machine: str,
+    wd_max_tokens: int,
+    full_prompt: str,
+    conversation_id: int,
+    current_user: Any,
+    request: Any,
+    user_id: int,
+    user_message: Any,
+    prompt_id: int,
+    wd_llm_id: int,
+    byok: bool,
+    pending_attachment_refs: list[str] | None,
+    strip_device_action_blocks: bool,
+    billing_reservation_id: str | None,
+    provider_tools: list | None,
+):
+    """Use normal persistence so existing foreground/outbox hooks fence it."""
+
+    from ai_runtime.tooling.execution import handle_function_call
+
+    arguments = tool_call.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    usage = tool_call.get("_billing_usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    input_tokens = max(0, int(usage.get("input_tokens") or 0))
+    output_tokens = max(0, int(usage.get("output_tokens") or 0))
+    async for chunk in handle_function_call(
+        str(tool_call.get("name") or ""),
+        arguments,
+        api_messages,
+        wd_model,
+        0.3,
+        wd_max_tokens,
+        pre_tool_content,
+        conversation_id,
+        current_user,
+        request,
+        input_tokens,
+        output_tokens,
+        input_tokens + output_tokens,
+        None,
+        user_id,
+        wd_machine,
+        full_prompt,
+        user_message,
+        prompt_id=prompt_id,
+        watchdog_config=None,
+        llm_id=wd_llm_id,
+        byok=byok,
+        pending_attachment_refs=pending_attachment_refs,
+        strip_device_action_blocks=strip_device_action_blocks,
+        billing_reservation_id=billing_reservation_id,
+        billing_first_call_accumulated=bool(billing_reservation_id),
+        tool_call=tool_call,
+        provider_tools=provider_tools,
+    ):
+        yield chunk
 
 
 async def _reserve_takeover_usage(
@@ -92,6 +207,46 @@ async def _reserve_takeover_usage(
     )
     return maximum_output_tokens, reservation_id
 
+
+async def _settle_or_refund_takeover_reservation(
+    *,
+    reservation_id: str,
+    user_id: int,
+    input_cost_per_million: float,
+    output_cost_per_million: float,
+    prompt_id: int | None,
+    byok: bool,
+    provider_usage_observed: bool = False,
+) -> None:
+    """Capture durable takeover usage, refunding only a genuinely unused hold."""
+
+    try:
+        captured = await settle_accumulated_ai_reservation_usage(
+            reservation_id=reservation_id,
+            user_id=user_id,
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million,
+            prompt_id=prompt_id,
+            byok=byok,
+        )
+    except BillingReservationError:
+        logger.exception(
+            "Could not capture unfinished takeover usage %s",
+            reservation_id,
+        )
+        return
+
+    if captured or provider_usage_observed:
+        return
+    try:
+        await refund_fixed_usage(reservation_id)
+    except BillingReservationError:
+        logger.exception(
+            "Could not release unused takeover reservation %s",
+            reservation_id,
+        )
+
+
 async def watchdog_takeover_response(
     conversation_id: int,
     prompt_id: int,
@@ -119,6 +274,10 @@ async def watchdog_takeover_response(
     an end_conversation event.
     """
     sanitized_directive = _sanitize_watchdog_directive(directive)
+    bound_turn = current_channel_turn()
+    takeover_channel = (
+        bound_turn.context.channel if bound_turn is not None else "web"
+    )
     lock_finalized = False
     if should_lock:
         # A response-generation or billing failure must never undo a lock that
@@ -130,7 +289,7 @@ async def watchdog_takeover_response(
             prompt_id,
             event_type,
             sanitized_directive,
-            channel="web",
+            channel=takeover_channel,
             should_lock=True,
             locked_reason=f"WATCHDOG_{event_type.upper()}_TAKEOVER",
         )
@@ -256,7 +415,9 @@ async def watchdog_takeover_response(
         yield f"data: {orjson.dumps({'error': 'Takeover billing is temporarily unavailable'}).decode()}\n\n"
         return
 
-    # 7. Build kwargs (no tools, no watchdog_config to prevent recursion)
+    # 7. Build kwargs. Takeover keeps general tools disabled, but preserves the
+    # current foreground turn's one phone-control capability.
+    provider_phone_tools, allowed_phone_tools = _takeover_phone_tools(wd_machine)
     kwargs = {
         "messages": api_messages,
         "model": wd_model,
@@ -279,16 +440,55 @@ async def watchdog_takeover_response(
     }
     if resolved_key:
         kwargs["user_api_key"] = resolved_key
+    if provider_phone_tools:
+        kwargs["tools"] = provider_phone_tools
 
     # 8. Stream response
     try:
+        collected_tool_call = None
+        pre_tool_content = ""
         async for chunk in api_func(**kwargs):
-            # Skip tool call chunks (takeover doesn't support tools)
-            if isinstance(chunk, str) and ("tool_call" in chunk and "tool_call_pending" not in chunk):
+            chunk_kind, tool_call = _takeover_tool_chunk(chunk)
+            if chunk_kind == "tool":
+                if (
+                    collected_tool_call is not None
+                    or tool_call is None
+                    or str(tool_call.get("name") or "") not in allowed_phone_tools
+                ):
+                    raise RuntimeError(
+                        "Watchdog takeover attempted an unavailable tool"
+                    )
+                collected_tool_call = tool_call
+                if isinstance(chunk, str) and chunk.startswith("data: "):
+                    payload = orjson.loads(chunk[6:].strip())
+                    pre_tool_content = str(payload.get("pre_tool_content") or "")
                 continue
-            if isinstance(chunk, str) and "tool_call_pending" in chunk:
+            if chunk_kind == "pending":
                 continue
             yield chunk
+        if collected_tool_call is not None:
+            async for tool_chunk in _execute_takeover_phone_tool(
+                collected_tool_call,
+                pre_tool_content=pre_tool_content,
+                api_messages=api_messages,
+                wd_model=wd_model,
+                wd_machine=wd_machine,
+                wd_max_tokens=wd_max_tokens,
+                full_prompt=full_prompt,
+                conversation_id=conversation_id,
+                current_user=current_user,
+                request=request,
+                user_id=user_id,
+                user_message=user_message,
+                prompt_id=prompt_id,
+                wd_llm_id=wd_llm_id,
+                byok=resolved_key is not None,
+                pending_attachment_refs=pending_attachment_refs,
+                strip_device_action_blocks=strip_device_action_blocks,
+                billing_reservation_id=billing_reservation_id,
+                provider_tools=provider_phone_tools,
+            ):
+                yield tool_chunk
     except Exception as exc:
         logger.error("watchdog takeover: streaming failed for conv=%d: %s", conversation_id, exc)
         # Persist error event
@@ -297,27 +497,14 @@ async def watchdog_takeover_response(
         raise
     finally:
         if billing_reservation_id:
-            try:
-                await settle_accumulated_ai_reservation_usage(
-                    reservation_id=billing_reservation_id,
-                    user_id=user_id,
-                    input_cost_per_million=wd_llm.get("input_token_cost", 0),
-                    output_cost_per_million=wd_llm.get("output_token_cost", 0),
-                    prompt_id=prompt_id,
-                    byok=resolved_key is not None,
-                )
-            except BillingReservationError:
-                logger.exception(
-                    "Could not capture unfinished takeover usage %s",
-                    billing_reservation_id,
-                )
-            try:
-                await refund_fixed_usage(billing_reservation_id)
-            except BillingReservationError:
-                logger.exception(
-                    "Could not release unfinished takeover reservation %s",
-                    billing_reservation_id,
-                )
+            await _settle_or_refund_takeover_reservation(
+                reservation_id=billing_reservation_id,
+                user_id=user_id,
+                input_cost_per_million=wd_llm.get("input_token_cost", 0),
+                output_cost_per_million=wd_llm.get("output_token_cost", 0),
+                prompt_id=prompt_id,
+                byok=resolved_key is not None,
+            )
 
     # 9. Finalize takeover (lock if needed, clean state, persist event)
     if not lock_finalized:
@@ -325,7 +512,7 @@ async def watchdog_takeover_response(
 
         await _finalize_takeover(
             conversation_id, prompt_id, event_type, sanitized_directive,
-            channel="web", should_lock=False,
+            channel=takeover_channel, should_lock=False,
             locked_reason=None,
         )
     if should_lock:
@@ -515,6 +702,10 @@ async def watchdog_takeover_response_requestfree(
             "byok": resolved_key is not None,
             "input_tokens": 0,
             "output_tokens": 0,
+            "input_cost_per_million": wd_llm.get("input_token_cost", 0),
+            "output_cost_per_million": wd_llm.get("output_token_cost", 0),
+            "provider_usage_observed": False,
+            "usage_accumulated": False,
         }
     )
 
@@ -547,19 +738,49 @@ async def watchdog_takeover_response_requestfree(
     try:
         async for chunk in api_func(**kwargs):
             if isinstance(chunk, str) and ("tool_call" in chunk and "tool_call_pending" not in chunk):
+                billing_context["provider_usage_observed"] = True
                 continue
             if isinstance(chunk, str) and "tool_call_pending" in chunk:
+                billing_context["provider_usage_observed"] = True
                 continue
             if isinstance(chunk, str) and chunk.startswith("data: "):
                 try:
                     payload = orjson.loads(chunk[6:].strip())
-                    if payload.get("token_info"):
-                        billing_context["input_tokens"] = int(
-                            payload.get("input_tokens") or 0
-                        )
-                        billing_context["output_tokens"] = int(
-                            payload.get("output_tokens") or 0
-                        )
+                    if payload.get("content"):
+                        billing_context["provider_usage_observed"] = True
+                    if (
+                        payload.get("token_info")
+                        and not billing_context["usage_accumulated"]
+                    ):
+                        input_tokens = int(payload.get("input_tokens") or 0)
+                        output_tokens = int(payload.get("output_tokens") or 0)
+                        billing_context["provider_usage_observed"] = True
+                        if billing_reservation_id:
+                            await accumulate_ai_reservation_usage(
+                                reservation_id=billing_reservation_id,
+                                user_id=user_id,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                component={
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": output_tokens,
+                                    "input_cost_per_million": wd_llm.get(
+                                        "input_token_cost", 0
+                                    ),
+                                    "output_cost_per_million": wd_llm.get(
+                                        "output_token_cost", 0
+                                    ),
+                                    "prompt_id": prompt_id,
+                                    "byok": resolved_key is not None,
+                                    "idempotency_key": (
+                                        "watchdog-requestfree:"
+                                        f"{billing_reservation_id}"
+                                    ),
+                                },
+                            )
+                        billing_context["input_tokens"] = input_tokens
+                        billing_context["output_tokens"] = output_tokens
+                        billing_context["usage_accumulated"] = True
                 except (orjson.JSONDecodeError, AttributeError, TypeError, ValueError):
                     pass
             yield chunk
@@ -574,10 +795,14 @@ async def watchdog_takeover_response_requestfree(
         raise
     finally:
         if owns_billing_context and billing_reservation_id:
-            try:
-                await refund_fixed_usage(billing_reservation_id)
-            except BillingReservationError:
-                logger.exception(
-                    "Could not release unclaimed request-free reservation %s",
-                    billing_reservation_id,
-                )
+            await _settle_or_refund_takeover_reservation(
+                reservation_id=billing_reservation_id,
+                user_id=user_id,
+                input_cost_per_million=wd_llm.get("input_token_cost", 0),
+                output_cost_per_million=wd_llm.get("output_token_cost", 0),
+                prompt_id=prompt_id,
+                byok=resolved_key is not None,
+                provider_usage_observed=bool(
+                    billing_context.get("provider_usage_observed")
+                ),
+            )

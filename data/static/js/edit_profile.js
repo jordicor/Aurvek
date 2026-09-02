@@ -239,6 +239,10 @@ function setupEventListeners() {
     const phoneVerificationIdInput = document.getElementById('phoneVerificationId');
     const editProfileForm = document.getElementById('editProfileForm');
 
+    if (phoneInput.value && phoneInput.dataset.phoneVerified === 'false') {
+        sendCodeButton.style.display = 'block';
+    }
+
     const verifyCodeButton = document.createElement('button');
     verifyCodeButton.textContent = 'Verify Code';
     verifyCodeButton.className = 'btn btn-primary mt-2';
@@ -363,7 +367,13 @@ async function handleFormSubmit(event) {
     const fullPhoneNumber = getFullPhoneNumber();
     formData.set('phone_number', fullPhoneNumber);
 
-    if (fullPhoneNumber !== originalPhoneNumber) {
+    const phoneInput = document.getElementById('phone');
+    const phoneNeedsVerification = Boolean(fullPhoneNumber) && (
+        fullPhoneNumber !== originalPhoneNumber
+        || phoneInput.dataset.phoneVerified !== 'true'
+    );
+
+    if (phoneNeedsVerification) {
         try {
             const checkResponse = await secureFetch('/api/check-phone-number', {
                 method: 'POST',
@@ -380,7 +390,6 @@ async function handleFormSubmit(event) {
                 return;
             }
 
-            const phoneInput = document.getElementById('phone');
             if (
                 phoneInput.dataset.verified !== 'true'
                 || !phoneChallengeApproved
@@ -422,6 +431,9 @@ async function handleFormSubmit(event) {
         if (data.success) {
             currentUserVoiceId = formData.get('sample_voice_id');
             originalPhoneNumber = fullPhoneNumber;
+            if (phoneChallengeApproved && challengePhoneNumber === fullPhoneNumber) {
+                document.getElementById('phone').dataset.phoneVerified = 'true';
+            }
             currentAlterEgoId = formData.get('alter_ego_id');
             if (data.reauthenticate) {
                 FormGuard.markClean('#editProfileForm');

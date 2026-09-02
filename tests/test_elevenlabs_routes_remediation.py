@@ -94,6 +94,41 @@ async def test_incognito_gate_runs_before_config_or_session_creation(
 
 
 @pytest.mark.asyncio
+async def test_availability_returns_canonical_visible_gate_without_starting_session(
+    routes_module,
+    monkeypatch,
+):
+    routes, _task = routes_module
+    availability = {
+        "available": False,
+        "error_code": "elevenlabs_webrtc_voice_incompatible",
+        "reason": "ElevenLabs cannot reproduce the canonical openai voice exactly.",
+        "provider": "openai",
+        "voice": "alloy",
+    }
+    get_availability = AsyncMock(return_value=availability)
+    monkeypatch.setattr(routes, "_is_admin_user", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        routes.elevenlabs_service,
+        "get_webrtc_availability",
+        get_availability,
+    )
+    get_configuration = AsyncMock()
+    register_session = AsyncMock()
+    monkeypatch.setattr(routes.elevenlabs_service, "get_configuration", get_configuration)
+    monkeypatch.setattr(routes.elevenlabs_service, "register_session", register_session)
+
+    response = await routes.get_elevenlabs_availability(100, SimpleNamespace(id=1))
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload == availability
+    get_availability.assert_awaited_once_with(100, 1, False)
+    get_configuration.assert_not_awaited()
+    register_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_empty_transcript_response_is_retryable_and_does_not_enqueue_audio(
     routes_module,
     monkeypatch,

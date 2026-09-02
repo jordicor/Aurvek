@@ -121,7 +121,7 @@ async def _load_warmup_context_messages(conversation_id: int, start_date: dateti
     async with get_db_connection(readonly=True) as conn_ro:
         cursor = await conn_ro.execute(
             """
-            SELECT message, type
+            SELECT id, message, type
             FROM messages
             WHERE conversation_id = ?
             AND date >= ?
@@ -132,7 +132,11 @@ async def _load_warmup_context_messages(conversation_id: int, start_date: dateti
         rows = await cursor.fetchall()
 
     messages = [
-        {"message": parse_stored_message(custom_unescape(row[0])), "type": row[1]}
+        {
+            "id": int(row[0]),
+            "message": parse_stored_message(custom_unescape(row[1])),
+            "type": row[2],
+        }
         for row in rows
     ]
     return flatten_multi_ai_context(messages)

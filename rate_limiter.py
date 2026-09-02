@@ -263,6 +263,10 @@ class RateLimitConfig:
     OAUTH_BY_IP = (15, 60)               # 15 per hour per IP
     OAUTH_CALLBACK_FAILURES = (5, 60)    # 5 failures per hour
 
+    # --- Provider-backed voice samples (cache misses only) ---
+    VOICE_SAMPLE_BY_IP = (30, 60)        # 30 provider generations/hour/IP
+    VOICE_SAMPLE_BY_USER = (30, 60)      # 30 provider generations/hour/account
+
     # --- Email verification ---
     VERIFY_BY_IP = (20, 60)              # 20 per hour per IP
     VERIFY_FAILURES = (10, 60)           # 10 failures per hour

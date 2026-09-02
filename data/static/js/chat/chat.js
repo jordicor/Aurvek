@@ -20,12 +20,22 @@ let lastSelectedConversationId = null;
 var botname = "bot";
 const limitMessage = 25;
 const processedMessageIds = new Set();
-let currentThinkingBudget = 0;
+const reasoningSelections = new Map();
 let isCurrentConversationLocked = false;
 let currentConversationIncognito = false;
 let userStopped = false;
 let currentProviderHealth = null;
 let currentMemoryHealth = null;
+
+function notifyConversationChannelControls() {
+    window.dispatchEvent(new CustomEvent('aurvek:conversation-changed', {
+        detail: {
+            conversationId: typeof currentConversationId === 'undefined'
+                ? null
+                : currentConversationId
+        }
+    }));
+}
 
 function conversationIdsMatch(left, right) {
     return left !== null && left !== undefined &&
@@ -729,6 +739,94 @@ function createMultiAiCarousel(models = []) {
     return carousel;
 }
 
+function normalizeMessageChannelProvenance(messageObj) {
+    const provenance = messageObj?.channel_provenance;
+    if (!provenance || typeof provenance !== 'object') return null;
+
+    const channel = String(provenance.channel || '').trim().toLowerCase();
+    if (channel !== 'whatsapp' && channel !== 'telegram') return null;
+
+    const direction = String(provenance.direction || '').trim().toLowerCase();
+    const contentKind = String(provenance.content_kind || '').trim().toLowerCase();
+    const voiceNote = provenance.voice_note && typeof provenance.voice_note === 'object'
+        ? provenance.voice_note
+        : null;
+    const audio = voiceNote?.audio && typeof voiceNote.audio === 'object'
+        ? voiceNote.audio
+        : null;
+    const audioUrl = audio?.available === true && typeof audio.url === 'string'
+        ? audio.url.trim()
+        : '';
+    const contentLabel = contentKind === 'audio'
+        ? 'Audio'
+        : (contentKind === 'voice_reply'
+            ? 'Voice reply'
+            : (contentKind === 'voice_note' || voiceNote ? 'Voice note' : ''));
+
+    return {
+        channel,
+        direction,
+        contentKind,
+        contentLabel,
+        originalAudio: audioUrl ? {
+            url: audioUrl,
+            label: contentLabel || 'Audio',
+        } : null,
+    };
+}
+
+function createMessageChannelBadge(provenance) {
+    if (!provenance) return null;
+
+    const channelLabel = provenance.channel === 'whatsapp' ? 'WhatsApp' : 'Telegram';
+    const badge = document.createElement('span');
+    badge.classList.add(
+        'message-channel-provenance',
+        `message-channel-provenance-${provenance.channel}`
+    );
+
+    let description = `${channelLabel} message`;
+    if (provenance.direction === 'inbound') {
+        description = `Received via ${channelLabel}`;
+    } else if (provenance.direction === 'outbound') {
+        description = `${channelLabel} reply`;
+    }
+    if (provenance.contentLabel) {
+        description += `. ${provenance.contentLabel}`;
+    }
+    badge.title = description;
+    badge.setAttribute('aria-label', description);
+
+    const channelIcon = document.createElement('i');
+    getExternalPlatformIcon(provenance.channel).split(/\s+/).forEach(className => {
+        if (className) channelIcon.classList.add(className);
+    });
+    channelIcon.setAttribute('aria-hidden', 'true');
+
+    const channelName = document.createElement('span');
+    channelName.className = 'message-channel-name';
+    channelName.textContent = channelLabel;
+    badge.append(channelIcon, channelName);
+
+    if (provenance.contentLabel) {
+        const kind = document.createElement('span');
+        kind.className = 'message-channel-kind';
+        const kindIcon = document.createElement('i');
+        kindIcon.className = provenance.contentKind === 'audio'
+            ? 'fas fa-file-audio'
+            : (provenance.contentKind === 'voice_reply'
+                ? 'fas fa-volume-high'
+                : 'fas fa-microphone');
+        kindIcon.setAttribute('aria-hidden', 'true');
+        const kindLabel = document.createElement('span');
+        kindLabel.textContent = provenance.contentLabel;
+        kind.append(kindIcon, kindLabel);
+        badge.appendChild(kind);
+    }
+
+    return badge;
+}
+
 function addMessage(author, message, timestampInfo = null, isTemporary = false, messageObj = null, prepend = false, container = null, messageId = null, citations = null) {
     var divMessage = document.createElement('div');
     divMessage.classList.add('message', 'text-white', author === 'user' ? 'user' : 'bot');
@@ -744,6 +842,37 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
 
     var messageContent = document.createElement('div');
     messageContent.classList.add('message-content');
+
+    const phoneProvenance = messageObj?.phone_provenance;
+    if (phoneProvenance?.phone_call_id) {
+        divMessage.dataset.phoneCallId = String(phoneProvenance.phone_call_id);
+        const phoneBadge = document.createElement('button');
+        phoneBadge.type = 'button';
+        phoneBadge.className = 'message-phone-provenance';
+        const phoneDescription = 'Spoken during a phone call';
+        phoneBadge.setAttribute('aria-label', `${phoneDescription}. View call details`);
+        phoneBadge.title = `${phoneDescription}. View call details`;
+        const phoneIcon = document.createElement('i');
+        phoneIcon.className = 'fas fa-phone';
+        phoneIcon.setAttribute('aria-hidden', 'true');
+        const phoneLabel = document.createElement('span');
+        phoneLabel.textContent = 'Phone';
+        phoneBadge.append(phoneIcon, phoneLabel);
+        phoneBadge.addEventListener('click', () => {
+            window.AurvekPhoneHistory?.showCall(String(phoneProvenance.phone_call_id));
+        });
+        messageContent.appendChild(phoneBadge);
+    }
+
+    const channelProvenance = normalizeMessageChannelProvenance(messageObj);
+    const channelBadge = createMessageChannelBadge(channelProvenance);
+    if (channelBadge) {
+        divMessage.dataset.messageChannel = channelProvenance.channel;
+        if (channelProvenance.contentKind) {
+            divMessage.dataset.messageContentKind = channelProvenance.contentKind;
+        }
+        messageContent.appendChild(channelBadge);
+    }
 
     if (isTemporary) {
         divMessage.classList.add('temporary-message');
@@ -896,11 +1025,21 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         iconContainer.classList.add('icon-container');
     
         const audioIcon = document.createElement('i');
-        audioIcon.classList.add('fa', 'fa-volume-up');
+        audioIcon.classList.add('fa', 'fa-volume-up', 'message-audio-action');
         audioIcon.dataset.baseIcon = 'fa-volume-up';
         audioIcon.style.cursor = 'pointer';
         audioIcon.style.display = 'inline';
-        audioIcon.title = 'Read aloud';
+        const originalAudio = channelProvenance?.originalAudio || null;
+        const audioActionLabel = originalAudio
+            ? `Play original ${originalAudio.label.toLowerCase()}`
+            : 'Read aloud';
+        audioIcon.title = audioActionLabel;
+        audioIcon.setAttribute('aria-label', audioActionLabel);
+        audioIcon.setAttribute('aria-pressed', 'false');
+        audioIcon.setAttribute('role', 'button');
+        audioIcon.tabIndex = 0;
+        audioIcon.dataset.audioSource = originalAudio ? 'original' : 'tts';
+        audioIcon.dataset.playLabel = audioActionLabel;
 
         const resolveMessageText = () => {
             if (divMessage.classList.contains('multi-ai-message')) {
@@ -911,8 +1050,19 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         };
 
         audioIcon.dataset.id = currentConversationId;
-        audioIcon.onclick = function() {
+        const activateAudio = function() {
+            if (originalAudio) {
+                playOriginalAudio(originalAudio.url, audioIcon);
+                return;
+            }
             textToSpeech(resolveMessageText(), user_id, currentConversationId, audioIcon, author);
+        };
+        audioIcon.onclick = activateAudio;
+        audioIcon.onkeydown = function(event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activateAudio();
+            }
         };
 
         const bookmarkIcon = document.createElement('i');
@@ -938,6 +1088,39 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
                 console.error('Could not find message ID to mark as favorite');
             }
         };
+
+        let retranscriptionIcon = null;
+        const canRetranscribeVoiceNote = Boolean(
+            messageObj?.type === 'text' &&
+            messageId !== null &&
+            messageId !== undefined &&
+            channelProvenance?.direction === 'inbound' &&
+            channelProvenance?.contentKind === 'voice_note' &&
+            channelProvenance?.originalAudio
+        );
+        if (canRetranscribeVoiceNote) {
+            retranscriptionIcon = document.createElement('i');
+            retranscriptionIcon.classList.add(
+                'fas',
+                'fa-sync-alt',
+                'voice-note-retranscription-action'
+            );
+            retranscriptionIcon.dataset.messageId = String(messageId);
+            retranscriptionIcon.title = 'Retranscribe original voice note';
+            retranscriptionIcon.setAttribute('aria-label', 'Retranscribe original voice note');
+            retranscriptionIcon.setAttribute('role', 'button');
+            retranscriptionIcon.tabIndex = 0;
+            const openRetranscription = () => {
+                window.AurvekVoiceNoteRetranscription?.open(messageId);
+            };
+            retranscriptionIcon.addEventListener('click', openRetranscription);
+            retranscriptionIcon.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openRetranscription();
+                }
+            });
+        }
     
         const copyIcon = document.createElement('i');
         copyIcon.classList.add('fas', 'fa-copy', 'copy-icon');
@@ -949,6 +1132,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         };
     
         iconContainer.appendChild(audioIcon);
+        if (retranscriptionIcon) iconContainer.appendChild(retranscriptionIcon);
         iconContainer.appendChild(bookmarkIcon);
 
         if (author === 'bot') {
@@ -1387,9 +1571,12 @@ function sendMessage(messageText, options = {}) {
     formData.append('text_compressed', new Blob([compressedMessage], { type: 'application/octet-stream' }));
     formData.append('is_compressed', 'true'); // Indicate that message is compressed
     
-    // Add thinking budget tokens if set (-1 = auto, > 0 = manual)
-    if (currentThinkingBudget !== 0) {
-        formData.append('thinking_budget_tokens', currentThinkingBudget);
+    const reasoningSelection = getCurrentReasoningSelection();
+    if (reasoningSelection?.mode) {
+        formData.append('reasoning_mode', reasoningSelection.mode);
+    }
+    if (reasoningSelection?.mode === 'custom') {
+        formData.append('reasoning_budget_tokens', String(reasoningSelection.budget_tokens));
     }
 
     if (options.pdfPageStart && options.pdfPageEnd) {
@@ -1816,6 +2003,7 @@ function sendMessage(messageText, options = {}) {
                     isCurrentConversationLocked = true;
                     const lockedBanner = document.getElementById('locked-conversation-banner');
                     if (lockedBanner) lockedBanner.style.display = 'flex';
+                    notifyConversationChannelControls();
                     const msgInput = document.getElementById('message-text');
                     msgInput.placeholder = 'This conversation is locked';
                     msgInput.disabled = true;
@@ -1979,6 +2167,8 @@ function sendMessage(messageText, options = {}) {
         let newUserMessageId = null;
         let updatedChatName = null;
         let streamCitations = null;
+        let queuedForActivePhone = false;
+        let staleChannelTurn = false;
 
         // Create the bot message element before starting to read the stream
         botMessageElement = document.createElement('div');
@@ -2115,10 +2305,17 @@ function sendMessage(messageText, options = {}) {
                         showPdfRangeRetryModal(pdfTooLargeError);
                         return;
                     }
+                    if (staleChannelTurn) {
+                        cleanupFailedStream(userMessageElement, botMessageElement, true);
+                        return;
+                    }
                     if (persistenceErrorOccurred) {
                         toggleSendButton('Send');
                         initializeNewImages(botMessageElement);
                         return;
+                    }
+                    if (queuedForActivePhone) {
+                        if (botMessageElement?.parentNode) botMessageElement.remove();
                     }
                     if (!streamContentReceived && !streamErrorOccurred) {
                         cleanupFailedStream(userMessageElement, botMessageElement, true);
@@ -2166,10 +2363,17 @@ function sendMessage(messageText, options = {}) {
                                 showPdfRangeRetryModal(pdfTooLargeError);
                                 return;
                             }
+                            if (staleChannelTurn) {
+                                cleanupFailedStream(userMessageElement, botMessageElement, true);
+                                return;
+                            }
                             if (persistenceErrorOccurred) {
                                 toggleSendButton('Send');
                                 initializeNewImages(botMessageElement);
                                 return;
+                            }
+                            if (queuedForActivePhone) {
+                                if (botMessageElement?.parentNode) botMessageElement.remove();
                             }
                             if (!streamContentReceived && !streamErrorOccurred) {
                                 cleanupFailedStream(userMessageElement, botMessageElement, true);
@@ -2233,6 +2437,7 @@ function sendMessage(messageText, options = {}) {
                                     const lockedBanner = document.getElementById('locked-conversation-banner');
                                     if (lockedBanner) lockedBanner.style.display = 'flex';
                                 }
+                                notifyConversationChannelControls();
                             }
                             // Note: pass_turn action sends '🚩' as content, which displays
                             // as a normal bot message. No special handling needed.
@@ -2290,6 +2495,19 @@ function sendMessage(messageText, options = {}) {
                                 }
                                 multiAiCarousel._multiAiApi.setSlideError(parsedData.llm_id, parsedData.error || 'Unknown error');
                                 scrollToBottomIfNeeded();
+                            } else if (parsedData.terminal === 'queued_for_active_phone') {
+                                queuedForActivePhone = true;
+                                streamContentReceived = true;
+                                if (parsedData.message_id) {
+                                    newUserMessageId = parsedData.message_id;
+                                }
+                            } else if (parsedData.terminal === 'stale_channel_turn') {
+                                staleChannelTurn = true;
+                                streamErrorOccurred = true;
+                                streamContentReceived = false;
+                                if (botMessageElement?.parentNode) {
+                                    botMessageElement.remove();
+                                }
                             } else if (parsedData.persistence_error === true) {
                                 const warningText = parsedData.error || 'The response was generated but could not be saved. Copy it before retrying.';
                                 console.error('Response persistence error:', warningText);
@@ -2698,15 +2916,10 @@ function updateActiveChatName(newName) {
         const chatNameSpan = activeChatElement.querySelector('.chat-name');
 
         if (chatNameSpan) {
-            // Preserve icon (WhatsApp, locked) when updating name
-            const icon = chatNameSpan.querySelector('i');
-            chatNameSpan.textContent = '';
-            if (icon) {
-                chatNameSpan.appendChild(icon);
-                chatNameSpan.appendChild(document.createTextNode(` ${newName}`));
-            } else {
-                chatNameSpan.textContent = newName;
-            }
+            const conversation = activeChatElement._conversationData || {};
+            conversation.chat_name = newName;
+            activeChatElement._conversationData = conversation;
+            renderConversationName(chatNameSpan, conversation, newName);
         } else {
             console.error('Element span.chat-name not found within active chat');
         }
@@ -2741,6 +2954,9 @@ function addConversationElement(conversation, chatName, currentConversationId, i
         // Preserve external state if it already existed
         if (!conversation.external_platform && existingElement.dataset.externalPlatform) {
             conversation.external_platform = existingElement.dataset.externalPlatform;
+        }
+        if (!Array.isArray(conversation.external_channels) && existingElement.dataset.externalChannels) {
+            conversation.external_channels = existingElement.dataset.externalChannels.split(/\s+/).filter(Boolean);
         }
         updateSingleConversation(existingElement, conversation, document.querySelector('#external-chats-container'), document.querySelector('#dynamic-chats-container'));
         return;
@@ -2784,9 +3000,11 @@ function addConversationElement(conversation, chatName, currentConversationId, i
     if (conversation.locked) {
         conversationElement.classList.add('conversation-locked');
     }
+    const externalChannels = getConversationExternalChannels(conversation);
     if (conversation.external_platform) {
         conversationElement.dataset.externalPlatform = conversation.external_platform;
     }
+    conversationElement.dataset.externalChannels = externalChannels.join(' ');
     if (conversation.id === currentConversationId) {
         conversationElement.classList.add('active-chat');
     }
@@ -2795,14 +3013,7 @@ function addConversationElement(conversation, chatName, currentConversationId, i
     // Create conversation element content
     const nameSpan = document.createElement('span');
     nameSpan.className = 'chat-name';
-    if (conversation.external_platform) {
-        const iconClass = getExternalPlatformIcon(conversation.external_platform);
-        nameSpan.innerHTML = `<i class="${iconClass}"></i> ${chatName}`;
-    } else if (conversation.locked) {
-        nameSpan.innerHTML = `<i class="fas fa-comment-slash" title="This conversation is locked"></i> ${chatName}`;
-    } else {
-        nameSpan.textContent = chatName;
-    }
+    renderConversationName(nameSpan, conversation, chatName);
     conversationElement.appendChild(nameSpan);
 
     const externalDeviceBadge = createExternalDeviceBadge(conversation);
@@ -2816,13 +3027,7 @@ function addConversationElement(conversation, chatName, currentConversationId, i
     conversationElement.appendChild(chatMenu);
 
     // Handle conversation addition
-    if (conversation.external_platform) {
-        // Remove any existing entry for the same platform to avoid duplicates
-        const existing = externalChatsContainer.querySelector(`[data-external-platform="${conversation.external_platform}"]`);
-        if (existing) {
-            existing.remove();
-        }
-
+    if (conversationHasExternalChannel(conversation)) {
         // Add conversation to external section
         externalChatsContainer.appendChild(conversationElement);
         document.querySelector('.external-section').style.display = 'block';
@@ -2916,7 +3121,13 @@ function createChatMenu(conversation) {
     const telegramLink = createPlatformLink('telegram', conversation);
     chatMenuContent.appendChild(telegramLink);
 
-    if (!conversation.external_platform) {
+    if (!(typeof admin_view !== 'undefined' && admin_view) &&
+        !isConversationIncognitoData(conversation) &&
+        (!conversation.locked || conversationUsesPlatform(conversation, 'phone'))) {
+        chatMenuContent.appendChild(createPhoneCallsMenuLink(conversation));
+    }
+
+    if (!conversationHasMessagingChannel(conversation)) {
         const externalAccessLink = createMenuLink('fa-plug', 'External access', () => openExternalAccessModal(conversation.id));
         chatMenuContent.appendChild(externalAccessLink);
     }
@@ -3004,9 +3215,6 @@ const renameConversation = withSession(function(conversationId) {
     nameSpan.replaceWith(input);
     input.focus();
 
-    // Save icon reference before any DOM changes (WhatsApp, locked, etc.)
-    const existingIcon = nameSpan.querySelector('i');
-
     // Clean up all rename listeners and restore span
     function exitRenameMode() {
         document.removeEventListener('click', onClickOutside);
@@ -3027,14 +3235,10 @@ const renameConversation = withSession(function(conversationId) {
                 });
 
                 if (response.ok) {
-                    // Preserve icon (WhatsApp, locked) when updating name
-                    nameSpan.textContent = '';
-                    if (existingIcon) {
-                        nameSpan.appendChild(existingIcon);
-                        nameSpan.appendChild(document.createTextNode(` ${newName}`));
-                    } else {
-                        nameSpan.textContent = newName;
-                    }
+                    const conversation = conversationElement._conversationData || {};
+                    conversation.chat_name = newName;
+                    conversationElement._conversationData = conversation;
+                    renderConversationName(nameSpan, conversation, newName);
                     exitRenameMode();
                     updateActiveChatName(newName);
                     return;
@@ -3091,13 +3295,120 @@ function getExternalPlatformIcon(platform) {
             return 'fab fa-whatsapp';
         case 'telegram':
             return 'fab fa-telegram';
+        case 'phone':
+            return 'fas fa-phone';
         default:
             return 'fas fa-external-link-alt';
     }
 }
 
+const EXTERNAL_CHANNEL_ORDER = ['whatsapp', 'telegram', 'phone'];
+
+function getConversationExternalChannels(conversation) {
+    const requested = Array.isArray(conversation?.external_channels)
+        ? conversation.external_channels
+        : [];
+    const channels = new Set(
+        requested.filter(channel => EXTERNAL_CHANNEL_ORDER.includes(channel))
+    );
+    if (conversation?.external_platform &&
+        EXTERNAL_CHANNEL_ORDER.includes(conversation.external_platform)) {
+        channels.add(conversation.external_platform);
+    }
+    if (conversation?.phone_binding) channels.add('phone');
+    return EXTERNAL_CHANNEL_ORDER.filter(channel => channels.has(channel));
+}
+
+function conversationHasExternalChannel(conversation) {
+    return getConversationExternalChannels(conversation).length > 0;
+}
+
+function conversationHasMessagingChannel(conversation) {
+    const channels = getConversationExternalChannels(conversation);
+    return channels.includes('whatsapp') || channels.includes('telegram');
+}
+
+function conversationUsesPlatform(conversation, platform) {
+    return getConversationExternalChannels(conversation).includes(platform);
+}
+
+function createConversationChannelBadges(conversation) {
+    const channels = getConversationExternalChannels(conversation);
+    if (!channels.length) return null;
+    const badges = document.createElement('span');
+    badges.className = 'conversation-channel-badges';
+    channels.forEach(channel => {
+        const icon = document.createElement('i');
+        getExternalPlatformIcon(channel).split(/\s+/).forEach(className => {
+            if (className) icon.classList.add(className);
+        });
+        const channelName = channel === 'phone'
+            ? 'Phone'
+            : channel.charAt(0).toUpperCase() + channel.slice(1);
+        icon.title = channel === 'phone' && conversation.phone_binding?.display_name
+            ? `${channelName}: ${conversation.phone_binding.display_name}`
+            : channelName;
+        icon.setAttribute('aria-label', icon.title);
+        badges.appendChild(icon);
+    });
+    return badges;
+}
+
+function renderConversationName(nameElement, conversation, chatName) {
+    nameElement.replaceChildren();
+    const badges = createConversationChannelBadges(conversation);
+    if (badges) nameElement.appendChild(badges);
+    if (conversation.locked) {
+        const lockedIcon = document.createElement('i');
+        lockedIcon.className = 'fas fa-comment-slash';
+        lockedIcon.title = 'This conversation is locked';
+        nameElement.appendChild(lockedIcon);
+    }
+    nameElement.appendChild(document.createTextNode(chatName));
+}
+
+async function openPhoneCallsForConversation(conversation, assignment = false) {
+    if (!conversation || !window.AurvekPhoneCall?.open) return;
+    if (!conversationIdsMatch(currentConversationId, conversation.id)) {
+        await continueConversation(
+            conversation.id,
+            conversation.chat_name || `Chat ${conversation.id}`,
+            conversation.machine,
+            false,
+            null,
+            conversation
+        );
+    }
+    if (conversationIdsMatch(currentConversationId, conversation.id)) {
+        if (assignment && typeof window.AurvekPhoneCall.openForAssignment === 'function') {
+            await window.AurvekPhoneCall.openForAssignment();
+        } else {
+            await window.AurvekPhoneCall.open();
+        }
+    }
+}
+
+function createPhoneCallsMenuLink(conversation) {
+    const assignedToPhone = conversationUsesPlatform(conversation, 'phone');
+    const label = assignedToPhone
+        ? 'Manage phone calls'
+        : 'Use for phone calls';
+    return createMenuLink('fa-phone', label, () => {
+        closeAllChatMenus();
+        void openPhoneCallsForConversation(conversation, !assignedToPhone).catch(error => {
+            console.error('Could not open phone call controls:', error);
+            NotificationModal.error('Phone calls', 'Could not open phone call controls.');
+        });
+    });
+}
+
+window.getConversationExternalChannels = getConversationExternalChannels;
+window.conversationHasExternalChannel = conversationHasExternalChannel;
+window.createConversationChannelBadges = createConversationChannelBadges;
+window.openPhoneCallsForConversation = openPhoneCallsForConversation;
+
 function getConversationExternalBindings(conversation) {
-    if (!conversation || conversation.external_platform) {
+    if (!conversation || conversationHasMessagingChannel(conversation)) {
         return null;
     }
     const bindings = conversation.external_bindings;
@@ -3464,7 +3775,7 @@ function updateFolderConversationExternalBindings(conversationId, externalBindin
 }
 
 function createPlatformLink(platform, conversation) {
-    const isAssigned = conversation.external_platform === platform;
+    const isAssigned = conversationUsesPlatform(conversation, platform);
     const icon = platform === 'whatsapp' ? 'fa-whatsapp' : 'fa-telegram';
     const platformName = platform.charAt(0).toUpperCase() + platform.slice(1);
 
@@ -3526,8 +3837,6 @@ function createPlatformLink(platform, conversation) {
 
         return container;
     } else {
-        const otherPlatform = conversation.external_platform;
-
         const link = document.createElement('a');
         link.href = '#';
         link.classList.add('platform-link');
@@ -3535,25 +3844,45 @@ function createPlatformLink(platform, conversation) {
         link.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
-            if (otherPlatform && otherPlatform !== platform) {
-                const otherName = otherPlatform === 'whatsapp' ? 'WhatsApp' : 'Telegram';
-                const targetName = platform === 'whatsapp' ? 'WhatsApp' : 'Telegram';
-                NotificationModal.confirm(
-                    'Move Conversation',
-                    `This conversation is on ${otherName}. Move it to ${targetName}?`,
-                    () => toggleExternalPlatform(conversation.id, platform, isAssigned)
-                );
-                return;
-            }
             toggleExternalPlatform(conversation.id, platform, isAssigned);
         });
         return link;
     }
 }
 
+const messagingChannelMutationGenerations = {
+    whatsapp: 0,
+    telegram: 0
+};
+
+function mergeVisibleConversationChannel(conversation, mutatedPlatform) {
+    const visible = visibleConversationCardData(conversation.id);
+    if (!visible) return conversation;
+    const visibleChannels = new Set(getConversationExternalChannels(visible));
+    const responseChannels = new Set(getConversationExternalChannels(conversation));
+    if (responseChannels.has(mutatedPlatform)) {
+        visibleChannels.add(mutatedPlatform);
+    } else {
+        visibleChannels.delete(mutatedPlatform);
+    }
+    const externalChannels = EXTERNAL_CHANNEL_ORDER.filter(
+        channel => visibleChannels.has(channel)
+    );
+    return {
+        ...conversation,
+        external_platform: externalChannels.find(
+            channel => channel === 'whatsapp' || channel === 'telegram'
+        ) || null,
+        external_channels: externalChannels,
+        phone_binding: visible.phone_binding || null
+    };
+}
+
 const toggleExternalPlatform = withSession(function(conversationId, platform, isAssigned) {
     const action = isAssigned ? 'remove' : 'add';
     const visibleCount = getVisibleConversationsCount();
+    const mutationGeneration = (messagingChannelMutationGenerations[platform] || 0) + 1;
+    messagingChannelMutationGenerations[platform] = mutationGeneration;
     secureFetch(`/api/conversations/${conversationId}/external-platform`, {
         method: 'POST',
         headers: {
@@ -3563,7 +3892,11 @@ const toggleExternalPlatform = withSession(function(conversationId, platform, is
     })
     .then(response => response.json())
     .then(data => {
+        if (mutationGeneration !== messagingChannelMutationGenerations[platform]) return;
         if (data.success) {
+            data.updatedConversations = data.updatedConversations.map(
+                conversation => mergeVisibleConversationChannel(conversation, platform)
+            );
             const updatedConversation = data.updatedConversations.find(
                 conv => conv.id === parseInt(conversationId)
             );
@@ -3612,7 +3945,12 @@ function updateConversationElement(conversationId, updatedConversation, allConve
 
     // Then, update or create conversation element
     const element = document.createElement('a');
-    updateSingleConversation(element, updatedConversation, externalChatsContainer, dynamicChatsContainer);
+    const rendered = updateSingleConversation(
+        element,
+        updatedConversation,
+        externalChatsContainer,
+        dynamicChatsContainer
+    );
 
     // Update other conversations if necessary
     allConversations.forEach(conv => {
@@ -3627,7 +3965,13 @@ function updateConversationElement(conversationId, updatedConversation, allConve
         }
     });
 
-    if (updatedConversation.external_platform) {
+    if (!rendered) {
+        sortDynamicChats();
+        updateExternalSection();
+        return;
+    }
+
+    if (conversationHasExternalChannel(updatedConversation)) {
         // Move to external section (without clearing other platform conversations)
         externalChatsContainer.appendChild(element);
         document.querySelector('.external-section').style.display = 'block';
@@ -3675,8 +4019,25 @@ function updateSingleConversation(element, conversationData, externalContainer, 
     const chatName = conversationData.chat_name || `Chat ${conversationData.id}`;
     let targetContainer;
 
-    if (conversationData.external_platform) {
+    if (conversationHasExternalChannel(conversationData)) {
         targetContainer = externalContainer;
+    } else if (Number(conversationData.folder_id) > 0) {
+        if (element instanceof HTMLElement && element.classList.contains('folder-chat-item')) {
+            return false;
+        }
+        if (element instanceof HTMLElement) element.remove();
+        loadedConversationIds.delete(Number(conversationData.id));
+        const folderId = Number(conversationData.folder_id);
+        const folderContainer = document.getElementById(`folder-chats-${folderId}`);
+        if (folderContainer && folderContainer.style.display !== 'none' &&
+            typeof loadFolderChats === 'function' &&
+            folderContainer.dataset.channelRefreshPending !== 'true') {
+            folderContainer.dataset.channelRefreshPending = 'true';
+            Promise.resolve(loadFolderChats(folderId)).finally(() => {
+                delete folderContainer.dataset.channelRefreshPending;
+            });
+        }
+        return false;
     } else {
         targetContainer = dynamicContainer;
     }
@@ -3734,18 +4095,12 @@ function updateSingleConversation(element, conversationData, externalContainer, 
     } else {
         delete element.dataset.externalPlatform;
     }
+    element.dataset.externalChannels = getConversationExternalChannels(conversationData).join(' ');
 
     // Wrap name in .chat-name span (matches addConversationElement structure)
     const nameSpan = document.createElement('span');
     nameSpan.className = 'chat-name';
-    if (conversationData.external_platform) {
-        const iconClass = getExternalPlatformIcon(conversationData.external_platform);
-        nameSpan.innerHTML = `<i class="${iconClass}"></i> ${chatName}`;
-    } else if (conversationData.locked) {
-        nameSpan.innerHTML = `<i class="fas fa-comment-slash" title="This conversation is locked"></i> ${chatName}`;
-    } else {
-        nameSpan.textContent = chatName;
-    }
+    renderConversationName(nameSpan, conversationData, chatName);
     delete element.dataset.folderMenuEnhanced;
     element.innerHTML = '';
     element.appendChild(nameSpan);
@@ -3763,12 +4118,6 @@ function updateSingleConversation(element, conversationData, externalContainer, 
 
     if (element.parentElement !== targetContainer) {
         if (targetContainer === externalContainer) {
-            const existingForPlatform = externalContainer.querySelector(
-                `[data-external-platform="${conversationData.external_platform}"]`
-            );
-            if (existingForPlatform && existingForPlatform !== element) {
-                existingForPlatform.remove();
-            }
             externalContainer.appendChild(element);
         } else {
             dynamicContainer.appendChild(element); 
@@ -3778,6 +4127,7 @@ function updateSingleConversation(element, conversationData, externalContainer, 
     }
 
     setupConversationElementListeners(element);
+    return true;
 }
 
 function setupConversationElementListeners(element) {
@@ -3839,6 +4189,7 @@ function deactivateChat() {
     // Update global state
     beginConversationViewTransition();
     currentConversationId = null;
+    notifyConversationChannelControls();
     setCurrentProviderHealth(null);
 }
 
@@ -3916,18 +4267,22 @@ function processConversations(conversations, loadMore, isInit) {
         addConversationElement(conversation, conversation.chat_name, currentConversationId);
     });
 
+    const normalConversations = conversations.filter(
+        conversation => !conversationHasExternalChannel(conversation)
+    );
+
     // Update pagination cursor from the last non-external conversation in this batch
     // (the oldest by activity, since the API returns newest-first)
     for (let i = conversations.length - 1; i >= 0; i--) {
         const conv = conversations[i];
-        if (!conv.external_platform) {
+        if (!conversationHasExternalChannel(conv)) {
             oldestLoadedActivity = conv.last_activity || null;
             oldestLoadedId = conv.id;
             break;
         }
     }
 
-    if (conversations.length < limit) {
+    if (normalConversations.length < limit) {
         allConversationsLoaded = true;
         document.getElementById('load-more-button').style.display = 'none';
     } else {
@@ -3942,7 +4297,9 @@ function processConversations(conversations, loadMore, isInit) {
     }
 
     if (isInit && currentConversationId !== null) {
-        const existingConversation = conversations.find(conv => conv.id === currentConversationId);
+        const existingConversation = conversations.find(
+            conv => conversationIdsMatch(conv.id, currentConversationId)
+        );
         if (existingConversation) {
             return continueConversation(currentConversationId, existingConversation.chat_name, existingConversation.machine, isInit, null, existingConversation);
         } else {
@@ -4046,6 +4403,9 @@ function continueConversation(
         localStorage.setItem('activeConversationId', conversationId);
     }
     setIncognitoUiState(isIncognitoConversation);
+    if (typeof window.syncElevenLabsVoiceAvailability === 'function') {
+        void window.syncElevenLabsVoiceAvailability();
+    }
     const dateOptions = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
     const formattedStartDate = new Date(startDate).toLocaleDateString(undefined, dateOptions);
 
@@ -4156,6 +4516,7 @@ function continueConversation(
                 messageText.placeholder = 'Type a message...';
                 messageText.disabled = false;
             }
+            notifyConversationChannelControls();
 
             // Balance-based input visibility (runs after locked check). A linked
             // GPTSub model is an owned credential, like BYOK, but paid prompt
@@ -4347,6 +4708,23 @@ function processMessage(
     if (processedIds.has(message.id)) return;
     const timestamps = convertToLocalTime(message.date);
     let messageObj;
+    const phoneMetadata = message.phone_call_id ? {
+        phone_provenance: {
+            phone_call_id: String(message.phone_call_id),
+            origin_channel: String(message.provenance?.origin_channel || message.channel || 'phone'),
+            participant: message.participant || null,
+            interrupted: Boolean(message.interrupted),
+            played_ms: message.played_ms ?? null,
+            delivery_state: message.delivery_state || null,
+            turn_id: message.provenance?.turn_id || null,
+            timestamps: message.phone_timestamps || null
+        }
+    } : {};
+    const channelMetadata = message.channel_provenance &&
+        typeof message.channel_provenance === 'object'
+        ? { channel_provenance: message.channel_provenance }
+        : {};
+    const messageMetadata = { ...phoneMetadata, ...channelMetadata };
 
     try {
         const parsedMessage = JSON.parse(message.message);
@@ -4361,7 +4739,8 @@ function processMessage(
                 type: 'multi_ai',
                 responses: parsedMessage.responses,
                 is_bookmarked: message.is_bookmarked,
-                conversation_id: message.conversation_id
+                conversation_id: message.conversation_id,
+                ...messageMetadata
             };
 
             addMessage(
@@ -4386,7 +4765,8 @@ function processMessage(
                         type: 'text',
                         text: String(item.text),
                         is_bookmarked: message.is_bookmarked,
-                        conversation_id: message.conversation_id
+                        conversation_id: message.conversation_id,
+                        ...messageMetadata
                     };
                 } else if (item.type === 'image_url') {
                     messageObj = {
@@ -4396,7 +4776,8 @@ function processMessage(
                         attachment_ref: item.image_url.attachment_ref,
                         alt: item.image_url.alt,
                         is_bookmarked: message.is_bookmarked,
-                        conversation_id: message.conversation_id
+                        conversation_id: message.conversation_id,
+                        ...messageMetadata
                     };
                 } else if (item.type === 'video_url') {
                     messageObj = {
@@ -4406,7 +4787,8 @@ function processMessage(
                         mime_type: item.video_url.mime_type,
                         poster: item.video_url.poster,
                         is_bookmarked: message.is_bookmarked,
-                        conversation_id: message.conversation_id
+                        conversation_id: message.conversation_id,
+                        ...messageMetadata
                     };
                 } else if (item.type === 'document_url') {
                     messageObj = {
@@ -4415,7 +4797,8 @@ function processMessage(
                         filename: item.document_url.filename || 'document.pdf',
                         pages: item.document_url.pages || 0,
                         is_bookmarked: message.is_bookmarked,
-                        conversation_id: message.conversation_id
+                        conversation_id: message.conversation_id,
+                        ...messageMetadata
                     };
                 } else if (item.type === 'text_file') {
                     messageObj = {
@@ -4423,7 +4806,8 @@ function processMessage(
                         filename: item.text_file.filename,
                         lines: item.text_file.lines,
                         is_bookmarked: message.is_bookmarked,
-                        conversation_id: message.conversation_id
+                        conversation_id: message.conversation_id,
+                        ...messageMetadata
                     };
                 } else if (item.type === 'image' && item.source.type === 'base64') {
                     messageObj = {
@@ -4431,7 +4815,8 @@ function processMessage(
                         url: item.source.data,
                         fullsize_url: item.source.data,
                         is_bookmarked: message.is_bookmarked,
-                        conversation_id: message.conversation_id
+                        conversation_id: message.conversation_id,
+                        ...messageMetadata
                     };
                 }
 
@@ -4452,7 +4837,8 @@ function processMessage(
                 type: 'text',
                 text: String(parsedMessage),
                 is_bookmarked: message.is_bookmarked,
-                conversation_id: message.conversation_id
+                conversation_id: message.conversation_id,
+                ...messageMetadata
             };
             addMessage(
                 message.type,
@@ -4471,7 +4857,8 @@ function processMessage(
             type: 'text',
             text: String(message.message),
             is_bookmarked: message.is_bookmarked,
-            conversation_id: message.conversation_id
+            conversation_id: message.conversation_id,
+            ...messageMetadata
         };
         addMessage(
             message.type,
@@ -4581,6 +4968,10 @@ async function loadMessages(
                 targetMessageFound = true;
             }
         });
+        if (window.AurvekPhoneHistory) {
+            if (!prepend) window.AurvekPhoneHistory.reset();
+            window.AurvekPhoneHistory.renderPage(data.phone_history || {}, tempDiv);
+        }
 
         if (!isCurrentConversationView(conversationId, viewGeneration)) {
             return null;
@@ -4754,7 +5145,109 @@ function setIncognitoUiState(isIncognito) {
     if (closeBtn) {
         closeBtn.hidden = !currentConversationIncognito;
     }
+    notifyConversationChannelControls();
 }
+
+function applyUpdatedConversationCards(conversations) {
+    if (!Array.isArray(conversations) || !conversations.length) return;
+    const externalChatsContainer = document.querySelector('#external-chats-container');
+    const dynamicChatsContainer = document.querySelector('#dynamic-chats-container');
+    conversations.forEach(conversation => {
+        const existing = document.querySelector(
+            `[data-conversation-id="${conversation.id}"]`
+        );
+        if (existing) {
+            updateSingleConversation(
+                existing,
+                conversation,
+                externalChatsContainer,
+                dynamicChatsContainer
+            );
+        } else if (conversationHasExternalChannel(conversation)) {
+            const element = document.createElement('a');
+            updateSingleConversation(
+                element,
+                conversation,
+                externalChatsContainer,
+                dynamicChatsContainer
+            );
+        }
+    });
+    sortDynamicChats();
+    updateExternalSection();
+}
+
+window.applyUpdatedConversationCards = applyUpdatedConversationCards;
+window.addEventListener('aurvek:conversation-cards-updated', event => {
+    applyUpdatedConversationCards(event.detail?.updatedConversations || []);
+});
+
+function visibleConversationCardData(conversationId) {
+    const element = document.querySelector(
+        `[data-conversation-id="${conversationId}"]`
+    );
+    if (!element) return null;
+    const conversation = {
+        ...(element._conversationData || {}),
+        id: Number(conversationId)
+    };
+    if (!Array.isArray(conversation.external_channels)) {
+        conversation.external_channels = String(
+            element.dataset.externalChannels || ''
+        ).split(/\s+/).filter(Boolean);
+    }
+    if (conversation.folder_id === undefined && element.dataset.folderId) {
+        conversation.folder_id = Number(element.dataset.folderId);
+    }
+    return conversation;
+}
+
+function phoneBindingCardSummary(binding) {
+    if (!binding || typeof binding !== 'object') return null;
+    return {
+        id: Number(binding.id),
+        contact_id: Number(binding.contact_id),
+        display_name: String(binding.display_name || 'Phone contact'),
+        allow_inbound: Boolean(binding.allow_inbound),
+        allow_outbound: Boolean(binding.allow_outbound)
+    };
+}
+
+function phoneChannelCard(conversationId, binding) {
+    const conversation = visibleConversationCardData(conversationId);
+    if (!conversation) return null;
+    const channels = new Set(getConversationExternalChannels(conversation));
+    if (binding) {
+        channels.add('phone');
+    } else {
+        channels.delete('phone');
+    }
+    conversation.external_channels = EXTERNAL_CHANNEL_ORDER.filter(
+        channel => channels.has(channel)
+    );
+    conversation.phone_binding = phoneBindingCardSummary(binding);
+    return conversation;
+}
+
+window.addEventListener('aurvek:phone-binding-changed', event => {
+    const detail = event.detail || {};
+    const previousId = Number(detail.previousConversationId);
+    const conversationId = Number(detail.conversationId);
+    const updatedConversations = [];
+    if (Number.isInteger(previousId) && previousId > 0 && previousId !== conversationId) {
+        const previousCard = phoneChannelCard(previousId, null);
+        if (previousCard) updatedConversations.push(previousCard);
+    }
+    if (Number.isInteger(conversationId) && conversationId > 0) {
+        const currentCard = phoneChannelCard(conversationId, detail.binding);
+        if (currentCard) updatedConversations.push(currentCard);
+    }
+    if (updatedConversations.length) {
+        window.dispatchEvent(new CustomEvent('aurvek:conversation-cards-updated', {
+            detail: { updatedConversations }
+        }));
+    }
+});
 
 function closeCurrentIncognitoConversation() {
     if (!currentConversationIncognito || !currentConversationId) {
@@ -4771,6 +5264,7 @@ function closeCurrentIncognitoConversation() {
         loadedConversationIds.delete(String(closingId));
         if (String(currentConversationId) === String(closingId)) {
             currentConversationId = null;
+            notifyConversationChannelControls();
             localStorage.removeItem('activeConversationId');
             setIncognitoUiState(false);
             const chatMessagesContainer = document.getElementById('chat-messages-container');
@@ -4861,6 +5355,11 @@ function activeConversationHasExternalAccess() {
     const data = selected._conversationData || {};
     const bindingCount = parseInt(data.external_bindings?.effective_count || 0, 10);
     return Boolean(
+        conversationHasExternalChannel(data) ||
+        getConversationExternalChannels({
+            external_channels: selected.dataset?.externalChannels?.split(/\s+/).filter(Boolean),
+            external_platform: selected.dataset?.externalPlatform
+        }).length ||
         selected.dataset?.externalPlatform ||
         data.external_platform ||
         (Number.isInteger(bindingCount) && bindingCount > 0) ||
@@ -5093,6 +5592,7 @@ function loadBookmarkedMessages() {
 
     const viewGeneration = beginConversationViewTransition();
     currentConversationId = null;
+    notifyConversationChannelControls();
     const bookmarksController = new AbortController();
     const loadState = {
         generation: viewGeneration,
@@ -5536,10 +6036,10 @@ class ModelSelector {
             window.updateConversationBalanceAvailability();
         }
         
-        // Update thinking tokens visibility
-        if (window.updateThinkingTokensVisibility) {
+        // Refresh reasoning capability for the exact selected LLM id.
+        if (window.updateReasoningControl) {
             setTimeout(() => {
-                window.updateThinkingTokensVisibility();
+                window.updateReasoningControl();
             }, 100);
         }
     }
@@ -5635,8 +6135,8 @@ class ModelSelector {
         if (typeof window.updateConversationBalanceAvailability === 'function') {
             window.updateConversationBalanceAvailability();
         }
-        if (window.updateThinkingTokensVisibility) {
-            window.updateThinkingTokensVisibility();
+        if (window.updateReasoningControl) {
+            window.updateReasoningControl();
         }
         return true;
     }
@@ -6184,7 +6684,7 @@ class MultiAiManager {
         // Should not be reachable if visibility is updated correctly, but guard anyway
         if (forcedLlmId) return;
 
-        let models = window.availableModels;
+        let models = window.availableModels.filter(m => m.machine !== 'GPTSub');
         if (allowedLlms) {
             models = models.filter(m => allowedLlms.includes(m.id));
         }
@@ -6298,6 +6798,7 @@ class MultiAiManager {
 
         // Integrate with existing plus menu indicator dot
         updatePlusMenuIndicator();
+        window.updateReasoningControl?.();
     }
 
     onConversationChange() {
@@ -6349,9 +6850,12 @@ class MultiAiManager {
             return;
         }
 
+        const multiAiCandidates = (window.availableModels || []).filter(
+            m => m.machine !== 'GPTSub'
+        );
         const availableCount = allowedLlms
-            ? window.availableModels?.filter(m => allowedLlms.includes(m.id)).length || 0
-            : window.availableModels?.length || 0;
+            ? multiAiCandidates.filter(m => allowedLlms.includes(m.id)).length
+            : multiAiCandidates.length;
 
         section.style.display = availableCount >= 2 ? '' : 'none';
     }
@@ -6568,10 +7072,10 @@ function closePlusMenu() {
 function updateAiSectionVisibility() {
     const section = document.getElementById('plus-ai-section');
     if (!section) return;
-    const thinkingItem = document.getElementById('plus-thinking-tokens');
+    const reasoningItem = document.getElementById('plus-reasoning');
     const webSearchItem = document.getElementById('plus-web-search');
     const allHidden =
-        (!thinkingItem || thinkingItem.style.display === 'none') &&
+        (!reasoningItem || reasoningItem.style.display === 'none') &&
         (!webSearchItem || webSearchItem.style.display === 'none');
     section.classList.toggle('hidden-section', allHidden);
 }
@@ -6580,93 +7084,186 @@ function updateAiSectionVisibility() {
 function updatePlusMenuIndicator() {
     const btn = document.getElementById('plus-menu-btn');
     if (!btn) return;
-    const hasActive = currentThinkingBudget !== 0 || webSearchEnabled || (window.multiAiManager?.enabled === true);
+    const reasoningSelection = getCurrentReasoningSelection();
+    const hasActive = (reasoningSelection?.mode && reasoningSelection.mode !== 'default') || webSearchEnabled ||
+        (window.multiAiManager?.enabled === true);
     btn.classList.toggle('has-active', hasActive);
 }
 
 // =============================================
-// Thinking Tokens Control (Plus Menu Item)
+// Reasoning Control (Plus Menu Item)
 // =============================================
 
-function initializeThinkingTokensControl() {
-    const menuItem = document.getElementById('plus-thinking-tokens');
-    const popup = document.getElementById('thinking-tokens-popup');
+function initializeReasoningControl() {
+    const menuItem = document.getElementById('plus-reasoning');
+    const popup = document.getElementById('reasoning-popup');
     if (!menuItem || !popup) return;
 
-    const slider = document.getElementById('thinking-tokens-slider');
-    const input = document.getElementById('thinking-tokens-input');
-    const display = document.getElementById('thinking-tokens-display');
-    const applyBtn = document.getElementById('thinking-tokens-apply');
-    const presetBtns = document.querySelectorAll('.preset-btn');
-    const badge = document.getElementById('thinking-tokens-badge');
-    const ANTHROPIC_THINKING_MIN = 1024;
+    const description = document.getElementById('reasoning-description');
+    const modes = document.getElementById('reasoning-modes');
+    const customValue = document.getElementById('reasoning-custom-value');
+    const input = document.getElementById('reasoning-budget-input');
+    const applyBtn = document.getElementById('reasoning-apply');
+    const badge = document.getElementById('reasoning-badge');
+    const validModes = new Set([
+        'default', 'off', 'auto', 'minimal', 'low', 'medium', 'high',
+        'xhigh', 'max', 'custom'
+    ]);
+    const labels = {
+        default: 'Predeterminado', off: 'Desactivado', auto: 'Automático',
+        minimal: 'Mínimo', low: 'Bajo', medium: 'Medio', high: 'Alto',
+        xhigh: 'Muy alto', max: 'Máximo', custom: 'Personalizado'
+    };
 
-    function isAdaptiveModel() {
-        const model = (document.getElementById('chat-model')?.textContent || '').toLowerCase();
-        return model.includes('4-6') || model.includes('4.6')
-            || model.includes('4-7') || model.includes('4.7')
-            || model.includes('4-8') || model.includes('4.8');
+    function currentKey() {
+        const multiAi = window.multiAiManager;
+        if (multiAi?.enabled && multiAi.selectedModels.length >= 2) {
+            const llmIds = multiAi.selectedModels
+                .map(model => Number(model.llm_id))
+                .filter(Number.isInteger)
+                .sort((a, b) => a - b);
+            if (!currentConversationId || llmIds.length < 2) return null;
+            return `${currentConversationId}:multi:${llmIds.join(',')}`;
+        }
+        const llmId = getCurrentConversationLlmIdForUi();
+        if (!currentConversationId || !llmId) return null;
+        return `${currentConversationId}:${llmId}`;
     }
 
-    function updateThinkingTokensVisibility() {
-        const currentModel = document.getElementById('chat-model')?.textContent || '';
-        const modelLower = currentModel.toLowerCase();
-        const isSupported =
-            modelLower.includes('claude-sonnet-4') ||
-            modelLower.includes('claude-opus-4') ||
-            modelLower.includes('claude-3.7') ||
-            modelLower.includes('claude-3-7') ||
-            modelLower.includes('claude-4') ||
-            (modelLower.includes('claude') && modelLower.includes('sonnet') && modelLower.includes('4'));
+    function currentModelReasoning() {
+        const multiAi = window.multiAiManager;
+        if (multiAi?.enabled && multiAi.selectedModels.length >= 2) {
+            const selectedReasoning = multiAi.selectedModels.map(selected => {
+                const model = (window.availableModels || []).find(
+                    item => Number(item.id) === Number(selected.llm_id)
+                );
+                return model?.capabilities?.reasoning;
+            });
+            if (selectedReasoning.some(reasoning => !reasoning)) {
+                return { behavior: 'unknown', modes: [] };
+            }
 
-        menuItem.style.display = isSupported ? '' : 'none';
-        if (!isSupported) {
-            currentThinkingBudget = 0;
+            const commonModes = selectedReasoning.reduce((common, reasoning, index) => {
+                const modelModes = reasoning.behavior === 'configurable'
+                    ? allowedReasoningModes(reasoning).filter(mode => mode !== 'custom')
+                    : ['default'];
+                return index === 0
+                    ? modelModes
+                    : common.filter(mode => modelModes.includes(mode));
+            }, []);
+            return { behavior: 'configurable', modes: commonModes, multi_ai: true };
+        }
+
+        const llmId = getCurrentConversationLlmIdForUi();
+        const model = (window.availableModels || []).find(
+            item => Number(item.id) === Number(llmId)
+        );
+        const reasoning = model?.capabilities?.reasoning;
+        return reasoning && typeof reasoning === 'object' ? reasoning : { behavior: 'unknown' };
+    }
+
+    function hasValidCustomBudget(reasoning) {
+        const budget = reasoning.budget_tokens || {};
+        const min = Number.parseInt(budget.min, 10);
+        const max = Number.parseInt(budget.max, 10);
+        const step = Number.parseInt(budget.step ?? 1, 10);
+        return Number.isInteger(min) && Number.isInteger(max) && Number.isInteger(step) &&
+            min > 0 && max >= min && step > 0;
+    }
+
+    function isValidCustomBudgetValue(reasoning, value) {
+        if (!hasValidCustomBudget(reasoning) || !Number.isInteger(value)) return false;
+        const budget = reasoning.budget_tokens;
+        const min = Number.parseInt(budget.min, 10);
+        const max = Number.parseInt(budget.max, 10);
+        const step = Number.parseInt(budget.step ?? 1, 10);
+        return value >= min && value <= max && (value - min) % step === 0;
+    }
+
+    function allowedReasoningModes(reasoning) {
+        return Array.isArray(reasoning.modes)
+            ? reasoning.modes.filter(mode =>
+                validModes.has(mode) && (mode !== 'custom' || hasValidCustomBudget(reasoning))
+            )
+            : [];
+    }
+
+    function currentSelection(reasoning = currentModelReasoning()) {
+        const key = currentKey();
+        const stored = key ? reasoningSelections.get(key) : null;
+        const allowedModes = allowedReasoningModes(reasoning);
+        if (reasoning.behavior !== 'configurable' ||
+            !stored || !allowedModes.includes(stored.mode) ||
+            (stored.mode === 'custom' && !isValidCustomBudgetValue(reasoning, stored.budget_tokens))) {
+            return { mode: 'default' };
+        }
+        return stored;
+    }
+
+    function setCurrentSelection(selection) {
+        const key = currentKey();
+        if (key) reasoningSelections.set(key, selection);
+    }
+
+    function render() {
+        const reasoning = currentModelReasoning();
+        const behavior = reasoning.behavior || 'unknown';
+        const selection = currentSelection(reasoning);
+        const allowedModes = allowedReasoningModes(reasoning);
+
+        menuItem.style.display = '';
+        modes.replaceChildren();
+        customValue.hidden = true;
+        applyBtn.hidden = true;
+
+        if (behavior === 'configurable' && allowedModes.length) {
+            description.textContent = reasoning.multi_ai
+                ? 'Selecciona un modo compatible con todos los modelos elegidos.'
+                : 'Selecciona uno de los modos disponibles para este modelo.';
+            allowedModes.forEach(mode => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'preset-btn';
+                button.textContent = labels[mode];
+                button.classList.toggle('active', selection.mode === mode);
+                button.addEventListener('click', () => {
+                    if (mode === 'custom') {
+                        const budget = selection.mode === 'custom'
+                            ? selection.budget_tokens
+                            : reasoning.budget_tokens.min;
+                        input.value = budget;
+                        setCurrentSelection({ mode, budget_tokens: budget });
+                    } else {
+                        setCurrentSelection({ mode });
+                    }
+                    render();
+                });
+                modes.appendChild(button);
+            });
+            if (selection.mode === 'custom' && allowedModes.includes('custom')) {
+                const budget = selection.budget_tokens;
+                input.min = String(reasoning.budget_tokens?.min);
+                input.max = String(reasoning.budget_tokens?.max);
+                input.step = String(reasoning.budget_tokens?.step ?? 1);
+                input.value = String(budget);
+                customValue.hidden = false;
+                applyBtn.hidden = false;
+            }
+        } else if (behavior === 'fixed') {
+            description.textContent = 'Gestionado por el modelo.';
+        } else if (behavior === 'none') {
+            description.textContent = 'No disponible.';
         } else {
-            // Update first preset button based on adaptive capability
-            const firstPreset = presetBtns[0];
-            if (firstPreset) {
-                if (isAdaptiveModel()) {
-                    firstPreset.textContent = 'Auto';
-                    firstPreset.dataset.value = '-1';
-                    // If was Off (0), auto-set to Auto (-1) for adaptive models
-                    if (currentThinkingBudget === 0) {
-                        currentThinkingBudget = -1;
-                        slider.disabled = true;
-                        input.disabled = true;
-                    }
-                } else {
-                    firstPreset.textContent = 'Off';
-                    firstPreset.dataset.value = '0';
-                    // If was Auto (-1), reset to Off (0) for non-adaptive models
-                    if (currentThinkingBudget === -1) {
-                        currentThinkingBudget = 0;
-                        slider.disabled = false;
-                        input.disabled = false;
-                    }
-                }
-            }
-            // Opus 4.7+ rejects manual thinking budget: lock UI to Off / Auto only
-            const isOpusAdaptiveOnly = modelLower.includes('opus-4-7') || modelLower.includes('opus-4.7')
-                || modelLower.includes('opus-4-8') || modelLower.includes('opus-4.8');
-            if (isOpusAdaptiveOnly) {
-                slider.disabled = true;
-                input.disabled = true;
-                presetBtns.forEach(btn => {
-                    const v = parseInt(btn.dataset.value);
-                    btn.disabled = v > 0;
-                    btn.classList.toggle('disabled', v > 0);
-                });
-                if (currentThinkingBudget > 0) {
-                    currentThinkingBudget = -1;
-                }
-            } else {
-                presetBtns.forEach(btn => {
-                    btn.disabled = false;
-                    btn.classList.remove('disabled');
-                });
-            }
-            updateDisplay(currentThinkingBudget);
+            description.textContent = 'Capacidad no catalogada; se usará el valor del proveedor.';
+        }
+
+        if (badge) {
+            badge.textContent = behavior === 'configurable'
+                ? (labels[selection.mode] || labels.default)
+                : behavior === 'fixed' ? 'Gestionado'
+                : behavior === 'none' ? 'No disponible'
+                : 'No catalogada';
+            badge.classList.toggle('active', behavior === 'configurable' && selection.mode !== 'default');
         }
         updateAiSectionVisibility();
         updatePlusMenuIndicator();
@@ -6685,84 +7282,38 @@ function initializeThinkingTokensControl() {
 
     // Close popup when clicking outside
     document.addEventListener('click', (e) => {
-        const control = document.getElementById('thinking-tokens-control');
+        const control = document.getElementById('reasoning-control');
         if (control && !control.contains(e.target) && !menuItem.contains(e.target)) {
             popup.style.display = 'none';
         }
     });
 
-    function updateDisplay(value) {
-        value = parseInt(value);
-        const label = value === -1 ? 'Auto' : value === 0 ? 'Off' : value.toLocaleString();
-        if (display) display.textContent = label;
-        if (badge) {
-            badge.textContent = label;
-            badge.classList.toggle('active', value !== 0);
-        }
-        presetBtns.forEach(btn => {
-            btn.classList.toggle('active', parseInt(btn.dataset.value) === value);
-        });
-        updatePlusMenuIndicator();
-    }
-
-    slider.addEventListener('input', (e) => {
-        input.value = e.target.value;
-        updateDisplay(e.target.value);
-    });
-
-    input.addEventListener('input', (e) => {
-        let value = parseInt(e.target.value) || 0;
-        value = Math.max(0, Math.min(128000, value));
-        e.target.value = value;
-        if (value <= 20000) slider.value = value;
-        updateDisplay(value);
-    });
-
-    presetBtns.forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            if (btn.disabled) return;
-            const value = parseInt(btn.dataset.value);
-            if (value === -1) {
-                currentThinkingBudget = -1;
-                slider.disabled = true;
-                input.disabled = true;
-            } else {
-                slider.disabled = false;
-                input.disabled = false;
-                input.value = value;
-                if (value <= 20000) slider.value = value;
-            }
-            updateDisplay(value);
-        });
-    });
-
     applyBtn.addEventListener('click', (e) => {
         e.preventDefault();
-        if (currentThinkingBudget !== -1) {
-            const parsed = parseInt(input.value) || 0;
-            currentThinkingBudget = (parsed > 0 && parsed < ANTHROPIC_THINKING_MIN)
-                ? ANTHROPIC_THINKING_MIN
-                : parsed;
-            input.value = currentThinkingBudget;
-            slider.value = Math.min(currentThinkingBudget, parseInt(slider.max) || currentThinkingBudget);
+        const reasoning = currentModelReasoning();
+        const budget = Number(input.value);
+        if (!isValidCustomBudgetValue(reasoning, budget)) {
+            input.reportValidity();
+            return;
         }
+        input.value = String(budget);
+        setCurrentSelection({ mode: 'custom', budget_tokens: budget });
         popup.style.display = 'none';
-        updateDisplay(currentThinkingBudget);
+        render();
         const originalText = applyBtn.textContent;
-        applyBtn.textContent = 'Applied!';
+        applyBtn.textContent = 'Aplicado';
         setTimeout(() => { applyBtn.textContent = originalText; }, 1000);
     });
 
-    const modelDropdown = document.getElementById('model-dropdown-content');
-    if (modelDropdown) {
-        modelDropdown.addEventListener('click', () => {
-            setTimeout(updateThinkingTokensVisibility, 100);
-        });
-    }
+    window.getCurrentReasoningSelection = () => currentSelection();
+    window.updateReasoningControl = render;
+    render();
+}
 
-    window.updateThinkingTokensVisibility = updateThinkingTokensVisibility;
-    updateThinkingTokensVisibility();
+function getCurrentReasoningSelection() {
+    return typeof window.getCurrentReasoningSelection === 'function'
+        ? window.getCurrentReasoningSelection()
+        : { mode: 'default' };
 }
 
 // =============================================
@@ -6851,11 +7402,11 @@ function initWebSearchEventListeners() {
 document.addEventListener('DOMContentLoaded', function() {
     initPlusMenu();
     initIncognitoChatControls();
-    initializeThinkingTokensControl();
+    initializeReasoningControl();
     initWebSearchEventListeners();
     setTimeout(() => {
-        if (window.updateThinkingTokensVisibility) {
-            window.updateThinkingTokensVisibility();
+        if (window.updateReasoningControl) {
+            window.updateReasoningControl();
         }
     }, 500);
 });

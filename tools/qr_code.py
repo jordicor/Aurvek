@@ -18,7 +18,7 @@ import io
 
 # Own libraries
 from rediscfg import redis_client, broker
-from common import estimate_message_tokens
+from common import estimate_message_tokens, get_runtime_request_url
 from models import User, ConnectionManager
 from integrations.conversations import is_whatsapp_conversation
 from tools import register_tool, register_dramatiq_task, register_function_handler
@@ -173,7 +173,7 @@ async def handle_generate_qr_code(function_arguments, messages, model, temperatu
         is_whatsapp = await is_whatsapp_conversation(conversation_id)
         
         # Get the request URL as a string
-        request_url = str(request.url)
+        request_url = get_runtime_request_url(request)
         
         # Send the task to Dramatiq with request_url instead of request
         generate_qr_code_task.send(channel_name, text, conversation_id, user_id, is_whatsapp, request_url)

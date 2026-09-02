@@ -175,6 +175,7 @@ async def test_persistence_failure_emits_error_without_normal_completion(monkeyp
 
 @pytest.mark.asyncio
 async def test_o1_reasoning_tokens_are_not_charged_twice(monkeypatch):
+    captured_request = {}
     response_payload = {
         "choices": [{"message": {"content": "answer"}}],
         "usage": {
@@ -208,6 +209,7 @@ async def test_o1_reasoning_tokens_are_not_charged_twice(monkeypatch):
             return False
 
         def post(self, *args, **kwargs):
+            captured_request.update(kwargs["json"])
             return _O1Response()
 
     save = AsyncMock(return_value=(10, 11))
@@ -246,6 +248,10 @@ async def test_o1_reasoning_tokens_are_not_charged_twice(monkeypatch):
     args = save.await_args.args
     assert args[1:4] == (5, 11, 16)
     assert save.await_args.kwargs["billing_reservation_id"] == "ai-reservation"
+    assert captured_request["messages"][0] == {
+        "role": "developer",
+        "content": "system",
+    }
 
 
 @pytest.mark.asyncio
@@ -291,6 +297,62 @@ async def test_openai_compatible_reasoning_streams_as_thinking(monkeypatch):
     ]
     assert parsed[4] == {"content": "answer"}
     assert "temperature" not in captured["json"]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_textual_thinking_tag_is_not_saved_as_answer(
+    monkeypatch,
+):
+    payload = "\n\n".join([
+        'data: {"choices":[{"delta":{"content":"antml:thi"}}]}',
+        'data: {"choices":[{"delta":{"content":"nking>private "}}]}',
+        'data: {"choices":[{"delta":{"content":"reasoning</thi"}}]}',
+        'data: {"choices":[{"delta":{"content":"nking>\\n\\nVisible answer"}}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}',
+        "data: [DONE]",
+        "",
+    ])
+    captured = {}
+    save = AsyncMock(return_value=(10, 11))
+    monkeypatch.setattr(
+        openai_chat.aiohttp,
+        "ClientSession",
+        lambda *args, **kwargs: _FakeSession(payload, captured),
+    )
+    monkeypatch.setattr(openai_chat, "save_content_to_db", save)
+    monkeypatch.setattr(
+        openai_chat,
+        "record_provider_success_for_label",
+        AsyncMock(),
+    )
+
+    chunks = [
+        chunk async for chunk in openai_chat.call_llm_api(
+            messages=[{"role": "user", "content": "hi"}],
+            model="google/gemini-test",
+            temperature=0.7,
+            max_tokens=100,
+            prompt="system",
+            conversation_id=123,
+            current_user=_User(),
+            request=None,
+            api_url="https://example.invalid/v1/chat/completions",
+            api_key="test",
+            provider_label="OpenRouter",
+            user_message="hi",
+            save_to_db=True,
+        )
+    ]
+
+    payloads = [_sse_payload(chunk) for chunk in chunks if chunk.startswith("data: {")]
+    assert payloads[0] == {"type": "thinking_start"}
+    assert "".join(
+        item.get("thinking", "") for item in payloads
+    ) == "private reasoning"
+    assert {"type": "thinking_end"} in payloads
+    assert "".join(item.get("content", "") for item in payloads) == "Visible answer"
+    save.assert_awaited_once()
+    assert save.await_args.args[0] == "Visible answer"
 
 
 @pytest.mark.asyncio
@@ -345,9 +407,10 @@ async def test_openai_compatible_tool_call_preserves_reasoning_content(monkeypat
 @pytest.mark.asyncio
 async def test_openai_compatible_reasoning_details_use_cumulative_delta(monkeypatch):
     payload = "\n\n".join([
-        'data: {"choices":[{"delta":{"reasoning_details":[{"text":"think"}]}}]}',
-        'data: {"choices":[{"delta":{"reasoning_details":[{"text":"thinking"}]}}]}',
-        'data: {"choices":[{"delta":{"content":"done"}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"think"}]}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"thinking","signature":"opaque"}]}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"name":"query_perplexity","arguments":"{\\"query\\":\\"docs\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}',
         "data: [DONE]",
         "",
     ])
@@ -371,7 +434,7 @@ async def test_openai_compatible_reasoning_details_use_cumulative_delta(monkeypa
             api_url="https://example.invalid/v1/chat/completions",
             api_key="test",
             provider_label="MiniMax",
-            save_to_db=False,
+            save_to_db=True,
         )
     ]
 
@@ -381,4 +444,56 @@ async def test_openai_compatible_reasoning_details_use_cumulative_delta(monkeypa
         {"thinking": "think", "type": "thinking"},
         {"thinking": "ing", "type": "thinking"},
         {"type": "thinking_end"},
+    ]
+    tool_call = next(event["tool_call"] for event in parsed if "tool_call" in event)
+    assert tool_call["reasoning_details"] == [{
+        "type": "reasoning.text",
+        "text": "thinking",
+        "signature": "opaque",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_reasoning_details_preserve_unindexed_sequence(monkeypatch):
+    payload = "\n\n".join([
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"think "}]}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"more"}]}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"short "}]}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"summary"}]}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","data":"abc"}]}}]}',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","data":"def"}]}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"name":"query_perplexity","arguments":"{\\"query\\":\\"docs\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+        "",
+    ])
+    captured = {}
+    monkeypatch.setattr(
+        openai_chat.aiohttp,
+        "ClientSession",
+        lambda *args, **kwargs: _FakeSession(payload, captured),
+    )
+
+    chunks = [
+        chunk async for chunk in openai_chat.call_llm_api(
+            messages=[{"role": "user", "content": "hi"}],
+            model="vendor/reasoning-model",
+            temperature=0.7,
+            max_tokens=100,
+            prompt="system",
+            conversation_id=124,
+            current_user=_User(),
+            request=None,
+            api_url="https://example.invalid/v1/chat/completions",
+            api_key="test",
+            provider_label="OpenRouter",
+            save_to_db=True,
+        )
+    ]
+
+    parsed = [_sse_payload(chunk) for chunk in chunks if chunk.startswith("data: {")]
+    tool_call = next(event["tool_call"] for event in parsed if "tool_call" in event)
+    assert tool_call["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "think more"},
+        {"type": "reasoning.summary", "summary": "short summary"},
+        {"type": "reasoning.encrypted", "data": "abcdef"},
     ]

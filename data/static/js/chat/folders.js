@@ -485,6 +485,9 @@ function createFolderChatElement(conversation, folderId = null) {
     chatElement.dataset.lastActivity = conversation.last_activity || '';
     chatElement.dataset.machine = conversation.machine || '';
     chatElement.dataset.llmModel = conversation.llm_model || '';
+    chatElement.dataset.externalChannels = typeof getConversationExternalChannels === 'function'
+        ? getConversationExternalChannels(conversation).join(' ')
+        : '';
     if (Number.isInteger(Number(folderId)) && Number(folderId) > 0) {
         chatElement.dataset.folderId = String(folderId);
     }
@@ -504,10 +507,18 @@ function createFolderChatElement(conversation, folderId = null) {
     
     const chatInfo = document.createElement('div');
     chatInfo.className = 'chat-content';
-    chatInfo.innerHTML = `
-        <div class="chat-name">${escapeHTML(chatName)}</div>
-        <small class="text-muted">${new Date(conversation.start_date).toLocaleDateString()}</small>
-    `;
+    const chatNameElement = document.createElement('div');
+    chatNameElement.className = 'chat-name';
+    if (typeof renderConversationName === 'function') {
+        renderConversationName(chatNameElement, conversation, chatName);
+    } else {
+        chatNameElement.textContent = chatName;
+    }
+    const chatDate = document.createElement('small');
+    chatDate.className = 'text-muted';
+    chatDate.textContent = new Date(conversation.start_date).toLocaleDateString();
+    chatInfo.appendChild(chatNameElement);
+    chatInfo.appendChild(chatDate);
     
     // Create the complete chat menu (same as main chats)
     const chatMenu = createChatMenuForFolder(conversation);
@@ -598,7 +609,17 @@ function createChatMenuForFolder(conversation) {
     const telegramLink = createPlatformLink('telegram', conversation);
     chatMenuContent.appendChild(telegramLink);
 
-    if (!conversation.external_platform) {
+    if (!(typeof admin_view !== 'undefined' && admin_view) &&
+        typeof isConversationIncognitoData === 'function' &&
+        !isConversationIncognitoData(conversation) &&
+        typeof createPhoneCallsMenuLink === 'function' &&
+        typeof conversationUsesPlatform === 'function' &&
+        (!conversation.locked || conversationUsesPlatform(conversation, 'phone'))) {
+        chatMenuContent.appendChild(createPhoneCallsMenuLink(conversation));
+    }
+
+    if (typeof conversationHasMessagingChannel !== 'function' ||
+        !conversationHasMessagingChannel(conversation)) {
         const externalAccessLink = createMenuLink('fa-plug', 'External access', () => openExternalAccessModal(conversation.id));
         chatMenuContent.appendChild(externalAccessLink);
     }

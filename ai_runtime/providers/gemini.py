@@ -1,10 +1,45 @@
 from ai_runtime.dependencies import *
 from ai_runtime.config import _log_truncated_response
+from ai_runtime.channel_turns import StaleChannelTurnError
 from ai_runtime.errors import _provider_error_payload
 from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
 from ai_runtime.tooling.citations import build_citation_event
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
+from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
+
+
+def _gemini_thinking_config(
+    reasoning_selection: ReasoningSelection | dict | str | None,
+):
+    """Build Gemini's SDK thinking config from an already validated selection."""
+
+    if reasoning_selection is None:
+        return None
+    selection = parse_reasoning_selection(reasoning_selection)
+    if selection.mode == "default":
+        return None
+    if selection.mode == "custom":
+        return genai_types.ThinkingConfig(
+            thinkingBudget=selection.budget_tokens,
+            includeThoughts=True,
+        )
+    if selection.mode == "off":
+        return genai_types.ThinkingConfig(thinkingBudget=0)
+    if selection.mode == "auto":
+        # Gemini 2.5 spells dynamic thinking as a budget of -1.
+        return genai_types.ThinkingConfig(thinkingBudget=-1, includeThoughts=True)
+    return genai_types.ThinkingConfig(thinkingLevel=selection.mode, includeThoughts=True)
+
+
+def _serialize_gemini_content(content):
+    """Keep signed Gemini parts JSON-safe while crossing the internal SSE boundary."""
+
+    if hasattr(content, "model_dump"):
+        # JSON mode base64-encodes bytes such as ``thoughtSignature`` so the
+        # object survives the internal SSE envelope without lossy coercion.
+        return content.model_dump(mode="json", by_alias=True, exclude_none=True)
+    return content
 
 async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conversation_id, current_user, request, user_message=None, user_api_key=None, tools=None,
                           input_token_fallback=None,
@@ -13,7 +48,8 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                           llm_id=None, save_to_db: bool = True, web_search_mode=None, byok: bool = False,
                           pending_attachment_refs: Optional[list[str]] = None,
                           strip_device_action_blocks: bool = False,
-                          billing_reservation_id: str | None = None):
+                          billing_reservation_id: str | None = None,
+                          reasoning_selection: ReasoningSelection | dict | str | None = None):
     global stop_signals
     logger.info("Entering call_gemini_api")
     user_id = current_user.id
@@ -31,6 +67,9 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
         temperature=temperature,
         max_output_tokens=max_tokens,
     )
+    thinking_config = _gemini_thinking_config(reasoning_selection)
+    if thinking_config is not None:
+        config.thinking_config = thinking_config
 
     # Add tools: google_search (native web search) and/or function declarations
     if web_search_mode == 'native':
@@ -54,6 +93,7 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
     function_call_detected = None
     last_chunk = None
     citations = []
+    thinking_open = False
 
     try:
         async for chunk in await client.aio.models.generate_content_stream(
@@ -74,26 +114,50 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                 break
 
             # Check for function calls
+            saw_content_parts = False
             if chunk.candidates:
                 for candidate in chunk.candidates:
                     if candidate.content and candidate.content.parts:
                         for part in candidate.content.parts:
+                            saw_content_parts = True
                             if part.function_call:
                                 fc = part.function_call
                                 function_call_detected = {
                                     'name': fc.name,
-                                    'arguments': dict(fc.args) if fc.args else {}
+                                    'arguments': dict(fc.args) if fc.args else {},
+                                    'id': getattr(fc, 'id', None) or '',
+                                    # Retain the SDK Content/Part untouched: Gemini requires
+                                    # its thought_signature for a function-response turn.
+                                    'gemini_content': _serialize_gemini_content(candidate.content),
                                 }
                                 logger.info(f"[call_gemini_api] - Function call detected: {fc.name}")
                                 break
+                            part_text = getattr(part, "text", None)
+                            if not part_text:
+                                continue
+                            if getattr(part, "thought", False):
+                                if not thinking_open:
+                                    thinking_open = True
+                                    yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+                                yield f"data: {orjson.dumps({'thinking': part_text, 'type': 'thinking'}).decode()}\n\n"
+                            else:
+                                if thinking_open:
+                                    thinking_open = False
+                                    yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                                content += part_text
+                                yield f"data: {orjson.dumps({'content': part_text}).decode()}\n\n"
                     if function_call_detected:
                         break
 
             if function_call_detected:
                 break
 
-            # Process text
-            if chunk.text:
+            # SDK ``chunk.text`` is a convenience aggregate.  Once parts are
+            # available, stream them above so thought parts never leak into answer text.
+            if not saw_content_parts and chunk.text:
+                if thinking_open:
+                    thinking_open = False
+                    yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
                 content += chunk.text
                 yield f"data: {orjson.dumps({'content': chunk.text}).decode()}\n\n"
 
@@ -159,6 +223,9 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
         yield f"data: {orjson.dumps(_provider_error_payload('Gemini', str(e), user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
         error_yielded = True
 
+    if thinking_open:
+        yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+
     billing_input_tokens = input_tokens
     billing_output_tokens = output_tokens
     if (
@@ -188,7 +255,7 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
         logger.info(f"[call_gemini_api] - Tool call: {function_call_detected['name']}")
         logger.debug(f"[call_gemini_api] - Tool call args: {function_call_detected['arguments']}")
         await record_provider_success_for_label("Gemini", model=model, byok=byok)
-        yield f"data: {orjson.dumps({'tool_call': {'name': function_call_detected['name'], 'arguments': function_call_detected['arguments'], 'id': '', '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'tool_call': {'name': function_call_detected['name'], 'arguments': function_call_detected['arguments'], 'id': function_call_detected['id'], 'gemini_content': function_call_detected.get('gemini_content'), '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return
 
@@ -221,6 +288,8 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                 else:
                     yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
                     return
+            except StaleChannelTurnError:
+                raise
             except Exception:
                 logger.exception("[call_gemini_api] - Error saving content to database")
                 yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"

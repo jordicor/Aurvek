@@ -304,7 +304,7 @@
     async function loadUsageData() {
         const days = document.getElementById('dateRange').value;
         const params = new URLSearchParams();
-        if (days !== 'all') params.append('days', days);
+        params.append('days', days === 'all' ? '0' : days);
 
         try {
             const response = await fetch('/api/my-usage?' + params.toString());

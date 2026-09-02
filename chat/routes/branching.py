@@ -9,7 +9,14 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from auth import get_current_user
 from common import generate_user_hash, users_directory
 from database import get_db_connection
-from file_storage import clone_attachments_for_branch, ensure_file_storage_schema, prune_unreferenced_blobs
+from file_storage import (
+    clone_attachments_for_branch,
+    ensure_file_storage_schema,
+    prune_unreferenced_blobs,
+)
+from integrations.messaging_voice_notes.service import (
+    clone_message_channel_provenance_for_branch,
+)
 from log_config import logger
 from models import User
 from prompts import can_user_access_prompt
@@ -263,6 +270,14 @@ async def branch_conversation(
                     "UPDATE MESSAGES SET message = ? WHERE id = ?",
                     (rewritten_message, new_message_id),
                 )
+            await clone_message_channel_provenance_for_branch(
+                conn,
+                old_message_id=int(source_message["id"]),
+                old_conversation_id=int(conversation_id),
+                new_message_id=int(new_message_id),
+                new_conversation_id=int(new_conv_id),
+                user_id=int(current_user.id),
+            )
 
         new_conv_str = f"{new_conv_id:07d}"
 

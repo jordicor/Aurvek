@@ -16,6 +16,7 @@ from chat.services.deletion import (
     close_incognito_conversation_for_user,
     delete_owned_conversation,
 )
+from integrations.telephony.repository import TelephonyConflictError
 from chat.services.locks import conversation_write_lock
 from chat.services.privacy import (
     ensure_conversation_privacy_schema,
@@ -23,6 +24,12 @@ from chat.services.privacy import (
     mark_conversation_incognito,
 )
 from chat.services.stop_signals import stop_signals
+from chat.services.conversation_channels import (
+    channel_summary_with_legacy,
+    get_conversation_channel_summaries,
+    has_messaging_channel,
+    legacy_external_platform,
+)
 from integrations.devices.service import get_conversation_binding_summaries
 
 router = APIRouter()
@@ -87,51 +94,40 @@ async def get_conversations(
             external_exclude = ""
             external_exclude_params = []
 
-            await cursor.execute(
-                """
-                SELECT json_extract(u.external_platforms, '$.whatsapp.conversation_id') as whatsapp_conv_id,
-                       json_extract(u.external_platforms, '$.telegram.conversation_id') as telegram_conv_id
-                FROM user_details u
-                WHERE u.user_id = ?
-                """,
-                [user_id],
+            channel_summaries = await get_conversation_channel_summaries(
+                user_id, conn=conn
             )
-            ext_id_row = await cursor.fetchone()
-
-            external_ids = []
-            if ext_id_row:
-                for platform, key in [("whatsapp", "whatsapp_conv_id"), ("telegram", "telegram_conv_id")]:
-                    conv_id = ext_id_row[key]
-                    if conv_id is not None:
-                        external_ids.append((platform, conv_id))
+            external_ids = sorted(channel_summaries)
 
             if external_ids:
                 placeholders = ",".join(["?" for _ in external_ids])
                 external_exclude = f" AND c.id NOT IN ({placeholders})"
-                external_exclude_params = [eid for _, eid in external_ids]
+                external_exclude_params = list(external_ids)
 
-                if before_activity is None:
-                    for platform, conv_id in external_ids:
-                        ext_query = f"""
-                            SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
-                                   c.locked, l.model as llm_model, COALESCE(p.disable_web_search, 0) as web_search_disabled,
-                                   COALESCE(p.force_web_search, 0) as web_search_forced,
-                                   p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
-                                   COALESCE(p.is_paid, 0) as is_paid,
-                                   c.last_activity, c.llm_id, l.machine, c.role_id
-                            FROM conversations c
-                            JOIN llm l ON c.llm_id = l.id
-                            LEFT JOIN prompts p ON c.role_id = p.id
-                            WHERE c.id = ? AND c.user_id = ?{folder_condition}
-                              AND COALESCE(c.hidden_from_history, 0) = 0
-                        """
-                        ext_params = [platform, conv_id, user_id] + folder_params
-                        await cursor.execute(ext_query, ext_params)
-                        ext_conv = await cursor.fetchone()
-                        if ext_conv:
-                            external_conversations.append(ext_conv)
+                if before_activity is None and folder_id is None:
+                    ext_query = f"""
+                        SELECT c.id, c.user_id, c.start_date, c.chat_name,
+                               NULL as external_platform,
+                               c.locked, l.model as llm_model,
+                               COALESCE(p.disable_web_search, 0) as web_search_disabled,
+                               COALESCE(p.force_web_search, 0) as web_search_forced,
+                               p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+                               COALESCE(p.is_paid, 0) as is_paid,
+                               c.last_activity, c.llm_id, l.machine, c.role_id,
+                               c.folder_id
+                        FROM conversations c
+                        JOIN llm l ON c.llm_id = l.id
+                        LEFT JOIN prompts p ON c.role_id = p.id
+                        WHERE c.id IN ({placeholders}) AND c.user_id = ?
+                          AND COALESCE(c.hidden_from_history, 0) = 0
+                        ORDER BY c.last_activity DESC, c.id DESC
+                    """
+                    ext_params = list(external_ids) + [user_id]
+                    await cursor.execute(ext_query, ext_params)
+                    external_conversations = list(await cursor.fetchall())
 
-            normal_limit = max(0, limit - len(external_conversations))
+            # Pinned external conversations do not consume the normal-chat page.
+            normal_limit = limit
             query = f"""
                 SELECT c.id, c.user_id, c.start_date, c.chat_name,
                        NULL as external_platform,
@@ -139,7 +135,8 @@ async def get_conversations(
                        COALESCE(p.force_web_search, 0) as web_search_forced,
                        p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
                        COALESCE(p.is_paid, 0) as is_paid,
-                       c.last_activity, c.llm_id, l.machine, c.role_id
+                       c.last_activity, c.llm_id, l.machine, c.role_id,
+                       c.folder_id
                 FROM conversations c
                 JOIN llm l ON c.llm_id = l.id
                 LEFT JOIN prompts p ON c.role_id = p.id
@@ -160,7 +157,15 @@ async def get_conversations(
             all_conversations = list(external_conversations) + list(conversations)
             binding_summaries = await get_conversation_binding_summaries(
                 user_id,
-                [conv[0] for conv in all_conversations if not conv[4]],
+                [
+                    conv[0]
+                    for conv in all_conversations
+                    if not has_messaging_channel(
+                        channel_summary_with_legacy(
+                            channel_summaries.get(int(conv[0])), conv[4]
+                        )
+                    )
+                ],
             )
 
             return JSONResponse(content=[
@@ -169,7 +174,17 @@ async def get_conversations(
                     "user_id": conv[1],
                     "start_date": conv[2],
                     "chat_name": conv[3] if conv[3] else "New Chat",
-                    "external_platform": conv[4],
+                    "external_platform": legacy_external_platform(
+                        channel_summary_with_legacy(
+                            channel_summaries.get(int(conv[0])), conv[4]
+                        )
+                    ),
+                    "external_channels": channel_summary_with_legacy(
+                        channel_summaries.get(int(conv[0])), conv[4]
+                    )["external_channels"],
+                    "phone_binding": channel_summary_with_legacy(
+                        channel_summaries.get(int(conv[0])), conv[4]
+                    )["phone_binding"],
                     "locked": bool(conv[5]) if conv[5] is not None else False,
                     "llm_model": conv[6],
                     "web_search_allowed": not bool(conv[7]),
@@ -182,8 +197,15 @@ async def get_conversations(
                     "llm_id": conv[14],
                     "machine": conv[15],
                     "prompt_id": conv[16],
+                    "folder_id": conv[17],
                     "external_bindings": (
-                        None if conv[4] else binding_summaries.get(int(conv[0]))
+                        None
+                        if has_messaging_channel(
+                            channel_summary_with_legacy(
+                                channel_summaries.get(int(conv[0])), conv[4]
+                            )
+                        )
+                        else binding_summaries.get(int(conv[0]))
                     ),
                 }
                 for conv in all_conversations
@@ -453,7 +475,10 @@ async def delete_conversation(conversation_id: int, current_user: User = Depends
     if current_user is None:
         return unauthenticated_response()
 
-    result = await delete_owned_conversation(current_user, conversation_id)
+    try:
+        result = await delete_owned_conversation(current_user, conversation_id)
+    except TelephonyConflictError as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=409)
     if not result.get("success"):
         return JSONResponse(content={"error": result["error"]}, status_code=result["status_code"])
     return JSONResponse(content={"success": True}, status_code=200)
@@ -478,7 +503,7 @@ async def close_incognito_conversation(
 
     try:
         result = await close_incognito_conversation_for_user(current_user, privacy)
-    except ValueError as exc:
+    except (ValueError, TelephonyConflictError) as exc:
         return JSONResponse(content={"success": False, "error": str(exc)}, status_code=400)
     return JSONResponse(content=result)
 

@@ -2,7 +2,11 @@ from ai_runtime.dependencies import *
 from ai_runtime.memory.context import _context_messages_for_memory_provider, _resolve_memory_context
 from ai_runtime.context.formatting import flatten_multi_ai_context, parse_stored_message
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
-from ai_runtime.watchdog.prompting import _build_escalated_hint_block, _sanitize_watchdog_directive
+from ai_runtime.watchdog.prompting import (
+    _build_escalated_hint_block,
+    _sanitize_watchdog_directive,
+    prepare_pre_watchdog_and_model_prompt,
+)
 
 async def apply_rate_limit(user_id: int) -> tuple[bool, str | None]:
     """Apply rate limiting for AI calls. Wraps check_rate_limit().
@@ -245,6 +249,7 @@ def assemble_system_prompt(blocks: list[dict], variables: dict, prompt_base: str
 async def build_full_prompt_context(
     user_id: int, prompt_id: int, conversation_id: int, user_message: str,
     context_messages: list | None = None, user_api_keys: dict | None = None,
+    internal_turn_context: str | None = None,
 ) -> dict:
     """Encapsulates the full prompt assembly pipeline from get_ai_response().
 
@@ -416,6 +421,16 @@ async def build_full_prompt_context(
                             f"{ext_list}\n--- END EXTENSION LEVELS ---"
                         )
 
+            # A channel may provide trusted ephemeral state (the native phone
+            # clock is the first consumer).  Apply it once before pre-watchdog
+            # so the evaluator and main model see exactly the same base block.
+            prompt_base, pre_watchdog_prompt_context = (
+                prepare_pre_watchdog_and_model_prompt(
+                    prompt_base,
+                    internal_turn_context,
+                )
+            )
+
             # --- Watchdog config ---
             watchdog_config = None
             watchdog_hint_block = ""
@@ -459,7 +474,7 @@ async def build_full_prompt_context(
                                 conversation_id=conversation_id,
                                 user_id=user_id,
                                 user_api_keys=user_api_keys or {},
-                                ai_prompt_context=prompt_base,
+                                ai_prompt_context=pre_watchdog_prompt_context,
                             )
                             pre_action = pre_result.get("action", "pass")
                             pre_hint = pre_result.get("hint", "")

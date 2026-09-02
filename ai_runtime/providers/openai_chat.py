@@ -2,8 +2,27 @@ from ai_runtime.dependencies import *
 from ai_runtime.config import _is_gpt5_model, safe_log_headers, _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
 from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.reasoning_tags import TaggedThinkingStreamParser
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
+from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
+
+
+def _chat_reasoning_effort(
+    reasoning_selection: ReasoningSelection | dict | str | None,
+) -> str | None:
+    """Translate selections supported by Chat Completions' reasoning_effort."""
+
+    if reasoning_selection is None:
+        return None
+    selection = parse_reasoning_selection(reasoning_selection)
+    if selection.mode == "default":
+        return None
+    if selection.mode == "off":
+        return "none"
+    if selection.mode in {"minimal", "low", "medium", "high", "xhigh"}:
+        return selection.mode
+    raise ValueError(f"OpenAI Chat does not support reasoning mode {selection.mode!r}")
 
 async def call_o1_api(messages, model, temperature, max_tokens, prompt, conversation_id, current_user, request, user_message=None, user_api_key=None,
                       input_token_fallback=None,
@@ -12,7 +31,8 @@ async def call_o1_api(messages, model, temperature, max_tokens, prompt, conversa
                       llm_id=None, save_to_db: bool = True, web_search_mode=None, byok: bool = False,
                       pending_attachment_refs: Optional[list[str]] = None,
                       strip_device_action_blocks: bool = False,
-                      billing_reservation_id: str | None = None):
+                      billing_reservation_id: str | None = None,
+                      reasoning_selection: ReasoningSelection | dict | str | None = None):
     global stop_signals
     logger.debug("enters call_o1_api")
 
@@ -28,8 +48,8 @@ async def call_o1_api(messages, model, temperature, max_tokens, prompt, conversa
         "Authorization": f"Bearer {api_key_to_use}"
     }
 
-    # Prepare messages with prompt first
-    api_messages = [{"role": "user", "content": prompt}]
+    # Keep server policy and trusted transport metadata above user content.
+    api_messages = [{"role": "developer", "content": prompt}]
 
     # Add message history
     for msg in messages:
@@ -41,6 +61,9 @@ async def call_o1_api(messages, model, temperature, max_tokens, prompt, conversa
         "messages": api_messages
         # "o1" doesn't support 'stream' parameter
     }
+    reasoning_effort = _chat_reasoning_effort(reasoning_selection)
+    if reasoning_effort is not None:
+        data["reasoning_effort"] = reasoning_effort
 
     content = ""
     input_tokens = output_tokens = total_tokens = 0
@@ -245,35 +268,70 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
         data["tool_choice"] = "auto"  # Let the model decide when to use tools
 
     content, function_name, function_arguments = "", "", ""
+    tagged_thinking_parser = TaggedThinkingStreamParser()
     tool_call_id = ""  # For tracking tool_calls
     input_tokens = output_tokens = total_tokens = 0
     truncated = False
     thinking_open = False
     reasoning_content_for_message = ""
-    reasoning_detail_buffers: dict[str, str] = {}
+    reasoning_details_for_message: list[dict] = []
+    reasoning_detail_positions: dict[tuple, int] = {}
+    reasoning_detail_keys: list[tuple] = []
+
+    def _merge_streamed_value(previous, current) -> tuple[str, str]:
+        """Return the reconstructed value and the newly arrived suffix."""
+        current = str(current)
+        if not isinstance(previous, str) or not previous:
+            return current, current
+        if current == previous:
+            return previous, ""
+        if current.startswith(previous):
+            return current, current[len(previous):]
+        return previous + current, current
 
     def _reasoning_chunks_from_delta(delta: dict) -> list[str]:
         chunks = []
         reasoning_details = delta.get("reasoning_details")
         if isinstance(reasoning_details, list):
-            for index, detail in enumerate(reasoning_details):
+            for detail in reasoning_details:
                 if not isinstance(detail, dict):
                     continue
-                text = detail.get("text") or detail.get("content")
-                if not text:
-                    continue
-                text = str(text)
-                key = str(detail.get("index", index))
-                previous = reasoning_detail_buffers.get(key, "")
-                if previous and text.startswith(previous):
-                    new_text = text[len(previous):]
-                elif text == previous:
-                    new_text = ""
+
+                if detail.get("index") is not None:
+                    key = ("index", str(detail["index"]))
+                elif detail.get("id") is not None:
+                    key = ("id", str(detail["id"]))
                 else:
-                    new_text = text
-                reasoning_detail_buffers[key] = text
-                if new_text:
-                    chunks.append(new_text)
+                    key = (
+                        "anonymous",
+                        str(detail.get("type") or ""),
+                        str(detail.get("format") or ""),
+                    )
+
+                position = reasoning_detail_positions.get(key)
+                if position is None and key[0] == "anonymous":
+                    if reasoning_detail_keys and reasoning_detail_keys[-1] == key:
+                        position = len(reasoning_details_for_message) - 1
+                if position is None:
+                    position = len(reasoning_details_for_message)
+                    reasoning_details_for_message.append({})
+                    reasoning_detail_keys.append(key)
+                    if key[0] != "anonymous":
+                        reasoning_detail_positions[key] = position
+
+                previous_detail = reasoning_details_for_message[position]
+                merged_detail = {**previous_detail, **detail}
+                for field in ("text", "summary", "content", "data"):
+                    value = detail.get(field)
+                    if not isinstance(value, str):
+                        continue
+                    merged_value, new_value = _merge_streamed_value(
+                        previous_detail.get(field), value
+                    )
+                    merged_detail[field] = merged_value
+                    if field != "data" and new_value:
+                        chunks.append(new_value)
+                reasoning_details_for_message[position] = merged_detail
             return chunks
 
         reasoning_content = delta.get("reasoning_content")
@@ -366,11 +424,26 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
                                                         if 'content' in delta:
                                                             content_chunk = delta['content']
                                                             if content_chunk is not None:
-                                                                if thinking_open:
-                                                                    thinking_open = False
-                                                                    yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
-                                                                content += content_chunk
-                                                                yield f"data: {orjson.dumps({'content': content_chunk}).decode()}\n\n"
+                                                                for tagged_type, tagged_chunk in tagged_thinking_parser.feed(content_chunk):
+                                                                    if tagged_type == 'thinking_start':
+                                                                        if not thinking_open:
+                                                                            thinking_open = True
+                                                                            yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+                                                                    elif tagged_type == 'thinking':
+                                                                        if not thinking_open:
+                                                                            thinking_open = True
+                                                                            yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+                                                                        yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
+                                                                    elif tagged_type == 'thinking_end':
+                                                                        if thinking_open:
+                                                                            thinking_open = False
+                                                                            yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                                                                    elif tagged_chunk:
+                                                                        if thinking_open:
+                                                                            thinking_open = False
+                                                                            yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                                                                        content += tagged_chunk
+                                                                        yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
 
                                                     # Check finish_reason for tool_calls
                                                     finish_reason = choice.get('finish_reason')
@@ -453,6 +526,23 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
             yield f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             error_yielded = True
 
+    for tagged_type, tagged_chunk in tagged_thinking_parser.finalize():
+        if tagged_type == 'thinking':
+            if not thinking_open:
+                thinking_open = True
+                yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+            yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
+        elif tagged_type == 'thinking_end':
+            if thinking_open:
+                thinking_open = False
+                yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+        elif tagged_type == 'content' and tagged_chunk:
+            if thinking_open:
+                thinking_open = False
+                yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+            content += tagged_chunk
+            yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
+
     if thinking_open:
         yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
 
@@ -506,6 +596,8 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
         }
         if reasoning_content_for_message:
             tool_call_payload["reasoning_content"] = reasoning_content_for_message
+        if reasoning_details_for_message:
+            tool_call_payload["reasoning_details"] = reasoning_details_for_message
         yield f"data: {orjson.dumps({'tool_call': tool_call_payload}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return  # Don't save to DB - handler will do it
@@ -559,9 +651,11 @@ async def call_gpt_api(messages, model, temperature, max_tokens, prompt, convers
                        llm_id=None, save_to_db: bool = True, web_search_mode=None, byok: bool = False,
                        pending_attachment_refs: Optional[list[str]] = None,
                        strip_device_action_blocks: bool = False,
-                       billing_reservation_id: str | None = None):
+                       billing_reservation_id: str | None = None,
+                       reasoning_selection: ReasoningSelection | dict | str | None = None):
     api_url = "https://api.openai.com/v1/chat/completions"
     api_key = user_api_key or openai.api_key  # Use user's key if provided
+    reasoning_effort = _chat_reasoning_effort(reasoning_selection)
 
     async for chunk in call_llm_api(
         messages,
@@ -587,6 +681,7 @@ async def call_gpt_api(messages, model, temperature, max_tokens, prompt, convers
         save_to_db=save_to_db,
         web_search_mode=web_search_mode,
         byok=byok,
+        extra_body={"reasoning_effort": reasoning_effort} if reasoning_effort is not None else None,
         pending_attachment_refs=pending_attachment_refs,
         strip_device_action_blocks=strip_device_action_blocks,
         billing_reservation_id=billing_reservation_id,

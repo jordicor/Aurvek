@@ -6,9 +6,9 @@ import aiohttp
 
 from database import get_db_connection
 from tools.tts_load_balancer import get_elevenlabs_key
+from ai_runtime.voice_resolution import CanonicalVoice, resolve_default_voice
 from log_config import logger
 
-HARDCODED_FALLBACK_VOICE = "nMPrFLO7QElx9wTR0JGo"
 ELEVENLABS_TTS_SERVICE_ID = 1
 SYNC_INTERVAL_SECONDS = 7 * 24 * 3600  # 7 days
 
@@ -20,8 +20,10 @@ async def sync_premade_voices() -> int:
 
     - Inserts new premade voices that don't exist in DB.
     - Updates names if they changed.
-    - If no voice has is_default=1, sets the first premade voice as default.
     - Paginates using next_page_token.
+
+    Default selection is intentionally not changed here.  It is an explicit
+    administrator decision shared by every voice channel.
 
     Returns the number of DB changes made.
     """
@@ -111,22 +113,6 @@ async def sync_premade_voices() -> int:
                 logger.info(f"voice_sync: Inserted new premade voice '{name}' (code={vc})")
                 changes += 1
 
-        # Ensure at least one default voice exists
-        async with conn.execute(
-            "SELECT id FROM VOICES WHERE is_default = 1 AND deprecated = 0 LIMIT 1"
-        ) as cursor:
-            default_row = await cursor.fetchone()
-
-        if not default_row:
-            # Set first premade voice as default
-            first_code = all_premade[0]["voice_code"]
-            await conn.execute(
-                "UPDATE VOICES SET is_default = 1 WHERE voice_code = ?",
-                (first_code,),
-            )
-            logger.info(f"voice_sync: Set default voice to '{all_premade[0]['name']}' (code={first_code})")
-            changes += 1
-
         await conn.commit()
 
     _last_sync_timestamp = time.monotonic()
@@ -135,66 +121,67 @@ async def sync_premade_voices() -> int:
 
 
 async def get_default_voice_code() -> str:
-    """Return the default voice code, triggering a sync if needed.
-
-    Resolution order:
-    1. DB query for is_default=1 AND deprecated=0
-    2. If not found, run sync_premade_voices() then retry
-    3. Hardcoded fallback as absolute last resort
-    """
-    async with get_db_connection(readonly=True) as conn:
-        async with conn.execute(
-            "SELECT voice_code FROM VOICES WHERE is_default = 1 AND deprecated = 0 LIMIT 1"
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            return row["voice_code"]
-
-    # No default found -- try syncing
-    logger.warning("voice_sync: No default voice in DB, triggering premade sync")
-    await sync_premade_voices()
-
-    async with get_db_connection(readonly=True) as conn:
-        async with conn.execute(
-            "SELECT voice_code FROM VOICES WHERE is_default = 1 AND deprecated = 0 LIMIT 1"
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            return row["voice_code"]
-
-    # Still nothing -- hardcoded fallback
-    logger.error("voice_sync: No default voice even after sync, using hardcoded fallback")
-    return HARDCODED_FALLBACK_VOICE
+    """Return the single canonical default voice code, or fail visibly."""
+    return (await resolve_default_voice()).voice_code
 
 
-async def mark_voice_deprecated(voice_code: str) -> None:
-    """Mark a voice as deprecated and detach it from all prompts that use it."""
+async def mark_voice_deprecated(
+    voice: CanonicalVoice | str,
+    *,
+    provider: str | None = None,
+) -> None:
+    """Deprecate one provider-qualified voice without crossing catalogues."""
+    voice_code = voice.voice_code if isinstance(voice, CanonicalVoice) else str(voice)
+    provider_key = voice.provider if isinstance(voice, CanonicalVoice) else provider
+    voice_id = voice.id if isinstance(voice, CanonicalVoice) else None
+    if provider_key != "elevenlabs":
+        logger.warning(
+            "voice_sync: Refusing to deprecate non-ElevenLabs voice_code=%s provider=%s",
+            voice_code,
+            provider_key,
+        )
+        return
+
     async with get_db_connection(readonly=False) as conn:
-        # Get the voice id
-        async with conn.execute(
-            "SELECT id FROM VOICES WHERE voice_code = ?", (voice_code,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        if voice_id is not None:
+            query = """
+                SELECT v.id
+                FROM VOICES v
+                JOIN SERVICES s ON s.id = v.tts_service
+                WHERE v.id = ? AND v.voice_code = ?
+                  AND LOWER(s.name) LIKE '%elevenlabs%'
+            """
+            params = (voice_id, voice_code)
+        else:
+            query = """
+                SELECT v.id
+                FROM VOICES v
+                JOIN SERVICES s ON s.id = v.tts_service
+                WHERE v.voice_code = ?
+                  AND LOWER(s.name) LIKE '%elevenlabs%'
+            """
+            params = (voice_code,)
 
-        if not row:
-            logger.warning(f"voice_sync: Cannot deprecate unknown voice_code={voice_code}")
+        async with conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            logger.warning(
+                "voice_sync: Cannot deprecate unknown ElevenLabs voice_code=%s",
+                voice_code,
+            )
             return
 
-        voice_id = row["id"]
-
         await conn.execute(
-            "UPDATE VOICES SET deprecated = 1 WHERE id = ?", (voice_id,)
-        )
-
-        # Detach from prompts so they fall back to default on next TTS call
-        await conn.execute(
-            "UPDATE PROMPTS SET voice_id = NULL WHERE voice_id = ?", (voice_id,)
+            f"UPDATE VOICES SET deprecated = 1 WHERE id IN ({','.join('?' for _ in rows)})",
+            tuple(row["id"] for row in rows),
         )
 
         await conn.commit()
 
     logger.warning(
-        f"voice_sync: Deprecated voice_code={voice_code} (id={voice_id}) and detached from prompts"
+        f"voice_sync: Deprecated ElevenLabs voice_code={voice_code}; "
+        "prompts remain attached so configuration fails visibly instead of changing voice"
     )
 
 

@@ -16,7 +16,7 @@ from twilio.request_validator import RequestValidator
 from twilio_async import AsyncTwilioClient
 from deepgram import DeepgramClient, DeepgramClientOptions
 
-from common import twilio_sid, twilio_auth, STRIPE_SECRET_KEY
+from common import STRIPE_SECRET_KEY, stt_engine, twilio_auth, twilio_sid
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ else:
     logger.warning("Telegram bot token not configured - Telegram integration disabled")
 
 # ---------------------------------------------------------------------------
-# Deepgram (STT)
+# Deepgram client retained only for an explicit legacy STT selection.
 # ---------------------------------------------------------------------------
 _deepgram_key = os.getenv("DEEPGRAM_KEY")
 _deepgram_opts = DeepgramClientOptions(verbose=logging.SPAM)
@@ -63,5 +63,4 @@ deepgram: DeepgramClient = DeepgramClient(_deepgram_key, _deepgram_opts)
 # ---------------------------------------------------------------------------
 # STT engine selection
 # ---------------------------------------------------------------------------
-stt_engine: str = os.getenv("STT_ENGINE", "deepgram")
 stt_fallback_enabled: bool = os.getenv("STT_FALLBACK_ENABLED", "0") == "1"

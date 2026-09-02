@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 from ai_runtime.dependencies import *
 from billing.usage_reservations import (
@@ -10,6 +11,7 @@ from billing.usage_reservations import (
 from tools import function_handlers
 from rediscfg import redis_client
 from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.channel_turns import current_channel_turn
 from ai_runtime.providers.claude import call_claude_api
 from ai_runtime.providers.gemini import call_gemini_api
 from ai_runtime.providers.kimi import call_kimi_api
@@ -18,10 +20,40 @@ from ai_runtime.providers.openai_chat import call_gpt_api, call_o1_api
 from ai_runtime.providers.openai_responses import call_gpt_responses_api
 from ai_runtime.providers.openrouter import call_openrouter_api
 from ai_runtime.providers.xai import call_xai_responses_api
+from integrations.telephony.clock import CallEndController, EndCallDirective
+from integrations.telephony.tooling import CallStartController
 
 
 TOOL_RESULT_MAX_BYTES = 64 * 1024
 TOOL_CALL_SERIALIZATION_BYTES_PER_OUTPUT_TOKEN = 16
+
+
+async def finish_pending_realtime_tool_output(api_func_override=None) -> bool:
+    """Release a Realtime turn that still owns an unanswered tool call.
+
+    Billing and tool failures can stop a follow-up before the provider adapter
+    gets a chance to submit ``function_call_output``.  The phone playback task
+    is already consuming the bridge by then, so leaving that call pending would
+    make it wait forever.  Only the server-created phone bridge is accepted;
+    standard model/tool paths remain untouched.
+    """
+
+    if api_func_override is None:
+        return False
+    bound_channel = current_channel_turn()
+    if bound_channel is None or bound_channel.context.channel != "phone":
+        return False
+    bridge = bound_channel.context.provenance.get("openai_realtime_bridge")
+    if not getattr(bridge, "_aurvek_internal_realtime_bridge", False):
+        return False
+    finish_pending = getattr(bridge, "finish_pending_output", None)
+    if not callable(finish_pending):
+        return False
+    try:
+        return bool(await finish_pending())
+    except Exception:
+        logger.exception("Could not finish pending Realtime tool output")
+        return False
 
 
 def truncate_tool_result_for_ai(value, max_bytes: int = TOOL_RESULT_MAX_BYTES) -> str:
@@ -57,12 +89,19 @@ def _build_tool_response_messages(api_messages: list, tool_call: dict, tool_resu
     if machine in ("GPT", "xAI"):
         # Responses API format (both OpenAI and xAI use this now)
         tool_call_id = tool_call.get('id', f'call_{function_name}')
-        api_messages.append({
-            "type": "function_call",
-            "call_id": tool_call_id,
-            "name": function_name,
-            "arguments": orjson.dumps(arguments).decode(),
-        })
+        # Responses continuations require opaque reasoning/output items from
+        # the preceding turn (including encrypted_content).  Re-use native
+        # objects verbatim when the adapter supplied them.
+        native_output_items = tool_call.get("response_output_items")
+        if isinstance(native_output_items, list) and native_output_items:
+            api_messages.extend(native_output_items)
+        else:
+            api_messages.append({
+                "type": "function_call",
+                "call_id": tool_call_id,
+                "name": function_name,
+                "arguments": orjson.dumps(arguments).decode(),
+            })
         api_messages.append({
             "type": "function_call_output",
             "call_id": tool_call_id,
@@ -84,8 +123,9 @@ def _build_tool_response_messages(api_messages: list, tool_call: dict, tool_resu
                 }
             }]
         }
-        if machine == "Kimi" and tool_call.get("reasoning_content"):
-            assistant_message["reasoning_content"] = tool_call["reasoning_content"]
+        for key in ("reasoning_content", "reasoning_details"):
+            if tool_call.get(key) is not None:
+                assistant_message[key] = tool_call[key]
         api_messages.append(assistant_message)
         api_messages.append({
             "role": "tool",
@@ -96,14 +136,12 @@ def _build_tool_response_messages(api_messages: list, tool_call: dict, tool_resu
     elif machine == "Claude":
         # Anthropic format: tool_use block + tool_result block
         tool_use_id = tool_call.get('id', f'toolu_{function_name}')
+        native_content_blocks = tool_call.get("claude_content_blocks")
         api_messages.append({
             "role": "assistant",
-            "content": [{
-                "type": "tool_use",
-                "id": tool_use_id,
-                "name": function_name,
-                "input": arguments
-            }]
+            "content": native_content_blocks if isinstance(native_content_blocks, list) and native_content_blocks else [{
+                "type": "tool_use", "id": tool_use_id, "name": function_name, "input": arguments
+            }],
         })
         api_messages.append({
             "role": "user",
@@ -115,25 +153,30 @@ def _build_tool_response_messages(api_messages: list, tool_call: dict, tool_resu
         })
 
     elif machine == "Gemini":
-        # Gemini requires thought_signature in function_call parts (which is an opaque
-        # token from the original response we don't have after SSE serialization).
-        # Use plain text messages instead to pass the tool results cleanly.
-        api_messages.append(
-            genai_types.Content(
+        native_content = tool_call.get("gemini_content")
+        if native_content is not None:
+            if isinstance(native_content, dict):
+                native_content = genai_types.Content.model_validate(native_content)
+            api_messages.append(native_content)
+        else:
+            api_messages.append(genai_types.Content(
                 role="model",
-                parts=[genai_types.Part.from_text(
-                    text=f"I called the {function_name} tool."
-                )]
-            )
-        )
-        api_messages.append(
-            genai_types.Content(
-                role="user",
-                parts=[genai_types.Part.from_text(
-                    text=f"Tool result:\n\n{tool_result}"
-                )]
-            )
-        )
+                parts=[genai_types.Part.from_function_call(
+                    name=function_name, args=arguments
+                )],
+            ))
+        function_response = {
+            "name": function_name,
+            "response": {"result": tool_result},
+        }
+        if tool_call.get("id"):
+            function_response["id"] = tool_call["id"]
+        api_messages.append(genai_types.Content(
+            role="user",
+            parts=[genai_types.Part(
+                function_response=genai_types.FunctionResponse(**function_response)
+            )],
+        ))
 
 async def atFieldActivate(
     suspicious_text,
@@ -158,6 +201,7 @@ async def atFieldActivate(
     watchdog_hint_eval_id=None,
     llm_id=None,
     byok: bool = False,
+    reasoning_selection=None,
     thinking_budget_tokens=None,
     pending_attachment_refs: Optional[list[str]] = None,
     strip_device_action_blocks: bool = False,
@@ -233,12 +277,13 @@ async def atFieldActivate(
         "pending_attachment_refs": pending_attachment_refs,
         "strip_device_action_blocks": strip_device_action_blocks,
         "billing_reservation_id": billing_reservation_id,
+        "reasoning_selection": reasoning_selection,
     }
     if user_api_key:
         provider_kwargs["user_api_key"] = user_api_key
     if client == "OpenRouter" and api_model:
         provider_kwargs["api_model"] = api_model
-    if client == "Claude" and thinking_budget_tokens:
+    if client == "Claude" and reasoning_selection is None and thinking_budget_tokens:
         provider_kwargs["thinking_budget_tokens"] = thinking_budget_tokens
 
     async for chunk in api_func(**provider_kwargs):
@@ -545,23 +590,54 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                                api_model=None,
                                pdf_error_metadata=None,
                                prompt_id=None, watchdog_config=None, watchdog_hint_active=False, watchdog_hint_eval_id=None,
-                               llm_id=None, byok: bool = False, thinking_budget_tokens=None,
+                               llm_id=None, byok: bool = False, reasoning_selection=None,
+                               thinking_budget_tokens=None,
                                pending_attachment_refs: Optional[list[str]] = None,
                                strip_device_action_blocks: bool = False,
                                billing_preflight_amount: float = 0.0,
                                billing_reservation_id: str | None = None,
                                billing_first_call_accumulated: bool = False,
-                               billing_followup_hold_amount: float = 0.0):
+                                billing_followup_hold_amount: float = 0.0,
+                                tool_call: dict | None = None,
+                                provider_tools: list | None = None,
+                                api_func_override=None):
     save_to_db = True
     final_content = ""
     delivery_ack = None
     deferred_delivery_chunks = []
+    realtime_tool_continuation = api_func_override is not None
+    realtime_tool_result = None
+    followup_hold_extended = False
+
+    async def _extend_followup_hold_once() -> str | None:
+        nonlocal followup_hold_extended
+        if (
+            followup_hold_extended
+            or not billing_reservation_id
+            or billing_followup_hold_amount <= 0
+        ):
+            return None
+        try:
+            await extend_ai_reservation(
+                reservation_id=billing_reservation_id,
+                user_id=current_user.id,
+                additional_amount=billing_followup_hold_amount,
+            )
+        except InsufficientBalanceError:
+            return "Insufficient balance for the tool follow-up"
+        except BillingReservationError:
+            logger.exception("Could not extend AI tool follow-up billing")
+            return "AI billing is temporarily unavailable"
+        followup_hold_extended = True
+        return None
+
     # Initialize with pre-tool content from Claude (if any)
     content_to_save = content + "\n\n" if content else ""
 
     if function_name in function_handlers:
         handler = function_handlers[function_name]
         tool_error_message = None
+        tool_result_parts = []
         async for chunk in handler(function_arguments, messages, model, temperature, max_tokens, content, conversation_id, current_user, request, input_tokens, output_tokens, total_tokens, message_id, user_id, client, prompt, user_message):
             try:
                 chunk_data = orjson.loads(chunk.split("data: ")[1])
@@ -585,10 +661,16 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                         # Tool reported an error — collect it for second-pass instead of showing raw
                         tool_error_message = chunk_data['content']
                         continue
+                    tool_result_parts.append(str(chunk_data['content']))
                     if chunk_data.get('save_to_db', True):
                         content_to_save += chunk_data['content']
                     if chunk_data.get('yield', True):
                         final_content += chunk_data['content']
+                        if realtime_tool_continuation:
+                            # Realtime tool output is private model input.  The
+                            # model's follow-up transcript/audio is the only
+                            # assistant response exposed to the phone runtime.
+                            continue
                         if chunk_delivery_ack:
                             client_chunk_data = dict(chunk_data)
                             client_chunk_data.pop("_delivery_ack", None)
@@ -599,7 +681,7 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                             yield chunk
                 elif 'video_content' in chunk_data:
                     # Forward video content to frontend for rendering
-                    if chunk_data.get('yield', True):
+                    if chunk_data.get('yield', True) and not realtime_tool_continuation:
                         if chunk_delivery_ack:
                             client_chunk_data = dict(chunk_data)
                             client_chunk_data.pop("_delivery_ack", None)
@@ -609,38 +691,32 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                         else:
                             yield chunk
             except orjson.JSONDecodeError:
-                yield chunk
+                if not realtime_tool_continuation:
+                    yield chunk
 
         # If the tool reported an error, do a second-pass to the AI so it can
         # respond naturally instead of showing the raw error to the user.
         if tool_error_message:
             logger.info(f"[handle_function_call] Tool '{function_name}' error, triggering AI second-pass: {tool_error_message[:200]}")
 
-            if billing_reservation_id and billing_followup_hold_amount > 0:
-                try:
-                    await extend_ai_reservation(
-                        reservation_id=billing_reservation_id,
-                        user_id=current_user.id,
-                        additional_amount=billing_followup_hold_amount,
-                    )
-                except InsufficientBalanceError:
-                    yield f"data: {orjson.dumps({'error': 'Insufficient balance for the tool follow-up'}).decode()}\n\n"
-                    return
-                except BillingReservationError:
-                    logger.exception("Could not extend failed-tool follow-up billing")
-                    yield f"data: {orjson.dumps({'error': 'AI billing is temporarily unavailable'}).decode()}\n\n"
-                    return
+            follow_up_error = await _extend_followup_hold_once()
+            if follow_up_error:
+                await finish_pending_realtime_tool_output(api_func_override)
+                yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
+                return
 
             # Build tool response messages: the AI sees its own tool call + the error result
             _build_tool_response_messages(
                 messages,
-                {"name": function_name, "arguments": function_arguments, "id": f"call_{function_name}"},
+                tool_call or {"name": function_name, "arguments": function_arguments, "id": f"call_{function_name}"},
                 f"Error: {tool_error_message}",
                 client,
             )
 
             # Select the right API function and configure for second-pass
-            if client == "Gemini":
+            if api_func_override is not None:
+                api_func = api_func_override
+            elif client == "Gemini":
                 api_func = call_gemini_api
             elif client == "O1":
                 api_func = call_o1_api
@@ -689,6 +765,7 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 "pending_attachment_refs": pending_attachment_refs,
                 "strip_device_action_blocks": strip_device_action_blocks,
                 "billing_reservation_id": billing_reservation_id,
+                "reasoning_selection": reasoning_selection,
             }
 
             if user_api_key:
@@ -696,8 +773,11 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             if api_model:
                 second_kwargs["api_model"] = api_model
 
-            if client == "Claude" and thinking_budget_tokens:
+            if client == "Claude" and reasoning_selection is None and thinking_budget_tokens:
                 second_kwargs["thinking_budget_tokens"] = thinking_budget_tokens
+            if client == "Claude" and provider_tools:
+                second_kwargs["tools"] = provider_tools
+                second_kwargs["tool_choice"] = {"type": "none"}
 
             # System prompt dedup for Chat Completions providers
             if client in ("OpenRouter", "MiniMax", "Kimi"):
@@ -708,30 +788,62 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 current_user.id,
                 billing_preflight_amount,
             ):
+                await finish_pending_realtime_tool_output(api_func_override)
                 yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
                 return
-            async for chunk in api_func(**second_kwargs):
-                yield chunk
+            try:
+                async for chunk in api_func(**second_kwargs):
+                    yield chunk
+            finally:
+                await finish_pending_realtime_tool_output(api_func_override)
             # api_func handles save_to_db internally
             return
 
+        if realtime_tool_continuation:
+            tool_result_text = "".join(tool_result_parts).strip()
+            realtime_tool_result = orjson.dumps(
+                {
+                    "status": "success",
+                    "result": tool_result_text or "Tool completed successfully.",
+                }
+            ).decode()
+
     else:
         _legacy_content_to_save = None
+        explicit_content_before_tool = content
+        realtime_explicit_parts = []
+        realtime_explicit_error = False
 
         if function_name == "dream_of_consciousness":
-            # Use read-only connection if only SELECT queries are performed
-            async with get_db_connection(readonly=True) as conn_ro:
-                async with conn_ro.cursor() as cursor_ro:
-                    first_chunk = True
-                    async for chunk in dream_of_consciousness(function_arguments['conversation_id'], cursor_ro, user_id):
-                        # Add separator before first chunk if there's pre-tool content
-                        if first_chunk and content:
-                            content += "\n\n"
-                            first_chunk = False
-                        content += chunk
-                        yield f"data: {orjson.dumps({'content': chunk}).decode()}\n\n"
+            try:
+                # Use read-only connection if only SELECT queries are performed
+                async with get_db_connection(readonly=True) as conn_ro:
+                    async with conn_ro.cursor() as cursor_ro:
+                        first_chunk = True
+                        async for chunk in dream_of_consciousness(function_arguments['conversation_id'], cursor_ro, user_id):
+                            # Add separator before first chunk if there's pre-tool content
+                            if first_chunk and content:
+                                content += "\n\n"
+                                first_chunk = False
+                            content += chunk
+                            if realtime_tool_continuation:
+                                realtime_explicit_parts.append(str(chunk))
+                            else:
+                                yield f"data: {orjson.dumps({'content': chunk}).decode()}\n\n"
+            except Exception as e:
+                logger.error(f"[dream_of_consciousness] Error: {e}")
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "The dream-of-consciousness tool failed."
+                    )
 
         elif function_name == "atFieldActivate":
+            follow_up_error = await _extend_followup_hold_once()
+            if follow_up_error:
+                await finish_pending_realtime_tool_output(api_func_override)
+                yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
+                return
             try:
                 arguments = function_arguments
                 suspicious_text = arguments["text"]
@@ -744,9 +856,14 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                     current_user.id,
                     billing_preflight_amount,
                 ):
-                    yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
-                    return
-                async for function_answer_chunk in atFieldActivate(
+                    if realtime_tool_continuation:
+                        realtime_explicit_error = True
+                        realtime_explicit_parts.append("Insufficient balance")
+                    else:
+                        yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                        return
+                if not realtime_explicit_error:
+                    async for function_answer_chunk in atFieldActivate(
                     suspicious_text,
                     messages,
                     model,
@@ -768,16 +885,129 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                     watchdog_hint_eval_id=watchdog_hint_eval_id,
                     llm_id=llm_id,
                     byok=byok,
+                    reasoning_selection=reasoning_selection,
                     thinking_budget_tokens=thinking_budget_tokens,
                     pending_attachment_refs=pending_attachment_refs,
                     strip_device_action_blocks=strip_device_action_blocks,
                     billing_reservation_id=billing_reservation_id,
-                ):
-                    yield function_answer_chunk
+                    ):
+                        if not realtime_tool_continuation:
+                            yield function_answer_chunk
+                            continue
+                        try:
+                            payload = orjson.loads(
+                                function_answer_chunk.split("data: ", 1)[1]
+                            )
+                        except (IndexError, orjson.JSONDecodeError):
+                            continue
+                        if payload.get("content") is not None:
+                            realtime_explicit_parts.append(
+                                str(payload["content"])
+                            )
+                        if payload.get("error") is not None:
+                            realtime_explicit_error = True
+                            realtime_explicit_parts.append(
+                                str(payload["error"])
+                            )
 
-            except (orjson.JSONDecodeError, KeyError) as e:
+            except Exception as e:
                 logger.error(f"[handle_function_call] - Error processing function arguments: {e}")
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "The safety tool could not process its arguments."
+                    )
 
+
+        elif function_name == "start_phone_call":
+            bound_channel = current_channel_turn()
+            controller = (
+                bound_channel.context.provenance.get("call_start_controller")
+                if bound_channel is not None
+                and bound_channel.context.channel != "phone"
+                else None
+            )
+            reply_message = str(
+                function_arguments.get("reply_message") or ""
+            ).strip()
+            if not isinstance(controller, CallStartController) or not reply_message:
+                logger.error(
+                    "start_phone_call rejected outside a permitted non-phone turn"
+                )
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "start_phone_call is unavailable for this turn"
+                    )
+                else:
+                    yield f"data: {orjson.dumps({'error': 'start_phone_call is unavailable for this turn'}).decode()}\n\n"
+                    return
+            if not realtime_explicit_error:
+                try:
+                    controller.request(reply_message)
+                except (RuntimeError, ValueError):
+                    logger.warning("start_phone_call rejected a duplicate or empty request")
+                    if realtime_tool_continuation:
+                        realtime_explicit_error = True
+                        realtime_explicit_parts.append(
+                            "start_phone_call could not be requested"
+                        )
+                    else:
+                        yield f"data: {orjson.dumps({'error': 'start_phone_call could not be requested'}).decode()}\n\n"
+                        return
+                if not realtime_explicit_error:
+                    if content:
+                        content += "\n\n"
+                    content += reply_message
+                    if not realtime_tool_continuation:
+                        yield f"data: {orjson.dumps({'content': reply_message, 'action': 'phone_call_requested'}).decode()}\n\n"
+
+        elif function_name == "end_call":
+            bound_channel = current_channel_turn()
+            controller = (
+                bound_channel.context.provenance.get("end_call_controller")
+                if bound_channel is not None
+                and bound_channel.context.channel == "phone"
+                else None
+            )
+            final_message = str(
+                function_arguments.get("final_message") or ""
+            ).strip()
+            if not isinstance(controller, CallEndController) or not final_message:
+                logger.error(
+                    "end_call rejected outside a valid phone turn or without final_message"
+                )
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "end_call is unavailable for this turn"
+                    )
+                else:
+                    yield f"data: {orjson.dumps({'error': 'end_call is unavailable for this turn'}).decode()}\n\n"
+                    return
+            if not realtime_explicit_error:
+                controller.request(
+                    EndCallDirective.voluntary(
+                        requested_at=datetime.now(UTC),
+                        final_message=final_message,
+                    )
+                )
+                if realtime_tool_continuation:
+                    realtime_tool_result = orjson.dumps(
+                        {
+                            "status": "end_call_requested",
+                            "final_message": final_message,
+                            "instruction": (
+                                "Say final_message verbatim as the complete farewell, "
+                                "then stop speaking."
+                            ),
+                        }
+                    ).decode()
+                else:
+                    if content:
+                        content += "\n\n"
+                    content += final_message
+                    yield f"data: {orjson.dumps({'content': final_message, 'action': 'phone_end_call_requested'}).decode()}\n\n"
 
         elif function_name == "zipItDrEvil":
             try:
@@ -788,7 +1018,8 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 if content:
                     content += "\n\n"
                 content += final_message
-                yield f"data: {orjson.dumps({'content': final_message, 'action': 'end_conversation', 'reason_code': reason_code}).decode()}\n\n"
+                if not realtime_tool_continuation:
+                    yield f"data: {orjson.dumps({'content': final_message, 'action': 'end_conversation', 'reason_code': reason_code}).decode()}\n\n"
 
                 # Use read-write connection for UPDATE operation
                 async with get_db_connection() as conn_rw:
@@ -800,8 +1031,13 @@ async def handle_function_call(function_name, function_arguments, messages, mode
 
                 logger.info(f"[zipItDrEvil] Conversation {conversation_id} locked - Reason: {reason_code}")
 
-            except (orjson.JSONDecodeError, KeyError) as e:
+            except Exception as e:
                 logger.error(f"[handle_function_call] - Error processing function arguments: {e}")
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "The conversation could not be closed."
+                    )
 
         elif function_name == "pass_turn":
             try:
@@ -816,12 +1052,16 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 if content:
                     content += "\n\n"
                 content += "🚩"
-                yield f"data: {orjson.dumps({'content': '🚩', 'action': 'pass_turn', 'reason_code': reason_code}).decode()}\n\n"
+                if not realtime_tool_continuation:
+                    yield f"data: {orjson.dumps({'content': '🚩', 'action': 'pass_turn', 'reason_code': reason_code}).decode()}\n\n"
 
                 # Message is saved to DB (save_to_db stays True) so it appears in conversation history
 
             except Exception as e:
                 logger.error(f"[pass_turn] Error: {e}")
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append("The turn could not be passed.")
 
         elif function_name == "advanceExtension":
             try:
@@ -834,7 +1074,8 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                         content += error_msg
                     else:
                         content = error_msg
-                    yield f"data: {orjson.dumps({'content': error_msg.strip()}).decode()}\n\n"
+                    if not realtime_tool_continuation:
+                        yield f"data: {orjson.dumps({'content': error_msg.strip()}).decode()}\n\n"
                     logger.warning(f"[advanceExtension] Invalid target_extension_id type for conversation {conversation_id}: {function_arguments.get('target_extension_id')!r}")
                     raise ValueError("invalid target_extension_id")
 
@@ -867,7 +1108,8 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                     else:
                         content = transition_msg
                     # SSE event for frontend to update level selector
-                    yield f"data: {orjson.dumps({'extension_changed': {'id': target_id, 'name': ext[1]}}).decode()}\n\n"
+                    if not realtime_tool_continuation:
+                        yield f"data: {orjson.dumps({'extension_changed': {'id': target_id, 'name': ext[1]}}).decode()}\n\n"
                     logger.info(f"[advanceExtension] Conversation {conversation_id} transitioned to extension {target_id} ({ext[1]}) - Reason: {reason}")
                 else:
                     error_msg = "\n\n[Extension transition failed - invalid target]"
@@ -875,11 +1117,19 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                         content += error_msg
                     else:
                         content = error_msg
-                    yield f"data: {orjson.dumps({'content': error_msg.strip()}).decode()}\n\n"
+                    if not realtime_tool_continuation:
+                        yield f"data: {orjson.dumps({'content': error_msg.strip()}).decode()}\n\n"
+                    else:
+                        realtime_explicit_error = True
                     logger.warning(f"[advanceExtension] Invalid target extension {target_id} for conversation {conversation_id}")
 
             except Exception as e:
                 logger.error(f"[advanceExtension] Error: {e}")
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "The extension could not be changed."
+                    )
 
         elif function_name == "changeResponseMode":
             try:
@@ -915,10 +1165,16 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 if content:
                     content += "\n\n"
                 content += confirmation_message
-                yield f"data: {orjson.dumps({'content': confirmation_message}).decode()}\n\n"
+                if not realtime_tool_continuation:
+                    yield f"data: {orjson.dumps({'content': confirmation_message}).decode()}\n\n"
 
-            except (orjson.JSONDecodeError, KeyError) as e:
+            except Exception as e:
                 logger.error(f"[handle_function_call] - Error processing changeResponseMode function arguments: {e}")
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                    realtime_explicit_parts.append(
+                        "The response mode could not be changed."
+                    )
 
         elif function_name == "get_directions":
             try:
@@ -935,22 +1191,26 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                     if content:
                         content += "\n\n"
                     content += error_msg
-                    yield f"data: {orjson.dumps({'content': error_msg}).decode()}\n\n"
-                    return
+                    if realtime_tool_continuation:
+                        realtime_explicit_error = True
+                    else:
+                        yield f"data: {orjson.dumps({'content': error_msg}).decode()}\n\n"
+                        return
 
-                is_whatsapp = await is_whatsapp_conversation(conversation_id)
+                if not realtime_explicit_error:
+                    is_whatsapp = await is_whatsapp_conversation(conversation_id)
 
-                result = await asyncio.to_thread(
-                    get_directions,
-                    origin,
-                    destination,
-                    api_key,
-                    mode,
-                    include_map,
-                    waypoints,
-                )
+                    result = await asyncio.to_thread(
+                        get_directions,
+                        origin,
+                        destination,
+                        api_key,
+                        mode,
+                        include_map,
+                        waypoints,
+                    )
 
-                if "error" not in result:
+                if not realtime_explicit_error and "error" not in result:
                     # Preserve any text Claude generated before calling the tool
                     if content:
                         content += "\n\n"
@@ -996,7 +1256,9 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                             }
                         ]).decode()
 
-                    if is_whatsapp:
+                    if realtime_tool_continuation:
+                        pass
+                    elif is_whatsapp:
                         json_content = [
                             {
                                 "type": "text",
@@ -1014,13 +1276,16 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                         yield f"data: {orjson.dumps({'content': json_content}).decode()}\n\n"
                     else:
                         yield f"data: {orjson.dumps({'content': content}).decode()}\n\n"
-                else:
+                elif not realtime_explicit_error:
                     error_msg = f"Error getting directions: {result['error']}"
                     logger.warning(f"[get_directions] {result['error']}")
                     if content:
                         content += "\n\n"
                     content += error_msg
-                    yield f"data: {orjson.dumps({'content': error_msg}).decode()}\n\n"
+                    if realtime_tool_continuation:
+                        realtime_explicit_error = True
+                    else:
+                        yield f"data: {orjson.dumps({'content': error_msg}).decode()}\n\n"
 
             except Exception as e:
                 logger.error(f"[handle_function_call] - Error processing get_directions function arguments: {e}")
@@ -1028,10 +1293,104 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 if content:
                     content += "\n\n"
                 content += error_msg
-                yield f"data: {orjson.dumps({'content': error_msg}).decode()}\n\n"
+                if realtime_tool_continuation:
+                    realtime_explicit_error = True
+                else:
+                    yield f"data: {orjson.dumps({'content': error_msg}).decode()}\n\n"
+
+        else:
+            logger.error(
+                "[handle_function_call] Unsupported explicit tool '%s'",
+                function_name,
+            )
+            if realtime_tool_continuation:
+                realtime_explicit_error = True
+                realtime_explicit_parts.append(
+                    f"Tool {function_name} is not supported."
+                )
 
 
         content_to_save = _legacy_content_to_save if _legacy_content_to_save is not None else content
+        if realtime_tool_continuation and realtime_tool_result is None:
+            if realtime_explicit_parts:
+                result_text = "\n".join(
+                    part for part in realtime_explicit_parts if part
+                ).strip()
+            elif content.startswith(explicit_content_before_tool):
+                result_text = content[len(explicit_content_before_tool):].strip()
+            else:
+                result_text = content.strip()
+            realtime_tool_result = orjson.dumps(
+                {
+                    "status": "error" if realtime_explicit_error else "success",
+                    "result": result_text or (
+                        "Tool failed without a result."
+                        if realtime_explicit_error
+                        else "Tool completed successfully."
+                    ),
+                }
+            ).decode()
+
+    if realtime_tool_result is not None:
+        follow_up_error = await _extend_followup_hold_once()
+        if follow_up_error:
+            await finish_pending_realtime_tool_output(api_func_override)
+            yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
+            return
+
+        _build_tool_response_messages(
+            messages,
+            tool_call or {
+                "name": function_name,
+                "arguments": function_arguments,
+                "id": f"call_{function_name}",
+            },
+            realtime_tool_result,
+            client,
+        )
+        second_kwargs = {
+            "messages": messages,
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "prompt": prompt,
+            "conversation_id": conversation_id,
+            "current_user": current_user,
+            "request": request,
+            "user_message": user_message,
+            "input_token_fallback": input_token_fallback,
+            "pdf_error_metadata": pdf_error_metadata,
+            "prompt_id": prompt_id,
+            "watchdog_config": watchdog_config,
+            "watchdog_hint_active": watchdog_hint_active,
+            "watchdog_hint_eval_id": watchdog_hint_eval_id,
+            "llm_id": llm_id,
+            "byok": byok,
+            "pending_attachment_refs": pending_attachment_refs,
+            "strip_device_action_blocks": strip_device_action_blocks,
+            "billing_reservation_id": billing_reservation_id,
+            "reasoning_selection": reasoning_selection,
+        }
+        if user_api_key:
+            second_kwargs["user_api_key"] = user_api_key
+        if api_model:
+            second_kwargs["api_model"] = api_model
+
+        if not await revalidate_user_billing(
+            current_user.id,
+            billing_preflight_amount,
+        ):
+            await finish_pending_realtime_tool_output(api_func_override)
+            yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+            return
+        try:
+            async for chunk in api_func_override(**second_kwargs):
+                yield chunk
+        finally:
+            await finish_pending_realtime_tool_output(api_func_override)
+        # The Realtime provider persists the final spoken transcript.  Never
+        # persist the internal function result as an assistant message.
+        return
 
     #logger.info(f"antes de save_content_to_db, content: {content}")
     if save_to_db:

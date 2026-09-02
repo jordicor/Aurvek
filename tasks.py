@@ -32,6 +32,24 @@ def download_elevenlabs_audio_task(conversation_id: int, session_id: str, user_i
     asyncio.run(elevenlabs_service.download_conversation_audio(conversation_id, session_id, user_id))
 
 
+@dramatiq.actor(
+    queue_name="default",
+    max_retries=0,
+    max_age=None,
+    time_limit=28_800_000,
+)
+def retranscribe_voice_note_task(revision_id: int):
+    """Create one long-form candidate without replacing chat text.
+
+    A retained note can be several hours long, so this actor intentionally
+    overrides the broker's five-minute age and ten-minute execution limits.
+    """
+    import asyncio
+    from integrations.messaging_voice_notes.service import run_retranscription_job
+
+    asyncio.run(run_retranscription_job(revision_id))
+
+
 @dramatiq.actor(queue_name="gransabio", max_retries=0, max_age=None)
 def gransabio_external_task(
     conversation_id: int,
@@ -39,6 +57,7 @@ def gransabio_external_task(
     platform: str,
     platform_context_json: str,
     estimated_timeout: int,
+    foreground_epoch: int | None = None,
 ):
     """Durable background task for GranSabio on external channels.
 
@@ -57,10 +76,18 @@ def gransabio_external_task(
         platform,
         orjson.loads(platform_context_json),
         estimated_timeout,
+        foreground_epoch,
     ))
 
 
-async def _run_gransabio_external(conversation_id, user_message, platform, platform_context, estimated_timeout):
+async def _run_gransabio_external(
+    conversation_id,
+    user_message,
+    platform,
+    platform_context,
+    estimated_timeout,
+    foreground_epoch=None,
+):
     """Wrapper that creates a fresh httpx client for the Dramatiq worker.
 
     Dramatiq runs asyncio.run() per job, creating a NEW event loop each time.
@@ -79,4 +106,5 @@ async def _run_gransabio_external(conversation_id, user_message, platform, platf
             platform_context=platform_context,
             http_client=client,
             estimated_timeout=estimated_timeout,
+            foreground_epoch=foreground_epoch,
         )

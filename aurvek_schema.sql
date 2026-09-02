@@ -30,8 +30,47 @@ CREATE TABLE VOICES (
     name TEXT NOT NULL,
     voice_code TEXT NOT NULL,
     tts_service INTEGER NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    deprecated INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (tts_service) REFERENCES SERVICES(id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voices_single_default
+ON VOICES(is_default) WHERE is_default = 1;
+
+CREATE TABLE VOICE_CANONICALIZATION_CONFLICTS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mapping_id_snapshot INTEGER, prompt_id INTEGER, prompt_id_snapshot INTEGER NOT NULL,
+    legacy_voice_code TEXT NOT NULL, legacy_voice_id INTEGER, canonical_voice_id INTEGER,
+    reason TEXT NOT NULL CHECK(reason IN ('explicit_voice_mismatch','legacy_voice_unresolved','legacy_voice_ambiguous')),
+    status TEXT NOT NULL DEFAULT 'needs_attention' CHECK(status IN ('needs_attention','resolved')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE SET NULL,
+    FOREIGN KEY(legacy_voice_id) REFERENCES VOICES(id) ON DELETE SET NULL,
+    FOREIGN KEY(canonical_voice_id) REFERENCES VOICES(id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX idx_voice_canonical_conflict_active
+ON VOICE_CANONICALIZATION_CONFLICTS(prompt_id_snapshot,legacy_voice_code,reason)
+WHERE status='needs_attention';
+
+CREATE TABLE VOICE_CANONICAL_ACTIVATIONS (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK(scope IN ('global','prompt')),
+    prompt_id INTEGER, current_voice_id INTEGER, target_voice_id INTEGER NOT NULL,
+    audio_revision INTEGER NOT NULL CHECK(audio_revision > 0),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','ready','failed','activated','canceled')),
+    last_error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ready_at TEXT, activated_at TEXT,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(current_voice_id) REFERENCES VOICES(id) ON DELETE SET NULL,
+    FOREIGN KEY(target_voice_id) REFERENCES VOICES(id) ON DELETE RESTRICT,
+    CHECK((scope='global' AND prompt_id IS NULL) OR (scope='prompt' AND prompt_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX idx_voice_canonical_activation_global
+ON VOICE_CANONICAL_ACTIVATIONS(scope,audio_revision)
+WHERE scope='global' AND status IN ('pending','ready');
+CREATE UNIQUE INDEX idx_voice_canonical_activation_prompt
+ON VOICE_CANONICAL_ACTIVATIONS(prompt_id) WHERE scope='prompt' AND status IN ('pending','ready');
 
 CREATE TABLE LLM (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +173,10 @@ CREATE TABLE PROMPTS (
     markup_per_mtokens DECIMAL DEFAULT 0.00,
     allowed_llms TEXT DEFAULT NULL,
     forced_llm_id INTEGER DEFAULT NULL,
+    forced_reasoning_json TEXT DEFAULT NULL,
+    phone_llm_id INTEGER DEFAULT NULL,
+    phone_reasoning_json TEXT DEFAULT NULL,
+    phone_realtime_voice TEXT DEFAULT NULL,
     hide_llm_name BOOLEAN DEFAULT 0,
     landing_registration_config TEXT DEFAULT NULL,
     disable_web_search BOOLEAN DEFAULT 0,
@@ -219,6 +262,121 @@ CREATE TABLE MESSAGES (
     FOREIGN KEY (conversation_id) REFERENCES CONVERSATIONS(id),
     FOREIGN KEY (user_id) REFERENCES USERS(id)
 );
+
+CREATE TABLE MESSAGE_CHANNEL_PROVENANCE (
+    message_id INTEGER PRIMARY KEY,
+    channel TEXT NOT NULL CHECK(channel IN ('whatsapp', 'telegram')),
+    direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')),
+    external_message_id TEXT,
+    content_kind TEXT NOT NULL CHECK(content_kind IN (
+        'text', 'voice_note', 'audio', 'image', 'mixed', 'voice_reply'
+    )),
+    response_mode TEXT CHECK(response_mode IN ('text', 'voice')),
+    delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK(delivery_state IN (
+        'pending', 'sent', 'failed', 'received'
+    )),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE
+);
+
+CREATE TABLE MESSAGE_INPUT_PROVENANCE (
+    message_id INTEGER PRIMARY KEY,
+    origin TEXT NOT NULL CHECK(origin IN (
+        'web.message', 'web.live_voice',
+        'whatsapp.message', 'whatsapp.voice_note', 'whatsapp.audio',
+        'telegram.message', 'telegram.voice_note',
+        'device.message', 'phone.live_call'
+    )),
+    perception TEXT NOT NULL CHECK(perception IN ('text', 'transcript_only')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(
+        (perception = 'text' AND origin IN (
+            'web.message', 'whatsapp.message',
+            'telegram.message', 'device.message'
+        ))
+        OR
+        (perception = 'transcript_only' AND origin IN (
+            'web.live_voice', 'whatsapp.voice_note', 'whatsapp.audio',
+            'telegram.voice_note', 'phone.live_call'
+        ))
+    ),
+    FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_message_channel_provenance_external
+ON MESSAGE_CHANNEL_PROVENANCE(channel, external_message_id, direction)
+WHERE external_message_id IS NOT NULL;
+
+CREATE INDEX idx_message_channel_provenance_delivery
+ON MESSAGE_CHANNEL_PROVENANCE(channel, delivery_state, updated_at);
+
+CREATE TABLE MESSAGE_VOICE_NOTES (
+    message_id INTEGER PRIMARY KEY,
+    audio_attachment_ref TEXT UNIQUE,
+    original_transcript TEXT NOT NULL,
+    active_transcript TEXT NOT NULL,
+    initial_stt_provider TEXT,
+    initial_stt_model TEXT,
+    duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
+    retention_status TEXT NOT NULL CHECK(retention_status IN (
+        'stored', 'disabled', 'quota_skipped', 'failed'
+    )),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE,
+    FOREIGN KEY(audio_attachment_ref) REFERENCES FILE_ATTACHMENTS(public_id)
+        ON DELETE SET NULL
+);
+
+CREATE INDEX idx_message_voice_notes_retention
+ON MESSAGE_VOICE_NOTES(retention_status, created_at);
+
+CREATE TABLE MESSAGE_TRANSCRIPTION_REVISIONS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    requested_by_user_id INTEGER,
+    old_transcript TEXT NOT NULL,
+    new_transcript TEXT,
+    stt_provider TEXT,
+    stt_model TEXT,
+    comparison_llm_id INTEGER,
+    comparison_machine TEXT,
+    comparison_model TEXT,
+    comparison_display_name TEXT,
+    comparison_input_token_cost REAL CHECK(
+        comparison_input_token_cost IS NULL OR comparison_input_token_cost >= 0
+    ),
+    comparison_output_token_cost REAL CHECK(
+        comparison_output_token_cost IS NULL OR comparison_output_token_cost >= 0
+    ),
+    verdict TEXT CHECK(verdict IN ('better', 'equal', 'worse', 'uncertain')),
+    confidence REAL CHECK(confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    rationale TEXT,
+    comparison_json TEXT,
+    status TEXT NOT NULL CHECK(status IN (
+        'queued', 'transcribing', 'comparing', 'ready', 'accepted',
+        'rejected', 'failed', 'stale'
+    )),
+    error_message TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_at TIMESTAMP,
+    FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE,
+    FOREIGN KEY(requested_by_user_id) REFERENCES USERS(id) ON DELETE SET NULL,
+    FOREIGN KEY(comparison_llm_id) REFERENCES LLM(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX idx_message_transcription_revisions_active_job
+ON MESSAGE_TRANSCRIPTION_REVISIONS(message_id)
+WHERE status IN ('queued', 'transcribing', 'comparing');
+
+CREATE INDEX idx_message_transcription_revisions_message
+ON MESSAGE_TRANSCRIPTION_REVISIONS(message_id, created_at DESC, id DESC);
+
+CREATE INDEX idx_message_transcription_revisions_status
+ON MESSAGE_TRANSCRIPTION_REVISIONS(status, updated_at);
 
 CREATE TABLE EXTERNAL_DEVICES (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -376,7 +534,7 @@ CREATE TABLE BILLING_USAGE_RESERVATIONS (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
     billing_account_id INTEGER NOT NULL,
-    purpose TEXT NOT NULL CHECK(purpose IN ('ai', 'image', 'stt', 'video')),
+    purpose TEXT NOT NULL CHECK(purpose IN ('ai', 'image', 'stt', 'tts', 'video', 'phone')),
     service_id INTEGER,
     usage_quantity REAL CHECK(usage_quantity IS NULL OR usage_quantity > 0),
     amount REAL NOT NULL CHECK(amount > 0),
@@ -1318,6 +1476,682 @@ CREATE INDEX idx_prompt_permissions_user_prompt ON PROMPT_PERMISSIONS(user_id, p
 CREATE INDEX idx_magic_links_token ON MAGIC_LINKS(token);
 CREATE INDEX idx_users_phone_number ON USERS(phone_number);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON USERS(phone_number) WHERE phone_number IS NOT NULL;
+
+-- =============================================================================
+-- NATIVE TELEPHONE CHANNEL
+-- =============================================================================
+CREATE TABLE TELEPHONY_NUMBERS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, provider_number_sid TEXT NOT NULL UNIQUE,
+    e164 TEXT NOT NULL UNIQUE, friendly_name TEXT, iso_country TEXT, region TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+    inbound_enabled INTEGER NOT NULL DEFAULT 0 CHECK(inbound_enabled IN (0,1)),
+    is_outbound_default INTEGER NOT NULL DEFAULT 0 CHECK(is_outbound_default IN (0,1)),
+    voice_url TEXT, voice_method TEXT CHECK(voice_method IS NULL OR voice_method IN ('GET','POST')),
+    status_callback_url TEXT,
+    status_callback_method TEXT CHECK(status_callback_method IS NULL OR status_callback_method IN ('GET','POST')),
+    voice_application_sid TEXT,
+    trunk_sid TEXT,
+    synced_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(is_outbound_default = 0 OR enabled = 1)
+);
+CREATE UNIQUE INDEX idx_telephony_numbers_outbound_default ON TELEPHONY_NUMBERS(is_outbound_default) WHERE is_outbound_default = 1;
+CREATE INDEX idx_telephony_numbers_enabled ON TELEPHONY_NUMBERS(enabled, inbound_enabled);
+
+CREATE TABLE PHONE_CONTACTS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, owner_user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL, e164 TEXT NOT NULL, timezone_name TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    UNIQUE(owner_user_id, e164)
+);
+CREATE INDEX idx_phone_contacts_owner_active ON PHONE_CONTACTS(owner_user_id, active, display_name);
+
+CREATE TABLE PHONE_CONVERSATION_BINDINGS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, owner_user_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, preferred_number_id INTEGER,
+    allow_inbound INTEGER NOT NULL DEFAULT 1 CHECK(allow_inbound IN (0,1)),
+    allow_outbound INTEGER NOT NULL DEFAULT 1 CHECK(allow_outbound IN (0,1)),
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deactivated_at TEXT,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(contact_id) REFERENCES PHONE_CONTACTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(preferred_number_id) REFERENCES TELEPHONY_NUMBERS(id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX idx_phone_binding_active_conversation ON PHONE_CONVERSATION_BINDINGS(conversation_id) WHERE active = 1;
+CREATE UNIQUE INDEX idx_phone_binding_active_contact ON PHONE_CONVERSATION_BINDINGS(contact_id) WHERE active = 1;
+CREATE INDEX idx_phone_bindings_owner ON PHONE_CONVERSATION_BINDINGS(owner_user_id, active);
+
+CREATE TABLE PHONE_ACTIVE_ROUTES (
+    e164 TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, binding_id INTEGER NOT NULL UNIQUE,
+    contact_id INTEGER NOT NULL UNIQUE, conversation_id INTEGER NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    FOREIGN KEY(binding_id) REFERENCES PHONE_CONVERSATION_BINDINGS(id) ON DELETE CASCADE,
+    FOREIGN KEY(contact_id) REFERENCES PHONE_CONTACTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_phone_active_routes_owner ON PHONE_ACTIVE_ROUTES(owner_user_id);
+
+CREATE TABLE PROMPT_PHONE_SETTINGS (
+    prompt_id INTEGER PRIMARY KEY, stt_locale TEXT NOT NULL DEFAULT 'auto',
+    endpointing_ms INTEGER CHECK(endpointing_ms IS NULL OR endpointing_ms BETWEEN 300 AND 3000),
+    interruptible INTEGER NOT NULL DEFAULT 1 CHECK(interruptible IN (0,1)),
+    interrupt_sensitivity TEXT NOT NULL DEFAULT 'normal' CHECK(interrupt_sensitivity IN ('low','normal','high')),
+    ignore_backchannels INTEGER NOT NULL DEFAULT 1 CHECK(ignore_backchannels IN (0,1)),
+    max_duration_seconds INTEGER CHECK(max_duration_seconds IS NULL OR max_duration_seconds > 0),
+    warning_milestones_json TEXT NOT NULL DEFAULT '[900,300,180,60]',
+    silence_prompt_seconds INTEGER CHECK(silence_prompt_seconds IS NULL OR silence_prompt_seconds > 0),
+    silence_hangup_seconds INTEGER CHECK(silence_hangup_seconds IS NULL OR silence_hangup_seconds > 0),
+    ai_initiation_mode TEXT NOT NULL DEFAULT 'on_request' CHECK(ai_initiation_mode IN ('on_request','proactive','disabled')),
+    inbound_greeting_mode TEXT NOT NULL DEFAULT 'inherit' CHECK(inbound_greeting_mode IN ('inherit','fixed','random')),
+    outbound_greeting_mode TEXT NOT NULL DEFAULT 'inherit' CHECK(outbound_greeting_mode IN ('inherit','fixed','random')),
+    recording_default INTEGER NOT NULL DEFAULT 0 CHECK(recording_default IN (0,1)),
+    amd_default INTEGER NOT NULL DEFAULT 0 CHECK(amd_default IN (0,1)),
+    active_audio_revision INTEGER, pending_audio_revision INTEGER,
+    audio_cache_status TEXT NOT NULL DEFAULT 'not_generated' CHECK(audio_cache_status IN ('not_generated','pending','ready','failed','needs_attention')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE CASCADE
+);
+
+CREATE TABLE PROMPT_PHONE_GREETINGS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL CHECK(scope IN ('global','prompt')),
+    prompt_id INTEGER, direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+    literal_text TEXT NOT NULL CHECK(length(trim(literal_text)) > 0),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+    is_fixed_selection INTEGER NOT NULL DEFAULT 0 CHECK(is_fixed_selection IN (0,1)),
+    display_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE CASCADE,
+    CHECK((scope='global' AND prompt_id IS NULL) OR (scope='prompt' AND prompt_id IS NOT NULL))
+);
+CREATE INDEX idx_phone_greetings_scope_direction ON PROMPT_PHONE_GREETINGS(scope,prompt_id,direction,enabled,display_order);
+CREATE UNIQUE INDEX idx_phone_greetings_fixed_global ON PROMPT_PHONE_GREETINGS(direction,revision) WHERE scope='global' AND prompt_id IS NULL AND is_fixed_selection=1;
+CREATE UNIQUE INDEX idx_phone_greetings_fixed_prompt ON PROMPT_PHONE_GREETINGS(prompt_id,direction,revision) WHERE scope='prompt' AND is_fixed_selection=1;
+
+CREATE TABLE PHONE_TECHNICAL_NOTICE_DEFINITIONS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    notice_key TEXT NOT NULL CHECK(notice_key IN (
+        'silence_check','silence_hangup','deadline','reconnect_notice',
+        'reconnect_failed','technical_failure','balance_exhausted',
+        'inbound_unavailable','unknown_caller'
+    )),
+    literal_text TEXT NOT NULL CHECK(length(trim(literal_text)) > 0),
+    updated_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(revision,notice_key)
+);
+CREATE INDEX idx_phone_technical_notices_revision ON PHONE_TECHNICAL_NOTICE_DEFINITIONS(revision,notice_key);
+
+CREATE TABLE PROMPT_PHONE_TECHNICAL_NOTICE_DEFINITIONS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    notice_key TEXT NOT NULL CHECK(notice_key IN (
+        'silence_check','silence_hangup','deadline','reconnect_notice',
+        'reconnect_failed','technical_failure','balance_exhausted'
+    )),
+    literal_text TEXT NOT NULL CHECK(length(trim(literal_text)) > 0),
+    updated_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE CASCADE,
+    UNIQUE(prompt_id,revision,notice_key)
+);
+CREATE INDEX idx_prompt_phone_technical_notices_revision ON PROMPT_PHONE_TECHNICAL_NOTICE_DEFINITIONS(prompt_id,revision,notice_key);
+
+CREATE TABLE PHONE_PROMPT_AUDIO_CACHE (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, cache_key TEXT NOT NULL UNIQUE, prompt_id INTEGER,
+    greeting_id INTEGER, asset_kind TEXT NOT NULL CHECK(asset_kind IN ('greeting','technical_notice')),
+    direction TEXT CHECK(direction IS NULL OR direction IN ('inbound','outbound')),
+    literal_text TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0), voice_id INTEGER NOT NULL,
+    provider_key TEXT NOT NULL, provider_voice_id TEXT NOT NULL, tts_profile_json TEXT NOT NULL DEFAULT '{}',
+    content_hash TEXT NOT NULL, source_mp3_path TEXT, pcmu_path TEXT,
+    duration_ms INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
+    alignment_json TEXT, status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','ready','failed','retired')),
+    last_error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, ready_at TEXT,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(greeting_id) REFERENCES PROMPT_PHONE_GREETINGS(id) ON DELETE CASCADE,
+    FOREIGN KEY(voice_id) REFERENCES VOICES(id) ON DELETE RESTRICT,
+    CHECK((asset_kind='greeting' AND greeting_id IS NOT NULL) OR asset_kind='technical_notice')
+);
+CREATE INDEX idx_phone_audio_cache_activation ON PHONE_PROMPT_AUDIO_CACHE(prompt_id,revision,status);
+
+CREATE TABLE PHONE_AUDIO_RENDER_ATTEMPTS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_key TEXT NOT NULL,
+    render_fingerprint TEXT NOT NULL CHECK(length(render_fingerprint)=64 AND render_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    billing_user_id INTEGER NOT NULL,
+    activation_id TEXT NOT NULL,
+    tts_reservation_id TEXT,
+    alignment_reservation_id TEXT,
+    provider_state TEXT NOT NULL DEFAULT 'pending' CHECK(provider_state IN ('pending','in_flight','succeeded','failed','ambiguous')),
+    alignment_state TEXT NOT NULL DEFAULT 'pending' CHECK(alignment_state IN ('pending','in_flight','succeeded','failed','ambiguous','not_required')),
+    needs_attention INTEGER NOT NULL DEFAULT 0 CHECK(needs_attention IN (0,1)),
+    last_error TEXT,
+    provider_started_at TEXT,
+    provider_succeeded_at TEXT,
+    alignment_started_at TEXT,
+    alignment_succeeded_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(cache_key) REFERENCES PHONE_PROMPT_AUDIO_CACHE(cache_key) ON DELETE CASCADE,
+    FOREIGN KEY(activation_id) REFERENCES VOICE_CANONICAL_ACTIVATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(tts_reservation_id) REFERENCES BILLING_USAGE_RESERVATIONS(id) ON DELETE SET NULL,
+    FOREIGN KEY(alignment_reservation_id) REFERENCES BILLING_USAGE_RESERVATIONS(id) ON DELETE SET NULL,
+    UNIQUE(cache_key,render_fingerprint),
+    CHECK((provider_state!='ambiguous' AND alignment_state!='ambiguous') OR needs_attention=1)
+);
+CREATE INDEX idx_phone_audio_render_attention ON PHONE_AUDIO_RENDER_ATTEMPTS(needs_attention,provider_state,alignment_state,updated_at);
+CREATE INDEX idx_phone_audio_render_activation ON PHONE_AUDIO_RENDER_ATTEMPTS(activation_id,created_at);
+CREATE INDEX idx_phone_audio_render_fingerprint ON PHONE_AUDIO_RENDER_ATTEMPTS(render_fingerprint,provider_state,alignment_state);
+
+CREATE TABLE PHONE_CALL_JOBS (
+    id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, conversation_id INTEGER NOT NULL,
+    binding_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, telephony_number_id INTEGER NOT NULL,
+    scheduled_at_utc TEXT NOT NULL, timezone_name TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK(origin IN ('ui','assistant','api')), origin_message_id INTEGER,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','dispatching','completed','canceled','missed','conflict','needs_attention')),
+    recording_override INTEGER CHECK(recording_override IS NULL OR recording_override IN (0,1)),
+    amd_override INTEGER CHECK(amd_override IS NULL OR amd_override IN (0,1)),
+    binding_snapshot_json TEXT NOT NULL, config_snapshot_json TEXT NOT NULL,
+    lease_owner TEXT, lease_token TEXT, lease_until TEXT, dispatch_started_at TEXT, completed_at TEXT,
+    last_error_code TEXT, last_error_detail TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(binding_id) REFERENCES PHONE_CONVERSATION_BINDINGS(id) ON DELETE RESTRICT,
+    FOREIGN KEY(contact_id) REFERENCES PHONE_CONTACTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(telephony_number_id) REFERENCES TELEPHONY_NUMBERS(id) ON DELETE RESTRICT,
+    FOREIGN KEY(origin_message_id) REFERENCES MESSAGES(id) ON DELETE SET NULL,
+    UNIQUE(owner_user_id,origin,idempotency_key)
+);
+CREATE INDEX idx_phone_call_jobs_due ON PHONE_CALL_JOBS(status,scheduled_at_utc,lease_until);
+CREATE INDEX idx_phone_call_jobs_binding ON PHONE_CALL_JOBS(binding_id,status,scheduled_at_utc);
+
+CREATE TABLE PHONE_CALLS (
+    id TEXT PRIMARY KEY, job_id TEXT UNIQUE, owner_user_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL, binding_id INTEGER, contact_id INTEGER NOT NULL,
+    telephony_number_id INTEGER NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+    from_e164 TEXT NOT NULL, to_e164 TEXT NOT NULL,
+    transport TEXT CHECK(transport IS NULL OR transport='media_streams'),
+    status TEXT NOT NULL DEFAULT 'created' CHECK(status IN ('created','dispatching','dispatch_unknown','queued','initiated','ringing','in_progress','completed','busy','no_answer','machine','failed','canceled','unresolved')),
+    provider_call_sid TEXT UNIQUE, provider_session_id TEXT UNIQUE, provider_stream_sid TEXT UNIQUE,
+    dispatch_token TEXT NOT NULL UNIQUE, provider_request_started_at TEXT, reconcile_deadline TEXT,
+    answered_by TEXT, binding_snapshot_json TEXT NOT NULL, config_snapshot_json TEXT NOT NULL,
+    foreground_fencing_token INTEGER NOT NULL DEFAULT 1 CHECK(foreground_fencing_token > 0),
+    foreground_lease_owner TEXT, foreground_lease_until TEXT,
+    reconnect_count INTEGER NOT NULL DEFAULT 0 CHECK(reconnect_count BETWEEN 0 AND 2),
+    initiated_at TEXT, ringing_at TEXT, answered_at TEXT, ended_at TEXT, deadline_at TEXT,
+    warning_milestones_json TEXT NOT NULL DEFAULT '[]', duration_seconds INTEGER CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
+    termination_reason TEXT, estimated_cost REAL NOT NULL DEFAULT 0 CHECK(estimated_cost >= 0),
+    final_cost REAL CHECK(final_cost IS NULL OR final_cost >= 0), currency TEXT NOT NULL DEFAULT 'USD',
+    recording_enabled INTEGER NOT NULL DEFAULT 0 CHECK(recording_enabled IN (0,1)),
+    amd_enabled INTEGER NOT NULL DEFAULT 0 CHECK(amd_enabled IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, deleted_at TEXT,
+    FOREIGN KEY(job_id) REFERENCES PHONE_CALL_JOBS(id) ON DELETE SET NULL,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(binding_id) REFERENCES PHONE_CONVERSATION_BINDINGS(id) ON DELETE SET NULL,
+    FOREIGN KEY(contact_id) REFERENCES PHONE_CONTACTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(telephony_number_id) REFERENCES TELEPHONY_NUMBERS(id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX idx_phone_calls_one_incompatible_conversation ON PHONE_CALLS(conversation_id)
+WHERE deleted_at IS NULL AND status IN ('created','dispatching','dispatch_unknown','queued','initiated','ringing','in_progress','unresolved');
+CREATE INDEX idx_phone_calls_owner_created ON PHONE_CALLS(owner_user_id,created_at DESC);
+CREATE INDEX idx_phone_calls_status ON PHONE_CALLS(status,updated_at);
+
+CREATE TABLE PHONE_HANGUP_ATTEMPTS (
+    call_id TEXT PRIMARY KEY,
+    provider_call_sid TEXT NOT NULL,
+    state TEXT NOT NULL
+        CHECK(state IN ('in_flight', 'unresolved', 'accepted', 'confirmed')),
+    attempt_count INTEGER NOT NULL CHECK(attempt_count > 0),
+    attempt_token TEXT UNIQUE,
+    lease_owner TEXT,
+    lease_until TEXT,
+    origin TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    target_status TEXT NOT NULL
+        CHECK(target_status IN ('completed', 'busy', 'no_answer', 'machine', 'failed', 'canceled')),
+    last_error_code TEXT,
+    last_error_detail TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TEXT,
+    FOREIGN KEY (call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE,
+    CHECK(
+        (state = 'in_flight' AND attempt_token IS NOT NULL
+            AND lease_owner IS NOT NULL AND lease_until IS NOT NULL)
+        OR
+        (state IN ('unresolved', 'accepted', 'confirmed') AND attempt_token IS NULL
+            AND lease_owner IS NULL AND lease_until IS NULL)
+    )
+);
+
+CREATE INDEX idx_phone_hangup_attempts_state_lease
+ON PHONE_HANGUP_ATTEMPTS(state, lease_until, updated_at);
+
+CREATE TABLE PHONE_CONVERSATION_FOREGROUND (
+    conversation_id INTEGER PRIMARY KEY,
+    epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch >= 0),
+    current_call_id TEXT, lease_owner TEXT, lease_until TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(current_call_id) REFERENCES PHONE_CALLS(id) ON DELETE SET NULL
+);
+
+CREATE TABLE PHONE_CALL_EVENTS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT, provider_call_sid TEXT,
+    provider_event_id TEXT, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+    signature_valid INTEGER NOT NULL CHECK(signature_valid IN (0,1)), provider_occurred_at TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}', received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_phone_call_events_call_received ON PHONE_CALL_EVENTS(call_id,received_at,id);
+CREATE INDEX idx_phone_call_events_provider_sid ON PHONE_CALL_EVENTS(provider_call_sid,received_at);
+
+CREATE TABLE PHONE_CALL_MESSAGE_LINKS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+    participant TEXT NOT NULL CHECK(participant IN ('caller','assistant','other_channel')),
+    turn_id TEXT, origin_channel TEXT NOT NULL CHECK(origin_channel IN ('phone','web','whatsapp','telegram','device')),
+    interrupted INTEGER NOT NULL DEFAULT 0 CHECK(interrupted IN (0,1)),
+    played_ms INTEGER CHECK(played_ms IS NULL OR played_ms >= 0),
+    confirmed_text TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'consumed' CHECK(delivery_state IN ('queued','consumed','released')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE,
+    FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE,
+    UNIQUE(call_id,message_id)
+);
+CREATE UNIQUE INDEX idx_phone_call_turn_participant ON PHONE_CALL_MESSAGE_LINKS(call_id,turn_id,participant) WHERE turn_id IS NOT NULL;
+CREATE INDEX idx_phone_call_message_delivery ON PHONE_CALL_MESSAGE_LINKS(call_id,delivery_state,message_id);
+
+CREATE TABLE PHONE_MEMORY_OUTBOX (
+    message_id INTEGER PRIMARY KEY,
+    call_id TEXT NOT NULL,
+    conversation_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    prompt_id INTEGER,
+    message_text TEXT NOT NULL,
+    occurred_at TEXT,
+    provider TEXT CHECK(provider IS NULL OR provider IN ('atagia', 'mem0', 'none')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'processing', 'retry', 'completed', 'needs_attention')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_attempt_at TEXT,
+    lease_owner TEXT,
+    lease_token TEXT UNIQUE,
+    lease_until TEXT,
+    provider_started_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE,
+    FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE SET NULL,
+    CHECK(
+        (status = 'processing' AND lease_owner IS NOT NULL
+            AND lease_token IS NOT NULL AND lease_until IS NOT NULL)
+        OR
+        (status != 'processing' AND lease_owner IS NULL
+            AND lease_token IS NULL AND lease_until IS NULL)
+    )
+);
+CREATE INDEX idx_phone_memory_outbox_claim
+ON PHONE_MEMORY_OUTBOX(status, next_attempt_at, lease_until, created_at);
+CREATE INDEX idx_phone_memory_outbox_attention
+ON PHONE_MEMORY_OUTBOX(status, updated_at)
+WHERE status = 'needs_attention';
+
+CREATE TABLE PHONE_AI_CALL_OUTBOX (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL,
+    binding_id INTEGER NOT NULL,
+    prompt_id INTEGER NOT NULL,
+    origin_channel TEXT NOT NULL
+        CHECK(origin_channel IN ('web','whatsapp','telegram','device')),
+    initiation_mode TEXT NOT NULL
+        CHECK(initiation_mode IN ('on_request','proactive')),
+    user_message_id INTEGER NOT NULL UNIQUE,
+    assistant_message_id INTEGER NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN (
+            'pending','processing','retry','completed','canceled','needs_attention'
+        )),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_attempt_at TEXT,
+    expires_at TEXT NOT NULL,
+    lease_owner TEXT,
+    lease_token TEXT UNIQUE,
+    lease_until TEXT,
+    call_job_id TEXT,
+    error_code TEXT,
+    error_detail TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY(binding_id) REFERENCES PHONE_CONVERSATION_BINDINGS(id) ON DELETE CASCADE,
+    FOREIGN KEY(prompt_id) REFERENCES PROMPTS(id) ON DELETE CASCADE,
+    FOREIGN KEY(user_message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE,
+    FOREIGN KEY(assistant_message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE,
+    FOREIGN KEY(call_job_id) REFERENCES PHONE_CALL_JOBS(id) ON DELETE CASCADE,
+    CHECK(
+        (status='processing' AND lease_owner IS NOT NULL
+            AND lease_token IS NOT NULL AND lease_until IS NOT NULL)
+        OR
+        (status!='processing' AND lease_owner IS NULL
+            AND lease_token IS NULL AND lease_until IS NULL)
+    ),
+    CHECK(status!='completed' OR call_job_id IS NOT NULL)
+);
+CREATE INDEX idx_phone_ai_call_outbox_claim
+ON PHONE_AI_CALL_OUTBOX(status,next_attempt_at,expires_at,created_at,id);
+CREATE INDEX idx_phone_ai_call_outbox_attention
+ON PHONE_AI_CALL_OUTBOX(status,updated_at)
+WHERE status='needs_attention';
+
+CREATE TABLE PHONE_BILLING_RATES (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    component_type TEXT NOT NULL CHECK(component_type IN (
+        'pstn','transport','stt','tts','amd','recording'
+    )),
+    direction TEXT NOT NULL DEFAULT '' CHECK(direction IN ('','inbound','outbound')),
+    from_country TEXT NOT NULL DEFAULT '',
+    to_country TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL CHECK(unit IN ('minute','character','call')),
+    provider_rate_per_unit REAL NOT NULL CHECK(provider_rate_per_unit >= 0),
+    customer_rate_per_unit REAL NOT NULL CHECK(customer_rate_per_unit >= 0),
+    currency TEXT NOT NULL,
+    service_id INTEGER,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(service_id) REFERENCES SERVICES(id) ON DELETE RESTRICT,
+    CHECK(length(provider) BETWEEN 1 AND 100),
+    CHECK(length(currency) BETWEEN 3 AND 8),
+    CHECK(from_country='' OR (length(from_country)=2 AND from_country=upper(from_country))),
+    CHECK(to_country='' OR (length(to_country)=2 AND to_country=upper(to_country))),
+    CHECK(
+        (component_type='pstn' AND direction IN ('inbound','outbound')
+         AND length(from_country)=2 AND length(to_country)=2)
+        OR
+        (component_type<>'pstn' AND direction=''
+         AND from_country='' AND to_country='')
+    ),
+    CHECK(customer_rate_per_unit=0 OR service_id IS NOT NULL),
+    UNIQUE(provider,component_type,direction,from_country,to_country)
+);
+CREATE INDEX idx_phone_billing_rates_lookup
+ON PHONE_BILLING_RATES(
+    active,provider,component_type,direction,from_country,to_country
+);
+
+CREATE TABLE PHONE_CALL_COST_COMPONENTS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id TEXT NOT NULL,
+    billing_reservation_id TEXT,
+    rate_id INTEGER,
+    provider TEXT NOT NULL,
+    component_type TEXT NOT NULL CHECK(component_type IN (
+        'pstn','transport','stt','tts','amd','recording'
+    )),
+    dedupe_key TEXT NOT NULL,
+    external_usage_id TEXT,
+    quantity REAL NOT NULL CHECK(quantity >= 0),
+    reserved_quantity REAL NOT NULL CHECK(reserved_quantity >= 0),
+    unit TEXT NOT NULL CHECK(unit IN ('minute','character','call')),
+    provider_rate_per_unit REAL NOT NULL CHECK(provider_rate_per_unit >= 0),
+    customer_rate_per_unit REAL NOT NULL CHECK(customer_rate_per_unit >= 0),
+    estimated_provider_cost REAL NOT NULL CHECK(estimated_provider_cost >= 0),
+    estimated_customer_charge REAL NOT NULL CHECK(estimated_customer_charge >= 0),
+    final_provider_cost REAL CHECK(final_provider_cost IS NULL OR final_provider_cost >= 0),
+    final_customer_charge REAL CHECK(final_customer_charge IS NULL OR final_customer_charge >= 0),
+    provider_cost REAL NOT NULL CHECK(provider_cost >= 0),
+    customer_charge REAL NOT NULL CHECK(customer_charge >= 0),
+    currency TEXT,
+    state TEXT NOT NULL CHECK(state IN (
+        'reserved','provider_started','settled','refunded','needs_attention'
+    )),
+    platform_absorbed INTEGER NOT NULL DEFAULT 0 CHECK(platform_absorbed IN (0,1)),
+    rate_missing INTEGER NOT NULL DEFAULT 0 CHECK(rate_missing IN (0,1)),
+    occurred_at TEXT,
+    provider_started_at TEXT,
+    provider_confirmed_at TEXT,
+    settled_at TEXT,
+    refunded_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE,
+    FOREIGN KEY(billing_reservation_id) REFERENCES BILLING_USAGE_RESERVATIONS(id) ON DELETE SET NULL,
+    FOREIGN KEY(rate_id) REFERENCES PHONE_BILLING_RATES(id) ON DELETE SET NULL,
+    CHECK(
+        (rate_missing=0 AND currency IS NOT NULL)
+        OR
+        (rate_missing=1 AND currency IS NULL AND rate_id IS NULL
+         AND billing_reservation_id IS NULL AND state='needs_attention')
+    ),
+    UNIQUE(call_id,dedupe_key)
+);
+CREATE INDEX idx_phone_call_costs_call_state ON PHONE_CALL_COST_COMPONENTS(call_id,state,component_type);
+CREATE INDEX idx_phone_call_costs_reservation ON PHONE_CALL_COST_COMPONENTS(billing_reservation_id);
+
+CREATE TABLE PHONE_RECORDINGS (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT NOT NULL, provider_recording_sid TEXT UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','available','failed','deleting','deleted','needs_attention')),
+    participant_path TEXT, assistant_path TEXT, mixed_path TEXT,
+    duration_seconds INTEGER CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
+    remote_deleted_at TEXT, local_deleted_at TEXT, last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_phone_recordings_call ON PHONE_RECORDINGS(call_id,status);
+
+CREATE TABLE PHONE_DATA_PURGE_JOBS (
+    id TEXT PRIMARY KEY, owner_user_id INTEGER, conversation_id INTEGER,
+    call_id TEXT, recording_id INTEGER,
+    owner_user_id_snapshot INTEGER NOT NULL, conversation_id_snapshot INTEGER NOT NULL,
+    call_id_snapshot TEXT, recording_id_snapshot INTEGER,
+    purge_scope TEXT NOT NULL CHECK(purge_scope IN ('call','recording')),
+    status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','running','needs_attention','completed')),
+    conversation_revision INTEGER NOT NULL CHECK(conversation_revision > 0),
+    provider_call_sid_snapshot TEXT, provider_recording_sid_snapshot TEXT,
+    source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    progress_json TEXT NOT NULL DEFAULT '{}', next_attempt_at TEXT,
+    lease_owner TEXT, lease_token TEXT, lease_until TEXT, runtime_lease_token TEXT,
+    content_revision_snapshot INTEGER NOT NULL DEFAULT 0,
+    source_revision INTEGER NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0), last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TEXT,
+    FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE SET NULL,
+    FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE SET NULL,
+    FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE SET NULL,
+    FOREIGN KEY(recording_id) REFERENCES PHONE_RECORDINGS(id) ON DELETE SET NULL,
+    CHECK((purge_scope='call' AND call_id_snapshot IS NOT NULL) OR
+          (purge_scope='recording' AND recording_id_snapshot IS NOT NULL))
+);
+CREATE UNIQUE INDEX idx_phone_purge_active_call ON PHONE_DATA_PURGE_JOBS(call_id_snapshot,purge_scope) WHERE purge_scope='call' AND status IN ('scheduled','running','needs_attention');
+CREATE UNIQUE INDEX idx_phone_purge_active_recording ON PHONE_DATA_PURGE_JOBS(recording_id_snapshot,purge_scope) WHERE purge_scope='recording' AND status IN ('scheduled','running','needs_attention');
+CREATE INDEX idx_phone_purge_jobs_claim ON PHONE_DATA_PURGE_JOBS(status,lease_until,created_at);
+
+-- Durable telephone data deletion.  Tombstones deliberately keep only provider
+-- correlation identifiers after the mutable call row has been purged so late
+-- signed callbacks cannot recreate deleted data.
+CREATE INDEX idx_phone_purge_jobs_ready
+ON PHONE_DATA_PURGE_JOBS(status,next_attempt_at,lease_until,created_at);
+
+CREATE TABLE PHONE_CALL_TOMBSTONES (
+    call_id TEXT PRIMARY KEY,
+    owner_user_id_snapshot INTEGER NOT NULL,
+    conversation_id_snapshot INTEGER NOT NULL,
+    dispatch_token TEXT NOT NULL UNIQUE,
+    provider_call_sid TEXT UNIQUE,
+    purge_job_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (purge_job_id) REFERENCES PHONE_DATA_PURGE_JOBS(id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_phone_call_tombstones_conversation
+ON PHONE_CALL_TOMBSTONES(conversation_id_snapshot,deleted_at);
+
+CREATE TABLE PHONE_RECORDING_TOMBSTONES (
+    call_id_snapshot TEXT PRIMARY KEY,
+    owner_user_id_snapshot INTEGER NOT NULL,
+    conversation_id_snapshot INTEGER NOT NULL,
+    purge_job_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (purge_job_id) REFERENCES PHONE_DATA_PURGE_JOBS(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE PHONE_CONVERSATION_DATA_REVISIONS (
+    conversation_id_snapshot INTEGER PRIMARY KEY,
+    owner_user_id_snapshot INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    content_revision INTEGER NOT NULL DEFAULT 0 CHECK(content_revision >= 0),
+    memory_state TEXT NOT NULL DEFAULT 'ready'
+        CHECK(memory_state IN ('ready','rebuilding','needs_attention')),
+    memory_blocked INTEGER NOT NULL DEFAULT 0 CHECK(memory_blocked IN (0,1)),
+    active_job_id TEXT,
+    lease_owner TEXT,
+    lease_token TEXT UNIQUE,
+    lease_until TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY (active_job_id) REFERENCES PHONE_DATA_PURGE_JOBS(id) ON DELETE SET NULL,
+    CHECK(
+        (memory_state='ready' AND memory_blocked=0 AND active_job_id IS NULL
+            AND lease_owner IS NULL AND lease_token IS NULL AND lease_until IS NULL)
+        OR
+        (memory_state IN ('rebuilding','needs_attention') AND memory_blocked=1)
+    )
+);
+CREATE INDEX idx_phone_conversation_data_state
+ON PHONE_CONVERSATION_DATA_REVISIONS(memory_state,lease_until,updated_at);
+
+CREATE TABLE PHONE_DATA_PURGE_RUNTIME (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    worker_id TEXT NOT NULL,
+    lease_token TEXT NOT NULL UNIQUE,
+    lease_until TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE PHONE_MEMORY_OPERATION_LEASES (
+    id TEXT PRIMARY KEY,
+    conversation_id_snapshot INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    lease_owner TEXT NOT NULL,
+    lease_token TEXT NOT NULL UNIQUE,
+    content_revision INTEGER NOT NULL CHECK(content_revision >= 0),
+    provider_started INTEGER NOT NULL DEFAULT 0 CHECK(provider_started IN (0,1)),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','completed','needs_attention')),
+    lease_until TEXT NOT NULL,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+);
+CREATE INDEX idx_phone_memory_operation_leases_active
+ON PHONE_MEMORY_OPERATION_LEASES(conversation_id_snapshot,status,lease_until,provider_started);
+
+CREATE TABLE PHONE_PURGED_MESSAGE_TOMBSTONES (
+    message_id INTEGER PRIMARY KEY,
+    conversation_id_snapshot INTEGER NOT NULL,
+    purge_job_id TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(purge_job_id) REFERENCES PHONE_DATA_PURGE_JOBS(id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_phone_purged_messages_conversation
+ON PHONE_PURGED_MESSAGE_TOMBSTONES(conversation_id_snapshot,deleted_at);
+
+CREATE TRIGGER trg_phone_content_revision_message_insert
+AFTER INSERT ON MESSAGES BEGIN
+    INSERT INTO PHONE_CONVERSATION_DATA_REVISIONS(
+        conversation_id_snapshot,owner_user_id_snapshot,content_revision
+    ) VALUES(
+        NEW.conversation_id,
+        COALESCE(NEW.user_id,(SELECT user_id FROM CONVERSATIONS WHERE id=NEW.conversation_id),0),1
+    ) ON CONFLICT(conversation_id_snapshot) DO UPDATE SET
+        content_revision=content_revision+1,updated_at=CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER trg_phone_content_revision_message_update
+AFTER UPDATE ON MESSAGES BEGIN
+    UPDATE PHONE_CONVERSATION_DATA_REVISIONS
+    SET content_revision=content_revision+1,updated_at=CURRENT_TIMESTAMP
+    WHERE conversation_id_snapshot=OLD.conversation_id;
+    INSERT INTO PHONE_CONVERSATION_DATA_REVISIONS(
+        conversation_id_snapshot,owner_user_id_snapshot,content_revision
+    ) SELECT NEW.conversation_id,
+        COALESCE(NEW.user_id,(SELECT user_id FROM CONVERSATIONS WHERE id=NEW.conversation_id),0),1
+    WHERE NEW.conversation_id<>OLD.conversation_id
+    ON CONFLICT(conversation_id_snapshot) DO UPDATE SET
+        content_revision=content_revision+1,updated_at=CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER trg_phone_content_revision_message_delete
+AFTER DELETE ON MESSAGES BEGIN
+    UPDATE PHONE_CONVERSATION_DATA_REVISIONS
+    SET content_revision=content_revision+1,updated_at=CURRENT_TIMESTAMP
+    WHERE conversation_id_snapshot=OLD.conversation_id;
+END;
+CREATE TRIGGER trg_phone_block_purged_watchdog_event_insert
+BEFORE INSERT ON WATCHDOG_EVENTS
+WHEN EXISTS(SELECT 1 FROM PHONE_PURGED_MESSAGE_TOMBSTONES
+            WHERE message_id=NEW.user_message_id OR message_id=NEW.bot_message_id)
+BEGIN SELECT RAISE(IGNORE); END;
+CREATE TRIGGER trg_phone_block_purged_watchdog_event_update
+BEFORE UPDATE OF user_message_id,bot_message_id ON WATCHDOG_EVENTS
+WHEN EXISTS(SELECT 1 FROM PHONE_PURGED_MESSAGE_TOMBSTONES
+            WHERE message_id=NEW.user_message_id OR message_id=NEW.bot_message_id)
+BEGIN SELECT RAISE(IGNORE); END;
+CREATE TRIGGER trg_phone_clear_purged_watchdog_state_insert
+AFTER INSERT ON WATCHDOG_STATE
+WHEN EXISTS(SELECT 1 FROM PHONE_PURGED_MESSAGE_TOMBSTONES
+            WHERE message_id=NEW.last_evaluated_message_id)
+BEGIN DELETE FROM WATCHDOG_STATE WHERE conversation_id=NEW.conversation_id; END;
+CREATE TRIGGER trg_phone_clear_purged_watchdog_state_update
+AFTER UPDATE OF last_evaluated_message_id ON WATCHDOG_STATE
+WHEN EXISTS(SELECT 1 FROM PHONE_PURGED_MESSAGE_TOMBSTONES
+            WHERE message_id=NEW.last_evaluated_message_id)
+BEGIN DELETE FROM WATCHDOG_STATE WHERE conversation_id=NEW.conversation_id; END;
+
+INSERT OR IGNORE INTO SYSTEM_CONFIG(key, value, description) VALUES
+('telephony_enabled', '0', 'Enable Aurvek native telephone calls'),
+('telephony_transport', 'media_streams', 'Selected Twilio voice transport'),
+('telephony_stt_provider', 'elevenlabs', 'Streaming speech-to-text provider'),
+('telephony_stt_model', 'scribe_v2_realtime', 'Streaming speech-to-text model'),
+('telephony_stt_language', 'multi', 'Default automatic speech language mode'),
+('telephony_endpointing_ms', '700', 'Default STT end-of-speech pause in milliseconds'),
+('telephony_barge_in_confirmation_ms', '350', 'Base speech confirmation before barge-in'),
+('telephony_max_call_seconds', '14400', 'Administrative maximum call duration'),
+('telephony_allowed_countries', '["US","ES"]', 'Allowed outbound destination countries'),
+('telephony_recording_default', '0', 'Default call recording mode'),
+('telephony_amd_default', '0', 'Default answering-machine detection mode'),
+('telephony_reconnect_attempts', '2', 'Maximum voice transport reconnections'),
+('telephony_silence_check_seconds', '60', 'Silence interval before checking presence'),
+('telephony_silence_hangup_seconds', '60', 'Second silence interval before hangup'),
+('telephony_scheduler_jitter_seconds', '10', 'Scheduler polling and network jitter allowance');
+INSERT OR IGNORE INTO SYSTEM_CONFIG(key, value, description) VALUES
+('telephony_max_concurrent_dispatches', '10', 'Maximum simultaneous outbound call dispatches');
+INSERT OR IGNORE INTO SYSTEM_CONFIG(key, value, description) VALUES
+('whatsapp_retain_voice_notes', '0', 'Retain original WhatsApp voice-note audio for future playback and processing'),
+('telegram_retain_voice_notes', '0', 'Retain original Telegram voice-note audio for future playback and processing');
 CREATE INDEX idx_conversations_user_id ON CONVERSATIONS(user_id);
 CREATE INDEX idx_conversations_role_id ON CONVERSATIONS(role_id);
 CREATE INDEX idx_conversations_last_activity ON CONVERSATIONS(user_id, last_activity DESC);

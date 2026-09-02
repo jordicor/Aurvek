@@ -15,10 +15,23 @@ from integrations.devices.service import (
     get_conversation_binding_summaries,
 )
 from integrations.platforms import validate_platform
+from chat.services.conversation_channels import (
+    channel_summary_with_legacy,
+    get_conversation_channel_summaries,
+    has_messaging_channel,
+    legacy_external_platform,
+)
 from models import User
 
 
 router = APIRouter()
+
+
+def _conversation_ids_match(left, right) -> bool:
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return False
 
 
 @router.post("/api/conversations/{conversation_id}/external-platform")
@@ -41,6 +54,7 @@ async def update_external_platform(
 
     visible_limit = min(max(1, int(data.get("visible_count", 10))), 50)
     platform_conversation = None
+    affected_conversation_ids = {conversation_id}
 
     if action == "add":
         if await conversation_has_external_device_bindings(
@@ -70,6 +84,7 @@ async def update_external_platform(
                     "message": result["message"],
                 },
             )
+        affected_conversation_ids.update(result.get("affected_conversation_ids") or [])
     else:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.cursor()
@@ -93,13 +108,18 @@ async def update_external_platform(
                 for platform_name in list(platforms.keys()):
                     if (
                         isinstance(platforms.get(platform_name), dict)
-                        and platforms[platform_name].get("conversation_id") == conversation_id
+                        and _conversation_ids_match(
+                            platforms[platform_name].get("conversation_id"),
+                            conversation_id,
+                        )
                     ):
                         platforms[platform_name].pop("conversation_id", None)
             elif (
                 platform in platforms
                 and isinstance(platforms.get(platform), dict)
-                and platforms[platform].get("conversation_id") == conversation_id
+                and _conversation_ids_match(
+                    platforms[platform].get("conversation_id"), conversation_id
+                )
             ):
                 platforms[platform].pop("conversation_id", None)
 
@@ -107,6 +127,9 @@ async def update_external_platform(
 
     await ensure_conversation_privacy_schema()
     async with get_db_connection(readonly=True) as conn:
+        channel_summaries = await get_conversation_channel_summaries(
+            current_user.id, conn=conn
+        )
         cursor = await conn.cursor()
         await cursor.execute(
             """
@@ -116,13 +139,16 @@ async def update_external_platform(
                      WHEN json_extract(u.external_platforms, '$.telegram.conversation_id') = c.id THEN 'telegram'
                      ELSE NULL
                    END as external_platform,
-                   c.last_activity,
-                   c.llm_id,
-                   l.model AS llm_model,
-                   l.machine
+                   c.locked, l.model AS llm_model,
+                   COALESCE(p.disable_web_search, 0) AS web_search_disabled,
+                   COALESCE(p.force_web_search, 0) AS web_search_forced,
+                   p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+                   COALESCE(p.is_paid, 0) AS is_paid,
+                   c.last_activity, c.llm_id, l.machine, c.role_id, c.folder_id
             FROM conversations c
             JOIN user_details u ON c.user_id = u.user_id
             LEFT JOIN LLM l ON l.id = c.llm_id
+            LEFT JOIN prompts p ON p.id = c.role_id
             WHERE c.user_id = ?
             ORDER BY c.last_activity DESC, c.id DESC
             LIMIT ?
@@ -135,18 +161,70 @@ async def update_external_platform(
             await cursor.execute(
                 """
                 SELECT c.id, c.user_id, c.start_date, c.chat_name, ? as external_platform,
-                       c.last_activity, c.llm_id, l.model AS llm_model, l.machine
+                       c.locked, l.model AS llm_model,
+                       COALESCE(p.disable_web_search, 0) AS web_search_disabled,
+                       COALESCE(p.force_web_search, 0) AS web_search_forced,
+                       p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+                       COALESCE(p.is_paid, 0) AS is_paid,
+                       c.last_activity, c.llm_id, l.machine, c.role_id, c.folder_id
                 FROM conversations c
                 LEFT JOIN LLM l ON l.id = c.llm_id
+                LEFT JOIN prompts p ON p.id = c.role_id
                 WHERE c.id = ? AND c.user_id = ?
                 """,
                 (platform, conversation_id, current_user.id),
             )
             platform_conversation = await cursor.fetchone()
 
+        visible_ids = {int(conv[0]) for conv in visible_conversations}
+        missing_affected_ids = sorted(
+            int(value)
+            for value in affected_conversation_ids
+            if int(value) not in visible_ids
+        )
+        extra_affected_conversations = []
+        if missing_affected_ids:
+            placeholders = ",".join("?" for _ in missing_affected_ids)
+            await cursor.execute(
+                f"""
+                SELECT c.id, c.user_id, c.start_date, c.chat_name,
+                       NULL as external_platform,
+                       c.locked, l.model AS llm_model,
+                       COALESCE(p.disable_web_search, 0) AS web_search_disabled,
+                       COALESCE(p.force_web_search, 0) AS web_search_forced,
+                       p.forced_llm_id, p.hide_llm_name, p.allowed_llms,
+                       COALESCE(p.is_paid, 0) AS is_paid,
+                       c.last_activity, c.llm_id, l.machine, c.role_id, c.folder_id
+                FROM conversations c
+                LEFT JOIN LLM l ON l.id = c.llm_id
+                LEFT JOIN prompts p ON p.id = c.role_id
+                WHERE c.user_id = ? AND c.id IN ({placeholders})
+                """,
+                [current_user.id, *missing_affected_ids],
+            )
+            extra_affected_conversations = list(await cursor.fetchall())
+
+    all_visible_conversations = list(visible_conversations)
+    known_ids = {int(conv[0]) for conv in all_visible_conversations}
+    if platform_conversation and int(platform_conversation[0]) not in known_ids:
+        all_visible_conversations.append(platform_conversation)
+        known_ids.add(int(platform_conversation[0]))
+    for conversation in extra_affected_conversations:
+        if int(conversation[0]) not in known_ids:
+            all_visible_conversations.append(conversation)
+            known_ids.add(int(conversation[0]))
+
     binding_summaries = await get_conversation_binding_summaries(
         current_user.id,
-        [conv[0] for conv in visible_conversations if not conv[4]],
+        [
+            conv[0]
+            for conv in all_visible_conversations
+            if not has_messaging_channel(
+                channel_summary_with_legacy(
+                    channel_summaries.get(int(conv[0])), conv[4]
+                )
+            )
+        ],
     )
 
     updated_conversations = [
@@ -155,33 +233,42 @@ async def update_external_platform(
             "user_id": conv[1],
             "start_date": conv[2],
             "chat_name": conv[3],
-            "external_platform": conv[4],
-            "last_activity": conv[5],
-            "llm_id": conv[6],
-            "llm_model": conv[7],
-            "machine": conv[8],
-            "external_bindings": None if conv[4] else binding_summaries.get(int(conv[0])),
+            "external_platform": legacy_external_platform(
+                channel_summary_with_legacy(
+                    channel_summaries.get(int(conv[0])), conv[4]
+                )
+            ),
+            "external_channels": channel_summary_with_legacy(
+                channel_summaries.get(int(conv[0])), conv[4]
+            )["external_channels"],
+            "phone_binding": channel_summary_with_legacy(
+                channel_summaries.get(int(conv[0])), conv[4]
+            )["phone_binding"],
+            "locked": bool(conv[5]) if conv[5] is not None else False,
+            "llm_model": conv[6],
+            "web_search_allowed": not bool(conv[7]),
+            "web_search_forced": bool(conv[8]),
+            "forced_llm_id": conv[9],
+            "hide_llm_name": bool(conv[10]) if conv[10] else False,
+            "allowed_llms": orjson.loads(conv[11]) if conv[11] else None,
+            "is_paid": bool(conv[12]),
+            "last_activity": conv[13],
+            "llm_id": conv[14],
+            "machine": conv[15],
+            "prompt_id": conv[16],
+            "folder_id": conv[17],
+            "external_bindings": (
+                None
+                if has_messaging_channel(
+                    channel_summary_with_legacy(
+                        channel_summaries.get(int(conv[0])), conv[4]
+                    )
+                )
+                else binding_summaries.get(int(conv[0]))
+            ),
         }
-        for conv in visible_conversations
+        for conv in all_visible_conversations
     ]
-
-    if platform_conversation and platform_conversation[0] not in [
-        conv["id"] for conv in updated_conversations
-    ]:
-        updated_conversations.append(
-            {
-                "id": platform_conversation[0],
-                "user_id": platform_conversation[1],
-                "start_date": platform_conversation[2],
-                "chat_name": platform_conversation[3],
-                "external_platform": platform_conversation[4],
-                "last_activity": platform_conversation[5],
-                "llm_id": platform_conversation[6],
-                "llm_model": platform_conversation[7],
-                "machine": platform_conversation[8],
-                "external_bindings": None,
-            }
-        )
 
     return JSONResponse(
         content={

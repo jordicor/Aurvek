@@ -91,7 +91,7 @@ STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
 
 tts_engine = os.getenv('TTS_ENGINE')
-stt_engine = os.getenv('STT_ENGINE')
+stt_engine = os.getenv('STT_ENGINE', 'elevenlabs')
 
 service_sid = os.getenv('SERVICE_SID')
 twilio_sid = os.getenv('TWILIO_SID')
@@ -161,6 +161,22 @@ def get_request_base_url(request) -> str:
     if port and port not in (80, 443) and ":" not in host:
         return f"{scheme}://{host}:{port}"
     return f"{scheme}://{host}"
+
+
+def get_runtime_request_url(request=None) -> str:
+    """Return a safe absolute URL for runtime tools with or without HTTP.
+
+    Browser and webhook turns retain their exact request URL.  Request-free
+    channels such as telephone use the configured canonical application origin;
+    they never fabricate a Starlette ``Request`` or trust an arbitrary host.
+    """
+    if request is not None and getattr(request, "url", None) is not None:
+        return str(request.url)
+    if PRIMARY_APP_DOMAIN:
+        return f"https://{PRIMARY_APP_DOMAIN}/"
+    raise RuntimeError(
+        "PRIMARY_APP_DOMAIN is required for request-free runtime media tools"
+    )
 
 
 def get_auth_base_url(request) -> str:
@@ -488,7 +504,15 @@ DATA_DIR = SCRIPT_DIR / "data"
 
 class Cost:
     TTS_COST_PER_CHARACTER = 0.0002  # Default values, in case of failure
-    STT_COST_PER_MINUTE = 0.0059  # Deepgram default
+    TTS_PROVIDER_SERVICES = {
+        'elevenlabs': {'cost_per_character': 0.0002, 'service_id': None},
+        'openai': {'cost_per_character': 0.0002, 'service_id': None},
+    }
+    STT_COST_PER_MINUTE = 0.0059  # Legacy generic rate; use provider-specific rates
+    STT_PROVIDER_SERVICES = {
+        'elevenlabs': {'cost_per_minute': 0.005, 'service_id': None},
+        'deepgram': {'cost_per_minute': 0.0059, 'service_id': None},
+    }
     # Media generation must be backed by a concrete SERVICES row.  The
     # monetary defaults below are only compatibility values; without a
     # matching service id the reservation layer fails closed.
@@ -512,23 +536,96 @@ class Cost:
         return float(service["cost"] or 0.0), service["service_id"]
 
     @classmethod
+    def get_tts_service(cls, provider: str | None = None) -> tuple[float, int | None]:
+        """Return rate and SERVICES id for a provider-aware TTS charge.
+
+        ``provider=None`` deliberately preserves legacy callers by using the
+        configured global engine; new voice paths must pass the resolved
+        canonical provider explicitly.
+        """
+        provider_key = str(provider or tts_engine or '').strip().lower()
+        service = cls.TTS_PROVIDER_SERVICES.get(provider_key)
+        if not service:
+            raise ValueError(f"Unsupported TTS billing provider: {provider_key or 'unset'}")
+        return float(service['cost_per_character']), service['service_id']
+
+    @classmethod
+    def get_stt_service(cls, provider: str | None = None) -> tuple[float, int | None]:
+        """Return the provider-aware STT rate per minute and service id.
+
+        ``provider=None`` preserves legacy callers by resolving the configured
+        global STT engine.  New paths must pass the provider explicitly so a
+        forced-alignment charge cannot accidentally use Deepgram pricing.
+        """
+        provider_key = str(provider or stt_engine or '').strip().lower()
+        service = cls.STT_PROVIDER_SERVICES.get(provider_key)
+        if not service:
+            raise ValueError(
+                f"Unsupported STT billing provider: {provider_key or 'unset'}"
+            )
+        return float(service['cost_per_minute']), service['service_id']
+
+    @classmethod
     async def initialize(cls):
         costs = await load_service_costs()
-        if tts_engine == 'elevenlabs':
-            cls.TTS_COST_PER_CHARACTER = costs.get('TTS_COST_PER_CHARACTER_ELEVENLABS', cls.TTS_COST_PER_CHARACTER)
-            cls.TTS_SERVICE_ID = costs.get('TTS_SERVICE_ID_ELEVENLABS')
-        elif tts_engine == 'openai':
-            cls.TTS_COST_PER_CHARACTER = costs.get('TTS_COST_PER_CHARACTER_OPENAI', cls.TTS_COST_PER_CHARACTER)
-            cls.TTS_SERVICE_ID = costs.get('TTS_SERVICE_ID_OPENAI')
+        cls.TTS_PROVIDER_SERVICES = {
+            'elevenlabs': {
+                'cost_per_character': costs.get(
+                    'TTS_COST_PER_CHARACTER_ELEVENLABS', 0.0002
+                ),
+                'service_id': costs.get('TTS_SERVICE_ID_ELEVENLABS'),
+            },
+            'openai': {
+                'cost_per_character': costs.get(
+                    'TTS_COST_PER_CHARACTER_OPENAI', 0.0002
+                ),
+                'service_id': costs.get('TTS_SERVICE_ID_OPENAI'),
+            },
+        }
+        try:
+            cls.TTS_COST_PER_CHARACTER, cls.TTS_SERVICE_ID = cls.get_tts_service()
+        except ValueError:
+            cls.TTS_SERVICE_ID = None
 
-        if stt_engine == 'elevenlabs':
-            cls.STT_COST_PER_MINUTE = costs.get('STT_COST_PER_MINUTE_ELEVENLABS', 0.005)  # $0.30/hour = $0.005/minute
-            cls.STT_SERVICE_ID = costs.get('STT_SERVICE_ID_ELEVENLABS') or costs.get('STT_SERVICE_ID')
-        elif stt_engine == 'deepgram':
-            cls.STT_COST_PER_MINUTE = costs.get('STT_COST_PER_MINUTE_DEEPGRAM', 0.0059)  # Deepgram Nova-2
-            cls.STT_SERVICE_ID = costs.get('STT_SERVICE_ID_DEEPGRAM') or costs.get('STT_SERVICE_ID')
-        else:
-            cls.STT_COST_PER_MINUTE = costs.get('STT_COST_PER_MINUTE', cls.STT_COST_PER_MINUTE)
+        legacy_stt_rate = costs.get('STT_COST_PER_MINUTE')
+        legacy_stt_service_id = costs.get('STT_SERVICE_ID')
+        cls.STT_PROVIDER_SERVICES = {
+            'elevenlabs': {
+                'cost_per_minute': costs.get(
+                    'STT_COST_PER_MINUTE_ELEVENLABS',
+                    (
+                        legacy_stt_rate
+                        if stt_engine == 'elevenlabs'
+                        and legacy_stt_rate is not None
+                        else 0.005
+                    ),
+                ),
+                'service_id': costs.get('STT_SERVICE_ID_ELEVENLABS') or (
+                    legacy_stt_service_id if stt_engine == 'elevenlabs' else None
+                ),
+            },
+            'deepgram': {
+                'cost_per_minute': costs.get(
+                    'STT_COST_PER_MINUTE_DEEPGRAM',
+                    (
+                        legacy_stt_rate
+                        if stt_engine == 'deepgram'
+                        and legacy_stt_rate is not None
+                        else 0.0059
+                    ),
+                ),
+                'service_id': costs.get('STT_SERVICE_ID_DEEPGRAM') or (
+                    legacy_stt_service_id if stt_engine == 'deepgram' else None
+                ),
+            },
+        }
+        try:
+            cls.STT_COST_PER_MINUTE, cls.STT_SERVICE_ID = cls.get_stt_service()
+        except ValueError:
+            # Preserve installations using only the legacy generic STT row.
+            cls.STT_COST_PER_MINUTE = costs.get(
+                'STT_COST_PER_MINUTE', cls.STT_COST_PER_MINUTE
+            )
             cls.STT_SERVICE_ID = costs.get('STT_SERVICE_ID')
             
         cls.MEDIA_GENERATION_SERVICES = costs.get(
@@ -564,10 +661,22 @@ async def has_sufficient_balance(user_id: int, amount: float) -> bool:
             logger.error(f"Error checking balance: {e}")
             return False
 
-async def cost_tts(user_id: int, characters_used: int) -> bool:
+async def cost_tts(
+    user_id: int,
+    characters_used: int,
+    provider: str | None = None,
+) -> bool:
     """Charge user for TTS usage in a single atomic transaction.
     Returns True on success, False on failure (insufficient balance or DB error)."""
-    total_tts_cost = Cost.TTS_COST_PER_CHARACTER * characters_used
+    try:
+        rate, service_id = Cost.get_tts_service(provider)
+    except ValueError as exc:
+        logger.error("TTS billing configuration error: %s", exc)
+        return False
+    if service_id is None:
+        logger.error("TTS billing service is not configured for provider=%s", provider)
+        return False
+    total_tts_cost = rate * characters_used
     last_lock_error = None
     for attempt in range(DB_MAX_RETRIES):
         retry_needed = False
@@ -594,7 +703,7 @@ async def cost_tts(user_id: int, characters_used: int) -> bool:
                 await conn.execute('''
                     INSERT INTO SERVICE_USAGE (user_id, service_id, usage_quantity, cost)
                     VALUES (?, ?, ?, ?)
-                ''', (user_id, Cost.TTS_SERVICE_ID, characters_used, total_tts_cost))
+                ''', (user_id, service_id, characters_used, total_tts_cost))
 
                 await conn.execute('''
                     UPDATE USER_DETAILS
@@ -658,10 +767,22 @@ async def cost_tts(user_id: int, characters_used: int) -> bool:
     return False
 
 
-async def refund_tts(user_id: int, characters_used: int) -> bool:
+async def refund_tts(
+    user_id: int,
+    characters_used: int,
+    provider: str | None = None,
+) -> bool:
     """Reverse a cost_tts charge when TTS generation fails after billing.
     Returns True on success, False on failure."""
-    total_tts_cost = Cost.TTS_COST_PER_CHARACTER * characters_used
+    try:
+        rate, service_id = Cost.get_tts_service(provider)
+    except ValueError as exc:
+        logger.error("TTS refund configuration error: %s", exc)
+        return False
+    if service_id is None:
+        logger.error("TTS refund service is not configured for provider=%s", provider)
+        return False
+    total_tts_cost = rate * characters_used
     last_lock_error = None
     for attempt in range(DB_MAX_RETRIES):
         retry_needed = False
@@ -681,7 +802,7 @@ async def refund_tts(user_id: int, characters_used: int) -> bool:
                 await conn.execute('''
                     INSERT INTO SERVICE_USAGE (user_id, service_id, usage_quantity, cost)
                     VALUES (?, ?, ?, ?)
-                ''', (user_id, Cost.TTS_SERVICE_ID, -characters_used, -total_tts_cost))
+                ''', (user_id, service_id, -characters_used, -total_tts_cost))
 
                 # Reverse totals with floor guard (never go negative)
                 await conn.execute('''
@@ -690,6 +811,18 @@ async def refund_tts(user_id: int, characters_used: int) -> bool:
                         total_tts_cost = MAX(0, total_tts_cost - ?)
                     WHERE user_id = ?
                 ''', (total_tts_cost, total_tts_cost, user_id))
+
+                # Keep the daily consumption summary consistent with the
+                # compensated balance and audit ledger. A refunded generation
+                # is not a consumed TTS operation.
+                await conn.execute('''
+                    UPDATE USAGE_DAILY
+                    SET operations = MAX(0, operations - 1),
+                        units = MAX(0, units - ?),
+                        total_cost = MAX(0, total_cost - ?),
+                        updated_at = datetime('now')
+                    WHERE user_id = ? AND date = date('now') AND type = 'tts'
+                ''', (characters_used, total_tts_cost, user_id))
 
                 await conn.commit()
                 logger.info("TTS refund for user_id=%s: %.6f (%d chars)",
@@ -1988,9 +2121,7 @@ async def reset_monthly_billing_if_needed(user_id: int, conn, cursor) -> bool:
     Reset billing_current_month_spent if we're in a new month.
     Returns True if reset was performed, False otherwise.
     """
-    from datetime import datetime
-
-    current_month = datetime.now().strftime('%Y-%m')
+    current_month = datetime.now(timezone.utc).strftime('%Y-%m')
 
     # Get current billing info
     await cursor.execute('''
@@ -2028,7 +2159,8 @@ async def get_llm_info(llm_id: int) -> dict | None:
             """
             SELECT id, machine, model, provider_key, provider_model_id,
                    enabled, max_output_tokens, context_window_tokens, max_input_tokens,
-                   COALESCE(input_token_cost, 0), COALESCE(output_token_cost, 0)
+                   COALESCE(input_token_cost, 0), COALESCE(output_token_cost, 0),
+                   capabilities_json
             FROM LLM
             WHERE id = ?
             """,
@@ -2049,6 +2181,7 @@ async def get_llm_info(llm_id: int) -> dict | None:
             "max_input_tokens": int(row[8] or 0) if len(row) > 8 else 0,
             "input_token_cost": float(row[9] or 0.0) if len(row) > 9 else 0.0,
             "output_token_cost": float(row[10] or 0.0) if len(row) > 10 else 0.0,
+            "capabilities_json": row[11] if len(row) > 11 else None,
         }
 
 

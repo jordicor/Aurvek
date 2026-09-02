@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS LLM (
     max_input_tokens INTEGER DEFAULT 0,
     max_output_tokens INTEGER DEFAULT 0,
     input_token_cost REAL DEFAULT 0,
-    output_token_cost REAL DEFAULT 0
+    output_token_cost REAL DEFAULT 0,
+    capabilities_json TEXT DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS USERS (

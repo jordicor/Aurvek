@@ -40,7 +40,13 @@ class BillingLimitExceededError(InsufficientBalanceError):
 _USAGE_TOTAL_COLUMNS = {
     "image": "total_image_cost",
     "stt": "total_stt_cost",
+    "tts": "total_tts_cost",
     "video": None,
+    # Telephone components use their own durable per-call ledger.  The normal
+    # Aurvek reservation still owns the payer balance, team allowance,
+    # SERVICE_USAGE row and aggregate total_cost, but must not guess whether a
+    # Twilio/Deepgram/TTS component belongs in one of the legacy narrow totals.
+    "phone": None,
 }
 
 
@@ -235,10 +241,19 @@ _STALE_RESERVATION_PREDICATE = """
              AND created_at < datetime('now', '-15 minutes'))
             OR provider_started_at < datetime('now', '-15 minutes')
         ))
+        OR (purpose = 'tts' AND (
+            (provider_started_at IS NULL
+             AND created_at < datetime('now', '-15 minutes'))
+            OR provider_started_at < datetime('now', '-15 minutes')
+        ))
         OR (purpose = 'stt'
             AND created_at < datetime('now', '-30 minutes'))
         OR (purpose = 'ai'
-            AND created_at < datetime('now', '-12 hours'))
+            AND created_at < datetime('now', '-12 hours')
+            AND (
+                provider_started_at IS NULL
+                OR COALESCE(TRIM(accumulated_components), '[]') <> '[]'
+            ))
     )
 """
 
@@ -909,6 +924,68 @@ class AiReservationCredit:
     payer_balance_with_credit: float
     accumulated_input_tokens: int
     accumulated_output_tokens: int
+    accumulated_api_cost: float | None
+
+
+def _accumulated_components_api_cost(raw_components) -> float | None:
+    """Return exact raw provider cost, or ``None`` for legacy token-only rows."""
+    if raw_components is None or raw_components == "":
+        return None
+    try:
+        components = orjson.loads(raw_components)
+    except (orjson.JSONDecodeError, TypeError) as exc:
+        raise BillingReservationError(
+            "AI usage components are invalid"
+        ) from exc
+    if not isinstance(components, list):
+        raise BillingReservationError("AI usage components are invalid")
+    if not components:
+        return None
+
+    total = 0.0
+    for component in components:
+        if not isinstance(component, dict):
+            raise BillingReservationError("AI usage component is invalid")
+        input_tokens = component.get("input_tokens", 0)
+        output_tokens = component.get("output_tokens", 0)
+        byok = component.get("byok", False)
+        if (
+            isinstance(input_tokens, bool)
+            or not isinstance(input_tokens, int)
+            or input_tokens < 0
+            or isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 0
+            or not isinstance(byok, bool)
+        ):
+            raise BillingReservationError("AI usage component is invalid")
+        try:
+            input_rate = float(component.get("input_cost_per_million") or 0.0)
+            output_rate = float(component.get("output_cost_per_million") or 0.0)
+            override = component.get("override_api_cost")
+            if override is not None:
+                override = float(override)
+        except (TypeError, ValueError) as exc:
+            raise BillingReservationError("AI usage component is invalid") from exc
+        if min(input_rate, output_rate) < 0 or not all(
+            math.isfinite(value) for value in (input_rate, output_rate)
+        ):
+            raise BillingReservationError("AI usage component rates are invalid")
+        if override is not None and (override < 0 or not math.isfinite(override)):
+            raise BillingReservationError("AI usage component cost is invalid")
+
+        if byok:
+            component_cost = 0.0
+        elif override is not None:
+            component_cost = override
+        else:
+            component_cost = (
+                input_tokens * input_rate + output_tokens * output_rate
+            ) / 1_000_000
+        total += component_cost
+        if not math.isfinite(total):
+            raise BillingReservationError("AI usage component cost is invalid")
+    return total
 
 
 async def accumulate_ai_reservation_usage(
@@ -1076,6 +1153,93 @@ async def accumulate_ai_reservation_usage(
     raise BillingReservationError(
         "Could not accumulate AI provider usage"
     ) from last_lock_error
+
+
+async def mark_ai_reservation_provider_started(
+    *,
+    reservation_id: str | None,
+    user_id: int,
+) -> bool:
+    """Durably preserve an active AI hold whose provider usage is uncertain.
+
+    Realtime cancellation normally yields a final usage event.  If that event
+    is absent, this marker prevents the request-finalizer from treating an
+    already-started provider call as unused and refunding it immediately.
+    """
+
+    if not reservation_id:
+        return False
+    last_lock_error = None
+    for attempt in range(DB_MAX_RETRIES):
+        retry_needed = False
+        async with get_db_connection() as conn:
+            transaction_started = False
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                transaction_started = True
+                cursor = await conn.execute(
+                    """
+                    UPDATE BILLING_USAGE_RESERVATIONS
+                    SET provider_started_at=COALESCE(
+                        provider_started_at,CURRENT_TIMESTAMP
+                    )
+                    WHERE id=? AND user_id=? AND purpose='ai'
+                      AND status='active'
+                    RETURNING id
+                    """,
+                    (reservation_id, int(user_id)),
+                )
+                marked = await cursor.fetchone() is not None
+                await conn.commit()
+                return marked
+            except sqlite3.OperationalError as exc:
+                if transaction_started:
+                    await conn.rollback()
+                if is_lock_error(exc) and attempt < DB_MAX_RETRIES - 1:
+                    last_lock_error = exc
+                    retry_needed = True
+                else:
+                    raise BillingReservationError(
+                        "Could not preserve uncertain AI provider usage"
+                    ) from exc
+            except Exception as exc:
+                if transaction_started:
+                    await conn.rollback()
+                raise BillingReservationError(
+                    "Could not preserve uncertain AI provider usage"
+                ) from exc
+        if retry_needed:
+            await asyncio.sleep(DB_RETRY_DELAY_BASE * (attempt + 1))
+    raise BillingReservationError(
+        "Could not preserve uncertain AI provider usage"
+    ) from last_lock_error
+
+
+async def ai_reservation_provider_started(
+    *,
+    reservation_id: str | None,
+    user_id: int,
+) -> bool:
+    """Return whether an active AI hold crossed the provider boundary."""
+
+    if not reservation_id:
+        return False
+    try:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                """
+                SELECT provider_started_at IS NOT NULL
+                FROM BILLING_USAGE_RESERVATIONS
+                WHERE id=? AND user_id=? AND purpose='ai' AND status='active'
+                """,
+                (reservation_id, int(user_id)),
+            )
+            row = await cursor.fetchone()
+        return bool(row and row[0])
+    except Exception as exc:
+        raise BillingReservationError(
+            "Could not inspect uncertain AI provider usage"
+        ) from exc
 
 
 async def accumulate_ai_provider_call_usage(
@@ -1414,7 +1578,8 @@ async def prepare_ai_reservation_settlement(
         """
         SELECT user_id, billing_account_id, amount, billing_month, status, purpose,
                accumulated_input_tokens, accumulated_output_tokens,
-               billing_limit_delta, billing_refill_count_delta
+               billing_limit_delta, billing_refill_count_delta,
+               accumulated_components
         FROM BILLING_USAGE_RESERVATIONS
         WHERE id = ?
         """,
@@ -1428,6 +1593,7 @@ async def prepare_ai_reservation_settlement(
 
     payer_id = int(row[1])
     maximum_amount = float(row[2])
+    accumulated_api_cost = _accumulated_components_api_cost(row[10])
     result = await conn.execute(
         """
         UPDATE USER_DETAILS
@@ -1459,6 +1625,7 @@ async def prepare_ai_reservation_settlement(
         payer_balance_with_credit=float(payer_row[0]),
         accumulated_input_tokens=max(0, int(row[6] or 0)),
         accumulated_output_tokens=max(0, int(row[7] or 0)),
+        accumulated_api_cost=accumulated_api_cost,
     )
 
 
@@ -1530,7 +1697,7 @@ async def settle_accumulated_ai_reservation_usage(
                 usage_cursor = await conn.execute(
                     """
                     SELECT accumulated_input_tokens, accumulated_output_tokens,
-                           status, purpose
+                           status, purpose, accumulated_components
                     FROM BILLING_USAGE_RESERVATIONS
                     WHERE id = ? AND user_id = ?
                     """,
@@ -1546,7 +1713,14 @@ async def settle_accumulated_ai_reservation_usage(
                     return False
                 input_tokens = max(0, int(usage[0] or 0))
                 output_tokens = max(0, int(usage[1] or 0))
-                if input_tokens == 0 and output_tokens == 0:
+                accumulated_api_cost = _accumulated_components_api_cost(
+                    usage[4]
+                )
+                if (
+                    input_tokens == 0
+                    and output_tokens == 0
+                    and accumulated_api_cost is None
+                ):
                     await conn.rollback()
                     return False
 
@@ -1566,6 +1740,7 @@ async def settle_accumulated_ai_reservation_usage(
                     billing_cursor,
                     prompt_id=prompt_id,
                     byok=bool(byok),
+                    override_api_cost=credit.accumulated_api_cost,
                     billing_account_id_override=credit.billing_account_id,
                 )
                 if not billing_ok:
@@ -1761,6 +1936,9 @@ async def claim_fixed_usage_provider(
     user_id: int,
 ) -> bool:
     """Atomically grant one worker permission to call a fixed-cost provider."""
+    normalized_purpose = str(purpose or "").strip().lower()
+    if normalized_purpose not in _USAGE_TOTAL_COLUMNS:
+        raise BillingReservationError(f"Unsupported billing purpose: {purpose}")
     last_lock_error = None
     for attempt in range(DB_MAX_RETRIES):
         async with get_db_connection() as conn:
@@ -1774,7 +1952,7 @@ async def claim_fixed_usage_provider(
                       AND status = 'active' AND provider_started_at IS NULL
                     RETURNING id
                     """,
-                    (reservation_id, int(user_id), str(purpose)),
+                    (reservation_id, int(user_id), normalized_purpose),
                 )
                 claimed = await cursor.fetchone() is not None
                 await conn.commit()
@@ -1822,7 +2000,7 @@ async def mark_fixed_usage_provider_succeeded(
                 clauses = [
                     "id = ?",
                     "status = 'active'",
-                    "purpose IN ('image', 'stt', 'video')",
+                    "purpose IN ('image', 'stt', 'tts', 'video', 'phone')",
                 ]
                 parameters: list[object] = [reservation_id]
                 if normalized_purpose is not None:
@@ -2175,6 +2353,143 @@ async def settle_fixed_usage_in_transaction(
     return True
 
 
+async def settle_fixed_usage_amount_in_transaction(
+    conn,
+    reservation_id: str,
+    *,
+    actual_amount: float,
+    actual_usage_quantity: float,
+    expected_user_id: int | None = None,
+) -> bool:
+    """Settle a fixed hold for a confirmed amount no greater than its maximum.
+
+    Provider-metered telephone components reserve a bounded tranche before
+    crossing the external I/O boundary, but the provider may later confirm a
+    smaller final duration.  This primitive returns the unused balance inside
+    the caller's transaction while keeping the reservation, service usage and
+    member/payer accounting consistent.  A zero actual amount is deliberately
+    handled by ``refund_fixed_usage`` instead of manufacturing zero-unit usage.
+    """
+
+    normalized_amount = float(actual_amount)
+    normalized_quantity = float(actual_usage_quantity)
+    if (
+        not math.isfinite(normalized_amount)
+        or normalized_amount <= 0
+        or not math.isfinite(normalized_quantity)
+        or normalized_quantity <= 0
+    ):
+        raise BillingReservationError(
+            "Actual fixed usage must be positive and finite"
+        )
+
+    cursor = await conn.execute(
+        """
+        SELECT user_id,billing_account_id,purpose,service_id,usage_quantity,
+               amount,status,billing_month,billing_limit_delta,
+               billing_refill_count_delta
+        FROM BILLING_USAGE_RESERVATIONS WHERE id=?
+        """,
+        (reservation_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise BillingReservationError("Unknown billing reservation")
+    user_id = int(row[0])
+    if expected_user_id is not None and user_id != int(expected_user_id):
+        raise BillingReservationError(
+            "Billing reservation belongs to another user"
+        )
+    if str(row[6]) == "settled":
+        return True
+    if str(row[6]) != "active":
+        return False
+
+    reserved_quantity = float(row[4])
+    reserved_amount = float(row[5])
+    if normalized_amount > reserved_amount + 1e-12:
+        raise BillingReservationError(
+            "Actual fixed usage exceeds its reserved maximum"
+        )
+    if normalized_quantity > reserved_quantity + 1e-12:
+        raise BillingReservationError(
+            "Actual usage quantity exceeds its reserved maximum"
+        )
+    purpose = str(row[2])
+    total_column = _USAGE_TOTAL_COLUMNS.get(purpose)
+    if purpose not in _USAGE_TOTAL_COLUMNS:
+        raise BillingReservationError(
+            f"Unsupported reservation purpose: {purpose}"
+        )
+    service_id = int(row[3])
+    payer_id = int(row[1])
+    credit = max(0.0, reserved_amount - normalized_amount)
+
+    status_cursor = await conn.execute(
+        """
+        UPDATE BILLING_USAGE_RESERVATIONS
+        SET status='settled',settled_amount=?,usage_quantity=?,
+            settled_at=CURRENT_TIMESTAMP
+        WHERE id=? AND status='active'
+        """,
+        (normalized_amount, normalized_quantity, reservation_id),
+    )
+    if status_cursor.rowcount != 1:
+        raise BillingReservationError(
+            "Reservation changed while it was being settled"
+        )
+    if credit > 0:
+        await conn.execute(
+            "UPDATE USER_DETAILS SET balance=COALESCE(balance,0)+? WHERE user_id=?",
+            (credit, payer_id),
+        )
+        await _release_team_reservation_state(
+            conn,
+            user_id=user_id,
+            payer_id=payer_id,
+            amount=credit,
+            billing_month=str(row[7] or ""),
+            billing_limit_delta=float(row[8] or 0.0),
+            billing_refill_count_delta=int(row[9] or 0),
+        )
+
+    await conn.execute(
+        """
+        INSERT INTO SERVICE_USAGE(user_id,service_id,usage_quantity,cost)
+        VALUES(?,?,?,?)
+        """,
+        (user_id, service_id, normalized_quantity, normalized_amount),
+    )
+    if total_column:
+        await conn.execute(
+            f"""
+            UPDATE USER_DETAILS
+            SET total_cost=COALESCE(total_cost,0)+?,
+                {total_column}=COALESCE({total_column},0)+?
+            WHERE user_id=?
+            """,
+            (normalized_amount, normalized_amount, user_id),
+        )
+    else:
+        await conn.execute(
+            """
+            UPDATE USER_DETAILS SET total_cost=COALESCE(total_cost,0)+?
+            WHERE user_id=?
+            """,
+            (normalized_amount, user_id),
+        )
+    daily_ok = await record_daily_usage(
+        user_id=user_id,
+        usage_type=purpose,
+        cost=normalized_amount,
+        units=normalized_quantity,
+        conn=conn,
+    )
+    if not daily_ok:
+        raise BillingReservationError("Could not record daily usage")
+    return True
+
+
 async def settle_fixed_usage(reservation_id: str) -> bool:
     """Finalize one active reservation and its accounting in one transaction."""
     last_lock_error = None
@@ -2228,30 +2543,12 @@ async def refund_fixed_usage(reservation_id: str) -> bool:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 transaction_started = True
-                cursor = await conn.execute(
-                    """
-                    UPDATE BILLING_USAGE_RESERVATIONS
-                    SET status = 'refunded', refunded_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND status = 'active'
-                      AND provider_succeeded_at IS NULL
-                    RETURNING user_id, billing_account_id, amount, billing_month,
-                              billing_limit_delta, billing_refill_count_delta
-                    """,
-                    (reservation_id,),
+                refunded = await refund_fixed_usage_in_transaction(
+                    conn,
+                    reservation_id,
                 )
-                row = await cursor.fetchone()
-                if not row:
-                    status_cursor = await conn.execute(
-                        "SELECT status FROM BILLING_USAGE_RESERVATIONS WHERE id = ?",
-                        (reservation_id,),
-                    )
-                    status_row = await status_cursor.fetchone()
-                    await conn.rollback()
-                    return bool(status_row and status_row[0] == "refunded")
-
-                await _restore_reservation_credit(conn, row)
                 await conn.commit()
-                return True
+                return refunded
             except sqlite3.OperationalError as exc:
                 if transaction_started:
                     await conn.rollback()
@@ -2274,3 +2571,48 @@ async def refund_fixed_usage(reservation_id: str) -> bool:
 
     logger.error("Could not refund reservation %s: %s", reservation_id, last_lock_error)
     raise BillingReservationError("Could not refund provider usage") from last_lock_error
+
+
+async def refund_fixed_usage_in_transaction(
+    conn,
+    reservation_id: str,
+    *,
+    expected_user_id: int | None = None,
+) -> bool:
+    """Refund one unconfirmed fixed hold inside an existing transaction."""
+
+    clauses = [
+        "id=?",
+        "status='active'",
+        "provider_succeeded_at IS NULL",
+    ]
+    parameters: list[object] = [reservation_id]
+    if expected_user_id is not None:
+        clauses.append("user_id=?")
+        parameters.append(int(expected_user_id))
+    cursor = await conn.execute(
+        f"""
+        UPDATE BILLING_USAGE_RESERVATIONS
+        SET status='refunded',refunded_at=CURRENT_TIMESTAMP
+        WHERE {' AND '.join(clauses)}
+        RETURNING user_id,billing_account_id,amount,billing_month,
+                  billing_limit_delta,billing_refill_count_delta
+        """,
+        tuple(parameters),
+    )
+    row = await cursor.fetchone()
+    if row is not None:
+        await _restore_reservation_credit(conn, row)
+        return True
+    status_cursor = await conn.execute(
+        "SELECT user_id,status FROM BILLING_USAGE_RESERVATIONS WHERE id=?",
+        (reservation_id,),
+    )
+    status_row = await status_cursor.fetchone()
+    if status_row is None:
+        raise BillingReservationError("Unknown billing reservation")
+    if expected_user_id is not None and int(status_row[0]) != int(expected_user_id):
+        raise BillingReservationError(
+            "Billing reservation belongs to another user"
+        )
+    return str(status_row[1]) == "refunded"

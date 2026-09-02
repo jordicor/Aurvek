@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 # Own libraries
 from rediscfg import redis_client, broker
-from common import estimate_message_tokens, Cost
+from common import estimate_message_tokens, Cost, get_runtime_request_url
 from models import User, ConnectionManager
 from integrations.conversations import is_whatsapp_conversation
 from tools import register_tool, register_dramatiq_task, register_function_handler
@@ -449,7 +449,7 @@ async def handle_generate_video(function_arguments, messages, model, temperature
         )
         
         is_whatsapp = await is_whatsapp_conversation(conversation_id)
-        request_url = str(request.url)
+        request_url = get_runtime_request_url(request)
 
         # Storage-quota soft pre-check: a generation may START only while the
         # owner is strictly under quota. Runs BEFORE any billing reservation so

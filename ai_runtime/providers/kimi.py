@@ -1,10 +1,33 @@
 from ai_runtime.dependencies import *
 from ai_runtime.providers.openai_chat import call_llm_api
+from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
 
 
 def _kimi_uses_fixed_temperature(model: str) -> bool:
     normalized = (model or "").lower().replace("_", "-")
     return normalized.startswith("kimi-k2.") or normalized.startswith("kimi-k2-")
+
+
+def _kimi_reasoning_payload(
+    reasoning_selection: ReasoningSelection | dict | str | None,
+) -> dict | None:
+    """Use Kimi's reasoning toggle and, where requested, its effort field."""
+
+    if reasoning_selection is None:
+        return None
+    selection = parse_reasoning_selection(reasoning_selection)
+    if selection.mode == "default":
+        return None
+    if selection.mode == "off":
+        return {"thinking": {"type": "disabled"}}
+    if selection.mode == "auto":
+        return {"thinking": {"type": "enabled"}}
+    payload = {"thinking": {"type": "enabled"}}
+    if selection.mode == "custom":
+        payload["thinking"]["budget_tokens"] = selection.budget_tokens
+    else:
+        payload["reasoning_effort"] = selection.mode
+    return payload
 
 
 async def call_kimi_api(messages, model, temperature, max_tokens, prompt, conversation_id, current_user, request, user_message=None, user_api_key=None, tools=None,
@@ -14,7 +37,8 @@ async def call_kimi_api(messages, model, temperature, max_tokens, prompt, conver
                         llm_id=None, save_to_db: bool = True, web_search_mode=None, byok: bool = False,
                         pending_attachment_refs: Optional[list[str]] = None,
                         strip_device_action_blocks: bool = False,
-                        billing_reservation_id: str | None = None):
+                        billing_reservation_id: str | None = None,
+                        reasoning_selection: ReasoningSelection | dict | str | None = None):
     api_url = "https://api.moonshot.ai/v1/chat/completions"
     api_key = user_api_key or moonshot_key
     if not api_key:
@@ -44,6 +68,7 @@ async def call_kimi_api(messages, model, temperature, max_tokens, prompt, conver
         save_to_db=save_to_db,
         web_search_mode=web_search_mode,
         byok=byok,
+        extra_body=_kimi_reasoning_payload(reasoning_selection),
         omit_temperature=_kimi_uses_fixed_temperature(model),
         pending_attachment_refs=pending_attachment_refs,
         strip_device_action_blocks=strip_device_action_blocks,

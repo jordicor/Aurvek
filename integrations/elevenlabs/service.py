@@ -15,6 +15,17 @@ from common import custom_unescape, generate_user_hash, sanitize_name, users_dir
 from database import get_db_connection, DB_MAX_RETRIES, DB_RETRY_DELAY_BASE, is_lock_error
 from storage_quota import record_generated_file
 from log_config import logger
+from ai_runtime.channel_turns import ChannelContext
+from ai_runtime.context.message_provenance import (
+    merge_internal_turn_context,
+    prepare_trusted_history_context,
+    render_current_input_context,
+)
+from ai_runtime.voice_resolution import (
+    CanonicalVoiceResolutionError,
+    require_elevenlabs_webrtc_compatible,
+    resolve_prompt_voice,
+)
 from wellbeing_service import record_voice_transcript_activity
 
 def get_elevenlabs_key():
@@ -96,8 +107,46 @@ class ElevenLabsService:
                 )
                 return None
 
+            prompt_id = conversation.get("role_id")
+            if prompt_id is None:
+                raise CanonicalVoiceResolutionError(
+                    "canonical_voice_prompt_missing",
+                    "Browser voice calls are unavailable because this conversation has no prompt.",
+                )
+            canonical_voice = require_elevenlabs_webrtc_compatible(
+                await resolve_prompt_voice(prompt_id, conn=conn)
+            )
+
             signed_url = await self._fetch_signed_url(agent_info["agent_id"]) if USE_SIGNED_URL else None
             recent_messages = await self._fetch_recent_messages(conn, conversation_id)
+            prompt_text = conversation.get("prompt_text") or ""
+            prompt_text, prepared_history = await prepare_trusted_history_context(
+                prompt_text,
+                [
+                    {
+                        "id": message.get("id"),
+                        "type": (
+                            "bot"
+                            if message.get("role") == "assistant"
+                            else "user"
+                        ),
+                        "message": message.get("text", ""),
+                    }
+                    for message in recent_messages
+                ],
+                connection=conn,
+            )
+            recent_messages = [
+                {
+                    "role": (
+                        "assistant"
+                        if message.get("type") == "bot"
+                        else "user"
+                    ),
+                    "text": str(message.get("message") or ""),
+                }
+                for message in prepared_history
+            ]
 
             # Watchdog: read pending hint (readonly, do NOT consume)
             watchdog_steering_hint = None
@@ -117,9 +166,23 @@ class ElevenLabsService:
                     watchdog_hint_eval_id = ws_row["last_evaluated_message_id"]
 
         context_text = self._build_context_string(recent_messages)
-        # The prompt from database will be sent as a dynamic variable
-        # ElevenLabs agent template should have {{personality_template}} placeholder
-        prompt_text = conversation.get("prompt_text") or ""
+        # ElevenLabs transcribes the caller before its text LLM sees the turn;
+        # unlike OpenAI Realtime's native bridge, this is transcript-only.
+        # The hosted browser agent receives this through dynamic variables, so
+        # it blocks transcript-level spoofing but is not a cryptographic trust
+        # boundary against a client that rewrites its own session payload.
+        prompt_text = merge_internal_turn_context(
+            prompt_text,
+            render_current_input_context(
+                ChannelContext(
+                    channel="web",
+                    input_origin="web.live_voice",
+                    input_perception="transcript_only",
+                )
+            ),
+        )
+        # The prompt from database will be sent as a dynamic variable.
+        # ElevenLabs agent template should have {{personality_template}} placeholder.
 
         # Debug logging
         logger.info("[ElevenLabs] Building configuration for conversation %s", conversation_id)
@@ -129,15 +192,13 @@ class ElevenLabsService:
         logger.info("[ElevenLabs] Prompt text length: %s", len(prompt_text))
         logger.info("[ElevenLabs] Prompt name: %s", conversation.get("prompt_name"))
 
-        prompt_voice_code = conversation.get("prompt_voice_code")
-        voice_id = agent_info.get("voice_id") or prompt_voice_code
-
         logger.info(
-            "[ElevenLabs] Resolved voice_id for conversation %s (agent=%s, prompt=%s, final=%s)",
+            "[ElevenLabs] Resolved canonical voice for conversation %s "
+            "(provider=%s, voice=%s, inherited_default=%s)",
             conversation_id,
-            agent_info.get("voice_id") or "NONE",
-            prompt_voice_code or "NONE",
-            voice_id or "NONE",
+            canonical_voice.provider,
+            canonical_voice.voice_code,
+            canonical_voice.inherited_default,
         )
 
         result = {
@@ -148,7 +209,8 @@ class ElevenLabsService:
             "prompt_text": prompt_text,
             "agent_id": agent_info["agent_id"],
             "agent_name": agent_info.get("agent_name"),
-            "voice_id": voice_id,
+            "voice_id": canonical_voice.voice_code,
+            "voice_provider": canonical_voice.provider,
             "signed_url": signed_url,
             "context": context_text,
             "recent_messages": recent_messages,
@@ -165,6 +227,89 @@ class ElevenLabsService:
             result["watchdog_hint_eval_id"] = watchdog_hint_eval_id
 
         return result
+
+    async def get_webrtc_availability(
+        self,
+        conversation_id: int,
+        current_user_id: int,
+        is_admin: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve WebRTC eligibility without minting credentials or sessions."""
+
+        def unavailable(
+            error_code: str,
+            reason: str,
+            *,
+            provider: Optional[str] = None,
+            voice: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            return {
+                "available": False,
+                "error_code": error_code,
+                "reason": reason,
+                "provider": provider,
+                "voice": voice,
+            }
+
+        async with get_db_connection(readonly=True) as conn:
+            conversation = await self._load_conversation(conn, conversation_id)
+            if not conversation:
+                return None
+            if not is_admin and conversation["user_id"] != current_user_id:
+                return None
+            if conversation.get("locked"):
+                return unavailable(
+                    "conversation_locked",
+                    "Browser voice calls are unavailable because this conversation is locked.",
+                )
+            if conversation.get("is_incognito"):
+                return unavailable(
+                    "conversation_incognito",
+                    "Browser voice calls are unavailable in incognito chats.",
+                )
+            if not self.is_configured():
+                return unavailable(
+                    "elevenlabs_integration_disabled",
+                    "Browser voice calls are unavailable because the ElevenLabs integration is disabled.",
+                )
+
+            prompt_id = conversation.get("role_id")
+            if prompt_id is None:
+                return unavailable(
+                    "canonical_voice_prompt_missing",
+                    "Browser voice calls are unavailable because this conversation has no prompt.",
+                )
+
+            agent_info = await self._resolve_agent(conn, prompt_id)
+            if not agent_info:
+                return unavailable(
+                    "elevenlabs_agent_missing",
+                    "Browser voice calls are unavailable because this prompt has no configured ElevenLabs agent and no default agent is selected.",
+                )
+
+            try:
+                canonical_voice = await resolve_prompt_voice(prompt_id, conn=conn)
+            except CanonicalVoiceResolutionError as exc:
+                return unavailable(exc.code, str(exc))
+
+            try:
+                require_elevenlabs_webrtc_compatible(canonical_voice)
+            except CanonicalVoiceResolutionError as exc:
+                return unavailable(
+                    exc.code,
+                    str(exc),
+                    provider=canonical_voice.provider,
+                    voice=canonical_voice.voice_code,
+                )
+
+            return {
+                "available": True,
+                "error_code": None,
+                "reason": None,
+                "provider": canonical_voice.provider,
+                "voice": canonical_voice.voice_code,
+                "inherited_default": canonical_voice.inherited_default,
+            }
 
     async def validate_conversation_access(
         self,
@@ -206,6 +351,15 @@ class ElevenLabsService:
                 raise ElevenLabsSessionBindingError(
                     "Conversation has no ElevenLabs agent"
                 )
+            prompt_id = conversation.get("role_id")
+            if prompt_id is None:
+                raise CanonicalVoiceResolutionError(
+                    "canonical_voice_prompt_missing",
+                    "Browser voice calls are unavailable because this conversation has no prompt.",
+                )
+            require_elevenlabs_webrtc_compatible(
+                await resolve_prompt_voice(prompt_id, conn=conn)
+            )
 
         provider_details = None
         for attempt in range(4):
@@ -659,6 +813,22 @@ class ElevenLabsService:
                         inserted_id = cursor.lastrowid
                         if message_role == "user":
                             last_user_message_id = inserted_id
+                            try:
+                                await conn.execute(
+                                    """
+                                    INSERT INTO MESSAGE_INPUT_PROVENANCE(
+                                        message_id, origin, perception
+                                    ) VALUES (?, 'web.live_voice', 'transcript_only')
+                                    """,
+                                    (inserted_id,),
+                                )
+                            except Exception as exc:
+                                if "no such table" not in str(exc).lower():
+                                    raise
+                                logger.warning(
+                                    "[ElevenLabs] MESSAGE_INPUT_PROVENANCE is "
+                                    "not installed; voice origin was not stored"
+                                )
                         else:
                             last_bot_message_id = inserted_id
                         saved_messages += 1
@@ -970,13 +1140,10 @@ class ElevenLabsService:
                 p.prompt AS prompt_text,
                 p.name AS prompt_name,
                 p.description AS prompt_description,
-                p.voice_id AS prompt_voice_fk,
-                v.voice_code AS prompt_voice_code,
                 u.username AS user_username
             FROM CONVERSATIONS c
             JOIN USERS u ON u.id = c.user_id
             LEFT JOIN PROMPTS p ON p.id = c.role_id
-            LEFT JOIN VOICES v ON v.id = p.voice_id
             WHERE c.id = ?
             """,
             (conversation_id,),
@@ -992,9 +1159,9 @@ class ElevenLabsService:
         if prompt_id is not None:
             cursor = await conn.execute(
                 """
-                SELECT m.agent_id, m.voice_id, a.agent_name
+                SELECT a.agent_id, a.agent_name
                 FROM PROMPT_AGENT_MAPPING m
-                LEFT JOIN ELEVENLABS_AGENTS a ON a.agent_id = m.agent_id
+                JOIN ELEVENLABS_AGENTS a ON a.agent_id = m.agent_id
                 WHERE m.prompt_id = ?
                 """,
                 (prompt_id,),
@@ -1003,7 +1170,6 @@ class ElevenLabsService:
             if mapping_row:
                 return {
                     "agent_id": mapping_row["agent_id"],
-                    "voice_id": mapping_row["voice_id"],
                     "agent_name": mapping_row["agent_name"],
                 }
 
@@ -1021,7 +1187,6 @@ class ElevenLabsService:
             return {
                 "agent_id": default_row["agent_id"],
                 "agent_name": default_row["agent_name"],
-                "voice_id": None,
             }
         return None
 
@@ -1055,10 +1220,10 @@ class ElevenLabsService:
         self,
         conn,
         conversation_id: int,
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         cursor = await conn.execute(
             """
-            SELECT message, type
+            SELECT id, message, type
             FROM MESSAGES
             WHERE conversation_id = ?
             ORDER BY id DESC
@@ -1070,13 +1235,15 @@ class ElevenLabsService:
         if not rows:
             return []
 
-        messages: List[Dict[str, str]] = []
+        messages: List[Dict[str, Any]] = []
         for row in reversed(rows):
             text = self._render_message_text(row["message"])
             if not text:
                 continue
             role = "assistant" if (row["type"] or "").lower() == "bot" else "user"
-            messages.append({"role": role, "text": text})
+            messages.append(
+                {"id": int(row["id"]), "role": role, "text": text}
+            )
         return messages
 
     @staticmethod
@@ -1117,7 +1284,7 @@ class ElevenLabsService:
         return custom_unescape(str(parsed))
 
     @staticmethod
-    def _build_context_string(recent_messages: List[Dict[str, str]]) -> str:
+    def _build_context_string(recent_messages: List[Dict[str, Any]]) -> str:
         if not recent_messages:
             logger.info("[ElevenLabs] No recent messages for context")
             return ""

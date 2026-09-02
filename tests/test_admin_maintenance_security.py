@@ -1,6 +1,7 @@
 """Regression coverage for global maintenance authorization and responses."""
 
 import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,11 +9,16 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 import app as app_module
+import request_security
 from maintenance_tasks import (
     MaintenanceTaskBusy,
     MaintenanceTaskTimedOut,
     validate_audio_cache_age,
 )
+from request_security import CSRF_HEADER
+
+
+_VALID_CSRF_TOKEN = "test-admin-maintenance-csrf-token-1234567890"
 
 
 class DummyUser:
@@ -26,8 +32,18 @@ class DummyUser:
         return self._token_claims_admin
 
 
-def _request(*, forwarded_for: str | None = None) -> Request:
-    headers = []
+def _request(
+    *,
+    forwarded_for: str | None = None,
+    csrf_token: str | None = _VALID_CSRF_TOKEN,
+    origin: str = "https://example.test",
+) -> Request:
+    headers = [
+        (b"host", b"example.test"),
+        (b"origin", origin.encode("ascii")),
+    ]
+    if csrf_token is not None:
+        headers.append((CSRF_HEADER.lower().encode("ascii"), csrf_token.encode("ascii")))
     if forwarded_for:
         headers.append((b"x-forwarded-for", forwarded_for.encode("ascii")))
     return Request(
@@ -39,6 +55,7 @@ def _request(*, forwarded_for: str | None = None) -> Request:
             "client": ("127.0.0.1", 12345),
             "server": ("example.test", 443),
             "scheme": "https",
+            "session": {"gptsub_csrf_token": _VALID_CSRF_TOKEN},
         }
     )
 
@@ -65,6 +82,7 @@ def live_admin_mocks(monkeypatch):
     monkeypatch.setattr(app_module, "is_admin", live_role)
     monkeypatch.setattr(app_module, "is_elevated", elevation)
     monkeypatch.setattr(app_module, "log_admin_action", AsyncMock())
+    monkeypatch.setattr(request_security, "PRIMARY_APP_DOMAIN", "")
     return live_role, elevation
 
 
@@ -104,7 +122,7 @@ async def test_live_admin_is_allowed_even_with_stale_token_claim(
 
 
 @pytest.mark.asyncio
-async def test_cloudflare_maintenance_requires_current_elevation(
+async def test_cloudflare_maintenance_does_not_require_current_elevation(
     monkeypatch, live_admin_mocks
 ):
     _, elevation = live_admin_mocks
@@ -118,10 +136,40 @@ async def test_cloudflare_maintenance_requires_current_elevation(
         current_user=DummyUser(1, token_claims_admin=True),
     )
 
+    assert response["success"] is True
+    elevation.assert_not_awaited()
+    runner.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_case",
+    [
+        _request(csrf_token=None),
+        _request(csrf_token="incorrect-token"),
+        _request(origin="https://attacker.example"),
+    ],
+)
+async def test_cloudflare_maintenance_rejects_invalid_csrf(
+    monkeypatch, live_admin_mocks, request_case
+):
+    runner = AsyncMock()
+    monkeypatch.setattr(app_module, "run_cloudflare_cache_disable", runner)
+
+    response = await app_module.disable_cloudflare_cache(
+        request=request_case,
+        current_user=DummyUser(1, token_claims_admin=True),
+    )
+
     assert response.status_code == 403
-    assert b'"reason":"ultra_admin_required"' in response.body
-    elevation.assert_awaited_once_with(1, request_ip="198.51.100.9")
     runner.assert_not_awaited()
+
+
+def test_dashboard_cloudflare_request_includes_csrf_token():
+    template = Path("templates/index.html").read_text(encoding="utf-8")
+
+    assert 'meta name="aurvek-admin-csrf-token"' in template
+    assert "headers: {'X-GPTSub-CSRF': csrfToken}" in template
 
 
 @pytest.mark.asyncio

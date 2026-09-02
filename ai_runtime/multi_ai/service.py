@@ -1,5 +1,11 @@
+import inspect
 import math
 
+from ai_runtime.channel_turns import (
+    ChannelContext,
+    StaleChannelTurnError,
+    bind_channel_turn,
+)
 from ai_runtime.dependencies import *
 from billing.usage_reservations import (
     BillingReservationError,
@@ -25,10 +31,24 @@ from ai_runtime.billing import assert_billable_claude_system_key
 from ai_runtime.config import _model_output_cap
 from ai_runtime.context.formatting import _format_messages_for_provider, flatten_multi_ai_context, parse_stored_message
 from ai_runtime.context.history import apply_no_memory_context_budget
+from ai_runtime.context.message_provenance import (
+    merge_internal_turn_context,
+    prepare_trusted_history_context,
+    render_current_input_context,
+)
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
 from ai_runtime.context.warmup import _build_warmup_cache_key_from_state, _copy_warmup_context_messages
 from ai_runtime.multi_ai.errors import MultiAiBillingError
-from ai_runtime.persistence.messages import persistence_error_payload, save_multi_ai_to_db
+from ai_runtime.persistence.messages import (
+    persistence_error_payload,
+    save_content_to_db,
+    save_multi_ai_to_db,
+)
+from ai_runtime.reasoning import (
+    ReasoningValidationError,
+    parse_reasoning_selection,
+    resolve_and_validate,
+)
 from ai_runtime.providers.claude import call_claude_api
 from ai_runtime.providers.gemini import call_gemini_api
 from ai_runtime.providers.kimi import call_kimi_api
@@ -67,6 +87,58 @@ def build_multi_ai_message(results: dict, model_ids: list) -> str:
 
     return orjson.dumps({"multi_ai": True, "responses": responses}).decode()
 
+
+async def _recover_stale_multi_ai_turn(
+    *,
+    channel_context: ChannelContext | None,
+    conversation_id: int,
+    user_id: int,
+    user_message: str,
+    prompt_id: int | None,
+    llm_id: int | None,
+) -> dict:
+    if channel_context is None or channel_context.recover_stale_context is None:
+        return {"terminal": "stale_channel_turn"}
+    try:
+        recovered = channel_context.recover_stale_context(channel_context)
+        if inspect.isawaitable(recovered):
+            recovered = await recovered
+        if recovered is None or not recovered.ingest_only:
+            return {"terminal": "stale_channel_turn"}
+        with bind_channel_turn(recovered):
+            user_message_id, _ = await save_content_to_db(
+                None,
+                0,
+                0,
+                0,
+                conversation_id,
+                user_id,
+                "multi-ai",
+                user_message=user_message,
+                prompt_id=prompt_id,
+                llm_id=llm_id,
+            )
+        if user_message_id is None:
+            return {
+                "terminal": "stale_channel_turn",
+                **persistence_error_payload(),
+            }
+        return {
+            "terminal": "queued_for_active_phone",
+            "message_id": int(user_message_id),
+        }
+    except StaleChannelTurnError:
+        return {"terminal": "stale_channel_turn"}
+    except Exception:
+        logger.exception(
+            "[process_multi_ai_message] Could not recover stale turn for conversation %s",
+            conversation_id,
+        )
+        return {
+            "terminal": "stale_channel_turn",
+            **persistence_error_payload(),
+        }
+
 async def _is_prompt_paid(prompt_id: int) -> bool:
     """Check if a prompt is a paid prompt."""
     async with get_db_connection(readonly=True) as conn:
@@ -85,7 +157,7 @@ async def _run_single_ai(
     current_user,
     request,
     max_tokens: int,
-    thinking_budget_tokens: int = None,
+    reasoning_selection=None,
     user_api_key: str = None,
     prompt_id: int = None,
     temperature: float = 0.7,
@@ -109,6 +181,11 @@ async def _run_single_ai(
     provider_error = None
 
     try:
+        system_prompt, context_messages = await prepare_trusted_history_context(
+            system_prompt,
+            context_messages,
+        )
+
         if apply_no_memory_limit:
             context_messages = await apply_no_memory_context_budget(
                 context_messages,
@@ -174,14 +251,12 @@ async def _run_single_ai(
             "save_to_db": False,
             "llm_id": llm_id,
             "prompt_id": prompt_id,
+            "reasoning_selection": reasoning_selection,
         }
 
         # O1 doesn't accept tools parameter - only add for functions that support it
         if provider_machine != "O1":
             kwargs["tools"] = None  # Tools disabled for Multi-AI
-
-        if provider_machine == "Claude" and thinking_budget_tokens:
-            kwargs["thinking_budget_tokens"] = thinking_budget_tokens
 
         if api_model:
             kwargs["api_model"] = api_model
@@ -312,8 +387,9 @@ async def process_multi_ai_message(
     current_user,
     user_message: str,
     model_ids: list,
-    thinking_budget_tokens: int = None,
+    reasoning_selection=None,
     user_api_keys: dict = None,
+    channel_context: ChannelContext | None = None,
 ):
     """Process a Multi-AI comparison request.
 
@@ -406,6 +482,15 @@ async def process_multi_ai_message(
         yield f"data: {orjson.dumps({'error': 'Multi-AI requires 2-4 unique model IDs'}).decode()}\n\n"
         return
 
+    try:
+        requested_reasoning = parse_reasoning_selection(reasoning_selection)
+    except ReasoningValidationError as exc:
+        yield f"data: {orjson.dumps({'error': str(exc), 'error_code': 'invalid_reasoning_selection'}).decode()}\n\n"
+        return
+    if requested_reasoning.mode == "custom":
+        yield f"data: {orjson.dumps({'error': 'Multi-AI does not support custom reasoning budgets', 'error_code': 'invalid_reasoning_selection'}).decode()}\n\n"
+        return
+
     # Reject Multi-AI if prompt has forced_llm_id
     if forced_llm_id:
         yield f"data: {orjson.dumps({'error': 'This prompt requires a specific model and cannot use Multi-AI'}).decode()}\n\n"
@@ -453,6 +538,43 @@ async def process_multi_ai_message(
             yield f"data: {orjson.dumps({'error': f'Model ID {mid} not found'}).decode()}\n\n"
             return
         llm_infos[mid] = info
+
+    reasoning_by_id = {}
+    for mid, info in llm_infos.items():
+        try:
+            raw_capabilities = info.get("capabilities_json")
+            try:
+                capabilities = orjson.loads(raw_capabilities) if raw_capabilities else {}
+            except (orjson.JSONDecodeError, TypeError):
+                capabilities = {}
+            if not isinstance(capabilities, dict):
+                capabilities = {}
+            if info.get("machine") == "GPTSub":
+                account_capabilities = None
+                try:
+                    from subscription_auth.reasoning import user_model_reasoning_capabilities
+
+                    account_capabilities = await user_model_reasoning_capabilities(
+                        current_user.id,
+                        info.get("model"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not resolve GPTSub reasoning capabilities for user_id=%s",
+                        current_user.id,
+                        exc_info=True,
+                    )
+                capabilities = {
+                    **capabilities,
+                    "reasoning": account_capabilities or {"behavior": "unknown"},
+                }
+            reasoning_by_id[mid] = resolve_and_validate(
+                requested_reasoning,
+                capabilities,
+            )
+        except ReasoningValidationError as exc:
+            yield f"data: {orjson.dumps({'error': str(exc), 'error_code': 'invalid_reasoning_selection', 'llm_id': mid}).decode()}\n\n"
+            return
 
     # --- 2. Load context (once) ---
     context_months = 2
@@ -575,6 +697,11 @@ async def process_multi_ai_message(
                 )
                 prompt_base += extensions_context
 
+        prompt_base = merge_internal_turn_context(
+            prompt_base,
+            render_current_input_context(channel_context),
+        )
+
         # Watchdog: reuse prompt-hint injection in Multi-AI so behavior matches single flow.
         watchdog_hint_block = ""
         if raw_watchdog_config:
@@ -623,14 +750,18 @@ async def process_multi_ai_message(
         # Load context messages unless the warm-up cache already prepared them.
         if context_messages_dicts is None:
             cursor = await conn_ro.execute(
-                """SELECT message, type FROM messages
+                """SELECT id, message, type FROM messages
                    WHERE conversation_id = ? AND date >= ?
                    ORDER BY id ASC, date ASC""",
                 (conversation_id, start_date),
             )
             context_rows = await cursor.fetchall()
             context_messages_dicts = [
-                {"message": parse_stored_message(custom_unescape(row[0])), "type": row[1]}
+                {
+                    "id": int(row[0]),
+                    "message": parse_stored_message(custom_unescape(row[1])),
+                    "type": row[2],
+                }
                 for row in context_rows
             ]
             context_messages_dicts = flatten_multi_ai_context(context_messages_dicts)
@@ -675,6 +806,12 @@ async def process_multi_ai_message(
     if should_surface_memory_health(memory_health):
         yield f"data: {orjson.dumps({'type': 'memory_health', 'memory_health': memory_health}).decode()}\n\n"
     apply_no_memory_limit = memory_decision.provider == "none"
+    billing_system_prompt, billing_context_messages = (
+        await prepare_trusted_history_context(
+            system_prompt,
+            context_messages_dicts,
+        )
+    )
     context_pdf_error_metadata = _extract_pdf_metadata_from_context_messages(context_messages_dicts)
     context_pdf_pages = int((context_pdf_error_metadata or {}).get("pages") or 0)
     context_pdf_count = int((context_pdf_error_metadata or {}).get("pdf_count") or 0)
@@ -792,8 +929,8 @@ async def process_multi_ai_message(
     input_tokens_est_base = max(
         estimate_message_tokens(user_message),
         estimate_structured_billing_tokens(
-            system_prompt,
-            context_messages_dicts,
+            billing_system_prompt,
+            billing_context_messages,
             user_message,
         ),
     )
@@ -805,8 +942,8 @@ async def process_multi_ai_message(
         for mid in model_ids
     }
     input_usage_fallback_base = estimate_structured_usage_tokens(
-        system_prompt,
-        context_messages_dicts,
+        billing_system_prompt,
+        billing_context_messages,
         user_message,
     )
     input_usage_fallback_by_model = {
@@ -903,6 +1040,15 @@ async def process_multi_ai_message(
     if max_tokens < 1:
         yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
         return
+    for mid in model_ids:
+        selection = reasoning_by_id[mid]
+        if (
+            llm_infos[mid].get("machine") == "Claude"
+            and selection.mode == "custom"
+            and selection.budget_tokens >= max_tokens
+        ):
+            yield f"data: {orjson.dumps({'error': 'Claude reasoning budget must be lower than the available output-token limit', 'error_code': 'invalid_reasoning_selection', 'llm_id': mid}).decode()}\n\n"
+            return
     billing_preflight_amount = (
         estimated_input_charge
         + max_tokens * combined_output_rate
@@ -1000,7 +1146,7 @@ async def process_multi_ai_message(
                 current_user=current_user,
                 request=request,
                 max_tokens=max_tokens,
-                thinking_budget_tokens=thinking_budget_tokens,
+                reasoning_selection=reasoning_by_id[mid],
                 user_api_key=resolved_keys.get(mid),
                 prompt_id=prompt_id,
                 temperature=0.7,
@@ -1125,6 +1271,7 @@ async def process_multi_ai_message(
                 byok_models=byok_models,
                 incognito=conversation_incognito,
                 billing_reservation_id=ai_reservation_id,
+                channel_context=channel_context,
             )
 
             if user_msg_id and bot_msg_id:
@@ -1132,6 +1279,17 @@ async def process_multi_ai_message(
             else:
                 yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
                 return
+        except StaleChannelTurnError:
+            terminal = await _recover_stale_multi_ai_turn(
+                channel_context=channel_context,
+                conversation_id=conversation_id,
+                user_id=current_user.id,
+                user_message=user_message,
+                prompt_id=prompt_id,
+                llm_id=conv_llm_id,
+            )
+            yield f"data: {orjson.dumps(terminal).decode()}\n\n"
+            return
         except MultiAiBillingError as exc:
             logger.warning("[process_multi_ai_message] Multi-AI billing failed: %s", exc)
             yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"

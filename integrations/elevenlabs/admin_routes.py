@@ -10,6 +10,11 @@ from auth import get_current_user, unauthenticated_response
 from captcha_service import get_captcha_config
 from common import GOOGLE_CLIENT_ID, get_template_context, templates
 from database import get_db_connection
+from ai_runtime.voice_resolution import (
+    CanonicalVoiceResolutionError,
+    require_elevenlabs_webrtc_compatible,
+    resolve_prompt_voice,
+)
 from log_config import logger
 from models import User
 from tools.tts_config import (
@@ -23,6 +28,40 @@ from tools.tts_load_balancer import get_elevenlabs_key
 
 
 router = APIRouter()
+
+
+async def _prompt_webrtc_voice_status(conn, prompt_id: int) -> dict:
+    try:
+        voice = await resolve_prompt_voice(prompt_id, conn=conn)
+    except CanonicalVoiceResolutionError as exc:
+        return {
+            "webrtc_compatible": False,
+            "compatibility_code": exc.code,
+            "compatibility_reason": str(exc),
+            "canonical_voice_code": None,
+            "canonical_voice_provider": None,
+            "canonical_voice_inherited": False,
+        }
+
+    try:
+        require_elevenlabs_webrtc_compatible(voice)
+    except CanonicalVoiceResolutionError as exc:
+        compatible = False
+        code = exc.code
+        reason = str(exc)
+    else:
+        compatible = True
+        code = None
+        reason = "ElevenLabs can reproduce this canonical voice exactly in browser calls."
+
+    return {
+        "webrtc_compatible": compatible,
+        "compatibility_code": code,
+        "compatibility_reason": reason,
+        "canonical_voice_code": voice.voice_code,
+        "canonical_voice_provider": voice.provider,
+        "canonical_voice_inherited": voice.inherited_default,
+    }
 
 
 def _login_response(request: Request):
@@ -56,12 +95,41 @@ async def admin_elevenlabs_agents(
         agents = [dict(row) for row in await cursor.fetchall()]
 
         cursor = await conn.execute(
-            "SELECT pam.prompt_id, p.name AS prompt_name, pam.agent_id, pam.voice_id FROM PROMPT_AGENT_MAPPING pam LEFT JOIN PROMPTS p ON p.id = pam.prompt_id ORDER BY p.name COLLATE NOCASE ASC"
+            """
+            SELECT pam.prompt_id, p.name AS prompt_name, pam.agent_id
+            FROM PROMPT_AGENT_MAPPING pam
+            LEFT JOIN PROMPTS p ON p.id = pam.prompt_id
+            ORDER BY p.name COLLATE NOCASE ASC
+            """
         )
         mappings = [dict(row) for row in await cursor.fetchall()]
 
         cursor = await conn.execute("SELECT id, name FROM PROMPTS ORDER BY name ASC")
         prompts = [dict(row) for row in await cursor.fetchall()]
+        voice_canonicalization_conflicts = []
+        cursor = await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='VOICE_CANONICALIZATION_CONFLICTS'"
+        )
+        if await cursor.fetchone() is not None:
+            cursor = await conn.execute(
+                """
+                SELECT c.prompt_id_snapshot, p.name AS prompt_name,
+                       c.legacy_voice_code, c.reason, c.created_at
+                FROM VOICE_CANONICALIZATION_CONFLICTS c
+                LEFT JOIN PROMPTS p ON p.id=c.prompt_id
+                WHERE c.status='needs_attention'
+                ORDER BY c.created_at DESC, c.id DESC
+                """
+            )
+            voice_canonicalization_conflicts = [
+                dict(row) for row in await cursor.fetchall()
+            ]
+        for mapping in mappings:
+            mapping_prompt_id = int(mapping["prompt_id"])
+            mapping.update(
+                await _prompt_webrtc_voice_status(conn, mapping_prompt_id)
+            )
 
     context = await get_template_context(request, current_user)
     context.update(
@@ -69,6 +137,7 @@ async def admin_elevenlabs_agents(
             "agents": agents,
             "mappings": mappings,
             "prompts": prompts,
+            "voice_canonicalization_conflicts": voice_canonicalization_conflicts,
             "message": message,
             "error": error,
         }
@@ -225,7 +294,6 @@ async def update_elevenlabs_mapping(
     current_user: User = Depends(get_current_user),
     prompt_id: int = Form(...),
     agent_id: str = Form(""),
-    voice_id: str = Form(""),
 ):
     if current_user is None:
         return _login_response(request)
@@ -233,7 +301,6 @@ async def update_elevenlabs_mapping(
         raise HTTPException(status_code=403, detail="Access denied")
 
     agent_id_clean = (agent_id or "").strip()
-    voice_id_clean = (voice_id or "").strip()
 
     async with get_db_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
@@ -248,11 +315,27 @@ async def update_elevenlabs_mapping(
                     query = urlencode({"error": "Agent not found"})
                     return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
+                voice_status = await _prompt_webrtc_voice_status(conn, prompt_id)
+                if voice_status["compatibility_code"] == "prompt_not_found":
+                    await conn.rollback()
+                    query = urlencode({"error": voice_status["compatibility_reason"]})
+                    return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
+
                 await conn.execute(
-                    "INSERT INTO PROMPT_AGENT_MAPPING (prompt_id, agent_id, voice_id) VALUES (?, ?, ?) ON CONFLICT(prompt_id) DO UPDATE SET agent_id = excluded.agent_id, voice_id = excluded.voice_id, created_at = CURRENT_TIMESTAMP",
-                    (prompt_id, agent_id_clean, voice_id_clean or None),
+                    "INSERT INTO PROMPT_AGENT_MAPPING (prompt_id, agent_id, voice_id) "
+                    "VALUES (?, ?, NULL) "
+                    "ON CONFLICT(prompt_id) DO UPDATE SET "
+                    "agent_id = excluded.agent_id, voice_id = NULL, "
+                    "created_at = CURRENT_TIMESTAMP",
+                    (prompt_id, agent_id_clean),
                 )
-                message = "Assignment updated"
+                if voice_status["webrtc_compatible"]:
+                    message = "Assignment updated. WebRTC voice is compatible."
+                else:
+                    message = (
+                        "Assignment updated. WebRTC remains unavailable: "
+                        + voice_status["compatibility_reason"]
+                    )
             else:
                 await conn.execute("DELETE FROM PROMPT_AGENT_MAPPING WHERE prompt_id = ?", (prompt_id,))
                 message = "Assignment deleted"

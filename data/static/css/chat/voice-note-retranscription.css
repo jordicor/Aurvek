@@ -1,0 +1,205 @@
+.message-info .voice-note-retranscription-action {
+    border-radius: 0.2rem;
+    display: inline-block !important;
+}
+
+.message-info .voice-note-retranscription-action:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--primary-color, #4f8cff) 65%, transparent);
+    outline-offset: 3px;
+}
+
+.voice-note-retranscription-dialog {
+    background: var(--bs-body-bg, #fff);
+    border: 1px solid color-mix(in srgb, var(--primary-color, #4f8cff) 30%, transparent);
+    border-radius: 0.85rem;
+    box-shadow: 0 1.25rem 4rem rgb(0 0 0 / 35%);
+    color: var(--bs-body-color, #1f2937);
+    max-height: min(90svh, 56rem);
+    max-width: calc(100vw - 2rem);
+    overflow: auto;
+    padding: 0;
+    width: min(44rem, calc(100vw - 2rem));
+}
+
+.voice-note-retranscription-dialog::backdrop {
+    background: rgb(8 15 28 / 68%);
+    backdrop-filter: blur(2px);
+}
+
+.voice-note-retranscription-dialog [hidden] {
+    display: none !important;
+}
+
+.voice-note-retranscription-shell {
+    display: grid;
+    gap: 1rem;
+    padding: 1.25rem;
+}
+
+.voice-note-retranscription-header {
+    align-items: center;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+}
+
+.voice-note-retranscription-header h2,
+.voice-note-retranscription-review h3,
+.voice-note-retranscription-description,
+.voice-note-retranscription-status,
+.voice-note-retranscription-rationale {
+    margin: 0;
+}
+
+.voice-note-retranscription-header h2 {
+    font-size: 1.2rem;
+}
+
+.voice-note-retranscription-close {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+    color: inherit;
+    display: inline-flex;
+    font-size: 1.5rem;
+    height: 2rem;
+    justify-content: center;
+    line-height: 1;
+    width: 2rem;
+}
+
+.voice-note-retranscription-close:hover {
+    background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.voice-note-retranscription-dialog button:focus-visible,
+.voice-note-retranscription-dialog select:focus-visible,
+.voice-note-retranscription-dialog summary:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--primary-color, #4f8cff) 58%, transparent);
+    outline-offset: 2px;
+}
+
+.voice-note-retranscription-description,
+.voice-note-retranscription-rationale {
+    opacity: 0.82;
+}
+
+.voice-note-retranscription-cost-notice {
+    background: color-mix(in srgb, var(--bs-warning, #ffc107) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bs-warning, #ffc107) 45%, transparent);
+    border-radius: 0.55rem;
+    font-size: 0.88rem;
+    margin: 0;
+    padding: 0.7rem 0.85rem;
+}
+
+.voice-note-retranscription-config {
+    display: grid;
+    gap: 0.85rem;
+}
+
+.voice-note-retranscription-field {
+    display: grid;
+    font-size: 0.9rem;
+    font-weight: 600;
+    gap: 0.35rem;
+}
+
+.voice-note-retranscription-field select {
+    background: var(--bs-body-bg, #fff);
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 0.45rem;
+    color: inherit;
+    min-height: 2.55rem;
+    padding: 0.45rem 0.65rem;
+    width: 100%;
+}
+
+.voice-note-retranscription-model-help {
+    font-size: 0.78rem;
+    font-weight: 400;
+    opacity: 0.78;
+}
+
+.voice-note-retranscription-primary,
+.voice-note-retranscription-secondary {
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    min-height: 2.5rem;
+    padding: 0.5rem 0.9rem;
+}
+
+.voice-note-retranscription-primary {
+    background: var(--primary-color, #2563eb);
+    color: #fff;
+}
+
+.voice-note-retranscription-secondary {
+    background: transparent;
+    border-color: color-mix(in srgb, currentColor 28%, transparent);
+    color: inherit;
+}
+
+.voice-note-retranscription-dialog button:disabled,
+.voice-note-retranscription-dialog select:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+}
+
+.voice-note-retranscription-status {
+    min-height: 1.5rem;
+}
+
+.voice-note-retranscription-status.is-error {
+    color: var(--bs-danger, #dc3545);
+    font-weight: 600;
+}
+
+.voice-note-retranscription-review {
+    display: grid;
+    gap: 0.85rem;
+}
+
+.voice-note-transcript-details {
+    border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    border-radius: 0.55rem;
+    overflow: hidden;
+}
+
+.voice-note-transcript-details summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.7rem 0.85rem;
+}
+
+.voice-note-transcript-details pre {
+    background: color-mix(in srgb, currentColor 5%, transparent);
+    border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+    color: inherit;
+    font-family: inherit;
+    margin: 0;
+    max-height: 18rem;
+    overflow: auto;
+    padding: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.voice-note-retranscription-decisions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+    justify-content: flex-end;
+}
+
+@media (max-width: 36rem) {
+    .voice-note-retranscription-shell {
+        padding: 1rem;
+    }
+
+    .voice-note-retranscription-decisions > button {
+        flex: 1 1 100%;
+    }
+}

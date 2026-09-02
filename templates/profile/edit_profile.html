@@ -28,12 +28,13 @@
                 </div>
                 <div class="mb-3">
                     <label for="phone" class="form-label">Phone Number</label>
-                    <input type="tel" class="form-control" id="phone" name="phone_number" value="{{ user_data['phone_number'] }}" data-original="{{ user_data['phone_number'] }}">
+                    <input type="tel" class="form-control" id="phone" name="phone_number" value="{{ user_data['phone_number'] }}" data-original="{{ user_data['phone_number'] }}" data-phone-verified="{{ 'true' if user_data['phone_verified'] else 'false' }}">
                     <button type="button" class="btn btn-secondary mt-2" id="sendCodeButton" style="display: none;">Send Verification Code</button>
                 </div>
                 <div class="mb-3" id="verificationCodeContainer" style="display: none;">
                     <label for="verificationCode" class="form-label">Verification Code</label>
                     <input type="text" class="form-control" id="verificationCode" name="verification_code">
+                    <input type="hidden" id="phoneVerificationId" name="phone_verification_id">
                 </div>
                 <div class="mb-3">
                     <label for="balance" class="form-label">Balance</label>

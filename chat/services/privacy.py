@@ -14,16 +14,14 @@ from log_config import logger
 
 _PRIVACY_COLUMNS: dict[str, str] = {
     "is_incognito": (
-        "is_incognito INTEGER NOT NULL DEFAULT 0 "
-        "CHECK(is_incognito IN (0, 1))"
+        "is_incognito INTEGER NOT NULL DEFAULT 0 CHECK(is_incognito IN (0, 1))"
     ),
     "hidden_from_history": (
         "hidden_from_history INTEGER NOT NULL DEFAULT 0 "
         "CHECK(hidden_from_history IN (0, 1))"
     ),
     "purge_on_close": (
-        "purge_on_close INTEGER NOT NULL DEFAULT 0 "
-        "CHECK(purge_on_close IN (0, 1))"
+        "purge_on_close INTEGER NOT NULL DEFAULT 0 CHECK(purge_on_close IN (0, 1))"
     ),
     "incognito_closed_at": "incognito_closed_at TEXT",
 }
@@ -104,21 +102,64 @@ async def mark_conversation_incognito(
     user_id: int,
     incognito: bool,
 ) -> bool:
-    """Set local incognito/history flags for one conversation."""
+    """Set privacy flags and remove phone routing in the same transaction."""
     await ensure_conversation_privacy_schema(conn)
-    value = 1 if incognito else 0
-    cursor = await conn.execute(
-        """
-        UPDATE CONVERSATIONS
-        SET is_incognito = ?,
-            hidden_from_history = ?,
-            purge_on_close = ?
-        WHERE id = ?
-          AND user_id = ?
-        """,
-        (value, value, value, conversation_id, user_id),
-    )
-    return bool(cursor.rowcount)
+    if not incognito:
+        cursor = await conn.execute(
+            """
+            UPDATE CONVERSATIONS
+            SET is_incognito = 0,
+                hidden_from_history = 0,
+                purge_on_close = 0
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (conversation_id, user_id),
+        )
+        return bool(cursor.rowcount)
+
+    # Preserve a caller-owned transaction and still make a caught telephony
+    # conflict roll back only this privacy transition.
+    had_transaction = conn.in_transaction
+    savepoint = "aurvek_incognito_phone_transition"
+    if had_transaction:
+        await conn.execute(f"SAVEPOINT {savepoint}")
+    else:
+        await conn.execute("BEGIN")
+    try:
+        from integrations.telephony.repository import TelephonyRepository
+
+        repository = TelephonyRepository()
+        await repository.disable_phone_for_incognito_in_transaction(
+            conn,
+            owner_user_id=int(user_id),
+            conversation_id=int(conversation_id),
+        )
+        cursor = await conn.execute(
+            """
+            UPDATE CONVERSATIONS
+            SET is_incognito = 1,
+                hidden_from_history = 1,
+                purge_on_close = 1
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (conversation_id, user_id),
+        )
+        changed = bool(cursor.rowcount)
+        if not changed:
+            raise ValueError("Conversation not found")
+    except Exception:
+        if had_transaction:
+            await conn.execute(f"ROLLBACK TO {savepoint}")
+            await conn.execute(f"RELEASE {savepoint}")
+        else:
+            await conn.rollback()
+        raise
+    else:
+        if had_transaction:
+            await conn.execute(f"RELEASE {savepoint}")
+        return True
 
 
 async def get_conversation_privacy(
@@ -214,6 +255,7 @@ async def delete_message_rows(
     message_ids = [int(mid) for mid in message_ids]
     if not message_ids:
         return
+    id_placeholders = ",".join("?" for _ in message_ids)
 
     # Provider message links reference MESSAGES(id) with no cascade, so they must
     # go before the messages themselves. The messages are being removed entirely,
@@ -223,7 +265,6 @@ async def delete_message_rows(
     # WATCHDOG_EVENTS keeps plain user_message_id/bot_message_id columns (no FK).
     # Drop the events that referenced any of the removed messages.
     if await _table_exists(conn, "WATCHDOG_EVENTS"):
-        id_placeholders = ",".join("?" for _ in message_ids)
         await conn.execute(
             f"""
             DELETE FROM WATCHDOG_EVENTS
@@ -234,7 +275,15 @@ async def delete_message_rows(
         )
 
     # FILE_ATTACHMENTS cascade from MESSAGES(id); blob pruning is the caller's job.
-    id_placeholders = ",".join("?" for _ in message_ids)
+    if await _table_exists(conn, "WATCHDOG_STATE"):
+        await conn.execute(
+            f"""
+            DELETE FROM WATCHDOG_STATE
+            WHERE conversation_id = ?
+              AND last_evaluated_message_id IN ({id_placeholders})
+            """,
+            [conversation_id, *message_ids],
+        )
     await conn.execute(
         f"DELETE FROM messages WHERE id IN ({id_placeholders})",
         message_ids,
@@ -283,6 +332,16 @@ async def delete_conversation_rows(
     memory_link_providers_to_delete: set[str] | None = None,
 ) -> None:
     """Delete local rows owned by one conversation, preserving caller transaction."""
+    # Capture provider identities and private recording paths before FK cascades
+    # remove the mutable phone rows.  The purge jobs and tombstones intentionally
+    # survive conversation/user deletion through their snapshot columns.
+    from integrations.telephony.purge import PhoneDataPurgeRepository
+
+    await PhoneDataPurgeRepository().stage_conversation_purges_in_transaction(
+        conn,
+        conversation_id=conversation_id,
+        owner_user_id=user_id,
+    )
     message_ids: list[int] = []
     cursor = await conn.execute(
         "SELECT id FROM MESSAGES WHERE conversation_id = ?",
@@ -367,9 +426,7 @@ async def _ensure_schema_on_connection(conn: aiosqlite.Connection) -> None:
         columns = {str(row[1]) for row in await cursor.fetchall()}
         for name, definition in _PRIVACY_COLUMNS.items():
             if name not in columns:
-                await conn.execute(
-                    f"ALTER TABLE CONVERSATIONS ADD COLUMN {definition}"
-                )
+                await conn.execute(f"ALTER TABLE CONVERSATIONS ADD COLUMN {definition}")
         if "folder_id" in columns and "last_activity" in columns:
             await conn.execute(
                 """

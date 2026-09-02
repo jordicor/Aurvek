@@ -2,14 +2,55 @@ from ai_runtime.dependencies import *
 from ai_runtime.config import safe_log_headers, _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
 from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.reasoning_tags import TaggedThinkingStreamParser
 from ai_runtime.providers.claude_capabilities import (
     claude_omits_temperature,
-    claude_requires_adaptive_thinking,
     claude_supports_adaptive_thinking,
 )
 from ai_runtime.tooling.citations import build_citation_event
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
+from ai_runtime.reasoning import (
+    ReasoningSelection,
+    parse_reasoning_selection,
+    selection_from_legacy_thinking_budget,
+)
+
+
+def _claude_reasoning_payload(
+    reasoning_selection: ReasoningSelection | dict | str | None,
+    *,
+    model: str,
+    thinking_budget_tokens: int | None = None,
+) -> tuple[dict | None, dict | None]:
+    """Translate the one neutral selection into Anthropic request fields.
+
+    ``thinking_budget_tokens`` is accepted only for the temporary legacy
+    transport field and is immediately converted to the common selection.
+    """
+
+    selection = (
+        parse_reasoning_selection(reasoning_selection)
+        if reasoning_selection is not None
+        else selection_from_legacy_thinking_budget(thinking_budget_tokens)
+    )
+    if selection.mode == "default":
+        return None, None
+    if selection.mode == "off":
+        return {"type": "disabled"}, None
+    if selection.mode == "auto":
+        return {"type": "adaptive", "display": "summarized"}, None
+    if selection.mode == "custom":
+        return {"type": "enabled", "budget_tokens": selection.budget_tokens}, None
+
+    # Effort is independent of thinking. Models that support adaptive thinking
+    # can combine both; older effort-capable models must not receive adaptive.
+    thinking = (
+        {"type": "adaptive", "display": "summarized"}
+        if claude_supports_adaptive_thinking(model)
+        else None
+    )
+    return thinking, {"effort": selection.mode}
 
 async def call_claude_api(messages, model, temperature, max_tokens, prompt, conversation_id, current_user, request, user_message=None, thinking_budget_tokens=None, user_api_key=None, tools=None,
                           input_token_fallback=None,
@@ -18,7 +59,9 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                           llm_id=None, save_to_db: bool = True, web_search_mode=None, byok: bool = False,
                           pending_attachment_refs: Optional[list[str]] = None,
                           strip_device_action_blocks: bool = False,
-                          billing_reservation_id: str | None = None):
+                          billing_reservation_id: str | None = None,
+                          reasoning_selection: ReasoningSelection | dict | str | None = None,
+                          tool_choice: dict | None = None):
     global stop_signals
     logger.debug("Entering call_claude_api")
 
@@ -35,13 +78,10 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
         "anthropic-version": "2023-06-01"
     }
 
-    model_lower = model.lower()
     model_max_tokens = int(max_tokens) if isinstance(max_tokens, (int, float)) else int(MAX_TOKENS)
     if model_max_tokens < 1:
         model_max_tokens = 1
 
-    is_opus_adaptive_only = claude_requires_adaptive_thinking(model)
-    is_adaptive_capable = claude_supports_adaptive_thinking(model)
     is_temperature_deprecated = claude_omits_temperature(model)
 
     data = {
@@ -61,6 +101,8 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     # Shallow copy to avoid mutating the caller's list when appending server tools below
     if tools:
         data["tools"] = list(tools)
+        if tool_choice is not None:
+            data["tool_choice"] = tool_choice
 
     # Add native web search server tool when in native mode
     if web_search_mode == 'native':
@@ -72,82 +114,27 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
             "max_uses": 5
         })
 
-    # Add thinking mode for Claude models that support it (Claude 3.7, Claude 4)
-    if thinking_budget_tokens:
-        thinking_models = [
-            "claude-3.7", "claude-3-7",
-            "claude-4", "claude-sonnet-4", "claude-opus-4"
-        ]
-
-        if any(model_part in model_lower for model_part in thinking_models):
-            if is_opus_adaptive_only:
-                # Opus 4.7+ only supports adaptive; manual budget_tokens is rejected.
-                if thinking_budget_tokens > 0:
-                    logger.info(
-                        "Opus 4.7+ does not accept manual thinking budget; "
-                        "ignoring budget_tokens=%d and using adaptive.",
-                        thinking_budget_tokens,
-                    )
-                # display defaults to "omitted" on Opus 4.7+, which would strip thinking text from
-                # the stream and break the UI render. Force "summarized" to keep reasoning visible.
-                data["thinking"] = {"type": "adaptive", "display": "summarized"}
-            elif is_adaptive_capable and thinking_budget_tokens == -1:
-                # Opus 4.6 / Sonnet 4.6 in Auto mode -> adaptive thinking (Claude decides budget)
-                data["thinking"] = {"type": "adaptive"}
-            elif thinking_budget_tokens > 0:
-                # Manual budget for Claude 3.7 / 4.1 / 4.5 and legacy 4.6 manual overrides
-                # Ensure max_tokens > budget_tokens (API requirement)
-                anthropic_thinking_budget_min = 1024
-                min_required_max_tokens = anthropic_thinking_budget_min + 1
-                if thinking_budget_tokens < anthropic_thinking_budget_min:
-                    logger.error(
-                        "Manual thinking budget %d is below Anthropic's minimum of %d.",
-                        thinking_budget_tokens,
-                        anthropic_thinking_budget_min,
-                    )
-                    error_payload = {
-                        "error": (
-                            "Manual thinking budget must be at least "
-                            f"{anthropic_thinking_budget_min} tokens (got {thinking_budget_tokens})."
-                        )
-                    }
-                    yield f"data: {orjson.dumps(error_payload).decode()}\n\n"
-                    return
-                if data["max_tokens"] < min_required_max_tokens:
-                    logger.error(
-                        "Manual thinking requires max_tokens >= %d; got %d.",
-                        min_required_max_tokens,
-                        data["max_tokens"],
-                    )
-                    error_payload = {
-                        "error": (
-                            "Insufficient balance for extended thinking "
-                            f"(need at least {min_required_max_tokens} output tokens, "
-                            f"have {data['max_tokens']})."
-                        )
-                    }
-                    yield f"data: {orjson.dumps(error_payload).decode()}\n\n"
-                    return
-                if thinking_budget_tokens >= data["max_tokens"]:
-                    data["max_tokens"] = min(thinking_budget_tokens + 16384, model_max_tokens)
-                # Final safety: if budget still >= max_tokens after cap, clamp budget
-                actual_budget = min(thinking_budget_tokens, data["max_tokens"] - 1)
-                data["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": actual_budget
-                }
-            # else: -1 on non-adaptive-capable model = no thinking (skip silently)
-
-            if "thinking" in data:
-                if not is_temperature_deprecated:
-                    # Legacy models require temperature=1.0 when thinking is enabled
-                    data["temperature"] = 1.0
-                mode_label = 'adaptive' if data["thinking"].get("type") == "adaptive" else f'manual ({data["thinking"].get("budget_tokens")})'
-                logger.info(f"Thinking mode: {mode_label} for {model}")
+    thinking, output_config = _claude_reasoning_payload(
+        reasoning_selection,
+        model=model,
+        thinking_budget_tokens=thinking_budget_tokens,
+    )
+    if thinking is not None:
+        if thinking.get("type") == "enabled" and thinking["budget_tokens"] >= data["max_tokens"]:
+            yield f"data: {orjson.dumps({'error': 'Claude thinking budget_tokens must be less than max_tokens'}).decode()}\n\n"
+            return
+        data["thinking"] = thinking
+        if thinking.get("type") != "disabled" and not is_temperature_deprecated:
+            # Anthropic legacy thinking requests require this fixed temperature.
+            data["temperature"] = 1.0
+        logger.info("Thinking mode: %s for %s", thinking["type"], model)
+    if output_config is not None:
+        data["output_config"] = output_config
 
     #logger.debug(f"data: {data}")
 
     content = ""
+    tagged_thinking_parser = TaggedThinkingStreamParser()
     input_tokens = output_tokens = total_tokens = 0
     cache_creation_tokens = cache_read_tokens = 0
 
@@ -165,6 +152,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     all_citations = []  # Final merged citations for persistence
     server_tool_input_buffer = ""  # Buffer for server tool use input (search query)
     response_content_blocks = []  # Full content blocks for pause_turn continuation
+    paused_content_blocks = []  # Earlier pieces of this same assistant turn
     current_block = None  # Currently open content block being streamed
 
     max_continuations = 3
@@ -213,14 +201,26 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                                 if current_block and current_block.get("type") == "thinking":
                                                     current_block["thinking"] += thinking_chunk
                                                 yield f"data: {orjson.dumps({'thinking': thinking_chunk, 'type': 'thinking'}).decode()}\n\n"
+                                            elif delta_type == "signature_delta" and current_block:
+                                                # Anthropic signs thinking blocks; the exact value must be
+                                                # carried into a tool continuation with the original block.
+                                                current_block["signature"] = delta.get("signature", "")
                                             # Handle regular text content
                                             elif delta_type == "text_delta" or "text" in delta:
                                                 content_chunk = delta.get("text", "")
                                                 if content_chunk:
-                                                    content += content_chunk
-                                                    if current_block and current_block.get("type") == "text":
-                                                        current_block["text"] += content_chunk
-                                                    yield f"data: {orjson.dumps({'content': content_chunk}).decode()}\n\n"
+                                                    for tagged_type, tagged_chunk in tagged_thinking_parser.feed(content_chunk):
+                                                        if tagged_type == "thinking_start":
+                                                            yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+                                                        elif tagged_type == "thinking":
+                                                            yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
+                                                        elif tagged_type == "thinking_end":
+                                                            yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                                                        elif tagged_chunk:
+                                                            content += tagged_chunk
+                                                            if current_block and current_block.get("type") == "text":
+                                                                current_block["text"] += tagged_chunk
+                                                            yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
                                             elif delta_type == "citations_delta":
                                                 # Citation attached to text during web search
                                                 citation = delta.get("citation", {})
@@ -257,31 +257,25 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
 
                                             # Initialize current_block for pause_turn continuation tracking
                                             if block_type == "text":
-                                                current_block = {"type": "text", "text": ""}
-                                            elif block_type == "thinking":
-                                                current_block = {"type": "thinking", "thinking": ""}
+                                                current_block = {**content_block, "text": ""}
+                                            elif block_type in {"thinking", "redacted_thinking"}:
+                                                # Preserve provider-signed and opaque thinking fields for a
+                                                # subsequent tool continuation.
+                                                current_block = dict(content_block)
+                                                if block_type == "thinking":
+                                                    current_block.setdefault("thinking", "")
                                                 yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
                                             elif block_type == "tool_use":
                                                 # Regular function-call tool (generateImage, etc.)
                                                 tool_use_name = content_block.get("name", "")
                                                 tool_use_id = content_block.get("id", "")
                                                 tool_use_input_buffer = ""
-                                                current_block = {
-                                                    "type": "tool_use",
-                                                    "id": tool_use_id,
-                                                    "name": tool_use_name,
-                                                    "input": {}
-                                                }
+                                                current_block = {**content_block, "input": {}}
                                                 logger.info(f"[call_claude_api] - Tool use started: {tool_use_name}")
                                             elif block_type == "server_tool_use":
                                                 # Claude decided to search the web (server-side)
                                                 server_tool_input_buffer = ""
-                                                current_block = {
-                                                    "type": "server_tool_use",
-                                                    "id": content_block.get("id", ""),
-                                                    "name": content_block.get("name", ""),
-                                                    "input": {}
-                                                }
+                                                current_block = {**content_block, "input": {}}
                                                 logger.info(f"[call_claude_api] - Server tool use started: {current_block['name']}")
                                             elif block_type == "web_search_tool_result":
                                                 # Search results arrived - extract source URLs and preserve raw block
@@ -305,7 +299,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                         elif event_type == "content_block_stop":
                                             block_index = event.get("index")
                                             stopped_block_type = block_types.get(block_index, "")
-                                            if stopped_block_type == "thinking":
+                                            if stopped_block_type in {"thinking", "redacted_thinking"}:
                                                 yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
                                             elif stopped_block_type == "tool_use":
                                                 # Finalize regular tool block with parsed input
@@ -391,6 +385,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                     "role": "assistant",
                     "content": response_content_blocks
                 })
+                paused_content_blocks.extend(response_content_blocks)
                 # Reset per-iteration state (keep accumulated content, tokens, citations)
                 stop_reason = ""
                 block_types = {}
@@ -402,6 +397,15 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                 if stop_reason == "pause_turn":
                     logger.warning(f"[call_claude_api] - Max continuations ({max_continuations}) reached, stopping")
                 break
+
+    for tagged_type, tagged_chunk in tagged_thinking_parser.finalize():
+        if tagged_type == "thinking":
+            yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
+        elif tagged_type == "thinking_end":
+            yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+        elif tagged_type == "content" and tagged_chunk:
+            content += tagged_chunk
+            yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
 
     total_tokens = input_tokens + output_tokens
     logger.info(f"Tokens used Claude:\ninput_tokens: {input_tokens}\noutput_tokens: {output_tokens}\ntotal_tokens: {total_tokens}")
@@ -448,7 +452,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
 
         # Include any text Claude generated before calling the tool
         await record_provider_success_for_label("Claude", model=model, byok=byok)
-        yield f"data: {orjson.dumps({'tool_call': {'name': tool_use_name, 'arguments': parsed_args, 'id': tool_use_id, '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}, 'pre_tool_content': content}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'tool_call': {'name': tool_use_name, 'arguments': parsed_args, 'id': tool_use_id, 'claude_content_blocks': [*paused_content_blocks, *response_content_blocks], '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}, 'pre_tool_content': content}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return  # Don't save to DB - handler will do it
 

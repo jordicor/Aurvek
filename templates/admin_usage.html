@@ -278,7 +278,7 @@
         const search = document.getElementById('userSearch').value;
 
         const params = new URLSearchParams();
-        if (days !== 'all') params.append('days', days);
+        params.append('days', days === 'all' ? '0' : days);
         if (type) params.append('type', type);
         if (search) params.append('search', search);
 
@@ -491,7 +491,7 @@
         const type = document.getElementById('typeFilter').value;
 
         const params = new URLSearchParams();
-        if (days !== 'all') params.append('days', days);
+        params.append('days', days === 'all' ? '0' : days);
         if (type) params.append('type', type);
         params.append('format', 'csv');
 
