@@ -14,7 +14,13 @@ def test_nginx_routes_voice_callbacks_and_preserves_private_audio_gets():
 
     assert "location = /webhooks/twilio/voice/inbound" in config
     assert "location = /webhooks/twilio/voice/inbound-status" in config
-    assert config.count("limit_except POST { deny all; }") == 4
+    voice_callbacks = re.findall(
+        r"^    location ([^\n]+) \{\n(.*?)^    \}", config, re.M | re.S
+    )
+    voice_posts = [body for route, body in voice_callbacks
+                   if "/webhooks/twilio/voice/" in route and "private-audio" not in route]
+    assert len(voice_posts) == 4
+    assert all("limit_except POST { deny all; }" in body for body in voice_posts)
     assert "(twiml|status|stream-status|amd|recording)" in config
     assert "connect-action/[^/]+/[0-9]+" in config
     assert "(private-audio|private-inbound-unavailable-audio|call-audio)" in config

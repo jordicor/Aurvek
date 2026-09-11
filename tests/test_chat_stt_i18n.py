@@ -29,7 +29,7 @@ def _prepare_audio(monkeypatch):
 
 async def _transcribe(language="es", audio=None):
     return await voice_io.transcribe(
-        SimpleNamespace(headers={"user-agent": "test"}),
+        SimpleNamespace(headers={"user-agent": "test"}, state=SimpleNamespace()),
         audio=AudioUpload() if audio is None else audio,
         user_id=1,
         ui_language=language,

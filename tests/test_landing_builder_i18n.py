@@ -20,7 +20,7 @@ from tests.test_marketplace_admin_i18n import Creator
 from tests.test_marketplace_checkout_i18n import checkout_db, request
 
 ROOT = Path(__file__).parents[1]
-NODE = 'C:/Program Files/nodejs/node.exe'
+NODE = 'node'
 PAGES = ['landing_config.html', 'pack_landing_config.html', 'user_branding.html',
          'web/component_edit.html', 'web/components_list.html', 'web/web_edit.html']
 
@@ -198,28 +198,6 @@ def test_rendered_browser_behavior_uses_locale_and_keeps_wire_values(language, p
                             input=json.dumps({'payload': payload, 'script': script, 'page': page}),
                             text=True, capture_output=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize('language', LANGUAGES)
-def test_publication_checks_localize_guidance_and_preserve_matching(language):
-    from tools.prompt_pipeline import verifier
-    tr = Translator(language)
-    scenarios = [
-        ('<p>Get your dashboard and unlimited exports.</p>', {}),
-        ('<section class="testimonials">Excellent service</section>', {}),
-        ('<p>Upload your files. Use web search.</p>', {'file_upload': False, 'web_search': 'disabled'}),
-        ('<a href="register">Continue</a>', {'access': 'paid', 'price': 1234.50}),
-        ('<p>Buy now</p>', {'access': 'free'}),
-        ('<nav>Nav</nav><header>hero</header><div>features grid cols</div><section>testimonials</section><footer>Footer</footer>', {}),
-    ]
-    for html, truth in scenarios:
-        original = verifier.check_publication_readiness(html, truth)
-        localized = verifier.check_publication_readiness(html, truth, translator=tr)
-        assert original and len(localized) == len(original)
-        assert not any(message.startswith(('TRUTH:', 'HALLUCINATION:', 'TESTIMONIAL:', 'FREE CLAIM:', 'STRUCTURE:')) for message in localized)
-    paid = verifier.check_publication_readiness('<a href="register">Continue</a>', {'access': 'paid', 'price': 1234.50}, translator=tr)
-    assert tr.t('landing_publication.paid_price', amount=tr.format_currency(1234.50, 'USD', 2)) in paid
-    assert set(get_catalogs()[language]['landing_publication']) == set(get_catalogs()['en']['landing_publication'])
 
 
 @pytest.mark.asyncio

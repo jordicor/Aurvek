@@ -53,8 +53,10 @@ async def _schema(conn):
         CREATE TABLE PHONE_CALLS (
             id TEXT PRIMARY KEY,
             conversation_id INTEGER NOT NULL,
+            active_conversation_id INTEGER,
             owner_user_id INTEGER NOT NULL,
-            config_snapshot_json TEXT NOT NULL
+            config_snapshot_json TEXT NOT NULL,
+            active_config_snapshot_json TEXT
         );
         CREATE TABLE PHONE_MEMORY_OUTBOX (
             message_id INTEGER PRIMARY KEY,

@@ -155,8 +155,10 @@ def init_db():
         print(f"Database {db_path} initialized successfully.")
     except sqlite3.Error as e:
         print(f"Database error: {e}")
+        raise
     except FileNotFoundError as e:
         print(f"Schema file not found: {e}")
+        raise
 
 if __name__ == '__main__':
     init_db()

@@ -419,7 +419,7 @@ async def test_transcribe_audio_decode_runs_in_worker(monkeypatch) -> None:
     monkeypatch.setattr(voice_io, "transcribe_with_deepgram", transcribe_with_deepgram)
 
     result = await voice_io.transcribe(
-        SimpleNamespace(headers={"user-agent": "Chrome"}),
+        SimpleNamespace(headers={"user-agent": "Chrome"}, state=SimpleNamespace()),
         audio=UploadFile(filename="voice.webm", file=io.BytesIO(b"audio")),
         user_id=31,
     )
@@ -478,7 +478,7 @@ async def test_transcribe_audio_defaults_to_elevenlabs_when_engine_is_unset(
     )
 
     result = await voice_io.transcribe(
-        SimpleNamespace(headers={}),
+        SimpleNamespace(headers={}, state=SimpleNamespace()),
         audio=UploadFile(filename="voice.webm", file=io.BytesIO(b"audio")),
         user_id=31,
     )
@@ -534,7 +534,7 @@ async def test_elevenlabs_primary_never_falls_back_to_deepgram(
 
     with pytest.raises(HTTPException) as exc_info:
         await voice_io.transcribe(
-            SimpleNamespace(headers={}),
+            SimpleNamespace(headers={}, state=SimpleNamespace()),
             audio=UploadFile(filename="voice.webm", file=io.BytesIO(b"audio")),
             user_id=31,
         )

@@ -165,9 +165,13 @@ def test_python_312_ci_uses_linux_dependency_overlay():
         encoding="utf-8"
     )
 
-    assert 'python-version: "3.12"' in workflow
-    assert "python -m pip install --requirement requirements-linux.txt" in workflow
-    assert "python -m pytest -q" in workflow
+    dockerfile = (ROOT / ".github/ci/Dockerfile").read_text(encoding="utf-8")
+    checks = (ROOT / ".github/ci/check.py").read_text(encoding="utf-8")
+    assert ".github/ci/Dockerfile" in workflow
+    assert "python3.12 -m venv" in dockerfile
+    assert "python -m pip install --requirement requirements-linux.txt" in dockerfile
+    assert '"-m", "pytest"' in checks
+    assert "docker run --rm --network none aurvek-public-ci" in workflow
 
 
 def test_public_mark_conversion_endpoint_is_removed():

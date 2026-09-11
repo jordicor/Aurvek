@@ -62,9 +62,9 @@ logs/
 Thumbs.db
 
 # Git residue files (accidentally copied from .git)
-config
-description
-HEAD
+/config
+/description
+/HEAD
 nul
 hooks/
 info/

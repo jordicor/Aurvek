@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from i18n import Translator
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +38,10 @@ def test_voice_note_retention_admin_switch_is_explicitly_opt_in(
     assert f"VALUES ('{key}', ?" in route
     assert f'id="{key}" name="{key}" value="1"' in template
     assert f"{{% if {key} %}}checked{{% endif %}}" in template
-    assert "Disabled by default for privacy." in template
-    assert "only to voice notes received after saving" in template
+    assert "t('admin_channels.retain_voice_help')" in template
+    help_text = Translator("en").t("admin_channels.retain_voice_help")
+    assert "Disabled by default for privacy." in help_text
+    assert "only to voice notes received after saving" in help_text
     assert "ensure_csrf_token" in route
     assert "validate_mutation_request" in route
     assert 'supplied_token=form.get("csrf_token")' in route
