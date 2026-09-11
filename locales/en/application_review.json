@@ -1,0 +1,16 @@
+{
+  "title": "Review conversations",
+  "read_only": "Read-only access. Views are recorded in the audit log.",
+  "back": "Back to conversations",
+  "untitled": "Untitled conversation",
+  "older_messages": "Older messages",
+  "client": "Client",
+  "assistant": "Assistant",
+  "unavailable": "This file is unavailable.",
+  "audio": "Retained audio",
+  "empty_messages": "There are no messages.",
+  "applications": "Applications",
+  "open": "Open history",
+  "empty_conversations": "There are no conversations for this application.",
+  "more": "More conversations"
+}

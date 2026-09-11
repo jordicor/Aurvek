@@ -1,6 +1,7 @@
+{% set i18n_domains = ['landing_builder'] %}
 {% extends 'base.html' %}
 
-{% block title %}White-Label Branding Settings{% endblock %}
+{% block title %}{{ t('landing_builder.ui.white_label_branding_settings') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -128,14 +129,14 @@
 </style>
 {% endblock %}
 
-{% block page_title %}White-Label Branding{% endblock %}
-{% block page_subtitle %}<p class="text-muted mb-0">Customize your brand appearance for users you create.</p>{% endblock %}
+{% block page_title %}{{ t('landing_builder.ui.white_label_branding') }}{% endblock %}
+{% block page_subtitle %}<p class="text-muted mb-0">{{ t('landing_builder.ui.customize_your_brand_appearance_for_users_you_create') }}</p>{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block page_actions %}
 <button class="btn btn-primary" onclick="saveBranding()" id="saveBtn">
-    <i class="fas fa-save me-1"></i>Save Changes
+    <i class="fas fa-save me-1"></i>{{ t('landing_builder.ui.save_changes') }}
 </button>
 {% endblock %}
 
@@ -145,103 +146,103 @@
     <div class="col-lg-7">
         <!-- Company Information -->
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-building me-2"></i>Company Information</div>
+            <div class="section-title"><i class="fas fa-building me-2"></i>{{ t('landing_builder.ui.company_information') }}</div>
             <div class="mb-3">
-                <label class="form-label">Company Name</label>
-                <input type="text" class="form-control" id="companyName" placeholder="Your Company Name" maxlength="100">
-                <small class="text-muted">Shown in emails and as page title for your users</small>
+                <label class="form-label">{{ t('landing_builder.ui.company_name') }}</label>
+                <input type="text" class="form-control" id="companyName" placeholder="{{ t('landing_builder.ui.your_company_name') }}" maxlength="100">
+                <small class="text-muted">{{ t('landing_builder.ui.shown_in_emails_and_as_page_title_for_your_users') }}</small>
             </div>
             <div class="mb-3">
-                <label class="form-label">Logo URL</label>
+                <label class="form-label">{{ t('landing_builder.ui.logo_url') }}</label>
                 <input type="url" class="form-control" id="logoUrl" placeholder="https://example.com/logo.png">
-                <small class="text-muted">Direct link to your logo image (PNG, JPG, SVG)</small>
+                <small class="text-muted">{{ t('landing_builder.ui.direct_link_to_your_logo_image_png_jpg_svg') }}</small>
             </div>
         </div>
 
         <!-- Brand Colors -->
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-fill-drip me-2"></i>Brand Colors</div>
+            <div class="section-title"><i class="fas fa-fill-drip me-2"></i>{{ t('landing_builder.ui.brand_colors') }}</div>
             <div class="row">
                 <div class="col-md-6 mb-3">
-                    <label class="form-label">Primary Color</label>
+                    <label class="form-label">{{ t('landing_builder.ui.primary_color_2') }}</label>
                     <div class="color-picker-wrapper">
                         <input type="color" id="colorPrimary" value="#6366f1" onchange="updateColorText('primary')">
                         <input type="text" class="form-control" id="colorPrimaryText" value="#6366f1" onchange="updateColorPicker('primary')">
                     </div>
-                    <small class="text-muted">Used for buttons, headers, accents</small>
+                    <small class="text-muted">{{ t('landing_builder.ui.used_for_buttons_headers_accents') }}</small>
                 </div>
                 <div class="col-md-6 mb-3">
-                    <label class="form-label">Secondary Color</label>
+                    <label class="form-label">{{ t('landing_builder.ui.secondary_color_2') }}</label>
                     <div class="color-picker-wrapper">
                         <input type="color" id="colorSecondary" value="#10B981" onchange="updateColorText('secondary')">
                         <input type="text" class="form-control" id="colorSecondaryText" value="#10B981" onchange="updateColorPicker('secondary')">
                     </div>
-                    <small class="text-muted">Used for gradients, highlights</small>
+                    <small class="text-muted">{{ t('landing_builder.ui.used_for_gradients_highlights') }}</small>
                 </div>
             </div>
         </div>
 
         <!-- Email Customization -->
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-envelope me-2"></i>Email Customization</div>
+            <div class="section-title"><i class="fas fa-envelope me-2"></i>{{ t('landing_builder.ui.email_customization') }}</div>
             <div class="mb-3">
-                <label class="form-label">Footer Text</label>
-                <textarea class="form-control" id="footerText" rows="2" placeholder="Custom footer message for emails" maxlength="500"></textarea>
+                <label class="form-label">{{ t('landing_builder.ui.footer_text') }}</label>
+                <textarea class="form-control" id="footerText" rows="2" placeholder="{{ t('landing_builder.ui.custom_footer_message_for_emails') }}" maxlength="500"></textarea>
             </div>
             <div class="mb-3">
-                <label class="form-label">Email Signature</label>
-                <textarea class="form-control" id="emailSignature" rows="2" placeholder="Your Company Team" maxlength="200"></textarea>
+                <label class="form-label">{{ t('landing_builder.ui.email_signature') }}</label>
+                <textarea class="form-control" id="emailSignature" rows="2" placeholder="{{ t('landing_builder.ui.your_company_team') }}" maxlength="200"></textarea>
             </div>
             <div class="toggle-switch">
                 <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="hidePlatformBranding">
-                    <label class="form-check-label" for="hidePlatformBranding">Hide "Powered by Aurvek" branding</label>
+                    <label class="form-check-label" for="hidePlatformBranding">{{ t('landing_builder.ui.hide_powered_by_aurvek_branding') }}</label>
                 </div>
             </div>
         </div>
 
         <!-- Theme Enforcement -->
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-paint-brush me-2"></i>Theme Enforcement</div>
-            <p class="text-muted">Force your users to use a specific theme, or let them choose their own.</p>
+            <div class="section-title"><i class="fas fa-paint-brush me-2"></i>{{ t('landing_builder.ui.theme_enforcement') }}</div>
+            <p class="text-muted">{{ t('landing_builder.ui.force_your_users_to_use_a_specific_theme_or_let') }}</p>
 
             <div class="mb-3 toggle-switch">
                 <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="disableThemeSelector" onchange="toggleThemeOptions()">
-                    <label class="form-check-label" for="disableThemeSelector">Lock theme for all my users</label>
+                    <label class="form-check-label" for="disableThemeSelector">{{ t('landing_builder.ui.lock_theme_for_all_my_users') }}</label>
                 </div>
             </div>
 
             <div id="themeOptions" style="display: none;">
-                <label class="form-label">Select Forced Theme</label>
+                <label class="form-label">{{ t('landing_builder.ui.select_forced_theme') }}</label>
                 <div class="theme-selector" id="themeSelector">
                     <div class="theme-option" data-theme="default" onclick="selectTheme('default')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #6366f1, #8b5cf6);"></div>
-                        <div class="theme-name">Default</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.default') }}</div>
                     </div>
                     <div class="theme-option" data-theme="dark" onclick="selectTheme('dark')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #1f2937, #374151);"></div>
-                        <div class="theme-name">Dark</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.dark') }}</div>
                     </div>
                     <div class="theme-option" data-theme="light" onclick="selectTheme('light')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #f3f4f6, #e5e7eb);"></div>
-                        <div class="theme-name">Light</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.light') }}</div>
                     </div>
                     <div class="theme-option" data-theme="writer" onclick="selectTheme('writer')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #fef3c7, #fde68a);"></div>
-                        <div class="theme-name">Writer</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.writer') }}</div>
                     </div>
                     <div class="theme-option" data-theme="terminal" onclick="selectTheme('terminal')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #000000, #1a1a1a);"></div>
-                        <div class="theme-name">Terminal</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.terminal') }}</div>
                     </div>
                     <div class="theme-option" data-theme="coder" onclick="selectTheme('coder')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #1e1e2e, #313244);"></div>
-                        <div class="theme-name">Coder</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.coder') }}</div>
                     </div>
                     <div class="theme-option" data-theme="katarishoji" onclick="selectTheme('katarishoji')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #0c1445, #d4af37);"></div>
-                        <div class="theme-name">Katarishoji</div>
+                        <div class="theme-name">{{ t('landing_builder.ui.katarishoji') }}</div>
                     </div>
                     <div class="theme-option" data-theme="nekoglass" onclick="selectTheme('nekoglass')">
                         <div class="theme-preview" style="background: linear-gradient(135deg, #0a0b10, #7c8dff);"></div>
@@ -263,29 +264,29 @@
     <!-- Right Column: Preview -->
     <div class="col-lg-5">
         <div class="section-container position-sticky" style="top: 20px;">
-            <div class="section-title"><i class="fas fa-eye me-2"></i>Live Preview</div>
+            <div class="section-title"><i class="fas fa-eye me-2"></i>{{ t('landing_builder.ui.live_preview') }}</div>
 
             <!-- Brand Card Preview -->
             <div class="preview-card" id="brandPreview">
-                <img id="logoPreview" class="logo-preview" src="" alt="Logo" style="display: none;">
-                <div class="company-name" id="companyNamePreview">Your Company</div>
+                <img id="logoPreview" class="logo-preview" src="" alt="{{ t('landing_builder.ui.logo') }}" style="display: none;">
+                <div class="company-name" id="companyNamePreview">{{ t('landing_builder.ui.your_company') }}</div>
             </div>
 
             <!-- Email Preview -->
-            <h6 class="mb-2"><i class="fas fa-envelope me-1"></i>Email Preview</h6>
+            <h6 class="mb-2"><i class="fas fa-envelope me-1"></i>{{ t('landing_builder.ui.email_preview') }}</h6>
             <div class="preview-email" id="emailPreview">
                 <div class="email-header">
-                    <h3 id="emailTitlePreview">Welcome to Your Company</h3>
+                    <h3 id="emailTitlePreview">{{ t('landing_builder.ui.welcome_to_your_company') }}</h3>
                 </div>
                 <div class="email-body text-center">
-                    <p>Thank you for signing up!</p>
-                    <p>Click the button below to verify your email:</p>
-                    <a href="#" class="email-button" id="emailButtonPreview">Verify Email</a>
+                    <p>{{ t('landing_builder.ui.thank_you_for_signing_up') }}</p>
+                    <p>{{ t('landing_builder.ui.click_the_button_below_to_verify_your_email') }}</p>
+                    <a href="#" class="email-button" id="emailButtonPreview">{{ t('landing_builder.ui.verify_email') }}</a>
                 </div>
                 <div class="email-footer">
                     <p id="footerPreview"></p>
                     <p id="signaturePreview"></p>
-                    <p class="powered-by" id="poweredByPreview">Powered by Aurvek</p>
+                    <p class="powered-by" id="poweredByPreview">{{ t('landing_builder.ui.powered_by_aurvek') }}</p>
                 </div>
             </div>
         </div>
@@ -306,7 +307,7 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to load branding');
+                throw new Error(data.error || AurvekI18n.t('landing_builder.ui.failed_to_load_branding'));
             }
 
             const branding = data.branding;
@@ -344,7 +345,7 @@
     async function saveBranding() {
         const btn = document.getElementById('saveBtn');
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Saving...';
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${AurvekI18n.t('landing_builder.ui.saving')}`;
 
         try {
             const data = {
@@ -368,16 +369,16 @@
             const result = await response.json();
 
             if (!response.ok) {
-                throw new Error(result.error || 'Failed to save branding');
+                throw new Error(result.error || AurvekI18n.t('landing_builder.ui.failed_to_save_branding'));
             }
 
             FormGuard.markClean(document.querySelector('.col-lg-7'));
-            btn.innerHTML = '<i class="fas fa-check me-1"></i>Saved!';
+            btn.innerHTML = `<i class="fas fa-check me-1"></i>${AurvekI18n.t('landing_builder.ui.saved')}`;
             btn.classList.remove('btn-primary');
             btn.classList.add('btn-success');
 
             setTimeout(() => {
-                btn.innerHTML = '<i class="fas fa-save me-1"></i>Save Changes';
+                btn.innerHTML = `<i class="fas fa-save me-1"></i>${AurvekI18n.t('landing_builder.ui.save_changes')}`;
                 btn.classList.remove('btn-success');
                 btn.classList.add('btn-primary');
                 btn.disabled = false;
@@ -385,18 +386,18 @@
 
         } catch (error) {
             console.error('Error saving branding:', error);
-            btn.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>Error';
+            btn.innerHTML = `<i class="fas fa-exclamation-triangle me-1"></i>${AurvekI18n.t('landing_builder.error.title')}`;
             btn.classList.remove('btn-primary');
             btn.classList.add('btn-danger');
 
             setTimeout(() => {
-                btn.innerHTML = '<i class="fas fa-save me-1"></i>Save Changes';
+                btn.innerHTML = `<i class="fas fa-save me-1"></i>${AurvekI18n.t('landing_builder.ui.save_changes')}`;
                 btn.classList.remove('btn-danger');
                 btn.classList.add('btn-primary');
                 btn.disabled = false;
             }, 2000);
 
-            NotificationModal.error('Save Error', 'Error saving: ' + error.message);
+            NotificationModal.error(AurvekI18n.t('landing_builder.ui.save_error'), AurvekI18n.t('landing_builder.ui.error_saving_detail', { detail: error.message }));
         }
     }
 
@@ -419,7 +420,7 @@
     function updatePreview() {
         const primary = document.getElementById('colorPrimaryText').value;
         const secondary = document.getElementById('colorSecondaryText').value;
-        const companyName = document.getElementById('companyName').value || 'Your Company';
+        const companyName = document.getElementById('companyName').value || AurvekI18n.t('landing_builder.ui.your_company');
         const logoUrl = document.getElementById('logoUrl').value;
         const footerText = document.getElementById('footerText').value;
         const signature = document.getElementById('emailSignature').value;
@@ -447,7 +448,7 @@
         }
 
         // Update email preview
-        document.getElementById('emailTitlePreview').textContent = `Welcome to ${companyName}`;
+        document.getElementById('emailTitlePreview').textContent = AurvekI18n.t('landing_builder.ui.welcome_to_companyname', { companyName: companyName });
         document.getElementById('emailTitlePreview').style.color = primary;
 
         const headerEl = document.querySelector('.preview-email .email-header');

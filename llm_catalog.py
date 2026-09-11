@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +10,7 @@ import aiohttp
 import aiosqlite
 
 from common import claude_key, gemini_key, minimax_key, moonshot_key, openai_key, openrouter_key, xai_key
+from database import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +90,24 @@ CATALOG_COLUMNS = """
 """
 
 _sync_lock = asyncio.Lock()
+_provider_sync_locks = {provider: asyncio.Lock() for provider in SYNC_PROVIDER_ORDER}
+CATALOG_REFRESH_SECONDS = 24 * 60 * 60
+CATALOG_RETRY_SECONDS = 60 * 60
 
 
 class LlmCatalogError(RuntimeError):
-    """Raised for catalog sync errors that should be shown to admins."""
+    """Catalog failure with a stable UI key; diagnostic text remains for logs."""
+
+    def __init__(self, message, *, message_key="error.catalog_failed", **params):
+        super().__init__(message)
+        self.message_key = message_key
+        self.params = params
+
+    def localized(self, translate):
+        return translate("admin_models." + self.message_key, **self.params)
+
+    def ui_error(self):
+        return {"error_key": self.message_key, "error_params": self.params}
 
 
 def normalize_provider_key(machine_or_provider: str | None) -> str:
@@ -211,6 +227,8 @@ def normalize_runtime_capability(
 
     provider = normalize_provider_key(provider_key)
     model = (model_id or "").strip().lower()
+    if provider == "openai" and (model == "gpt-live-1" or model.startswith("gpt-live-1-")):
+        return {"kind": "openai_live", "channels": ["phone"]}
     if _is_openai_realtime_model(provider, model):
         return {
             "kind": "openai_realtime",
@@ -661,7 +679,7 @@ async def get_provider_catalog_view(
     """Return remote models enriched with matching local catalog state."""
     provider = normalize_provider_key(provider_key)
     if provider not in SYNC_PROVIDERS:
-        raise LlmCatalogError(f"Provider '{provider}' does not support API sync")
+        raise LlmCatalogError(f"Provider '{provider}' does not support API sync", message_key="error.unsupported_provider", provider=provider)
 
     normalized_remote = [
         _normalize_catalog_remote(provider, _normalize_remote_model(provider, item))
@@ -693,7 +711,24 @@ async def get_provider_catalog_view(
         local = local_by_model_id.get(model_id)
         item = _remote_for_admin(remote)
         if local:
+            updates = _build_update_payload(
+                remote,
+                local["manual_overrides"],
+                _json_loads(local.get("capabilities_json"), {}),
+                now="",
+                enabled=None,
+            )
+            changed = any(
+                (
+                    _json_loads(local.get(field), {}) != _json_loads(value, {})
+                    if field.endswith("_json")
+                    else local.get(field) != value
+                )
+                for field, value in updates.items()
+                if field not in {"last_synced_at", "raw_metadata_json"}
+            )
             item.update({
+                "catalog_change": "updated" if changed else "current",
                 "local_id": local["id"],
                 "enabled": local["enabled"],
                 "local_sync_status": local.get("sync_status"),
@@ -709,6 +744,7 @@ async def get_provider_catalog_view(
             item["needs_review"] = bool(local.get("needs_review") or _remote_needs_review(item))
         else:
             item.update({
+                "catalog_change": "new",
                 "local_id": None,
                 "enabled": False,
                 "local_sync_status": "new",
@@ -747,6 +783,7 @@ async def get_provider_catalog_view(
             "last_synced_at": local.get("last_synced_at"),
             "local_only": True,
             "remote_available": False,
+            "catalog_change": "local-only",
         })
 
     models.sort(key=lambda item: (
@@ -858,7 +895,7 @@ async def get_selector_llms(
             }
         if (
             not include_realtime
-            and capabilities["runtime"]["kind"] == "openai_realtime"
+            and "web" not in capabilities["runtime"]["channels"]
         ):
             continue
         # This query is the public selector boundary: never forward catalog raw
@@ -889,7 +926,7 @@ async def fetch_remote_models(provider_key: str) -> list[dict[str, Any]]:
         return await _fetch_openai_models()
     if provider == "anthropic":
         return await _fetch_anthropic_models()
-    raise LlmCatalogError(f"Provider '{provider_key}' does not support API sync")
+    raise LlmCatalogError(f"Provider '{provider_key}' does not support API sync", message_key="error.unsupported_provider", provider=provider_key)
 
 
 async def sync_provider(
@@ -898,10 +935,11 @@ async def sync_provider(
     selected_model_ids: list[str] | None = None,
     remote_models: list[dict[str, Any]] | None = None,
     disabled_model_ids: list[str] | None = None,
+    local_enabled_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     provider = normalize_provider_key(provider_key)
     if provider not in SYNC_PROVIDERS:
-        raise LlmCatalogError(f"Provider '{provider}' does not support API sync")
+        raise LlmCatalogError(f"Provider '{provider}' does not support API sync", message_key="error.unsupported_provider", provider=provider)
 
     async with _sync_lock:
         normalized_remote = [
@@ -922,7 +960,7 @@ async def sync_provider(
 
         cursor = await conn.execute(
             """
-            SELECT id, provider_model_id, model, capabilities_json, manual_overrides_json
+            SELECT id, machine, provider_model_id, model, capabilities_json, manual_overrides_json
             FROM LLM
             WHERE provider_key = ? OR machine = ?
             """,
@@ -933,6 +971,30 @@ async def sync_provider(
             (row["provider_model_id"] or row["model"]): row
             for row in existing_rows
         }
+
+        local_states: dict[int, bool] = {}
+        if local_enabled_states is not None:
+            if not selective_sync or not isinstance(local_enabled_states, list):
+                raise LlmCatalogError("Local model states require a selected provider sync", message_key="error.local_model_states_require_a_selected_provider_sync")
+            local_only_rows = {
+                row["id"]: row for model_id, row in existing_by_id.items()
+                if model_id not in remote_by_id
+            }
+            for state in local_enabled_states:
+                if (
+                    not isinstance(state, dict)
+                    or type(state.get("llm_id")) is not int
+                    or type(state.get("enabled")) is not bool
+                ):
+                    raise LlmCatalogError("Each local model state requires an integer llm_id and boolean enabled", message_key="error.each_local_model_state_requires_an_integer_llm_id_and_boolean_enabled")
+                llm_id = state["llm_id"]
+                row = local_only_rows.get(llm_id)
+                if not row:
+                    raise LlmCatalogError("Local model state must belong to this provider and be absent from its remote catalog", message_key="error.local_model_state_must_belong_to_this_provider_and_be_absent_from_its_remote_catalog")
+                _validate_model_state_change(row)
+                if llm_id in local_states and local_states[llm_id] != state["enabled"]:
+                    raise LlmCatalogError("Conflicting enabled states for the same model", message_key="error.conflicting_enabled_states_for_the_same_model")
+                local_states[llm_id] = state["enabled"]
 
         now = _utc_now()
         added = 0
@@ -1001,6 +1063,12 @@ async def sync_provider(
                 )
                 stale += 1
 
+        if local_states:
+            await conn.executemany(
+                "UPDATE LLM SET enabled = ? WHERE id = ?",
+                [(int(enabled), llm_id) for llm_id, enabled in local_states.items()],
+            )
+
         return {
             "provider": provider,
             "added": added,
@@ -1010,43 +1078,147 @@ async def sync_provider(
             "skipped": skipped,
             "remote_count": len(normalized_remote),
             "selected_count": len(selected_set),
+            "local_updated": len(local_states),
         }
 
 
-async def sync_all_providers(conn: aiosqlite.Connection) -> dict[str, Any]:
-    results = {}
-    for provider in SYNC_PROVIDER_ORDER:
+async def _write_catalog_sync_state(
+    conn: aiosqlite.Connection, provider: str, state: dict[str, Any]
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO SYSTEM_CONFIG (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """,
+        (f"llm_catalog_sync_{provider}", _json_dumps(state)),
+    )
+
+
+async def sync_provider_catalog(provider_key: str, *, only_if_stale: bool = False) -> dict[str, Any]:
+    """Refresh a complete provider catalog, with persistent freshness across visits."""
+    provider = normalize_provider_key(provider_key)
+    if provider not in SYNC_PROVIDERS:
+        raise LlmCatalogError(f"Provider '{provider}' does not support API sync", message_key="error.unsupported_provider", provider=provider)
+    lock = _provider_sync_locks[provider]
+    waited_for_update = lock.locked()
+    async with lock:
+        state: dict[str, Any] = {}
         try:
+            async with get_db_connection(readonly=True) as conn:
+                cursor = await conn.execute(
+                    "SELECT value FROM SYSTEM_CONFIG WHERE key = ?",
+                    (f"llm_catalog_sync_{provider}",),
+                )
+                row = await cursor.fetchone()
+            stored = _json_loads(row["value"], {}) if row else {}
+            state = stored if isinstance(stored, dict) else {}
+            now = time.time()
+            last_success = _as_float(state.get("last_success_at"))
+            last_attempt = _as_float(state.get("last_attempt_at"))
+            if only_if_stale and last_success and now - last_success < CATALOG_REFRESH_SECONDS:
+                return {
+                    "provider": provider, "status": "fresh", "last_success_at": last_success,
+                    "refreshed": waited_for_update,
+                }
+            if only_if_stale and last_attempt and now - last_attempt < CATALOG_RETRY_SECONDS:
+                return {
+                    "provider": provider, "status": "retry_later", "refreshed": False,
+                    "last_success_at": last_success, "retry_at": last_attempt + CATALOG_RETRY_SECONDS,
+                    "error": state.get("error") or "An earlier catalog update did not complete",
+                    "error_key": state.get("error_key", "error.retry_later"),
+                    "error_params": state.get("error_params", {}),
+                }
+
+            state["last_attempt_at"] = now
+            state.pop("error", None)
+            state.pop("error_key", None)
+            state.pop("error_params", None)
+            async with get_db_connection() as conn:
+                await _write_catalog_sync_state(conn, provider, state)
+                await conn.commit()
+
+            # Provider I/O must not hold a database connection or transaction.
             remote_models = await fetch_remote_models(provider)
-            results[provider] = await sync_provider(conn, provider, remote_models=remote_models)
-            await conn.commit()
+            async with get_db_connection() as conn:
+                try:
+                    await conn.execute("BEGIN IMMEDIATE")
+                    result = await sync_provider(conn, provider, remote_models=remote_models)
+                    success_state = {**state, "last_success_at": time.time()}
+                    await _write_catalog_sync_state(conn, provider, success_state)
+                    await conn.commit()
+                    state = success_state
+                except Exception:
+                    await conn.rollback()
+                    raise
+            return {
+                **result, "status": "updated", "refreshed": True,
+                "last_success_at": state["last_success_at"],
+            }
         except Exception as exc:
+            logger.exception("[llm_catalog] catalog refresh failed for provider '%s'", provider)
+            state["error"] = str(exc)
+            ui_error = exc.ui_error() if isinstance(exc, LlmCatalogError) else {"error_key": "error.catalog_failed", "error_params": {}}
+            state.update(ui_error)
             try:
-                await conn.rollback()
+                async with get_db_connection() as conn:
+                    await _write_catalog_sync_state(conn, provider, state)
+                    await conn.commit()
             except Exception:
-                pass
-            logger.exception("[llm_catalog] sync_all_providers failed for provider '%s'", provider)
-            results[provider] = {"error": str(exc)}
-    return results
+                logger.exception("[llm_catalog] could not persist refresh error for '%s'", provider)
+            return {"provider": provider, "status": "error", "refreshed": False, "error": str(exc), **ui_error}
+
+
+async def sync_all_providers(*, only_if_stale: bool = False) -> dict[str, Any]:
+    results = await asyncio.gather(*(
+        sync_provider_catalog(provider, only_if_stale=only_if_stale)
+        for provider in SYNC_PROVIDER_ORDER
+    ))
+    return dict(zip(SYNC_PROVIDER_ORDER, results))
 
 
 async def set_model_enabled(conn: aiosqlite.Connection, llm_id: int, enabled: bool) -> dict[str, Any]:
-    cursor = await conn.execute(
-        "SELECT id, machine, model FROM LLM WHERE id = ?",
-        (llm_id,),
-    )
-    row = await cursor.fetchone()
-    if not row:
-        raise LlmCatalogError("LLM not found")
+    return (await set_models_enabled(conn, [llm_id], enabled))[0]
+
+
+def _validate_model_state_change(row: aiosqlite.Row) -> None:
     if str(row["machine"] or "").strip().casefold() == "gptsub":
         raise LlmCatalogError(
-            "GPTSub model state is managed by linked-account catalog synchronization"
+            "GPTSub model state is managed by linked-account catalog synchronization",
+            message_key="error.gptsub_model_state_is_managed_by_linked_account_catalog_synchronization",
         )
     if row["machine"] == "GranSabio" and row["model"] == "gransabio-pipeline":
-        raise LlmCatalogError("System LLM cannot be disabled")
+        raise LlmCatalogError("System LLM cannot be disabled", message_key="error.system_llm_cannot_be_disabled")
 
-    await conn.execute("UPDATE LLM SET enabled = ? WHERE id = ?", (1 if enabled else 0, llm_id))
-    return {"id": llm_id, "enabled": enabled}
+
+async def set_models_enabled(
+    conn: aiosqlite.Connection, llm_ids: list[int], enabled: bool
+) -> list[dict[str, Any]]:
+    """Set the complete selection after validating every row, without toggling."""
+    if (
+        not isinstance(llm_ids, list)
+        or not llm_ids
+        or any(type(llm_id) is not int or llm_id <= 0 for llm_id in llm_ids)
+    ):
+        raise LlmCatalogError("Provide a non-empty list of positive integer LLM IDs", message_key="error.provide_a_non_empty_list_of_positive_integer_llm_ids")
+    if type(enabled) is not bool:
+        raise LlmCatalogError("Enabled must be a boolean", message_key="error.enabled_must_be_a_boolean")
+    llm_ids = list(dict.fromkeys(llm_ids))
+    placeholders = ",".join("?" for _ in llm_ids)
+    cursor = await conn.execute(
+        f"SELECT id, machine, model FROM LLM WHERE id IN ({placeholders})",
+        llm_ids,
+    )
+    rows = await cursor.fetchall()
+    if len(rows) != len(llm_ids):
+        raise LlmCatalogError("One or more LLMs were not found; no models were changed", message_key="error.one_or_more_llms_were_not_found_no_models_were_changed")
+    for row in rows:
+        _validate_model_state_change(row)
+    await conn.execute(
+        f"UPDATE LLM SET enabled = ? WHERE id IN ({placeholders})",
+        [int(enabled), *llm_ids],
+    )
+    return [{"id": llm_id, "enabled": enabled} for llm_id in llm_ids]
 
 
 def merge_manual_overrides(existing_json: str | None, fields: list[str]) -> str:
@@ -1071,13 +1243,13 @@ async def _request_json(
         ) as response:
             if response.status >= 400:
                 text = await response.text()
-                raise LlmCatalogError(f"API error {response.status}: {text[:500]}")
+                raise LlmCatalogError(f"API error {response.status}: {text[:500]}", message_key="error.provider_http", status=response.status)
             return await response.json()
 
 
 async def _fetch_openrouter_models() -> list[dict[str, Any]]:
     if not openrouter_key:
-        raise LlmCatalogError("OpenRouter API key not configured")
+        raise LlmCatalogError("OpenRouter API key not configured", message_key="error.openrouter_api_key_not_configured")
     data = await _request_json(
         "https://openrouter.ai/api/v1/models",
         headers={"Authorization": f"Bearer {openrouter_key}"},
@@ -1087,17 +1259,30 @@ async def _fetch_openrouter_models() -> list[dict[str, Any]]:
 
 async def _fetch_google_models() -> list[dict[str, Any]]:
     if not gemini_key:
-        raise LlmCatalogError("Gemini API key not configured")
-    data = await _request_json(
-        "https://generativelanguage.googleapis.com/v1beta/models",
-        params={"key": gemini_key},
-    )
-    return [_normalize_google_model(item) for item in data.get("models", [])]
+        raise LlmCatalogError("Gemini API key not configured", message_key="error.gemini_api_key_not_configured")
+    models = []
+    page_token = None
+    seen_tokens = set()
+    while True:
+        params = {"key": gemini_key, "pageSize": 100}
+        if page_token:
+            params["pageToken"] = page_token
+        data = await _request_json(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params=params,
+        )
+        models.extend(_normalize_google_model(item) for item in data.get("models", []))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            return models
+        if not isinstance(page_token, str) or page_token in seen_tokens:
+            raise LlmCatalogError("Google models API returned an invalid pagination token", message_key="error.google_models_api_returned_an_invalid_pagination_token")
+        seen_tokens.add(page_token)
 
 
 async def _fetch_xai_models() -> list[dict[str, Any]]:
     if not xai_key:
-        raise LlmCatalogError("xAI API key not configured")
+        raise LlmCatalogError("xAI API key not configured", message_key="error.xai_api_key_not_configured")
     data = await _request_json(
         "https://api.x.ai/v1/language-models",
         headers={"Authorization": f"Bearer {xai_key}"},
@@ -1108,7 +1293,7 @@ async def _fetch_xai_models() -> list[dict[str, Any]]:
 
 async def _fetch_minimax_models() -> list[dict[str, Any]]:
     if not minimax_key:
-        raise LlmCatalogError("MiniMax API key not configured")
+        raise LlmCatalogError("MiniMax API key not configured", message_key="error.minimax_api_key_not_configured")
     data = await _request_json(
         "https://api.minimax.io/v1/models",
         headers={"Authorization": f"Bearer {minimax_key}"},
@@ -1119,7 +1304,7 @@ async def _fetch_minimax_models() -> list[dict[str, Any]]:
 
 async def _fetch_kimi_models() -> list[dict[str, Any]]:
     if not moonshot_key:
-        raise LlmCatalogError("Kimi API key not configured")
+        raise LlmCatalogError("Kimi API key not configured", message_key="error.kimi_api_key_not_configured")
     data = await _request_json(
         "https://api.moonshot.ai/v1/models",
         headers={"Authorization": f"Bearer {moonshot_key}"},
@@ -1130,7 +1315,7 @@ async def _fetch_kimi_models() -> list[dict[str, Any]]:
 
 async def _fetch_openai_models() -> list[dict[str, Any]]:
     if not openai_key:
-        raise LlmCatalogError("OpenAI API key not configured")
+        raise LlmCatalogError("OpenAI API key not configured", message_key="error.openai_api_key_not_configured")
     data = await _request_json(
         "https://api.openai.com/v1/models",
         headers={"Authorization": f"Bearer {openai_key}"},
@@ -1141,7 +1326,7 @@ async def _fetch_openai_models() -> list[dict[str, Any]]:
 
 async def _fetch_anthropic_models() -> list[dict[str, Any]]:
     if not claude_key:
-        raise LlmCatalogError("Anthropic API key not configured")
+        raise LlmCatalogError("Anthropic API key not configured", message_key="error.anthropic_api_key_not_configured")
     data = await _request_json(
         "https://api.anthropic.com/v1/models",
         headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
@@ -1453,7 +1638,7 @@ def _normalize_remote_model(provider: str, item: dict[str, Any]) -> dict[str, An
         return _normalize_kimi_model(item)
     if provider in DISCOVERY_ASSISTED_PROVIDERS:
         return _normalize_discovery_model(provider, item)
-    raise LlmCatalogError(f"Cannot normalize provider '{provider}'")
+    raise LlmCatalogError(f"Cannot normalize provider '{provider}'", message_key="error.normalize_provider", provider=provider)
 
 
 def _normalize_catalog_remote(provider: str, remote: dict[str, Any]) -> dict[str, Any]:

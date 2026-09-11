@@ -1,5 +1,4 @@
 import asyncio
-import calendar
 import re
 import sqlite3
 import unicodedata
@@ -8,6 +7,8 @@ from typing import Any, Callable
 
 import orjson
 
+from babel.dates import format_date
+from chat.services.localization import chat_translator
 from database import (
     DB_MAX_RETRIES,
     DB_RETRY_DELAY_BASE,
@@ -18,14 +19,14 @@ from chat.services.conversations import create_conversation_core
 from log_config import logger
 
 
-def sanitize_chat_title(name: str | None, max_len: int = 25) -> str:
+def sanitize_chat_title(name: str | None, max_len: int = 25, *, fallback: str = "Untitled") -> str:
     """Strip control/format chars, collapse whitespace, and truncate."""
     cleaned = "".join(
-        ch for ch in (name or "Untitled")
+        ch for ch in (name or fallback)
         if unicodedata.category(ch) not in ("Cc", "Cf")
     )
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned[:max_len] if cleaned else "Untitled"
+    return cleaned[:max_len] if cleaned else fallback
 
 
 def escape_markdown(text: str) -> str:
@@ -35,8 +36,9 @@ def escape_markdown(text: str) -> str:
     return text
 
 
-async def can_use_platform(user_id: int, platform: str, cursor) -> tuple[bool, str, str]:
+async def can_use_platform(user_id: int, platform: str, cursor, *, translator=None) -> tuple[bool, str, str]:
     """Check if a user can use a platform."""
+    tr = chat_translator(translator)
     if platform == "telegram":
         await cursor.execute("SELECT telegram_chat_id FROM USERS WHERE id = ?", (user_id,))
         row = await cursor.fetchone()
@@ -44,7 +46,7 @@ async def can_use_platform(user_id: int, platform: str, cursor) -> tuple[bool, s
             return (
                 False,
                 "platform_not_linked",
-                "Telegram is not linked to your account. Link it first from Telegram.",
+                tr.t("channel_notices.telegram_not_linked"),
             )
         config_key = "telegram_require_phone_verification"
     elif platform == "whatsapp":
@@ -54,14 +56,14 @@ async def can_use_platform(user_id: int, platform: str, cursor) -> tuple[bool, s
             return (
                 False,
                 "no_phone_number",
-                "No phone number on your account. Set it in your account settings first.",
+                tr.t("channel_notices.phone_required"),
             )
         config_key = "whatsapp_require_phone_verification"
     else:
         return (
             False,
             "invalid_platform",
-            "Invalid platform. Use: whatsapp (wa) or telegram (tg).",
+            tr.t("channel_notices.invalid_platform"),
         )
 
     await cursor.execute("SELECT value FROM SYSTEM_CONFIG WHERE key = ?", (config_key,))
@@ -73,7 +75,7 @@ async def can_use_platform(user_id: int, platform: str, cursor) -> tuple[bool, s
             return (
                 False,
                 "phone_verification_required",
-                "Your phone number must be verified first. Check your account settings.",
+                tr.t("channel_notices.phone_verification"),
             )
 
     return True, "", ""
@@ -297,8 +299,11 @@ async def set_external_conversation(
     conv_id: int,
     target_platform: str,
     current_platform: str,
+    *,
+    translator=None,
 ) -> dict:
     """Validate and assign a conversation to a platform in one transaction."""
+    tr = chat_translator(translator)
 
     async def _work(conn, cursor):
         await cursor.execute(
@@ -311,16 +316,16 @@ async def set_external_conversation(
             return {
                 "success": False,
                 "error": "conversation_not_found",
-                "message": "Conversation not found.",
+                "message": tr.t("channel_notices.conversation_missing"),
             }
 
-        conv_name = sanitize_chat_title(conv_row[1])
+        conv_name = sanitize_chat_title(conv_row[1], fallback=tr.t("channel_notices.untitled"))
         if conv_row[2]:
             await conn.rollback()
             return {
                 "success": False,
                 "error": "conversation_locked",
-                "message": f"Conversation #{conv_id} is locked. Use !new to start a fresh one.",
+                "message": tr.t("channel_notices.conversation_locked", id=conv_id),
             }
 
         try:
@@ -339,14 +344,14 @@ async def set_external_conversation(
                 return {
                     "success": False,
                     "error": "external_devices_attached",
-                    "message": "Remove external device access before assigning this conversation to WhatsApp or Telegram.",
+                    "message": tr.t("channel_notices.remove_devices"),
                 }
         except sqlite3.OperationalError as exc:
             if "EXTERNAL_DEVICE_BINDINGS" not in str(exc).upper():
                 await conn.rollback()
                 raise
 
-        ok, err_code, err_msg = await can_use_platform(user_id, target_platform, cursor)
+        ok, err_code, err_msg = await can_use_platform(user_id, target_platform, cursor, translator=tr)
         if not ok:
             await conn.rollback()
             return {"success": False, "error": err_code, "message": err_msg}
@@ -400,12 +405,12 @@ async def set_external_conversation(
             and normalized_previous_conversation_id != conv_id
         ):
             message = (
-                f'Moved {platform_label} to conversation #{conv_id} "{conv_name}".'
+                tr.t("channel_notices.conversation_moved", platform=platform_label, id=conv_id, name=conv_name)
             )
         elif target_platform != current_platform:
-            message = f'Assigned conversation #{conv_id} "{conv_name}" to {platform_label}.'
+            message = tr.t("channel_notices.conversation_assigned", platform=platform_label, id=conv_id, name=conv_name)
         else:
-            message = f'Switched to conversation #{conv_id} "{conv_name}" on {platform_label}.'
+            message = tr.t("channel_notices.conversation_switched", platform=platform_label, id=conv_id, name=conv_name)
 
         return {
             "success": True,
@@ -423,8 +428,10 @@ async def get_chats_list(
     conn,
     *,
     markdown: bool = True,
+    translator=None,
 ) -> str:
     """Return a formatted recent-conversation list for external platforms."""
+    tr = chat_translator(translator)
     cursor = await conn.cursor()
 
     await cursor.execute(
@@ -450,7 +457,7 @@ async def get_chats_list(
     rows = list(await cursor.fetchall())
 
     if not rows:
-        return "No conversations yet. Send a message to start one!"
+        return tr.t("channel_notices.no_conversations")
 
     current_conv_id = wa_conv_id if current_platform == "whatsapp" else tg_conv_id
     result_ids = {row[0] for row in rows}
@@ -471,14 +478,14 @@ async def get_chats_list(
     lines = []
     for row in rows:
         conv_id, name, last_activity, locked, msg_count = row
-        raw_name = sanitize_chat_title(name)
+        raw_name = sanitize_chat_title(name, fallback=tr.t("channel_notices.untitled"))
         display_name = escape_markdown(raw_name) if markdown else raw_name
 
         date_str = ""
         try:
             if last_activity and str(last_activity).strip():
                 dt = datetime.fromisoformat(str(last_activity))
-                date_str = f"{calendar.month_abbr[dt.month]} {dt.day:02d}"
+                date_str = format_date(dt, format="MMM dd", locale=tr.language)
         except (TypeError, ValueError):
             date_str = ""
 
@@ -488,11 +495,11 @@ async def get_chats_list(
         if conv_id == tg_conv_id:
             badges.append("TG")
         if locked:
-            badges.append("LOCKED")
+            badges.append(tr.t("channel_notices.locked"))
         badge_str = " ".join(f"[{badge}]" for badge in badges)
 
         pointer = "-> " if conv_id == current_conv_id else ""
-        count_part = f"{int(msg_count or 0)} msgs"
+        count_part = tr.t("channel_notices.message_count", count=int(msg_count or 0))
         if date_str:
             count_part += f", {date_str}"
 
@@ -501,11 +508,11 @@ async def get_chats_list(
             line += f" {badge_str}"
         lines.append(line)
 
-    header = "*Your conversations:*" if markdown else "Your conversations:"
+    header = tr.t("channel_notices.chats_header_markdown") if markdown else tr.t("channel_notices.chats_header")
     footer = (
-        "Use *!set <id>* to switch conversation."
+        tr.t("channel_notices.chats_footer_markdown")
         if markdown
-        else "Use !set <id> to switch conversation."
+        else tr.t("channel_notices.chats_footer")
     )
     return header + "\n\n" + "\n".join(lines) + "\n\n" + footer
 
@@ -549,6 +556,8 @@ async def change_response_mode(
     new_mode: str,
     platform: str = "whatsapp",
     conn=None,
+    *,
+    translator=None,
 ) -> str:
     """
     Change the default response mode for a user's external platform.
@@ -557,10 +566,11 @@ async def change_response_mode(
     and AI-side confirmation flows: update the platform JSON for the user and
     return the human-readable confirmation string.
     """
+    tr = chat_translator(translator)
     if new_mode not in ("voice", "text"):
-        return "Error changing mode: invalid mode"
+        return tr.t("channel_notices.invalid_mode")
     if platform not in ("whatsapp", "telegram"):
-        return "Error changing mode: invalid platform"
+        return tr.t("channel_notices.mode_invalid_platform")
 
     async def _write(db_conn):
         await db_conn.execute(
@@ -577,10 +587,10 @@ async def change_response_mode(
         else:
             async with get_db_connection() as owned_conn:
                 await _write(owned_conn)
-        return f"Changed to {'voice' if new_mode == 'voice' else 'text'} mode"
+        return tr.t("channel_notices.mode_changed", mode=tr.t("channel_notices.mode_" + new_mode))
     except Exception as e:
         logger.error(f"Error in change_response_mode: {e}")
-        return f"Error changing mode: {str(e)}"
+        return tr.t("channel_notices.mode_failed")
 
 
 async def change_conversation_response_mode(
@@ -588,19 +598,22 @@ async def change_conversation_response_mode(
     platform: str,
     conversation_id: int,
     mode: str,
+    *,
+    translator=None,
 ):
     """Change response mode for an assigned external-platform conversation."""
+    tr = chat_translator(translator)
     if platform not in ("whatsapp", "telegram"):
         return {
             "success": False,
             "error": "invalid_platform",
-            "message": "Invalid platform. Use whatsapp or telegram.",
+            "message": tr.t("channel_notices.mode_invalid_platform"),
         }
     if mode not in ("voice", "text"):
         return {
             "success": False,
             "error": "invalid_mode",
-            "message": "Invalid mode. Use voice or text.",
+            "message": tr.t("channel_notices.invalid_mode"),
         }
 
     async def _work(conn, cursor):
@@ -614,7 +627,7 @@ async def change_conversation_response_mode(
             return {
                 "success": False,
                 "error": "conversation_not_found",
-                "message": "Conversation not found.",
+                "message": tr.t("channel_notices.conversation_missing"),
             }
 
         await cursor.execute(
@@ -629,7 +642,7 @@ async def change_conversation_response_mode(
             return {
                 "success": False,
                 "error": "conversation_not_assigned",
-                "message": f"Conversation is not assigned to {platform}.",
+                "message": tr.t("channel_notices.conversation_not_assigned", platform=platform),
             }
 
         platforms[platform]["answer"] = mode
@@ -641,7 +654,7 @@ async def change_conversation_response_mode(
         return {
             "success": True,
             "error": None,
-            "message": f"Response mode changed to {mode}",
+            "message": tr.t("channel_notices.response_mode_changed", mode=tr.t("channel_notices.mode_" + mode)),
             "mode": mode,
         }
 

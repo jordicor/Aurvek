@@ -1,0 +1,42 @@
+<div class="mb-3">
+    <label for="uiLanguage" class="form-label">{{ t('profile.language.interface_label') }}</label>
+    <select class="form-select" id="uiLanguage" name="ui_language">
+        {% for code, label in [('en', 'English'), ('es', 'Español'), ('ja', '日本語'), ('fr', 'Français'), ('pt', 'Português'), ('it', 'Italiano'), ('de', 'Deutsch')] %}
+        <option value="{{ code }}"{% if ui_language == code %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+    </select>
+    <small class="form-text text-muted d-block">{{ t('profile.language.interface_help') }}</small>
+</div>
+
+<div class="mb-3" data-language-preferences data-max-languages="6">
+    <label for="primaryLanguageInput" class="form-label">{{ t('profile.language.conversation_primary_label') }}</label>
+    <input type="search" class="form-control" id="primaryLanguageInput"
+           list="userLanguageOptions" autocomplete="off" spellcheck="false"
+           value="{{ user_data['primary_language_label'] }}"
+           placeholder="{{ t('profile.language.search_automatic') }}">
+    <datalist id="userLanguageOptions">
+        {% for language in language_options %}
+        <option value="{{ language['label'] }}" data-code="{{ language['code'] }}">{{ language['code'] }}</option>
+        {% endfor %}
+    </datalist>
+    <input type="hidden" id="preferredLanguagesJson" name="preferred_languages_json"
+           value="{{ user_data['preferred_languages_json']|e }}">
+    <small class="form-text text-muted d-block">
+        {{ t('profile.language.conversation_help') }}
+    </small>
+
+    <div id="additionalLanguageChips" class="d-flex flex-wrap gap-2 mt-2" aria-live="polite"></div>
+    <button type="button" class="btn btn-link btn-sm px-0 mt-1" id="showAdditionalLanguageButton">
+        <i class="fas fa-plus me-1" aria-hidden="true"></i>{{ t('profile.language.add') }}
+    </button>
+    <div id="additionalLanguageControls" class="mt-1" hidden>
+        <label for="additionalLanguageInput" class="form-label small mb-1">{{ t('profile.language.additional_label') }}</label>
+        <div class="input-group input-group-sm">
+            <input type="search" class="form-control" id="additionalLanguageInput"
+                   list="userLanguageOptions" autocomplete="off" spellcheck="false"
+                   placeholder="{{ t('profile.language.search') }}">
+            <button type="button" class="btn btn-outline-secondary" id="addAdditionalLanguageButton">{{ t('profile.action.add') }}</button>
+        </div>
+    </div>
+    <small class="form-text d-block" id="languagePreferenceStatus" aria-live="polite"></small>
+</div>

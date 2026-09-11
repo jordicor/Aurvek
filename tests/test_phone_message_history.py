@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import aiosqlite
 import httpx
@@ -12,6 +13,7 @@ from fastapi import FastAPI
 from auth import get_current_user
 from chat.routes import messages as messages_module
 from chat.services.phone_history import load_phone_history_page
+from integrations.embed.models import EmbedError
 
 
 def make_history_database(tmp_path):
@@ -49,6 +51,13 @@ def make_history_database(tmp_path):
         CREATE TABLE PHONE_RECORDINGS(
             id INTEGER PRIMARY KEY, call_id TEXT, status TEXT,
             participant_path TEXT, assistant_path TEXT, mixed_path TEXT
+        );
+        CREATE TABLE PHONE_CALL_MESSAGE_AUDIO_RANGES(
+            message_id INTEGER PRIMARY KEY,call_id TEXT NOT NULL,
+            start_byte INTEGER NOT NULL,end_byte INTEGER NOT NULL
+        );
+        CREATE TABLE PHONE_RECORDING_TOMBSTONES(
+            call_id_snapshot TEXT PRIMARY KEY
         );
 
         INSERT INTO MESSAGES(id,conversation_id,date) VALUES
@@ -123,7 +132,17 @@ def make_history_database(tmp_path):
         ) VALUES(1,'call-span','twilio','pstn',700,'seconds',0.30,0.42,'USD','final','2030-01-01 10:31:00');
         INSERT INTO PHONE_RECORDINGS(
             id,call_id,status,participant_path,assistant_path,mixed_path
-        ) VALUES(1,'call-span','available','D:/private/caller.ulaw',NULL,'D:/private/mix.mp3');
+        ) VALUES
+            (1,'call-span','available','D:/private/caller.ulaw',
+             'D:/private/assistant.ulaw','D:/private/mix.mp3'),
+            (2,'call-single','deleting','D:/private/deleting-caller.ulaw',
+             NULL,NULL);
+        INSERT INTO PHONE_CALL_MESSAGE_AUDIO_RANGES(
+            message_id,call_id,start_byte,end_byte
+        ) VALUES
+            (20,'call-span',80,240),
+            (30,'call-span',400,640),
+            (40,'call-single',0,160);
         """
     )
     conn.commit()
@@ -174,6 +193,12 @@ async def test_phone_history_enriches_messages_and_keeps_boundaries_stable(
             "origin_channel": "phone",
             "participant": "assistant",
             "turn_id": "turn-1",
+            "audio": {
+                "available": True,
+                "url": "/api/phone-messages/30/audio",
+                "mime_type": "audio/wav",
+                "label": "Phone assistant audio",
+            },
         },
         "interrupted": True,
         "played_ms": 1300,
@@ -188,6 +213,13 @@ async def test_phone_history_enriches_messages_and_keeps_boundaries_stable(
     assert older.message_metadata[10]["channel"] == "whatsapp"
     assert older.message_metadata[10]["provenance"]["channel"] == "phone"
     assert older.message_metadata[10]["delivery_state"] == "released"
+    assert older.message_metadata[20]["provenance"]["audio"] == {
+        "available": True,
+        "url": "/api/phone-messages/20/audio",
+        "mime_type": "audio/wav",
+        "label": "Phone caller audio",
+    }
+    assert "audio" not in newest.message_metadata[40]["provenance"]
 
     newest_markers = {marker["id"]: marker for marker in newest.markers}
     older_markers = {marker["id"]: marker for marker in older.markers}
@@ -280,6 +312,10 @@ async def test_phone_history_exposes_safe_detail_without_paths_or_provider_ids(
                 "track": "participant",
                 "url": "/api/phone-calls/call-span/recording?track=participant",
             },
+            {
+                "track": "assistant",
+                "url": "/api/phone-calls/call-span/recording?track=assistant",
+            },
         ]
     }
     assert call["recording"] == {
@@ -335,6 +371,39 @@ async def test_phone_history_exposes_safe_detail_without_paths_or_provider_ids(
     }
     assert admin_call["cost_components"][0]["provider_cost"] == 0.3
     assert "/recording?track=" not in json.dumps(admin_page.public_payload())
+    assert "audio" not in admin_page.message_metadata[30]["provenance"]
+    assert "/api/phone-messages/" not in json.dumps(admin_page.message_metadata)
+
+
+@pytest.mark.asyncio
+async def test_phone_history_hides_audio_after_recording_deletion_is_fenced(
+    tmp_path,
+) -> None:
+    factory = make_history_database(tmp_path)
+    async with factory() as conn:
+        await conn.execute(
+            "INSERT INTO PHONE_RECORDING_TOMBSTONES(call_id_snapshot) VALUES(?)",
+            ("call-span",),
+        )
+        await conn.commit()
+
+    page = await load_phone_history_page(
+        factory,
+        conversation_id=10,
+        owner_user_id=1,
+        message_ids=[20, 30],
+        newest_page=True,
+    )
+    call = next(item for item in page.calls if item["id"] == "call-span")
+
+    assert "audio" not in page.message_metadata[20]["provenance"]
+    assert "audio" not in page.message_metadata[30]["provenance"]
+    assert call["audio"] is None
+    assert call["recording"] == {
+        "present": False,
+        "status": None,
+        "audio_available": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -389,7 +458,7 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
             extensions_enabled INTEGER,extensions_free_selection INTEGER,
             is_paid INTEGER
         );
-        CREATE TABLE LLM(id INTEGER PRIMARY KEY,machine TEXT,model TEXT);
+        CREATE TABLE LLM(id INTEGER PRIMARY KEY,machine TEXT,model TEXT,enabled INTEGER DEFAULT 1);
         CREATE TABLE CONVERSATIONS(
             id INTEGER PRIMARY KEY,user_id INTEGER,role_id INTEGER,llm_id INTEGER,
             active_extension_id INTEGER,is_incognito INTEGER,hidden_from_history INTEGER,
@@ -426,7 +495,7 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
         );
         INSERT INTO USERS VALUES(1,'owner'),(2,'other');
         INSERT INTO PROMPTS VALUES(1,'Prompt',NULL,'Description',0,1,0);
-        INSERT INTO LLM VALUES(1,'OpenAI','model');
+        INSERT INTO LLM(id,machine,model) VALUES(1,'OpenAI','model');
         INSERT INTO CONVERSATIONS VALUES
             (10,1,1,1,NULL,0,0,0,0,NULL),
             (11,1,1,1,NULL,0,0,0,0,NULL),
@@ -442,7 +511,7 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
             '2030-01-01 09:59:00','2030-01-01 10:05:00',NULL
         );
         INSERT INTO PHONE_CALL_MESSAGE_LINKS VALUES(
-            1,'call-route',100,'caller','turn-route','phone',0,NULL,
+            1,'call-route',100,'caller','turn-route','phone',1,NULL,
             'consumed','2030-01-01 10:00:01'
         );
         """
@@ -490,11 +559,12 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
 
     class FakeUser:
         id = 1
+        admin = False
 
         @property
         def is_admin(self):
             async def value():
-                return False
+                return self.admin
 
             return value()
 
@@ -517,6 +587,7 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
     assert [message["id"] for message in phone_payload["messages"]] == [100]
     assert phone_payload["messages"][0]["phone_call_id"] == "call-route"
     assert phone_payload["messages"][0]["channel"] == "phone"
+    assert phone_payload["messages"][0]["interrupted"] is True
     assert phone_payload["messages"][0]["played_ms"] is None
     assert phone_payload["messages"][0]["delivery_state"] == "consumed"
     assert phone_payload["messages"][0]["provenance"]["turn_id"] == "turn-route"
@@ -530,3 +601,46 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
 
     assert denied_response.status_code == 404
     assert "private text" not in denied_response.text
+
+    # A platform operator can inspect an inaccessible application, without
+    # gaining that application's identity or deleting empty historical turns.
+    denied_scope = AsyncMock(side_effect=EmbedError("application_disabled", 403))
+    audit = AsyncMock()
+    monkeypatch.setattr(messages_module, "authorize_application_read", denied_scope)
+    monkeypatch.setattr(messages_module, "log_admin_action", audit)
+    async with route_factory() as db:
+        await db.execute("""INSERT INTO MESSAGES VALUES
+            (201,20,2,'','bot','2030-01-01 10:03:00',0,1,NULL,0,0)""")
+        await db.commit()
+
+    FakeUser.admin = True
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as client:
+        newest = await client.get("/api/conversations/20/messages?limit=1")
+        older = await client.get("/api/conversations/20/messages?limit=1&before_id=201")
+        missing = await client.get("/api/conversations/999/messages")
+        assert newest.status_code == older.status_code == 200
+        assert newest.json()["has_more"] is True
+        assert [row["id"] for row in newest.json()["messages"]] == [201]
+        assert [row["id"] for row in older.json()["messages"]] == [200]
+        assert older.json()["has_more"] is False
+        assert older.json()["conversation_info"]["message_count"] == 2
+        assert missing.status_code == 404
+        denied_scope.assert_not_awaited()
+        assert audit.await_count == 2
+        for call in audit.await_args_list:
+            assert call.kwargs["admin_id"] == 1
+            assert call.kwargs["target_user_id"] == 2
+            assert call.kwargs["target_resource_id"] == 20
+            assert call.kwargs["action_type"] == "view_conversation"
+
+        FakeUser.embed_principal = object()
+        embedded = await client.get("/api/conversations/20/messages")
+        assert embedded.status_code == 403
+        denied_scope.assert_awaited_once()
+        assert audit.await_count == 2
+
+    async with route_factory(readonly=True) as db:
+        rows = await (await db.execute("SELECT id FROM MESSAGES WHERE conversation_id=20 ORDER BY id")).fetchall()
+        assert [row["id"] for row in rows] == [200, 201]

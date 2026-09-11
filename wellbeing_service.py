@@ -795,6 +795,21 @@ def _trigger_for_severity(
     return {"threshold_key": key, "threshold_value": threshold, "observed_value": observed}
 
 
+def _reminder_copy(config: dict[str, Any], severity: str) -> dict[str, str]:
+    config_key = f"wellbeing_notice_text_{severity}"
+    default_text = DEFAULT_CONFIG[config_key][0]
+    text = config.get(config_key) or default_text
+    copy = {"text": text}
+    if text == default_text:
+        copy.update({
+            "text_key": f"notice_{severity}",
+            "text_source": "platform_default",
+        })
+    else:
+        copy["text_source"] = "admin_configured"
+    return copy
+
+
 def _build_status_payload(
     session: Optional[dict[str, Any]],
     config: dict[str, Any],
@@ -832,8 +847,7 @@ def _build_status_payload(
             reminder = {
                 "should_show": True,
                 "severity": severity,
-                "text": config.get("wellbeing_notice_text_strong")
-                or DEFAULT_CONFIG["wellbeing_notice_text_strong"][0],
+                **_reminder_copy(config, "strong"),
                 "allow_snooze": False,
                 "snooze_minutes": int(config["wellbeing_snooze_minutes"]),
                 "mode": config["wellbeing_mode"],
@@ -873,8 +887,7 @@ def _build_status_payload(
                 reminder = {
                     "should_show": True,
                     "severity": severity,
-                    "text": config.get(f"wellbeing_notice_text_{severity}")
-                    or DEFAULT_CONFIG[f"wellbeing_notice_text_{severity}"][0],
+                    **_reminder_copy(config, severity),
                     "allow_snooze": bool(config["wellbeing_allow_snooze"]),
                     "snooze_minutes": int(config["wellbeing_snooze_minutes"]),
                     "mode": config["wellbeing_mode"],

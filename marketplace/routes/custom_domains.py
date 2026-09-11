@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 import dns.resolver
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, ValidationInfo, field_validator
 
 from auth import get_current_user
 from models import User
+from i18n import get_translator, Translator
 from database import get_db_connection
 from common import deduct_balance, get_balance, record_daily_usage
 from marketplace.middleware.custom_domains import invalidate_domain_cache
@@ -56,9 +57,9 @@ router = APIRouter(prefix="/api/domains", tags=["Custom Domains"])
 admin_router = APIRouter(prefix="/admin/domains", tags=["Admin - Custom Domains"])
 
 
-def _require_custom_domain_tools_enabled() -> None:
-    require_creator_tools_enabled()
-    require_public_landings_enabled()
+def _require_custom_domain_tools_enabled(translator=None) -> None:
+    require_creator_tools_enabled(translator)
+    require_public_landings_enabled(translator)
 
 
 # =============================================================================
@@ -178,17 +179,18 @@ class DomainConfigRequest(BaseModel):
 
     @field_validator('domain')
     @classmethod
-    def validate_domain(cls, v):
+    def validate_domain(cls, v, info: ValidationInfo):
+        tr = (info.context or {}).get("translator") or Translator("en")
         # Basic domain validation
         pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$'
         if not re.match(pattern, v):
-            raise ValueError('Invalid domain format')
+            raise ValueError(tr.t('landing_builder.response.invalid_domain_format'))
         domain = v.lower().strip().rstrip(".")
         if not is_host_isolated_from_primary(domain):
-            raise ValueError('Custom domain must be on a separate site from Aurvek')
+            raise ValueError(tr.t('landing_builder.response.custom_domain_must_be_on_a_separate_site_from_aurvek'))
         creator_config = get_creator_content_config()
         if creator_config and domain == creator_config.host:
-            raise ValueError('Domain is reserved for isolated creator content')
+            raise ValueError(tr.t('landing_builder.response.domain_is_reserved_for_isolated_creator_content'))
         return domain
 
 
@@ -198,6 +200,7 @@ class DomainConfigRequest(BaseModel):
 
 @router.get("/{prompt_id}")
 async def get_domain_config(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
@@ -205,10 +208,11 @@ async def get_domain_config(
     Get custom domain configuration for a prompt.
     Returns current domain, verification status, and CNAME target.
     """
+    tr = get_translator(request, current_user)
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
-    await _verify_prompt_access(prompt_id, current_user)
+    await _verify_prompt_access(prompt_id, current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute("""
@@ -234,7 +238,7 @@ async def get_domain_config(
         "is_active": bool(result[2]),
         "activated_by_admin": bool(result[3]),
         "last_check": result[4],
-        "verification_error": result[5],
+        "verification_error": tr.t("landing_builder.ui.domain_verification_failed_check_your_dns_configuration_and_verify_again") if result[5] else None,
         "activated_at": result[6],
         "cname_target": CNAME_TARGET,
         "price": DOMAIN_PRICE
@@ -243,16 +247,18 @@ async def get_domain_config(
 
 @router.get("/slots/info")
 async def get_slots_info(
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """
     Get domain slots information for the current user.
     Returns purchased, used, and available slots.
     """
-    _require_custom_domain_tools_enabled()
+    tr = get_translator(request, current_user)
+    _require_custom_domain_tools_enabled(tr)
 
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
     slots = await get_user_slots_info(current_user.id)
 
@@ -265,21 +271,23 @@ async def get_slots_info(
 
 @router.post("/slots/purchase")
 async def purchase_slot(
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """
     Purchase a domain slot.
     Deducts SLOT_PRICE from user balance and adds 1 slot.
     """
-    _require_custom_domain_tools_enabled()
+    tr = get_translator(request, current_user)
+    _require_custom_domain_tools_enabled(tr)
 
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
     # Only users (creators) can purchase slots
     is_user = await current_user.is_user
     if not is_user:
-        raise HTTPException(403, "Only users can purchase domain slots")
+        raise HTTPException(403, tr.t('landing_builder.response.only_users_can_purchase_domain_slots'))
 
     # Atomic: deduct balance + add slot in single transaction
     async with get_db_connection() as conn:
@@ -299,7 +307,7 @@ async def purchase_slot(
                 balance = await get_balance(current_user.id)
                 raise HTTPException(
                     402,
-                    f"Insufficient balance. Required: ${SLOT_PRICE:.2f}, Available: ${balance:.2f}"
+                    tr.t('landing_builder.response.insufficient_balance_required_value1_available_value2', value1=tr.format_currency(SLOT_PRICE, 'USD', fraction_digits=2), value2=tr.format_currency(balance, 'USD', fraction_digits=2))
                 )
 
             # Add slot
@@ -324,14 +332,14 @@ async def purchase_slot(
         except Exception as e:
             await conn.rollback()
             logger.error(f"Error purchasing domain slot: {e}")
-            raise HTTPException(500, "Payment processing failed")
+            raise HTTPException(500, tr.t('landing_builder.response.payment_processing_failed'))
 
     # Get updated slots info (outside transaction)
     slots = await get_user_slots_info(current_user.id)
 
     return JSONResponse({
         "success": True,
-        "message": "Domain slot purchased successfully",
+        "message": tr.t('landing_builder.response.domain_slot_purchased_successfully'),
         "amount_charged": SLOT_PRICE,
         "slots": slots
     })
@@ -340,19 +348,33 @@ async def purchase_slot(
 @router.post("/{prompt_id}/configure")
 async def configure_domain(
     prompt_id: int,
-    request: DomainConfigRequest,
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """
     Configure a custom domain for a prompt.
     Does NOT activate - just saves the domain and sets status to 'pending'.
     """
+    tr = get_translator(request, current_user)
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
-    await _verify_prompt_access(prompt_id, current_user)
+    await _verify_prompt_access(prompt_id, current_user, translator=tr)
 
-    domain = request.domain
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(422, tr.t('landing_builder.response.invalid_json'))
+    try:
+        data = DomainConfigRequest.model_validate(payload, context={"translator": tr})
+    except ValidationError as exc:
+        errors = []
+        for error in exc.errors(include_url=False, include_context=False):
+            error["loc"] = ["body", *error["loc"]]
+            error["msg"] = tr.t('landing_builder.response.enter_a_valid_domain_name_on_a_separate_site_from')
+            errors.append(error)
+        return JSONResponse({"detail": errors}, status_code=422)
+    domain = data.domain
 
     # Check if domain is already used by another prompt
     async with get_db_connection(readonly=True) as conn:
@@ -362,7 +384,7 @@ async def configure_domain(
         )
         existing = await cursor.fetchone()
         if existing and existing[0] != prompt_id:
-            raise HTTPException(400, "Domain already configured for another prompt")
+            raise HTTPException(400, tr.t('landing_builder.response.domain_already_configured_for_another_prompt'))
 
     # Insert or update
     async with get_db_connection() as conn:
@@ -381,7 +403,7 @@ async def configure_domain(
 
     return JSONResponse({
         "success": True,
-        "message": f"Domain configured. Point CNAME to: {CNAME_TARGET}",
+        "message": tr.t('landing_builder.response.domain_configured_point_cname_to_value1', value1=CNAME_TARGET),
         "cname_target": CNAME_TARGET,
         "next_step": "verify"
     })
@@ -389,16 +411,18 @@ async def configure_domain(
 
 @router.post("/{prompt_id}/verify")
 async def verify_domain(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
     """
     Verify that the domain's CNAME points to our server.
     """
+    tr = get_translator(request, current_user)
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
-    await _verify_prompt_access(prompt_id, current_user)
+    await _verify_prompt_access(prompt_id, current_user, translator=tr)
 
     # Get the configured domain
     async with get_db_connection(readonly=True) as conn:
@@ -409,10 +433,10 @@ async def verify_domain(
         result = await cursor.fetchone()
 
     if not result:
-        raise HTTPException(404, "No domain configured")
+        raise HTTPException(404, tr.t('landing_builder.response.no_domain_configured'))
 
     domain = result[0]
-    verification_result = _verify_cname(domain, CNAME_TARGET)
+    verification_result = _verify_cname(domain, CNAME_TARGET, translator=tr)
 
     # Update verification status
     async with get_db_connection() as conn:
@@ -442,6 +466,7 @@ async def verify_domain(
 
 @router.post("/{prompt_id}/activate")
 async def activate_domain(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
@@ -450,20 +475,21 @@ async def activate_domain(
     Requires an available slot (purchased previously or buy one now).
     Only users can use this endpoint. Admins should use /admin/domains/{id}/activate-free.
     """
+    tr = get_translator(request, current_user)
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
     # Only users can activate. Admins should use activate-free endpoint.
     is_admin = await current_user.is_admin
     is_user = await current_user.is_user
     if not is_user and not is_admin:
-        raise HTTPException(403, "Only users can activate custom domains")
+        raise HTTPException(403, tr.t('landing_builder.response.only_users_can_activate_custom_domains'))
 
     # If admin, redirect them to use the free endpoint
     if is_admin:
-        raise HTTPException(400, "Admins should use /admin/domains/{prompt_id}/activate-free endpoint")
+        raise HTTPException(400, tr.t('landing_builder.response.use_the_free_admin_activation_action_for_this_domain'))
 
-    await _verify_prompt_access(prompt_id, current_user)
+    await _verify_prompt_access(prompt_id, current_user, translator=tr)
 
     # Check verification status
     async with get_db_connection(readonly=True) as conn:
@@ -474,15 +500,15 @@ async def activate_domain(
         result = await cursor.fetchone()
 
     if not result:
-        raise HTTPException(404, "No domain configured")
+        raise HTTPException(404, tr.t('landing_builder.response.no_domain_configured'))
 
     domain, status, is_active, admin_activated = result
 
     if is_active:
-        raise HTTPException(400, "Domain already active")
+        raise HTTPException(400, tr.t('landing_builder.response.domain_already_active'))
 
     if status != VSTATUS_VERIFIED:
-        raise HTTPException(400, f"Domain not verified. Current status: {VSTATUS_NAMES.get(status, 'unknown')}")
+        raise HTTPException(400, tr.t('landing_builder.response.domain_not_verified'))
 
     # Atomic: check slot availability + activate in single transaction
     async with get_db_connection() as conn:
@@ -509,8 +535,7 @@ async def activate_domain(
             await conn.execute('ROLLBACK')
             raise HTTPException(
                 402,
-                f"No domain slots available. You have {used}/{purchased} slots in use. "
-                f"Purchase a slot for ${SLOT_PRICE:.2f} to activate this domain."
+                tr.t('landing_builder.response.no_domain_slots_available_you_have_value1_value2_slots_in', value1=tr.format_number(used, maximum_fraction_digits=0), value2=tr.format_number(purchased, maximum_fraction_digits=0), value3=tr.format_currency(SLOT_PRICE, 'USD', fraction_digits=2))
             )
 
         # Activate domain
@@ -533,13 +558,14 @@ async def activate_domain(
 
     return JSONResponse({
         "success": True,
-        "message": f"Domain {domain} activated successfully",
+        "message": tr.t('landing_builder.response.domain_value1_activated_successfully', value1=domain),
         "slots": updated_slots
     })
 
 
 @router.post("/{prompt_id}/deactivate")
 async def deactivate_domain(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
@@ -548,10 +574,11 @@ async def deactivate_domain(
     This frees up the slot for use on another prompt.
     The domain configuration is preserved and can be reactivated later.
     """
+    tr = get_translator(request, current_user)
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
-    await _verify_prompt_access(prompt_id, current_user)
+    await _verify_prompt_access(prompt_id, current_user, translator=tr)
 
     # Get current domain state
     async with get_db_connection(readonly=True) as conn:
@@ -562,12 +589,12 @@ async def deactivate_domain(
         result = await cursor.fetchone()
 
     if not result:
-        raise HTTPException(404, "No domain configured")
+        raise HTTPException(404, tr.t('landing_builder.response.no_domain_configured'))
 
     domain_id, domain, is_active = result
 
     if not is_active:
-        raise HTTPException(400, "Domain is already inactive")
+        raise HTTPException(400, tr.t('landing_builder.response.domain_is_already_inactive'))
 
     # Deactivate domain (frees the slot)
     async with get_db_connection() as conn:
@@ -591,21 +618,23 @@ async def deactivate_domain(
 
     return JSONResponse({
         "success": True,
-        "message": f"Domain {domain} deactivated. Slot freed for use elsewhere.",
+        "message": tr.t('landing_builder.response.domain_value1_deactivated_slot_freed_for_use_elsewhere', value1=domain),
         "slots": slots
     })
 
 
 @router.delete("/{prompt_id}")
 async def remove_domain(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
     """Remove custom domain configuration."""
+    tr = get_translator(request, current_user)
     if not current_user:
-        raise HTTPException(401, "Authentication required")
+        raise HTTPException(401, tr.t('landing_builder.response.authentication_required'))
 
-    await _verify_prompt_access(prompt_id, current_user)
+    await _verify_prompt_access(prompt_id, current_user, translator=tr)
 
     # Get domain for cache invalidation and captive user revert
     async with get_db_connection(readonly=True) as conn:
@@ -632,7 +661,7 @@ async def remove_domain(
             await conn.commit()
         invalidate_domain_cache(domain)
 
-    return JSONResponse({"success": True, "message": "Domain removed"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.domain_removed')})
 
 
 # =============================================================================
@@ -641,13 +670,15 @@ async def remove_domain(
 
 @admin_router.get("/")
 async def list_all_domains(
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """List all configured custom domains (admin only)."""
-    _require_custom_domain_tools_enabled()
+    tr = get_translator(request, current_user)
+    _require_custom_domain_tools_enabled(tr)
 
     if not current_user or not await current_user.is_admin:
-        raise HTTPException(403, "Admin only")
+        raise HTTPException(403, tr.t('landing_builder.response.admin_only'))
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute("""
@@ -682,14 +713,16 @@ async def list_all_domains(
 
 @admin_router.post("/{prompt_id}/activate-free")
 async def admin_activate_free(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
     """Activate a domain for free (admin only, bypasses payment)."""
-    _require_custom_domain_tools_enabled()
+    tr = get_translator(request, current_user)
+    _require_custom_domain_tools_enabled(tr)
 
     if not current_user or not await current_user.is_admin:
-        raise HTTPException(403, "Admin only")
+        raise HTTPException(403, tr.t('landing_builder.response.admin_only'))
 
     async with get_db_connection() as conn:
         # Check domain exists and is verified
@@ -700,12 +733,12 @@ async def admin_activate_free(
         result = await cursor.fetchone()
 
         if not result:
-            raise HTTPException(404, "No domain configured for this prompt")
+            raise HTTPException(404, tr.t('landing_builder.response.no_domain_configured_for_this_prompt'))
 
         domain, status = result
 
         if status != VSTATUS_VERIFIED:
-            raise HTTPException(400, f"Domain not verified yet. Current status: {VSTATUS_NAMES.get(status, 'unknown')}")
+            raise HTTPException(400, tr.t('landing_builder.response.domain_not_verified_yet'))
 
         # Activate for free
         await conn.execute("""
@@ -724,20 +757,22 @@ async def admin_activate_free(
 
     return JSONResponse({
         "success": True,
-        "message": f"Domain {domain} activated for free (admin)"
+        "message": tr.t('landing_builder.response.domain_value1_activated_for_free_admin', value1=domain)
     })
 
 
 @admin_router.post("/{prompt_id}/deactivate")
 async def admin_deactivate(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user)
 ):
     """Deactivate a domain (admin only)."""
-    _require_custom_domain_tools_enabled()
+    tr = get_translator(request, current_user)
+    _require_custom_domain_tools_enabled(tr)
 
     if not current_user or not await current_user.is_admin:
-        raise HTTPException(403, "Admin only")
+        raise HTTPException(403, tr.t('landing_builder.response.admin_only'))
 
     domain_id = None
     async with get_db_connection() as conn:
@@ -764,16 +799,17 @@ async def admin_deactivate(
         if freed:
             logger.info(f"Freed {len(freed)} captive users after admin domain deactivation for prompt {prompt_id}")
 
-    return JSONResponse({"success": True, "message": "Domain deactivated"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.domain_deactivated')})
 
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
-async def _verify_prompt_access(prompt_id: int, user: User):
+async def _verify_prompt_access(prompt_id: int, user: User, translator=None):
     """Verify user has edit access to prompt."""
-    _require_custom_domain_tools_enabled()
+    tr = translator or Translator("en")
+    _require_custom_domain_tools_enabled(tr)
 
     is_admin = await user.is_admin
     if is_admin:
@@ -789,14 +825,15 @@ async def _verify_prompt_access(prompt_id: int, user: User):
             )
         """, (prompt_id, user.id, user.id))
         if not await cursor.fetchone():
-            raise HTTPException(403, "Access denied to this prompt")
+            raise HTTPException(403, tr.t('landing_builder.response.access_denied_to_this_prompt'))
 
 
-def _verify_cname(domain: str, expected_target: str) -> dict:
+def _verify_cname(domain: str, expected_target: str, translator=None) -> dict:
     """
     Verify CNAME record for a domain.
     Returns dict with success status and details.
     """
+    tr = translator or Translator("en")
     try:
         # Try CNAME lookup
         try:
@@ -806,12 +843,12 @@ def _verify_cname(domain: str, expected_target: str) -> dict:
                 if cname_target.lower() == expected_target.lower():
                     return {
                         "success": True,
-                        "message": f"CNAME verified: {domain} -> {cname_target}"
+                        "message": tr.t('landing_builder.response.cname_verified_value1_value2', value1=domain, value2=cname_target)
                     }
                 else:
                     return {
                         "success": False,
-                        "error": f"CNAME points to {cname_target}, expected {expected_target}"
+                        "error": tr.t('landing_builder.response.cname_points_to_value1_expected_value2', value1=cname_target, value2=expected_target)
                     }
         except dns.resolver.NoAnswer:
             # No CNAME, try A record as fallback
@@ -825,23 +862,24 @@ def _verify_cname(domain: str, expected_target: str) -> dict:
                 if str(ip) == our_ip:
                     return {
                         "success": True,
-                        "message": f"A record verified: {domain} -> {ip}"
+                        "message": tr.t('landing_builder.response.a_record_verified_value1_value2', value1=domain, value2=ip)
                     }
             return {
                 "success": False,
-                "error": f"Domain does not point to our server. Configure CNAME to {expected_target}"
+                "error": tr.t('landing_builder.response.domain_does_not_point_to_our_server_configure_cname_to', value1=expected_target)
             }
         except Exception:
             pass
 
         return {
             "success": False,
-            "error": f"No valid DNS records found. Configure CNAME to {expected_target}"
+            "error": tr.t('landing_builder.response.no_valid_dns_records_found_configure_cname_to_value1', value1=expected_target)
         }
 
     except dns.resolver.NXDOMAIN:
-        return {"success": False, "error": "Domain does not exist"}
+        return {"success": False, "error": tr.t('landing_builder.response.domain_does_not_exist')}
     except dns.resolver.Timeout:
-        return {"success": False, "error": "DNS lookup timeout"}
+        return {"success": False, "error": tr.t('landing_builder.response.dns_lookup_timeout')}
     except Exception as e:
-        return {"success": False, "error": f"DNS verification error: {str(e)}"}
+        logger.exception('Custom domain DNS verification failed for %s', domain)
+        return {"success": False, "error": tr.t('landing_builder.response.dns_verification_error_value1', value1=tr.t('landing_builder.response.internal_server_error'))}

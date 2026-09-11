@@ -5,9 +5,10 @@ module keeps that audio untouched, frames it for Twilio, and deliberately
 commits assistant text only after Twilio confirms the final playback mark.
 
 Realtime audio does not provide trustworthy word-to-audio alignment.  A
-barge-in therefore retains no assistant prefix: it clears Twilio, removes the
-provider response from its conversation, and commits the canonical caller
-turn with an empty assistant prefix.
+barge-in therefore keeps a real, conservative audio playhead for provider
+truncation and recording, but never derives words proportionally from elapsed
+audio.  Assistant text is retained only through a transcript/audio checkpoint
+known to be behind that playhead (or when the complete response was heard).
 """
 
 from __future__ import annotations
@@ -21,18 +22,25 @@ import time
 from typing import Any, Protocol
 
 from integrations.telephony.audio import (
+    PCMU_SAMPLE_RATE_HZ,
     PcmuFrame,
     PcmuFrameBuffer,
     pcmu_duration_ceiling_ms,
 )
 from integrations.telephony.media_streams import (
+    ConservativePlaybackClock,
+    MediaStreamError,
     build_clear_message,
     build_mark_message,
     build_media_message,
 )
-from integrations.telephony.phone_context import PhoneChannelTurn
+from integrations.telephony.phone_context import (
+    PhoneChannelTurn,
+    PhoneMessageAudioRange,
+)
 from integrations.telephony.playback import PhonePlaybackResult
 from integrations.telephony.recording import LocalCallRecorder
+from integrations.telephony.realtime_bridge import RealtimeTextCheckpoint
 from integrations.telephony.transport import CanonicalPhoneTurn
 
 
@@ -46,9 +54,10 @@ class RealtimePcmuBridge(Protocol):
 
     ``output_pcmu`` yields one completed native model response.
 
-    ``truncate_output(played_ms=0)`` must remove the interrupted assistant
-    item from provider-side conversation state.  Zero is intentional: neither
-    OpenAI Realtime nor this seam promises exact audio/text alignment.
+    ``truncate_output`` receives the conservative audio playhead observed when
+    Twilio is cleared.  It can be non-zero even when no assistant text is safe
+    to persist: neither OpenAI Realtime nor this seam promises word-level
+    audio/text alignment.
     """
 
     def output_pcmu(self) -> AsyncIterator[bytes]: ...
@@ -56,6 +65,14 @@ class RealtimePcmuBridge(Protocol):
     async def cancel_output(self) -> None: ...
 
     async def truncate_output(self, *, played_ms: int) -> None: ...
+
+    def confirmed_text_prefix(self, played_ms: int) -> str: ...
+
+    def confirmed_text_checkpoint(
+        self,
+        played_ms: int,
+    ) -> RealtimeTextCheckpoint | None: ...
+
 
 class RealtimePlaybackError(RuntimeError):
     """Realtime phone output could not be resolved durably."""
@@ -86,6 +103,7 @@ class RealtimeTurnPlayback:
         recorder: LocalCallRecorder | None = None,
         call_started_monotonic: float | None = None,
         monotonic: MonotonicClock = time.monotonic,
+        playback_clock: ConservativePlaybackClock | None = None,
         mark_confirmation_grace_seconds: float = (
             DEFAULT_MARK_CONFIRMATION_GRACE_SECONDS
         ),
@@ -99,6 +117,7 @@ class RealtimeTurnPlayback:
         self._send_message = send_message
         self._recorder = recorder
         self._monotonic = monotonic
+        self.playback_clock = playback_clock or ConservativePlaybackClock()
         now = float(monotonic())
         self._call_started_monotonic = (
             now if call_started_monotonic is None else float(call_started_monotonic)
@@ -139,6 +158,8 @@ class RealtimeTurnPlayback:
         self._output_started = False
         self._mark_sent = False
         self._source_audio_bytes = 0
+        self._wire_audio_bytes = 0
+        self._recording_start_ms: int | None = None
         self._finalize_task: asyncio.Task[Any] | None = None
 
     @property
@@ -187,8 +208,9 @@ class RealtimeTurnPlayback:
             # has also reached its response sentinel (or the bridge's bounded
             # response watchdog fails the turn).
             await audio_task
-            draft = await draft_task
-
+            if self._interrupted:
+                raise _PlaybackInterrupted
+            draft = await self._wait_for_draft_or_interruption(draft_task)
             if self._interrupted:
                 raise _PlaybackInterrupted
             if self._source_audio_bytes == 0 and draft.content:
@@ -311,6 +333,7 @@ class RealtimeTurnPlayback:
                 and self._result is None
             )
             if advanced and self._finalize_task is None:
+                self.playback_clock.note_mark_confirmed(played_ms)
                 self._finalize_task = asyncio.create_task(
                     self._confirm_final(played_ms),
                     name=f"realtime-confirm-{self._mark_prefix}",
@@ -353,6 +376,35 @@ class RealtimeTurnPlayback:
                 recording_start_ms=recording_start_ms,
             )
 
+    async def _wait_for_draft_or_interruption(
+        self,
+        draft_task: asyncio.Task[Any],
+    ) -> Any:
+        """Do not strand ``run`` if barge-in wins before draft publication."""
+
+        if draft_task.done():
+            return draft_task.result()
+        interrupted = asyncio.create_task(
+            self._done.wait(),
+            name=f"realtime-interrupt-wait-{self._mark_prefix}",
+        )
+        try:
+            done, _ = await asyncio.wait(
+                (draft_task, interrupted),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if draft_task in done:
+                return draft_task.result()
+            if self._interrupted:
+                raise _PlaybackInterrupted
+            raise RealtimePlaybackError(
+                "realtime playback resolved before its canonical draft"
+            )
+        finally:
+            if not interrupted.done():
+                interrupted.cancel()
+            await asyncio.gather(interrupted, return_exceptions=True)
+
     async def _send_frame(
         self,
         frame: PcmuFrame,
@@ -367,6 +419,7 @@ class RealtimeTurnPlayback:
                     * 1_000
                 ),
             )
+            self._recording_start_ms = recording_start_ms
         async with self._send_lock:
             async with self._state_lock:
                 if self._interrupted:
@@ -374,12 +427,15 @@ class RealtimeTurnPlayback:
             await self._send_message(
                 build_media_message(stream_sid=self.stream_sid, audio=frame.payload)
             )
+            sent_at = float(self._monotonic())
             self._output_started = True
-        if self._recorder is not None:
-            self._recorder.record_assistant(
-                frame.payload,
-                start_ms=recording_start_ms + frame.start_ms,
-            )
+            self._wire_audio_bytes += len(frame.payload)
+            self.playback_clock.note_audio_sent(frame.payload, sent_at=sent_at)
+            if self._recorder is not None:
+                self._recorder.record_assistant(
+                    frame.payload,
+                    start_ms=recording_start_ms + frame.start_ms,
+                )
         return recording_start_ms
 
     async def _interrupt(
@@ -396,6 +452,7 @@ class RealtimeTurnPlayback:
                 wait_existing = True
             else:
                 self._interrupted = True
+                draft_at_interrupt = getattr(self.runtime_turn, "draft", None)
                 self.phone_turn.link_state.mark_interrupted()
                 if participant_speech:
                     self.phone_turn.end_controller.on_real_participant_speech()
@@ -407,10 +464,26 @@ class RealtimeTurnPlayback:
             return self._result
 
         cleanup_errors: list[BaseException] = []
+        provider_played_ms = 0
+        # Waiting for the wire lock lets an already-admitted media send finish.
+        # No later frame can pass the interrupted state check, so this sample
+        # is the one frozen transport frontier immediately before ``clear``.
+        async with self._send_lock:
+            try:
+                provider_played_ms = self._estimate_played_ms()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            try:
+                await self._send_message(
+                    build_clear_message(stream_sid=self.stream_sid)
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
         for cleanup in (
-            self._clear_twilio,
             self.bridge.cancel_output,
-            lambda: self.bridge.truncate_output(played_ms=0),
+            lambda: self.bridge.truncate_output(
+                played_ms=provider_played_ms
+            ),
         ):
             try:
                 await cleanup()
@@ -418,9 +491,29 @@ class RealtimeTurnPlayback:
                 cleanup_errors.append(exc)
 
         try:
+            confirmed_text = ""
+            text_audio_ms = 0
+            if participant_speech:
+                current_draft = getattr(self.runtime_turn, "draft", None)
+                confirmed_text, text_audio_ms = (
+                    self._verified_text_checkpoint(
+                        current_draft or draft_at_interrupt,
+                        provider_played_ms=provider_played_ms,
+                    )
+                )
+            # Match the standard playback ledger: ``played_ms`` records the
+            # conservative transport playhead (which may include part of the
+            # next unaligned item), while the linked audio range below stops
+            # exactly at the checkpoint that backs ``confirmed_text``.
+            confirmed_ms = provider_played_ms if confirmed_text else 0
+            self._truncate_assistant_recording(played_ms=provider_played_ms)
+            self._stage_assistant_audio(
+                confirmed_text,
+                played_ms=text_audio_ms,
+            )
             ids = await self.runtime_turn.interrupt(
-                "",
-                played_ms=0,
+                confirmed_text,
+                played_ms=confirmed_ms,
                 reason=reason,
             )
         except BaseException:
@@ -430,7 +523,7 @@ class RealtimeTurnPlayback:
                 pass
             self._done.set()
             raise
-        result = PhonePlaybackResult(ids, "", 0, True)
+        result = PhonePlaybackResult(ids, confirmed_text, confirmed_ms, True)
         self._set_result(result)
         if cleanup_errors and not tolerate_cleanup_failure:
             raise RealtimePlaybackError(
@@ -438,10 +531,80 @@ class RealtimeTurnPlayback:
             ) from cleanup_errors[0]
         return result
 
-    async def _clear_twilio(self) -> None:
-        await self._send(
-            build_clear_message(stream_sid=self.stream_sid)
+    def _estimate_played_ms(self) -> int:
+        """Return the bounded audio frontier that could have reached the caller."""
+
+        if self._source_audio_bytes <= 0 or self._wire_audio_bytes <= 0:
+            return 0
+        try:
+            return self.playback_clock.estimate(
+                observed_at=float(self._monotonic()),
+                maximum_ms=pcmu_duration_ceiling_ms(self._source_audio_bytes),
+            )
+        except MediaStreamError as exc:
+            raise RealtimePlaybackError(
+                "could not estimate realtime playback frontier"
+            ) from exc
+
+    def _verified_text_checkpoint(
+        self,
+        draft: Any,
+        *,
+        provider_played_ms: int,
+    ) -> tuple[str, int]:
+        """Keep only text backed by a conservative native-audio checkpoint.
+
+        Realtime exposes no word timings. Only a bridge-provided boundary for
+        a completely closed audio/transcript item is usable behind the
+        playhead. Elapsed time alone never manufactures a proportional prefix,
+        even if the provider has finished its draft.
+        """
+
+        checkpoint_ms = provider_played_ms
+        checkpoint: str = ""
+        rich_checkpoint_getter = getattr(
+            self.bridge,
+            "confirmed_text_checkpoint",
+            None,
         )
+        if callable(rich_checkpoint_getter):
+            rich_checkpoint = rich_checkpoint_getter(provider_played_ms)
+            if rich_checkpoint is not None:
+                checkpoint = getattr(rich_checkpoint, "text", None)
+                checkpoint_ms = getattr(rich_checkpoint, "played_ms", None)
+                if (
+                    not isinstance(checkpoint, str)
+                    or isinstance(checkpoint_ms, bool)
+                    or not isinstance(checkpoint_ms, int)
+                    or checkpoint_ms <= 0
+                    or checkpoint_ms > provider_played_ms
+                ):
+                    raise RealtimePlaybackError(
+                        "realtime transcript checkpoint is invalid"
+                    )
+
+        checkpoint_getter = getattr(
+            self.bridge,
+            "confirmed_text_prefix",
+            None,
+        )
+        if not checkpoint and callable(checkpoint_getter):
+            checkpoint = checkpoint_getter(provider_played_ms)
+            if not isinstance(checkpoint, str):
+                raise RealtimePlaybackError(
+                    "realtime transcript checkpoint must be text"
+                )
+        if checkpoint:
+            draft_content = getattr(draft, "content", None)
+            if (
+                isinstance(draft_content, str)
+                and not draft_content.startswith(checkpoint)
+            ):
+                raise RealtimePlaybackError(
+                    "realtime transcript checkpoint is not a draft prefix"
+                )
+            return checkpoint, checkpoint_ms
+        return "", 0
 
     async def _send(self, message: Mapping[str, Any]) -> None:
         async with self._send_lock:
@@ -450,6 +613,7 @@ class RealtimeTurnPlayback:
     async def _confirm_final(self, played_ms: int) -> None:
         try:
             draft = await self.runtime_turn.wait_for_draft()
+            self._stage_assistant_audio(draft.content, played_ms=played_ms)
             ids = await self.runtime_turn.confirm_audible(
                 draft.content,
                 played_ms=played_ms,
@@ -464,6 +628,51 @@ class RealtimeTurnPlayback:
             except BaseException:
                 pass
             self._done.set()
+
+    def _stage_assistant_audio(
+        self,
+        confirmed_text: str,
+        *,
+        played_ms: int,
+    ) -> None:
+        if (
+            self._recorder is None
+            or not self._recorder.enabled
+            or self._recording_start_ms is None
+            or self._wire_audio_bytes <= 0
+        ):
+            return
+        start_byte = self._recording_start_ms * PCMU_SAMPLE_RATE_HZ // 1_000
+        retained_bytes = min(
+            self._wire_audio_bytes,
+            max(0, int(played_ms)) * PCMU_SAMPLE_RATE_HZ // 1_000,
+        )
+        end_byte = start_byte + retained_bytes
+        if not confirmed_text or retained_bytes <= 0:
+            return
+        self.phone_turn.link_state.set_audio_range(
+            "assistant",
+            PhoneMessageAudioRange(
+                start_byte=start_byte,
+                end_byte=end_byte,
+            ),
+        )
+
+    def _truncate_assistant_recording(self, *, played_ms: int) -> None:
+        if (
+            self._recorder is None
+            or not self._recorder.enabled
+            or self._recording_start_ms is None
+        ):
+            return
+        start_byte = self._recording_start_ms * PCMU_SAMPLE_RATE_HZ // 1_000
+        retained_bytes = min(
+            self._wire_audio_bytes,
+            max(0, int(played_ms)) * PCMU_SAMPLE_RATE_HZ // 1_000,
+        )
+        self._recorder.truncate_assistant(
+            end_byte=start_byte + retained_bytes
+        )
 
     def _set_result(self, result: PhonePlaybackResult) -> None:
         if self._result is None:

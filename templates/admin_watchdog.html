@@ -1,23 +1,26 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_operations'] %}
 
-{% block title %}Watchdog Events - AURVEK{% endblock %}
+{% block title %}{{ t('admin_operations.watchdog_events_aurvek') }}{% endblock %}
 
-{% block page_title %}Watchdog Events{% endblock %}
+{% block page_title %}{{ t('admin_operations.watchdog_events') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Monitor conversation steering events and diagnostics</p>
+<p class="page-subtitle">{{ t('admin_operations.monitor_conversation_steering_events_and_diagnostics') }}</p>
 {% endblock %}
 
 {% block alerts %}
 {% if error %}
 <div class="alert alert-danger alert-dismissible fade show" role="alert">
     <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_operations.close') }}"></button>
 </div>
 {% endif %}
 {% endblock %}
 
 {% block content %}
+{% set event_labels = {'none': 'none', 'drift': 'drift', 'rabbit_hole': 'rabbit_hole', 'stuck': 'stuck', 'inconsistency': 'inconsistency', 'saturation': 'saturation', 'security': 'security', 'role_breach': 'role_breach', 'role_breach_hard': 'role_breach_hard', 'role_breach_soft': 'role_breach_soft', 'error': 'error_3'} %}
+{% set severity_labels = {'info': 'info', 'nudge': 'nudge', 'redirect': 'redirect', 'alert': 'alert'} %}
 {% set base_query = "per_page=" ~ per_page ~ ("&event_type=" ~ filters.event_type if filters.event_type else "") ~ ("&severity=" ~ filters.severity if filters.severity else "") ~ ("&prompt_id=" ~ filters.prompt_id if filters.prompt_id else "") ~ ("&conversation_id=" ~ filters.conversation_id if filters.conversation_id else "") %}
 
 <!-- Stats -->
@@ -27,54 +30,54 @@
         {% if events|length > 0 %}
             {% set start = (page - 1) * per_page + 1 %}
             {% set end = start + events|length - 1 %}
-            Showing <strong>{{ start }}-{{ end }}</strong> of <strong>{{ total_events }}</strong>
+            {{ t('admin_operations.range', start=format_number(start), end=format_number(end), total=format_number(total_events)) }}
         {% else %}
-            <strong>0</strong> events
+            {{ t('admin_operations.range', start=0, end=0, total=0) }}
         {% endif %}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-bolt"></i> <strong>{{ stats.hints }}</strong> Hints generated
+        <i class="fas fa-bolt"></i> {{ t('admin_operations.stats.hints', count=format_number(stats.hints)) }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-bug"></i> <strong>{{ stats.errors }}</strong> Errors
+        <i class="fas fa-bug"></i> {{ t('admin_operations.stats.errors', count=format_number(stats.errors)) }}
     </span>
 </div>
 
 <!-- Filters -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-filter"></i> Filters
+        <i class="fas fa-filter"></i> {{ t('admin_operations.filters') }}
     </div>
     <form method="get" action="/admin/watchdog-events" id="filterForm">
         <input type="hidden" name="page" value="1">
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="filter_event_type">Event Type</label>
+                    <label class="form-label" for="filter_event_type">{{ t('admin_operations.event_type') }}</label>
                     <select class="form-select" id="filter_event_type" name="event_type" onchange="this.form.submit()">
-                        <option value="">All types</option>
+                        <option value="">{{ t('admin_operations.all_types') }}</option>
                         {% for et in event_types %}
-                        <option value="{{ et }}" {% if filters.event_type == et %}selected{% endif %}>{{ et }}</option>
+                        <option value="{{ et }}" {% if filters.event_type == et %}selected{% endif %}>{{ t('admin_operations.' ~ event_labels.get(et, 'unknown')) }}</option>
                         {% endfor %}
                     </select>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="filter_severity">Severity</label>
+                    <label class="form-label" for="filter_severity">{{ t('admin_operations.severity') }}</label>
                     <select class="form-select" id="filter_severity" name="severity" onchange="this.form.submit()">
-                        <option value="">All severities</option>
+                        <option value="">{{ t('admin_operations.all_severities') }}</option>
                         {% for sev in severities %}
-                        <option value="{{ sev }}" {% if filters.severity == sev %}selected{% endif %}>{{ sev }}</option>
+                        <option value="{{ sev }}" {% if filters.severity == sev %}selected{% endif %}>{{ t('admin_operations.' ~ severity_labels.get(sev, 'unknown')) }}</option>
                         {% endfor %}
                     </select>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="filter_prompt_id">Prompt</label>
+                    <label class="form-label" for="filter_prompt_id">{{ t('admin_operations.prompt') }}</label>
                     <select class="form-select" id="filter_prompt_id" name="prompt_id" onchange="this.form.submit()">
-                        <option value="">All prompts</option>
+                        <option value="">{{ t('admin_operations.all_prompts') }}</option>
                         {% for p in prompts %}
                         <option value="{{ p.id }}" {% if filters.prompt_id == p.id %}selected{% endif %}>{{ p.name }}</option>
                         {% endfor %}
@@ -83,20 +86,20 @@
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="filter_conversation_id">Conversation ID</label>
+                    <label class="form-label" for="filter_conversation_id">{{ t('admin_operations.conversation_id') }}</label>
                     <input class="form-control" id="filter_conversation_id" name="conversation_id"
                            value="{{ filters.conversation_id or '' }}"
-                           placeholder="Filter by conv ID" type="number" min="1">
+                           placeholder="{{ t('admin_operations.filter_by_conv_id') }}" type="number" min="1">
                 </div>
             </div>
             <input type="hidden" name="per_page" value="{{ per_page }}">
         </div>
         <div class="mt-2 d-flex gap-2">
             <button type="submit" class="btn btn-primary btn-sm">
-                <i class="fas fa-search me-1"></i> Apply
+                <i class="fas fa-search me-1"></i> {{ t('admin_operations.apply') }}
             </button>
             <a href="/admin/watchdog-events" class="btn btn-outline-secondary btn-sm">
-                <i class="fas fa-times me-1"></i> Clear
+                <i class="fas fa-times me-1"></i> {{ t('admin_operations.clear') }}
             </a>
         </div>
     </form>
@@ -105,11 +108,11 @@
 <!-- Events Table -->
 <div class="section-container">
     <div class="section-title" style="display: flex; align-items: center; justify-content: space-between;">
-        <span><i class="fas fa-eye"></i> Events</span>
-        <span class="btn-group btn-group-sm" role="group" aria-label="Events per page" style="font-weight: 400;">
+        <span><i class="fas fa-eye"></i> {{ t('admin_operations.events_2') }}</span>
+        <span class="btn-group btn-group-sm" role="group" aria-label="{{ t('admin_operations.events_per_page') }}" style="font-weight: 400;">
             {% for n in [25, 50, 100] %}
             <a href="/admin/watchdog-events?{{ base_query|replace('per_page=' ~ per_page, 'per_page=' ~ n) }}&page=1"
-               class="btn btn-outline-secondary{% if per_page == n %} active{% endif %}" style="font-size: 0.75rem; padding: 2px 10px;">{{ n }}</a>
+               class="btn btn-outline-secondary{% if per_page == n %} active{% endif %}" style="font-size: 0.75rem; padding: 2px 10px;">{{ format_number(n) }}</a>
             {% endfor %}
         </span>
     </div>
@@ -117,20 +120,20 @@
         <table class="table">
             <thead>
                 <tr>
-                    <th style="width: 140px;">Date</th>
-                    <th style="width: 80px;">Conv</th>
-                    <th>Prompt</th>
-                    <th style="width: 110px;">Event</th>
-                    <th style="width: 80px;">Severity</th>
-                    <th>Analysis</th>
-                    <th>Hint</th>
-                    <th style="width: 100px;">Action</th>
+                    <th style="width: 140px;">{{ t('admin_operations.date') }}</th>
+                    <th style="width: 80px;">{{ t('admin_operations.conv') }}</th>
+                    <th>{{ t('admin_operations.prompt') }}</th>
+                    <th style="width: 110px;">{{ t('admin_operations.event') }}</th>
+                    <th style="width: 80px;">{{ t('admin_operations.severity') }}</th>
+                    <th>{{ t('admin_operations.analysis') }}</th>
+                    <th>{{ t('admin_operations.hint') }}</th>
+                    <th style="width: 100px;">{{ t('admin_operations.action') }}</th>
                 </tr>
             </thead>
             <tbody>
                 {% for event in events %}
                 <tr>
-                    <td><small>{{ event.created_at }}</small></td>
+                    <td><time data-operation-date="{{ event.created_at }}">{{ event.created_at }}</time></td>
                     <td>
                         <span title="{{ event.chat_name or '' }}" data-bs-toggle="tooltip">
                             {{ event.conversation_id }}
@@ -139,49 +142,49 @@
                     <td><small>{{ event.prompt_name or ('-') }}</small></td>
                     <td>
                         {% if event.event_type == 'none' %}
-                        <span class="badge bg-secondary">none</span>
+                        <span class="badge bg-secondary">{{ t('admin_operations.none') }}</span>
                         {% elif event.event_type == 'error' %}
-                        <span class="badge bg-danger">error</span>
+                        <span class="badge bg-danger">{{ t('admin_operations.error_3') }}</span>
                         {% elif event.event_type == 'drift' %}
-                        <span class="badge bg-warning text-dark">drift</span>
+                        <span class="badge bg-warning text-dark">{{ t('admin_operations.drift') }}</span>
                         {% elif event.event_type == 'rabbit_hole' %}
-                        <span class="badge bg-warning text-dark">rabbit_hole</span>
+                        <span class="badge bg-warning text-dark">{{ t('admin_operations.rabbit_hole') }}</span>
                         {% elif event.event_type == 'stuck' %}
-                        <span class="badge bg-info text-dark">stuck</span>
+                        <span class="badge bg-info text-dark">{{ t('admin_operations.stuck') }}</span>
                         {% elif event.event_type == 'inconsistency' %}
-                        <span class="badge bg-danger">inconsistency</span>
+                        <span class="badge bg-danger">{{ t('admin_operations.inconsistency') }}</span>
                         {% elif event.event_type == 'saturation' %}
-                        <span class="badge bg-info text-dark">saturation</span>
+                        <span class="badge bg-info text-dark">{{ t('admin_operations.saturation') }}</span>
                         {% elif event.event_type == 'security' %}
-                        <span class="badge bg-dark">security</span>
+                        <span class="badge bg-dark">{{ t('admin_operations.security') }}</span>
                         {% else %}
-                        <span class="badge bg-secondary">{{ event.event_type }}</span>
+                        <span class="badge bg-secondary">{{ t('admin_operations.' ~ event_labels.get(event.event_type, 'unknown')) }}</span>
                         {% endif %}
                     </td>
                     <td>
                         {% if event.severity == 'info' %}
-                        <span class="badge bg-secondary">info</span>
+                        <span class="badge bg-secondary">{{ t('admin_operations.info') }}</span>
                         {% elif event.severity == 'nudge' %}
-                        <span class="badge bg-primary">nudge</span>
+                        <span class="badge bg-primary">{{ t('admin_operations.nudge') }}</span>
                         {% elif event.severity == 'redirect' %}
-                        <span class="badge bg-warning text-dark">redirect</span>
+                        <span class="badge bg-warning text-dark">{{ t('admin_operations.redirect') }}</span>
                         {% elif event.severity == 'alert' %}
-                        <span class="badge bg-danger">alert</span>
+                        <span class="badge bg-danger">{{ t('admin_operations.alert') }}</span>
                         {% else %}
-                        <span class="badge bg-secondary">{{ event.severity }}</span>
+                        <span class="badge bg-secondary">{{ t('admin_operations.' ~ severity_labels.get(event.severity, 'unknown')) }}</span>
                         {% endif %}
                     </td>
                     <td><small class="text-break">{{ event.analysis[:200] if event.analysis else '-' }}{% if event.analysis and event.analysis|length > 200 %}...{% endif %}</small></td>
                     <td><small class="text-break">{{ event.hint[:150] if event.hint else '-' }}{% if event.hint and event.hint|length > 150 %}...{% endif %}</small></td>
                     <td>
                         {% if event.action_taken == 'hint_generated' %}
-                        <span class="badge bg-success">hint</span>
+                        <span class="badge bg-success">{{ t('admin_operations.hint_2') }}</span>
                         {% elif event.action_taken == 'error' %}
-                        <span class="badge bg-danger">error</span>
+                        <span class="badge bg-danger">{{ t('admin_operations.error_3') }}</span>
                         {% elif event.action_taken == 'blocked' %}
-                        <span class="badge bg-dark">blocked</span>
+                        <span class="badge bg-dark">{{ t('admin_operations.blocked') }}</span>
                         {% else %}
-                        <span class="badge bg-secondary">none</span>
+                        <span class="badge bg-secondary">{{ t('admin_operations.none') }}</span>
                         {% endif %}
                     </td>
                 </tr>
@@ -189,7 +192,7 @@
                 <tr>
                     <td colspan="8" class="text-center text-muted py-4">
                         <i class="fas fa-eye fa-2x mb-2 d-block opacity-50"></i>
-                        No watchdog events found.
+                        {{ t('admin_operations.no_watchdog_events_found') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -199,11 +202,11 @@
 
     <!-- Pagination -->
     {% if total_pages > 1 %}
-    <nav aria-label="Watchdog events pagination" class="mt-3">
+    <nav aria-label="{{ t('admin_operations.watchdog_events_pagination') }}" class="mt-3">
         <ul class="pagination justify-content-center mb-0">
             <!-- Previous -->
             <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ page - 1 }}" aria-label="Previous">
+                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ page - 1 }}" aria-label="{{ t('admin_operations.previous') }}">
                     <span aria-hidden="true">&laquo;</span>
                 </a>
             </li>
@@ -223,7 +226,7 @@
             <!-- Neighbor pages around current (skip 1 and total_pages, shown separately) -->
             {% for p in range([page - 2, 2]|max, [page + 3, total_pages]|min) %}
             <li class="page-item {% if p == page %}active{% endif %}">
-                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ p }}">{{ p }}</a>
+                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ p }}">{{ format_number(p) }}</a>
             </li>
             {% endfor %}
 
@@ -237,13 +240,13 @@
             <!-- Last page (if more than 1 page) -->
             {% if total_pages > 1 %}
             <li class="page-item {% if page == total_pages %}active{% endif %}">
-                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ total_pages }}">{{ total_pages }}</a>
+                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ total_pages }}">{{ format_number(total_pages) }}</a>
             </li>
             {% endif %}
 
             <!-- Next -->
             <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ page + 1 }}" aria-label="Next">
+                <a class="page-link" href="/admin/watchdog-events?{{ base_query }}&page={{ page + 1 }}" aria-label="{{ t('admin_operations.next') }}">
                     <span aria-hidden="true">&raquo;</span>
                 </a>
             </li>
@@ -251,4 +254,24 @@
     </nav>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts_inline %}
+<script>
+    function formatOperationDate(value, dateOnly = false) {
+        if (!value) return '-';
+        let normalized = String(value).replace(' ', 'T');
+        if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)) normalized += 'Z';
+        const date = new Date(normalized);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return dateOnly
+            ? date.toLocaleDateString(AurvekI18n.locale, {timeZone: 'UTC'})
+            : date.toLocaleString(AurvekI18n.locale);
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('[data-operation-date]').forEach(element => {
+            element.textContent = formatOperationDate(element.dataset.operationDate, element.hasAttribute('data-date-only'));
+        });
+    });
+</script>
 {% endblock %}

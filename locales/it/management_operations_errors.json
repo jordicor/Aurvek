@@ -1,0 +1,12 @@
+{
+  "admin_required": "È richiesto l’accesso come amministratore",
+  "invalid_llm": "Selezione LLM non valida",
+  "unsupported_key": "Tipo di chiave non supportato",
+  "task_not_found": "Attività non trovata nella coda degli errori.",
+  "invalid_ip": "Inserisci un indirizzo IP valido.",
+  "conversation_ids_required": "Seleziona almeno una conversazione.",
+  "conversation_deleted": "Conversazione eliminata.",
+  "conversation_folder_failed": "Conversazione eliminata dal database, ma non è stato possibile eliminare la cartella.",
+  "conversations_folder_failed": "Alcune conversazioni sono state eliminate dal database, ma non è stato possibile eliminare le cartelle.",
+  "conversations_deleted": "Conversazioni eliminate."
+}

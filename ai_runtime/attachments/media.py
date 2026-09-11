@@ -16,6 +16,20 @@ async def hydrate_image_for_context(
     For xAI: reads WebP from disk and converts to JPEG base64 (xAI does not support WebP).
     """
     image_info = image_block.get("image_url", {})
+    from chat.services.generated_media import parse_generated_media_url, read_generated_image_bytes
+    generated_url = image_info.get("fullsize_url") or image_info.get("url", "")
+    if parse_generated_media_url(generated_url):
+        data = await read_generated_image_bytes(
+            generated_url, user_id=current_user.id, conversation_id=conversation_id,
+        )
+        if data is None:
+            return None
+        with PilImage.open(io.BytesIO(data)) as generated_image:
+            mime_type = PilImage.MIME.get(generated_image.format, "image/webp")
+        return await asyncio.to_thread(
+            image_block_to_provider_block, data=data, mime_type=mime_type,
+            machine=machine, force_base64=force_base64,
+        )
     attachment_ref = image_info.get("attachment_ref")
     if attachment_ref:
         try:

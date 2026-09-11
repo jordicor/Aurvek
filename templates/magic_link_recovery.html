@@ -1,6 +1,11 @@
+{% set i18n_domains = ['auth'] %}
 {% extends 'base.html' %}
 
-{% block title %}Magic Link Recovery{% endblock %}
+{% macro auth_link(url, label, class_name='') -%}
+<a href="{{ url|e }}" class="{{ class_name }}">{{ label }}</a>
+{%- endmacro %}
+
+{% block title %}{{ t('auth.title.magic_link_recovery') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -24,10 +29,10 @@
 <div class="container d-flex align-items-center justify-content-center" style="min-height: 100vh;">
     <div class="card shadow" style="width: 26rem;">
         <div class="card-body">
-            <h2 class="card-title text-center mb-4">Magic Link Recovery</h2>
+            <h2 class="card-title text-center mb-4">{{ t('auth.title.magic_link_recovery') }}</h2>
             <div class="alert alert-info" role="alert">
-                <strong>Your magic link has expired.</strong><br>
-                Please enter your email address to receive a new magic link.
+                <strong>{{ t('auth.recovery.expired') }}</strong><br>
+                {{ t('auth.recovery.instructions') }}
             </div>
 
             {% if message %}
@@ -39,20 +44,20 @@
             <form id="recoveryForm" action="/magic-link-recovery" method="POST">
                 <input type="hidden" name="next" value="{{ next_url|default('', true) }}">
                 <div class="mb-3">
-                    <label for="email" class="form-label">Email Address:</label>
+                    <label for="email" class="form-label">{{ t('auth.label.email_address') }}:</label>
                     <input type="email" class="form-control" id="email" name="email" required
-                           placeholder="Enter your registered email address">
+                           placeholder="{{ t('auth.placeholder.registered_email') }}">
                 </div>
                 <div class="d-grid gap-2">
                     <button type="submit" class="btn btn-primary" id="submitBtn">
-                        Send New Magic Link
+                        {{ t('auth.action.send_magic_link') }}
                     </button>
                 </div>
             </form>
 
             <div class="text-center mt-3">
                 <small class="text-muted">
-                    Remember your password? <a href="{{ login_url|default('/login') }}" class="text-decoration-none">Login here</a>
+                    {{ t_html('auth.prompt.remember_password', link=auth_link(login_url|default('/login'), t('auth.action.login_here'), 'text-decoration-none')) }}
                 </small>
             </div>
         </div>
@@ -69,12 +74,12 @@
     document.getElementById('recoveryForm').addEventListener('submit', function(e) {
         const submitBtn = document.getElementById('submitBtn');
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Sending...';
+        submitBtn.textContent = AurvekI18n.t('auth.progress.sending');
 
         // Re-enable button after 3 seconds to prevent double submissions
         setTimeout(() => {
             submitBtn.disabled = false;
-            submitBtn.textContent = 'Send New Magic Link';
+            submitBtn.textContent = AurvekI18n.t('auth.action.send_magic_link');
         }, 3000);
     });
 </script>

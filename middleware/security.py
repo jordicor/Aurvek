@@ -1648,9 +1648,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
         # 3. Process the request normally
         response = await call_next(request)
+        application_backend = getattr(request.state, "application_backend_authenticated", False) is True
 
         # 4. After response: check if 404 and track
-        if response.status_code == 404 and not is_whitelisted_path(path):
+        if response.status_code == 404 and not application_backend and not is_whitelisted_path(path):
             if is_known_bot(request):
                 max_404s, window_min = SecurityConfig.BOT_THRESHOLD
             else:
@@ -1671,7 +1672,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 # The NEXT request from this IP will be blocked
 
         # 5. Record in reputation system (non-authenticated only)
-        if not _has_valid_session(request):
+        if not application_backend and not _has_valid_session(request):
             is_wl = is_whitelisted_path(path)
             ban_info = reputation_manager.record_request(ip, response.status_code, path, is_whitelisted_path=is_wl)
             if ban_info:

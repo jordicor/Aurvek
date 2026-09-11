@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="{{ ui_language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ t('public_shell.support') }}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #111827; background: #f8fafc; }
+    main { max-width: 680px; margin: 0 auto; padding: 56px 24px; }
+    h1 { font-size: 2rem; margin: 0 0 16px; }
+    p { line-height: 1.6; }
+    a { color: #0f766e; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{{ t('public_shell.support') }}</h1>
+    {% set email_link %}<a href="mailto:{{ support_email }}">{{ support_email }}</a>{% endset %}
+    <p>{{ t_html('public_shell.support_contact', email=email_link) }}</p>
+  </main>
+</body>
+</html>

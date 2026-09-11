@@ -1,13 +1,14 @@
+{% set i18n_domains = ['marketplace_admin'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}{{ 'Edit: ' + pack.name if pack else 'New Pack' }} - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace_admin.ui.edit_pack', name=pack.name) if pack else t('marketplace_admin.ui.new_pack') }} - AURVEK{% endblock %}
 
-{% block page_title %}{{ 'Edit: ' + pack.name if pack else 'New Pack' }}{% endblock %}
-{% block page_subtitle %}<p class="page-subtitle">{{ 'Modify pack settings and contents' if pack else 'Create a new AI prompt pack' }}</p>{% endblock %}
+{% block page_title %}{{ t('marketplace_admin.ui.edit_pack', name=pack.name) if pack else t('marketplace_admin.ui.new_pack') }}{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">{{ t('marketplace_admin.ui.edit_subtitle') if pack else t('marketplace_admin.ui.new_subtitle') }}</p>{% endblock %}
 
 {% block page_actions %}
 <a href="/admin/packs" class="btn btn-outline-secondary">
-    <i class="fas fa-arrow-left me-1"></i> Back to Packs
+    <i class="fas fa-arrow-left me-1"></i> {{ t('marketplace_admin.ui.back_to_packs') }}
 </a>
 {% endblock %}
 
@@ -116,85 +117,85 @@
     {% if pack and pack.status == 'rejected' and pack.rejection_reason %}
     <div class="alert alert-danger" style="margin-bottom: 1.5rem; display: flex; align-items: flex-start; gap: 0.75rem;">
         <div style="flex: 1;">
-            <strong><i class="fas fa-exclamation-triangle"></i> Pack Rejected</strong>
+            <strong><i class="fas fa-exclamation-triangle"></i> {{ t('marketplace_admin.ui.pack_rejected') }}</strong>
             <p style="margin: 0.5rem 0 0;">{{ pack.rejection_reason }}</p>
         </div>
-        <button type="button" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: inherit; padding: 0; line-height: 1;" onclick="this.parentElement.remove()">&times;</button>
+        <button type="button" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: inherit; padding: 0; line-height: 1;" aria-label="{{ t('marketplace_admin.ui.close') }}" onclick="this.parentElement.remove()">&times;</button>
     </div>
     {% endif %}
 
     <!-- Basic Information -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-info-circle"></i> Basic Information</div>
+        <div class="section-title"><i class="fas fa-info-circle"></i> {{ t('marketplace_admin.ui.basic_information') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="packName">Pack Name</label>
+                    <label class="form-label" for="packName">{{ t('marketplace_admin.ui.pack_name') }}</label>
                     <input class="form-control" id="packName" name="name" required maxlength="100"
-                           value="{{ pack.name if pack else '' }}" placeholder="e.g. Super Entrepreneur AI">
+                           value="{{ pack.name if pack else '' }}" placeholder="{{ t('marketplace_admin.ui.e_g_super_entrepreneur_ai') }}">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="packSlug">Slug</label>
+                    <label class="form-label" for="packSlug">{{ t('marketplace_admin.ui.slug') }}</label>
                     <input class="form-control" id="packSlug" name="slug" maxlength="120"
-                           value="{{ pack.slug if pack else '' }}" placeholder="auto-generated-from-name">
-                    <small class="text-muted">URL-friendly identifier. Auto-generated from name if left empty.</small>
+                           value="{{ pack.slug if pack else '' }}" placeholder="{{ t('marketplace_admin.ui.auto_generated_from_name') }}">
+                    <small class="text-muted">{{ t('marketplace_admin.ui.url_friendly_identifier_auto_generated_from_name_if_left_empty') }}</small>
                 </div>
             </div>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="packDescription">Description</label>
+            <label class="form-label" for="packDescription">{{ t('marketplace_admin.ui.description') }}</label>
             <textarea class="form-control" id="packDescription" name="description" rows="3"
-                      maxlength="500" placeholder="Describe what this pack offers...">{{ pack.description if pack else '' }}</textarea>
+                      maxlength="500" placeholder="{{ t('marketplace_admin.ui.describe_what_this_pack_offers') }}">{{ pack.description if pack else '' }}</textarea>
         </div>
         <div class="mb-3">
-            <label class="form-label">Cover Image</label>
+            <label class="form-label">{{ t('marketplace_admin.ui.cover_image') }}</label>
             <div class="cover-image-wrapper">
                 <div class="cover-image-container" id="coverImageContainer">
                     {% if pack and pack.cover_image %}
-                        <img src="/api/packs/{{ pack.id }}/cover/512" alt="Cover" id="currentCoverImage" class="cover-preview">
+                        <img src="/api/packs/{{ pack.id }}/cover/512" alt="{{ t('marketplace_admin.ui.cover') }}" id="currentCoverImage" class="cover-preview">
                         <div class="cover-icons">
-                            <span class="cover-icon edit" title="Change image"><i class="fas fa-pencil-alt"></i></span>
-                            <span class="cover-icon delete" title="Remove image"><i class="fas fa-trash"></i></span>
+                            <span class="cover-icon edit" title="{{ t('marketplace_admin.ui.change_image') }}"><i class="fas fa-pencil-alt"></i></span>
+                            <span class="cover-icon delete" title="{{ t('marketplace_admin.ui.remove_image') }}"><i class="fas fa-trash"></i></span>
                         </div>
                     {% else %}
                         <div class="cover-placeholder">
                             <i class="fas fa-image"></i>
-                            <span>Upload cover image (16:9)</span>
+                            <span>{{ t('marketplace_admin.ui.upload_cover_image_16_9') }}</span>
                         </div>
                         <div class="cover-icons">
-                            <span class="cover-icon edit" title="Upload image"><i class="fas fa-pencil-alt"></i></span>
+                            <span class="cover-icon edit" title="{{ t('marketplace_admin.ui.upload_image') }}"><i class="fas fa-pencil-alt"></i></span>
                         </div>
                     {% endif %}
                 </div>
                 <div class="cover-preview-new hidden" id="coverPreviewContainer">
-                    <img id="coverPreviewImage" alt="Preview" class="cover-preview">
+                    <img id="coverPreviewImage" alt="{{ t('marketplace_admin.ui.preview') }}" class="cover-preview">
                     <div class="cover-icons">
-                        <span class="cover-icon edit" title="Change"><i class="fas fa-pencil-alt"></i></span>
-                        <span class="cover-icon cancel" title="Cancel"><i class="fas fa-times"></i></span>
+                        <span class="cover-icon edit" title="{{ t('marketplace_admin.ui.change') }}"><i class="fas fa-pencil-alt"></i></span>
+                        <span class="cover-icon cancel" title="{{ t('marketplace_admin.ui.cancel') }}"><i class="fas fa-times"></i></span>
                     </div>
                 </div>
                 <input type="file" id="coverImageInput" accept="image/*" style="display:none">
             </div>
-            <small class="text-muted">Recommended: 16:9 ratio, at least 512px wide</small>
+            <small class="text-muted">{{ t('marketplace_admin.ui.recommended_16_9_ratio_at_least_512px_wide') }}</small>
         </div>
     </div>
 
     <!-- Pricing & Tags -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-tags"></i> Pricing & Tags</div>
+        <div class="section-title"><i class="fas fa-tags"></i> {{ t('marketplace_admin.ui.pricing_tags') }}</div>
         <div class="mb-3">
             <div class="form-check">
                 <input class="form-check-input" type="checkbox" id="packIsPaid" name="is_paid"
                        {{ 'checked' if pack and pack.is_paid else '' }}>
-                <label class="form-check-label" for="packIsPaid">This is a paid pack</label>
+                <label class="form-check-label" for="packIsPaid">{{ t('marketplace_admin.ui.this_is_a_paid_pack') }}</label>
             </div>
         </div>
         <div class="flex-row price-row" id="priceRow">
             <div class="flex-column" style="max-width: 200px;">
                 <div class="mb-3">
-                    <label class="form-label" for="packPrice">Price (USD)</label>
+                    <label class="form-label" for="packPrice">{{ t('marketplace_admin.ui.price_usd') }}</label>
                     <div class="input-group">
                         <span class="input-group-text">$</span>
                         <input type="number" class="form-control" id="packPrice" name="price"
@@ -204,23 +205,23 @@
             </div>
         </div>
         <div class="mb-3">
-            <label class="form-label">Tags</label>
+            <label class="form-label">{{ t('marketplace_admin.ui.tags') }}</label>
             <div id="tagsContainer" class="mb-2"></div>
             <div class="input-group" style="max-width: 350px;">
-                <input class="form-control" id="tagInput" maxlength="30" placeholder="Add a tag...">
-                <button type="button" class="btn btn-outline-secondary" id="addTagBtn">
+                <input class="form-control" id="tagInput" maxlength="30" placeholder="{{ t('marketplace_admin.ui.add_a_tag') }}">
+                <button type="button" class="btn btn-outline-secondary" id="addTagBtn" aria-label="{{ t('marketplace_admin.ui.add_tag') }}">
                     <i class="fas fa-plus"></i>
                 </button>
             </div>
-            <small class="text-muted">Max 10 tags, 30 characters each. Press Enter or click + to add.</small>
+            <small class="text-muted">{{ t('marketplace_admin.ui.max_10_tags_30_characters_each_press_enter_or_click_to_add') }}</small>
         </div>
     </div>
 
     <!-- Prompts in this Pack -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-layer-group"></i> Prompts in this Pack</div>
+        <div class="section-title"><i class="fas fa-layer-group"></i> {{ t('marketplace_admin.ui.prompts_in_this_pack') }}</div>
         {% if not pack %}
-        <p class="text-muted">Save the pack first, then you can add prompts.</p>
+        <p class="text-muted">{{ t('marketplace_admin.ui.save_the_pack_first_then_you_can_add_prompts') }}</p>
         {% else %}
         <div class="table-wrapper">
             <table class="table pack-items-table">
@@ -229,17 +230,17 @@
                         <th style="width:40px;"></th>
                         <th style="width:30px;">#</th>
                         <th style="width:40px;"></th>
-                        <th>Prompt</th>
-                        <th>Owner</th>
-                        <th>Notice</th>
-                        <th class="text-end" style="width:60px;">Remove</th>
+                        <th>{{ t('marketplace_admin.ui.prompt') }}</th>
+                        <th>{{ t('marketplace_admin.ui.owner') }}</th>
+                        <th>{{ t('marketplace_admin.ui.notice') }}</th>
+                        <th class="text-end" style="width:60px;">{{ t('marketplace_admin.ui.remove') }}</th>
                     </tr>
                 </thead>
                 <tbody id="packItemsBody">
                     {% for item in pack_items %}
                     <tr data-prompt-id="{{ item.prompt_id }}">
                         <td><i class="fas fa-grip-vertical drag-handle"></i></td>
-                        <td class="item-order">{{ loop.index }}</td>
+                        <td class="item-order">{{ format_number(loop.index) }}</td>
                         <td>
                             {% if item.prompt_image %}
                             <img class="prompt-avatar" src="/static/{{ item.prompt_image }}" alt="">
@@ -255,14 +256,14 @@
                             {% if item.notice_period_snapshot == 0 %}
                             <small class="text-muted">--</small>
                             {% elif item.notice_period_snapshot >= 365 %}
-                            {{ item.notice_period_snapshot // 365 }}y
+                            {{ t('marketplace_admin.ui.notice_years', count=item.notice_period_snapshot // 365, years=format_number(item.notice_period_snapshot // 365)) }}
                             {% else %}
-                            {{ item.notice_period_snapshot }}d
+                            {{ t('marketplace_admin.ui.notice_days', count=item.notice_period_snapshot, days=format_number(item.notice_period_snapshot)) }}
                             {% endif %}
                         </td>
                         <td class="text-end">
                             <button type="button" class="btn btn-sm btn-outline-danger"
-                                    onclick="removePackItem({{ item.prompt_id }}, '{{ item.prompt_name|e }}')">
+                                    data-remove-prompt="{{ item.prompt_id }}" data-prompt-name="{{ item.prompt_name }}" aria-label="{{ t('marketplace_admin.ui.remove_prompt') }}">
                                 <i class="fas fa-times"></i>
                             </button>
                         </td>
@@ -270,7 +271,7 @@
                     {% else %}
                     <tr id="noItemsRow">
                         <td colspan="7" class="text-center text-muted py-3">
-                            No prompts added yet. Click "Add Prompt" below.
+                            {{ t('marketplace_admin.ui.no_prompts_added_yet_click_add_prompt_below') }}
                         </td>
                     </tr>
                     {% endfor %}
@@ -278,14 +279,14 @@
             </table>
         </div>
         <button type="button" class="btn btn-outline-primary mt-2" data-bs-toggle="modal" data-bs-target="#addPromptModal">
-            <i class="fas fa-plus me-1"></i> Add Prompt
+            <i class="fas fa-plus me-1"></i> {{ t('marketplace_admin.ui.add_prompt') }}
         </button>
         {% endif %}
     </div>
 
     <!-- Landing Page Config -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-cog"></i> Landing Page Config</div>
+        <div class="section-title"><i class="fas fa-cog"></i> {{ t('marketplace_admin.ui.landing_page_config') }}</div>
         {% set lrc = {} %}
         {% if pack and pack.landing_reg_config is mapping %}
             {% set lrc = pack.landing_reg_config %}
@@ -293,21 +294,21 @@
         <div class="flex-row">
             <div class="flex-column" style="max-width: 200px;">
                 <div class="mb-3">
-                    <label class="form-label" for="lrcBalance">Initial Balance (USD)</label>
+                    <label class="form-label" for="lrcBalance">{{ t('marketplace_admin.ui.initial_balance_usd') }}</label>
                     <div class="input-group">
                         <span class="input-group-text">$</span>
                         <input type="number" class="form-control" id="lrcBalance"
                                min="0" step="0.01" value="{{ lrc.initial_balance|default(5.0) }}">
                     </div>
-                    <small class="text-muted" id="lrcBalanceHint">Max: ${{ '%.2f'|format(max_initial_balance|default(5.0)) }}</small>
+                    <small class="text-muted" id="lrcBalanceHint">{{ t('marketplace_admin.ui.maximum_balance', amount=format_currency(max_initial_balance|default(5.0))) }}</small>
                 </div>
             </div>
             <div class="flex-column" style="max-width: 200px;">
                 <div class="mb-3">
-                    <label class="form-label" for="lrcBilling">Billing Mode</label>
+                    <label class="form-label" for="lrcBilling">{{ t('marketplace_admin.ui.billing_mode') }}</label>
                     <select class="form-select" id="lrcBilling">
-                        <option value="customer_pays" {{ 'selected' if lrc.billing_mode|default('customer_pays') == 'customer_pays' else '' }}>Customer Pays</option>
-                        <option value="user_pays" {{ 'selected' if lrc.billing_mode|default('') == 'user_pays' else '' }}>User Pays</option>
+                        <option value="customer_pays" {{ 'selected' if lrc.billing_mode|default('customer_pays') == 'customer_pays' else '' }}>{{ t('marketplace_admin.ui.customer_pays') }}</option>
+                        <option value="user_pays" {{ 'selected' if lrc.billing_mode|default('') == 'user_pays' else '' }}>{{ t('marketplace_admin.ui.user_pays') }}</option>
                     </select>
                 </div>
             </div>
@@ -316,21 +317,21 @@
             <div class="form-check">
                 <input class="form-check-input" type="checkbox" id="lrcPublicPrompts"
                        {{ 'checked' if lrc.public_prompts_access|default(true) else '' }}>
-                <label class="form-check-label" for="lrcPublicPrompts">Allow browsing public prompts</label>
+                <label class="form-check-label" for="lrcPublicPrompts">{{ t('marketplace_admin.ui.allow_browsing_public_prompts') }}</label>
             </div>
         </div>
         <div class="mb-3">
             <div class="form-check">
                 <input class="form-check-input" type="checkbox" id="lrcFileUpload"
                        {{ 'checked' if lrc.allow_file_upload|default(false) else '' }}>
-                <label class="form-check-label" for="lrcFileUpload">Allow file upload</label>
+                <label class="form-check-label" for="lrcFileUpload">{{ t('marketplace_admin.ui.allow_file_upload') }}</label>
             </div>
         </div>
         <div class="mb-3">
             <div class="form-check">
                 <input class="form-check-input" type="checkbox" id="lrcImageGen"
                        {{ 'checked' if lrc.allow_image_generation|default(false) else '' }}>
-                <label class="form-check-label" for="lrcImageGen">Allow image generation</label>
+                <label class="form-check-label" for="lrcImageGen">{{ t('marketplace_admin.ui.allow_image_generation') }}</label>
             </div>
         </div>
     </div>
@@ -339,25 +340,25 @@
     <div class="section-container">
         <div class="d-flex gap-2 flex-wrap">
             <button type="submit" class="btn btn-primary" id="saveDraftBtn">
-                <i class="fas fa-save me-1"></i> Save Draft
+                <i class="fas fa-save me-1"></i> {{ t('marketplace_admin.ui.save_draft') }}
             </button>
             {% if pack %}
             {% if pack.status != 'published' %}
             <button type="button" class="btn btn-success" id="publishBtn" onclick="publishPack()">
-                <i class="fas fa-globe me-1"></i> Publish
+                <i class="fas fa-globe me-1"></i> {{ t('marketplace_admin.ui.publish') }}
             </button>
             {% else %}
             <button type="button" class="btn btn-warning" id="unpublishBtn" onclick="unpublishPack()">
-                <i class="fas fa-eye-slash me-1"></i> Unpublish
+                <i class="fas fa-eye-slash me-1"></i> {{ t('marketplace_admin.ui.unpublish') }}
             </button>
             {% endif %}
             {% if pack.public_id %}
             <a href="/pack/{{ pack.public_id }}/{{ pack.slug }}/" target="_blank" class="btn btn-outline-secondary">
-                <i class="fas fa-external-link-alt me-1"></i> Preview Landing
+                <i class="fas fa-external-link-alt me-1"></i> {{ t('marketplace_admin.ui.preview_landing') }}
             </a>
             {% endif %}
             <a href="/admin/packs/{{ pack.id }}/landing" class="btn btn-outline-info">
-                <i class="fas fa-paint-brush me-1"></i> Manage Landing Page
+                <i class="fas fa-paint-brush me-1"></i> {{ t('marketplace_admin.ui.manage_landing_page') }}
             </a>
             {% endif %}
         </div>
@@ -366,15 +367,15 @@
     <!-- Welcome Message Editor (only for existing packs) -->
     {% if pack %}
     <div class="section-container" style="margin-top: 1.5rem;">
-        <div class="section-title"><i class="fas fa-hand-wave"></i> Welcome Message</div>
-        <p class="text-muted small mb-2">Welcome Message (shown on Home page to users who have access)</p>
-        <textarea id="pack-welcome-editor" class="form-control" rows="8" placeholder="Write HTML content for your welcome message...">{{ welcome_message_content }}</textarea>
+        <div class="section-title"><i class="fas fa-hand-wave"></i> {{ t('marketplace_admin.ui.welcome_message') }}</div>
+        <p class="text-muted small mb-2">{{ t('marketplace_admin.ui.welcome_message_shown_on_home_page_to_users_who_have_access') }}</p>
+        <textarea id="pack-welcome-editor" class="form-control" rows="8" placeholder="{{ t('marketplace_admin.ui.write_html_content_for_your_welcome_message') }}">{{ welcome_message_content }}</textarea>
         <div class="mt-2 d-flex gap-2">
             <button type="button" class="btn btn-sm btn-primary" onclick="savePackWelcome()">
-                <i class="fas fa-save me-1"></i> Save Welcome
+                <i class="fas fa-save me-1"></i> {{ t('marketplace_admin.ui.save_welcome') }}
             </button>
             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="previewPackWelcome()">
-                <i class="fas fa-eye me-1"></i> Preview
+                <i class="fas fa-eye me-1"></i> {{ t('marketplace_admin.ui.preview') }}
             </button>
         </div>
     </div>
@@ -384,36 +385,36 @@
     {% if pack %}
     <div class="section-container" style="margin-top: 1.5rem;">
         <div class="section-title">
-            <i class="fas fa-door-open"></i> Welcome Page (full landing page at /welcome/...)
-            <span id="welcome-status-badge" class="badge bg-secondary ms-2" style="font-size: 0.75rem;">Checking...</span>
+            <i class="fas fa-door-open"></i> {{ t('marketplace_admin.ui.welcome_page_full_landing_page_at_welcome') }}
+            <span id="welcome-status-badge" class="badge bg-secondary ms-2" style="font-size: 0.75rem;">{{ t('marketplace_admin.ui.checking') }}</span>
         </div>
         <p class="text-muted small mb-3">
-            An immersive welcome page for authenticated users. Generated by AI in the background.
+            {{ t('marketplace_admin.ui.an_immersive_welcome_page_for_authenticated_users_generated_by_ai_in_the_ba') }}
         </p>
 
         <!-- File list -->
         <div id="welcome-file-list" class="mb-3" style="display: none;">
-            <label class="form-label small fw-semibold">Current files:</label>
+            <label class="form-label small fw-semibold">{{ t('marketplace_admin.ui.current_files') }}</label>
             <ul id="welcome-files-ul" class="list-unstyled small text-muted mb-0"></ul>
         </div>
 
         <!-- Progress indicator -->
         <div id="welcome-progress" class="text-center py-3 mb-3" style="display: none; border: 1px solid var(--border-color, #333); border-radius: 8px; background: var(--bg-tertiary, #202225);">
             <div class="spinner-border spinner-border-sm text-primary mb-2" role="status"></div>
-            <p class="mb-0 small fw-semibold">AI job in progress...</p>
-            <small class="text-muted" id="welcome-progress-text">Checking status...</small>
+            <p class="mb-0 small fw-semibold">{{ t('marketplace_admin.ui.ai_job_in_progress') }}</p>
+            <small class="text-muted" id="welcome-progress-text">{{ t('marketplace_admin.ui.checking_status') }}</small>
         </div>
 
         <!-- Action buttons -->
         <div class="d-flex gap-2 flex-wrap">
             <button type="button" class="btn btn-sm btn-primary" id="welcome-generate-btn" onclick="welcomeOpenGenerateModal()">
-                <i class="fas fa-magic me-1"></i> Generate Welcome Page
+                <i class="fas fa-magic me-1"></i> {{ t('marketplace_admin.ui.generate_welcome_page') }}
             </button>
             <button type="button" class="btn btn-sm btn-outline-primary" id="welcome-modify-btn" onclick="welcomeOpenModifyModal()" style="display: none;">
-                <i class="fas fa-edit me-1"></i> Modify Welcome Page
+                <i class="fas fa-edit me-1"></i> {{ t('marketplace_admin.ui.modify_welcome_page') }}
             </button>
             <button type="button" class="btn btn-sm btn-outline-danger" id="welcome-delete-btn" onclick="welcomeDeleteFiles()" style="display: none;">
-                <i class="fas fa-trash me-1"></i> Delete Welcome Files
+                <i class="fas fa-trash me-1"></i> {{ t('marketplace_admin.ui.delete_welcome_files') }}
             </button>
         </div>
     </div>
@@ -425,44 +426,44 @@
         <div class="modal-dialog modal-lg modal-dialog-centered">
             <div class="modal-content" style="background: var(--bg-secondary, #1e1e1e); color: var(--text-primary, #fff);">
                 <div class="modal-header" style="background: var(--accent, #6366f1); color: #fff; border-color: var(--border-color, #333);">
-                    <h5 class="modal-title"><i class="fas fa-magic me-2"></i>Generate Welcome Page</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h5 class="modal-title"><i class="fas fa-magic me-2"></i>{{ t('marketplace_admin.ui.generate_welcome_page') }}</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="{{ t('marketplace_admin.ui.close') }}"></button>
                 </div>
                 <div class="modal-body">
                     <!-- Description -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Describe the welcome experience *</label>
+                        <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.describe_the_welcome_experience') }}</label>
                         <textarea id="welcome-wizard-description" class="form-control" rows="4"
-                            placeholder="Example: An immersive onboarding page that introduces the user to the pack, explains what is included, and sets expectations..."></textarea>
-                        <small class="text-muted">Minimum 20 characters. The more detailed, the better.</small>
+                            placeholder="{{ t('marketplace_admin.ui.example_an_immersive_onboarding_page_that_introduces_the_user_to_the_pack_e') }}"></textarea>
+                        <small class="text-muted">{{ t('marketplace_admin.ui.minimum_20_characters_the_more_detailed_the_better') }}</small>
                     </div>
 
                     <!-- Style -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Visual style</label>
+                        <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.visual_style') }}</label>
                         <div class="btn-group d-flex" role="group">
                             <input type="radio" class="btn-check" name="welcomeWizardStyle" id="welcomeStyleModern" value="modern" checked>
-                            <label class="btn btn-outline-primary" for="welcomeStyleModern">Modern</label>
+                            <label class="btn btn-outline-primary" for="welcomeStyleModern">{{ t('marketplace_admin.ui.modern') }}</label>
                             <input type="radio" class="btn-check" name="welcomeWizardStyle" id="welcomeStyleMinimalist" value="minimalist">
-                            <label class="btn btn-outline-primary" for="welcomeStyleMinimalist">Minimalist</label>
+                            <label class="btn btn-outline-primary" for="welcomeStyleMinimalist">{{ t('marketplace_admin.ui.minimalist') }}</label>
                             <input type="radio" class="btn-check" name="welcomeWizardStyle" id="welcomeStyleCorporate" value="corporate">
-                            <label class="btn btn-outline-primary" for="welcomeStyleCorporate">Corporate</label>
+                            <label class="btn btn-outline-primary" for="welcomeStyleCorporate">{{ t('marketplace_admin.ui.corporate') }}</label>
                             <input type="radio" class="btn-check" name="welcomeWizardStyle" id="welcomeStyleCreative" value="creative">
-                            <label class="btn btn-outline-primary" for="welcomeStyleCreative">Creative</label>
+                            <label class="btn btn-outline-primary" for="welcomeStyleCreative">{{ t('marketplace_admin.ui.creative') }}</label>
                         </div>
                     </div>
 
                     <!-- Colors -->
                     <div class="row mb-4">
                         <div class="col-6">
-                            <label class="form-label fw-semibold">Primary color</label>
+                            <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.primary_color') }}</label>
                             <div class="input-group">
                                 <input type="color" id="welcome-primary-color" class="form-control form-control-color" value="#3B82F6">
                                 <input type="text" id="welcome-primary-color-text" class="form-control" value="#3B82F6" pattern="^#[0-9A-Fa-f]{6}$">
                             </div>
                         </div>
                         <div class="col-6">
-                            <label class="form-label fw-semibold">Secondary color</label>
+                            <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.secondary_color') }}</label>
                             <div class="input-group">
                                 <input type="color" id="welcome-secondary-color" class="form-control form-control-color" value="#10B981">
                                 <input type="text" id="welcome-secondary-color-text" class="form-control" value="#10B981" pattern="^#[0-9A-Fa-f]{6}$">
@@ -472,37 +473,37 @@
 
                     <!-- Language -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Content language</label>
+                        <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.content_language') }}</label>
                         <select id="welcome-wizard-language" class="form-select" style="max-width: 200px;">
-                            <option value="es">Spanish</option>
-                            <option value="en">English</option>
+                            <option value="es">{{ t('marketplace_admin.ui.spanish') }}</option>
+                            <option value="en">{{ t('marketplace_admin.ui.english') }}</option>
                         </select>
                     </div>
 
                     <!-- Timeout -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Maximum execution time</label>
+                        <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.maximum_execution_time') }}</label>
                         <div class="input-group" style="max-width: 200px;">
                             <input type="number" id="welcome-wizard-timeout" class="form-control" value="5" min="1" max="60">
-                            <span class="input-group-text">minutes</span>
+                            <span class="input-group-text">{{ t('marketplace_admin.ui.minutes') }}</span>
                         </div>
-                        <small class="text-muted">Max: 60 minutes.</small>
+                        <small class="text-muted">{{ t('marketplace_admin.ui.max_60_minutes') }}</small>
                     </div>
 
                     <!-- Progress -->
                     <div id="welcome-wizard-progress" class="text-center py-4" style="display: none;">
                         <div class="spinner-border text-primary mb-3" role="status"></div>
-                        <p class="mb-0 fw-semibold">Generating welcome page...</p>
-                        <small class="text-muted">Please wait...</small>
+                        <p class="mb-0 fw-semibold">{{ t('marketplace_admin.ui.generating_welcome_page') }}</p>
+                        <small class="text-muted">{{ t('marketplace_admin.ui.please_wait') }}</small>
                     </div>
 
                     <!-- Error -->
                     <div id="welcome-wizard-error" class="alert alert-danger" style="display: none;"></div>
                 </div>
                 <div class="modal-footer" style="border-color: var(--border-color, #333);">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="welcome-wizard-cancel-btn">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="welcome-wizard-cancel-btn">{{ t('marketplace_admin.ui.cancel') }}</button>
                     <button type="button" class="btn btn-primary" id="welcome-wizard-generate-btn" onclick="welcomeGenerate()">
-                        <i class="fas fa-wand-magic-sparkles me-1"></i> Generate Welcome Page
+                        <i class="fas fa-wand-magic-sparkles me-1"></i> {{ t('marketplace_admin.ui.generate_welcome_page') }}
                     </button>
                 </div>
             </div>
@@ -514,48 +515,48 @@
         <div class="modal-dialog modal-lg modal-dialog-centered">
             <div class="modal-content" style="background: var(--bg-secondary, #1e1e1e); color: var(--text-primary, #fff);">
                 <div class="modal-header" style="background: var(--accent, #6366f1); color: #fff; border-color: var(--border-color, #333);">
-                    <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Modify Welcome Page</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h5 class="modal-title"><i class="fas fa-edit me-2"></i>{{ t('marketplace_admin.ui.modify_welcome_page') }}</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="{{ t('marketplace_admin.ui.close') }}"></button>
                 </div>
                 <div class="modal-body">
                     <!-- Current files -->
                     <div class="alert alert-secondary mb-4">
-                        <strong><i class="fas fa-folder-open me-2"></i>Current files:</strong>
+                        <strong><i class="fas fa-folder-open me-2"></i>{{ t('marketplace_admin.ui.current_files') }}</strong>
                         <div id="welcome-modify-file-list" class="mt-2 small"></div>
                     </div>
 
                     <!-- Instructions -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">What would you like to change?</label>
+                        <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.what_would_you_like_to_change') }}</label>
                         <textarea id="welcome-modify-instructions" class="form-control" rows="5"
-                            placeholder="Example: Add a progress indicator at the top, change the color scheme to warmer tones..."></textarea>
-                        <small class="text-muted">Minimum 10 characters.</small>
+                            placeholder="{{ t('marketplace_admin.ui.example_add_a_progress_indicator_at_the_top_change_the_color_scheme_to_warm') }}"></textarea>
+                        <small class="text-muted">{{ t('marketplace_admin.ui.minimum_10_characters') }}</small>
                     </div>
 
                     <!-- Timeout -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Maximum execution time</label>
+                        <label class="form-label fw-semibold">{{ t('marketplace_admin.ui.maximum_execution_time') }}</label>
                         <div class="input-group" style="max-width: 200px;">
                             <input type="number" id="welcome-modify-timeout" class="form-control" value="5" min="1" max="60">
-                            <span class="input-group-text">minutes</span>
+                            <span class="input-group-text">{{ t('marketplace_admin.ui.minutes') }}</span>
                         </div>
-                        <small class="text-muted">Max: 60 minutes.</small>
+                        <small class="text-muted">{{ t('marketplace_admin.ui.max_60_minutes') }}</small>
                     </div>
 
                     <!-- Progress -->
                     <div id="welcome-modify-progress" class="text-center py-4" style="display: none;">
                         <div class="spinner-border text-primary mb-3" role="status"></div>
-                        <p class="mb-0 fw-semibold">Applying modifications...</p>
-                        <small class="text-muted">Working on changes...</small>
+                        <p class="mb-0 fw-semibold">{{ t('marketplace_admin.ui.applying_modifications') }}</p>
+                        <small class="text-muted">{{ t('marketplace_admin.ui.working_on_changes') }}</small>
                     </div>
 
                     <!-- Error -->
                     <div id="welcome-modify-error" class="alert alert-danger mt-3" style="display: none;"></div>
                 </div>
                 <div class="modal-footer" style="border-color: var(--border-color, #333);">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="welcome-modify-cancel-btn">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="welcome-modify-cancel-btn">{{ t('marketplace_admin.ui.cancel') }}</button>
                     <button type="button" class="btn btn-primary" id="welcome-modify-apply-btn" onclick="welcomeApplyModifications()">
-                        <i class="fas fa-check me-1"></i> Apply Changes
+                        <i class="fas fa-check me-1"></i> {{ t('marketplace_admin.ui.apply_changes') }}
                     </button>
                 </div>
             </div>
@@ -566,27 +567,27 @@
     <!-- Sales History (only for existing packs) -->
     {% if pack %}
     <div class="section-container" style="margin-top: 1.5rem;">
-        <div class="section-title"><i class="fas fa-receipt"></i> Sales History</div>
+        <div class="section-title"><i class="fas fa-receipt"></i> {{ t('marketplace_admin.ui.sales_history') }}</div>
         <div id="salesSummary" style="display:none; margin-bottom: 1rem;">
             <span class="badge bg-primary" style="font-size: 0.9rem; padding: 6px 12px; margin-right: 8px;">
-                <i class="fas fa-shopping-cart me-1"></i> <span id="salesCount">0</span> purchases
+                <i class="fas fa-shopping-cart me-1"></i> <span id="salesCount">{{ t('marketplace_admin.ui.purchase_count', count=0, purchases=format_number(0)) }}</span>
             </span>
             <span class="badge bg-success" style="font-size: 0.9rem; padding: 6px 12px;">
-                <i class="fas fa-dollar-sign me-1"></i> <span id="salesRevenue">0.00</span> revenue
+                <i class="fas fa-dollar-sign me-1"></i> <span id="salesRevenue">{{ t('marketplace_admin.ui.revenue_amount', amount=format_currency(0)) }}</span>
             </span>
         </div>
-        <div id="salesLoading" class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> Loading sales data...</div>
-        <div id="salesEmpty" style="display:none;" class="text-muted py-3 text-center">No purchases yet.</div>
+        <div id="salesLoading" class="text-muted"><i class="fas fa-spinner fa-spin me-1"></i> {{ t('marketplace_admin.ui.loading_sales_data') }}</div>
+        <div id="salesEmpty" style="display:none;" class="text-muted py-3 text-center">{{ t('marketplace_admin.ui.no_purchases_yet') }}</div>
         <div class="table-wrapper" id="salesTableWrapper" style="display:none;">
             <table class="table">
                 <thead>
                     <tr>
-                        <th>Date</th>
-                        <th>Buyer</th>
-                        <th>Email</th>
-                        <th class="text-end">Amount</th>
-                        <th>Method</th>
-                        <th>Status</th>
+                        <th>{{ t('marketplace_admin.ui.date') }}</th>
+                        <th>{{ t('marketplace_admin.ui.buyer') }}</th>
+                        <th>{{ t('marketplace_admin.ui.email') }}</th>
+                        <th class="text-end">{{ t('marketplace_admin.ui.amount') }}</th>
+                        <th>{{ t('marketplace_admin.ui.method') }}</th>
+                        <th>{{ t('marketplace_admin.ui.status') }}</th>
                     </tr>
                 </thead>
                 <tbody id="salesTableBody"></tbody>
@@ -603,14 +604,14 @@
     <div class="modal-dialog">
         <div class="modal-content" style="background: var(--bg-secondary, #1e1e1e); color: var(--text-primary, #fff);">
             <div class="modal-header" style="border-color: var(--border-color, #333);">
-                <h5 class="modal-title"><i class="fas fa-search me-1"></i> Add Prompt to Pack</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title"><i class="fas fa-search me-1"></i> {{ t('marketplace_admin.ui.add_prompt_to_pack') }}</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="{{ t('marketplace_admin.ui.close') }}"></button>
             </div>
             <div class="modal-body">
-                <input class="form-control mb-3" id="promptSearchInput" placeholder="Search prompts..." autocomplete="off">
+                <input class="form-control mb-3" id="promptSearchInput" placeholder="{{ t('marketplace_admin.ui.search_prompts') }}" autocomplete="off">
                 <div id="addPromptResults"></div>
                 <div id="promptSearchEmpty" class="text-center text-muted py-3" style="display:none;">
-                    No matching prompts found.
+                    {{ t('marketplace_admin.ui.no_matching_prompts_found') }}
                 </div>
             </div>
         </div>
@@ -719,13 +720,13 @@
                 body: JSON.stringify({ message: html })
             });
             if (resp.ok) {
-                NotificationModal.success('Saved', 'Welcome message saved.');
+                NotificationModal.success(AurvekI18n.t('marketplace_admin.ui.saved'), AurvekI18n.t('marketplace_admin.ui.welcome_message_saved'));
                 if (typeof packWelcomeGroup !== 'undefined') packWelcomeGroup.markClean();
             } else {
-                NotificationModal.error('Save Failed', 'Failed to save welcome message.');
+                NotificationModal.error(AurvekI18n.t('marketplace_admin.ui.save_failed'), AurvekI18n.t('marketplace_admin.ui.failed_to_save_welcome_message'));
             }
         } catch (e) {
-            NotificationModal.error('Error', 'Error saving welcome message.');
+            NotificationModal.error(AurvekI18n.t('marketplace_admin.ui.error'), AurvekI18n.t('marketplace_admin.ui.error_saving_welcome_message'));
         }
     }
 
@@ -755,14 +756,14 @@
             if (hasFiles) {
                 badge.className = 'badge bg-success ms-2';
                 badge.style.fontSize = '0.75rem';
-                badge.textContent = 'Active';
+                badge.textContent = AurvekI18n.t('marketplace_admin.ui.active');
                 modifyBtn.style.display = '';
                 deleteBtn.style.display = '';
                 fileListDiv.style.display = '';
             } else {
                 badge.className = 'badge bg-secondary ms-2';
                 badge.style.fontSize = '0.75rem';
-                badge.textContent = 'Not created';
+                badge.textContent = AurvekI18n.t('marketplace_admin.ui.not_created');
                 modifyBtn.style.display = 'none';
                 deleteBtn.style.display = 'none';
                 fileListDiv.style.display = 'none';
@@ -772,9 +773,13 @@
         async function welcomeLoadFiles() {
             try {
                 const resp = await fetch(`/api/welcome/pack/${packId}/files`);
-                if (!resp.ok) { welcomeSetUI(false); return; }
+                if (!resp.ok) {
+                    welcomeSetUI(false);
+                    document.getElementById('welcome-status-badge').textContent = AurvekI18n.t('marketplace_admin.ui.files_load_failed');
+                    return;
+                }
                 const data = await resp.json();
-                welcomeCurrentFiles = data.files || [];
+                welcomeCurrentFiles = ['pages', 'css', 'js', 'images', 'other'].flatMap(kind => Array.isArray(data.files?.[kind]) ? data.files[kind] : []);
                 const ul = document.getElementById('welcome-files-ul');
                 ul.innerHTML = '';
                 if (welcomeCurrentFiles.length > 0) {
@@ -790,6 +795,7 @@
             } catch (e) {
                 console.error('Welcome files load error:', e);
                 welcomeSetUI(false);
+                document.getElementById('welcome-status-badge').textContent = AurvekI18n.t('marketplace_admin.ui.files_load_failed');
             }
         }
 
@@ -799,7 +805,7 @@
                 if (!resp.ok) return;
                 const data = await resp.json();
                 if (data.success && data.has_active_job) {
-                    welcomeShowProgress(`A ${data.type} job is running...`);
+                    welcomeShowProgress(AurvekI18n.t('marketplace_admin.ui.job_running'));
                     welcomeStartPolling(data.task_id);
                 }
             } catch (e) {
@@ -809,7 +815,7 @@
 
         function welcomeShowProgress(text) {
             document.getElementById('welcome-progress').style.display = '';
-            document.getElementById('welcome-progress-text').textContent = text || 'Working...';
+            document.getElementById('welcome-progress-text').textContent = text || AurvekI18n.t('marketplace_admin.ui.working');
             document.getElementById('welcome-generate-btn').disabled = true;
             document.getElementById('welcome-modify-btn').disabled = true;
             document.getElementById('welcome-delete-btn').disabled = true;
@@ -824,7 +830,7 @@
 
         function welcomeStartPolling(taskId) {
             welcomeActiveTaskId = taskId;
-            welcomeShowProgress('AI is working...');
+            welcomeShowProgress(AurvekI18n.t('marketplace_admin.ui.ai_is_working'));
             welcomePollStatus(taskId);
             welcomePollingInterval = setInterval(() => welcomePollStatus(taskId), WELCOME_POLL_MS);
         }
@@ -845,11 +851,11 @@
 
                 if (data.status === 'running') {
                     const elapsed = Math.round((Date.now() - new Date(data.started_at).getTime()) / 1000);
-                    document.getElementById('welcome-progress-text').textContent = `AI is working... (${elapsed}s elapsed)`;
+                    document.getElementById('welcome-progress-text').textContent = AurvekI18n.t('marketplace_admin.ui.job_elapsed', { seconds: AurvekI18n.formatNumber(elapsed) });
                 } else if (data.status === 'completed') {
                     welcomeStopPolling();
                     welcomeHideProgress();
-                    NotificationModal.success('Welcome Page', 'Job completed successfully!');
+                    NotificationModal.success(AurvekI18n.t('marketplace_admin.ui.welcome_page'), AurvekI18n.t('marketplace_admin.ui.job_completed_successfully'));
                     welcomeLoadFiles();
                     ['welcome-wizard-modal', 'welcome-modify-modal'].forEach(id => {
                         const el = document.getElementById(id);
@@ -859,7 +865,7 @@
                 } else if (data.status === 'failed' || data.status === 'timeout') {
                     welcomeStopPolling();
                     welcomeHideProgress();
-                    NotificationModal.error('Welcome Page', data.error || `Job ${data.status}`);
+                    NotificationModal.error(AurvekI18n.t('marketplace_admin.ui.welcome_page'), typeof data.error === 'string' && data.error ? data.error : AurvekI18n.t(data.status === 'timeout' ? 'marketplace_admin.ui.job_timeout' : 'marketplace_admin.ui.job_failed'));
                 }
             } catch (e) {
                 console.error('Welcome poll error:', e);
@@ -879,7 +885,7 @@
         window.welcomeGenerate = async function() {
             const description = document.getElementById('welcome-wizard-description').value.trim();
             if (!description || description.length < 20) {
-                NotificationModal.warning('Description Required', 'Please provide a detailed description (at least 20 characters).');
+                NotificationModal.warning(AurvekI18n.t('marketplace_admin.ui.description_required'), AurvekI18n.t('marketplace_admin.ui.please_provide_a_detailed_description_at_least_20_characters'));
                 document.getElementById('welcome-wizard-description').focus();
                 return;
             }
@@ -895,7 +901,7 @@
             const errorEl = document.getElementById('welcome-wizard-error');
 
             progressEl.style.display = 'block';
-            progressEl.querySelector('small').textContent = 'Starting job...';
+            progressEl.querySelector('small').textContent = AurvekI18n.t('marketplace_admin.ui.starting_job');
             errorEl.style.display = 'none';
             document.getElementById('welcome-wizard-generate-btn').disabled = true;
             document.getElementById('welcome-wizard-cancel-btn').disabled = true;
@@ -916,10 +922,10 @@
                 const data = await resp.json();
 
                 if (data.success && data.task_id) {
-                    progressEl.querySelector('small').textContent = 'AI is working...';
+                    progressEl.querySelector('small').textContent = AurvekI18n.t('marketplace_admin.ui.ai_is_working');
                     welcomeStartPolling(data.task_id);
                 } else {
-                    errorEl.textContent = data.message || data.detail || 'Failed to start job';
+                    errorEl.textContent = (typeof data.message === 'string' && data.message) || (typeof data.detail === 'string' ? data.detail : data.detail?.message) || AurvekI18n.t('marketplace_admin.ui.failed_to_start_job');
                     errorEl.style.display = 'block';
                     progressEl.style.display = 'none';
                     document.getElementById('welcome-wizard-generate-btn').disabled = false;
@@ -927,7 +933,7 @@
                 }
             } catch (e) {
                 console.error('Welcome generate error:', e);
-                errorEl.textContent = 'Network error. Please try again.';
+                errorEl.textContent = AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again');
                 errorEl.style.display = 'block';
                 progressEl.style.display = 'none';
                 document.getElementById('welcome-wizard-generate-btn').disabled = false;
@@ -942,10 +948,14 @@
             document.getElementById('welcome-modify-apply-btn').disabled = false;
             document.getElementById('welcome-modify-cancel-btn').disabled = false;
 
-            const fileListHtml = welcomeCurrentFiles.length > 0
-                ? welcomeCurrentFiles.map(f => `<code>${f}</code>`).join(', ')
-                : 'No files';
-            document.getElementById('welcome-modify-file-list').innerHTML = fileListHtml;
+            const fileList = document.getElementById('welcome-modify-file-list');
+            fileList.textContent = welcomeCurrentFiles.length ? '' : AurvekI18n.t('marketplace_admin.ui.no_files');
+            welcomeCurrentFiles.forEach((filename, index) => {
+                if (index) fileList.appendChild(document.createTextNode(', '));
+                const code = document.createElement('code');
+                code.textContent = filename;
+                fileList.appendChild(code);
+            });
 
             new bootstrap.Modal(document.getElementById('welcome-modify-modal')).show();
         };
@@ -953,7 +963,7 @@
         window.welcomeApplyModifications = async function() {
             const instructions = document.getElementById('welcome-modify-instructions').value.trim();
             if (!instructions || instructions.length < 10) {
-                NotificationModal.warning('Instructions Required', 'Please provide instructions (at least 10 characters).');
+                NotificationModal.warning(AurvekI18n.t('marketplace_admin.ui.instructions_required'), AurvekI18n.t('marketplace_admin.ui.please_provide_instructions_at_least_10_characters'));
                 document.getElementById('welcome-modify-instructions').focus();
                 return;
             }
@@ -965,7 +975,7 @@
             const errorEl = document.getElementById('welcome-modify-error');
 
             progressEl.style.display = 'block';
-            progressEl.querySelector('small').textContent = 'Starting job...';
+            progressEl.querySelector('small').textContent = AurvekI18n.t('marketplace_admin.ui.starting_job');
             errorEl.style.display = 'none';
             document.getElementById('welcome-modify-apply-btn').disabled = true;
             document.getElementById('welcome-modify-cancel-btn').disabled = true;
@@ -979,10 +989,10 @@
                 const data = await resp.json();
 
                 if (data.success && data.task_id) {
-                    progressEl.querySelector('small').textContent = 'AI is working on changes...';
+                    progressEl.querySelector('small').textContent = AurvekI18n.t('marketplace_admin.ui.ai_is_working_on_changes');
                     welcomeStartPolling(data.task_id);
                 } else {
-                    errorEl.textContent = data.message || data.detail || 'Failed to start job';
+                    errorEl.textContent = (typeof data.message === 'string' && data.message) || (typeof data.detail === 'string' ? data.detail : data.detail?.message) || AurvekI18n.t('marketplace_admin.ui.failed_to_start_job');
                     errorEl.style.display = 'block';
                     progressEl.style.display = 'none';
                     document.getElementById('welcome-modify-apply-btn').disabled = false;
@@ -990,7 +1000,7 @@
                 }
             } catch (e) {
                 console.error('Welcome modify error:', e);
-                errorEl.textContent = 'Network error. Please try again.';
+                errorEl.textContent = AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again');
                 errorEl.style.display = 'block';
                 progressEl.style.display = 'none';
                 document.getElementById('welcome-modify-apply-btn').disabled = false;
@@ -1000,25 +1010,25 @@
 
         window.welcomeDeleteFiles = function() {
             NotificationModal.confirm(
-                'Delete Welcome Files',
-                'Are you sure you want to delete all welcome page files? This cannot be undone.',
+                AurvekI18n.t('marketplace_admin.ui.delete_welcome_files'),
+                AurvekI18n.t('marketplace_admin.ui.are_you_sure_you_want_to_delete_all_welcome_page_files_this_cannot_be_undon'),
                 async function() {
                     try {
                         const resp = await fetch(`/api/welcome/pack/${packId}/files`, { method: 'DELETE' });
                         const data = await resp.json();
                         if (data.success || resp.ok) {
-                            NotificationModal.success('Deleted', 'Welcome page files deleted.');
+                            NotificationModal.success(AurvekI18n.t('marketplace_admin.ui.deleted'), AurvekI18n.t('marketplace_admin.ui.welcome_page_files_deleted'));
                             welcomeLoadFiles();
                         } else {
-                            NotificationModal.error('Delete Failed', data.message || data.detail || 'Failed to delete files.');
+                            NotificationModal.error(AurvekI18n.t('marketplace_admin.ui.delete_failed'), (typeof data.message === 'string' && data.message) || (typeof data.detail === 'string' ? data.detail : data.detail?.message) || AurvekI18n.t('marketplace_admin.ui.failed_to_delete_files'));
                         }
                     } catch (e) {
                         console.error('Welcome delete error:', e);
-                        NotificationModal.error('Error', 'Error deleting welcome page files.');
+                        NotificationModal.error(AurvekI18n.t('marketplace_admin.ui.error'), AurvekI18n.t('marketplace_admin.ui.error_deleting_welcome_page_files'));
                     }
                 },
                 null,
-                { type: 'error', confirmText: 'Delete' }
+                { type: 'error', confirmText: AurvekI18n.t('marketplace_admin.ui.delete') }
             );
         };
 

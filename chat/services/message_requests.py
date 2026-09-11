@@ -14,6 +14,22 @@ from rediscfg import (
     increment_user_activity,
 )
 from wellbeing_service import get_active_pause
+from chat.services.localization import chat_text
+
+
+def unavailable_model_response(llm_id: int, model: str, current_user=None) -> JSONResponse:
+    """Reject a retired model before a turn reaches inference or persistence."""
+    return JSONResponse(
+        content={
+            "success": False,
+            "error_code": "model_unavailable",
+            "message": chat_text(current_user, "model_unavailable"),
+            "llm_id": int(llm_id),
+            "model": model,
+            "llm_enabled": False,
+        },
+        status_code=409,
+    )
 
 
 async def validate_message_request(
@@ -25,7 +41,30 @@ async def validate_message_request(
     if current_user is None:
         return JSONResponse(content={"redirect": "/login"}, status_code=401)
 
-    if not is_whatsapp:
+    from integrations.embed.context import get_embed_principal, is_embed_request
+    if is_embed_request(request):
+        principal = get_embed_principal(request)
+        if principal is None or principal.user_id != current_user.id:
+            return JSONResponse(content={"error": "unauthenticated"}, status_code=401)
+        if is_whatsapp or not principal.capabilities.get("text", False):
+            return JSONResponse(content={"error": "capability_disabled"}, status_code=403)
+        from request_security import validate_mutation_request
+        rejection = validate_mutation_request(request)
+        if rejection is not None:
+            return rejection
+        # Optional native controls require the delegated capability. The shared
+        # runtime still validates model restrictions and reasoning budgets.
+        form = await request.form()
+        if form.get("multi_ai_models") and not principal.capabilities.get("multi_ai", False):
+            return JSONResponse(content={"error": "capability_disabled"}, status_code=403)
+        if any(form.get(key) for key in (
+            "reasoning_mode", "reasoning_budget_tokens", "thinking_budget_tokens",
+        )) and not principal.capabilities.get("reasoning", False):
+            return JSONResponse(content={"error": "capability_disabled"}, status_code=403)
+        if not principal.capabilities.get("attachments", False):
+            if form.get("attachment_refs") or any(getattr(item, "filename", "") for item in form.getlist("file")):
+                return JSONResponse(content={"error": "capability_disabled"}, status_code=403)
+    elif not is_whatsapp:
         token = request.cookies.get(SESSION_COOKIE_NAME)
         if not token:
             logger.debug("no token!")
@@ -33,8 +72,6 @@ async def validate_message_request(
 
         try:
             payload = decode_jwt_cached(token, SECRET_KEY)
-            logger.info("payload: %s", payload)
-
             if not verify_token_expiration(payload):
                 logger.debug("token expired")
                 return JSONResponse(content={"redirect": "/login"}, status_code=401)
@@ -48,7 +85,7 @@ async def validate_message_request(
         return JSONResponse(
             content={
                 "error": "wellbeing_pause_active" if pause_reason == "pause_active" else "wellbeing_pause_required",
-                "message": active_pause.get("message") or "A break pause is required before continuing.",
+                "message": chat_text(current_user, "wellbeing_pause_active" if pause_reason == "pause_active" else "wellbeing_pause_required"),
                 "pause_until": active_pause.get("pause_until"),
                 "session_id": active_pause.get("session_id"),
                 "reason": pause_reason,
@@ -62,7 +99,8 @@ async def validate_message_request(
         return JSONResponse(
             content={
                 "error": "Rate limit exceeded",
-                "message": f"Too many AI requests. Limit: {rate_status['limit']} per minute. Current: {rate_status['current']}",
+                "error_code": "rate_limit_exceeded",
+                "message": chat_text(current_user, "rate_limit_exceeded"),
                 "rate_limit": rate_status,
             },
             status_code=429,

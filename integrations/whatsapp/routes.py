@@ -1,12 +1,10 @@
 import os
-import time
 
-import aiohttp
 import orjson
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from auth import get_user_from_phone_number
+from auth import get_user_from_phone_number, get_user_by_id
 from billing.usage_reservations import serialize_user_billing_response
 from clients import async_twilio, twilio_validator
 from common import (
@@ -16,7 +14,9 @@ from common import (
 )
 from database import get_db_connection
 from file_storage import create_pending_audio_attachment, discard_pending_attachments
+from chat.services.localization import chat_translator
 from integrations.conversations import (
+    escape_markdown,
     can_use_platform,
     change_response_mode,
     create_new_platform_conversation,
@@ -26,6 +26,7 @@ from integrations.conversations import (
 )
 from integrations.media import (
     download_external_audio,
+    download_external_media,
     transcribe_external_audio_detailed,
 )
 from integrations.messaging_voice_notes.service import (
@@ -34,6 +35,7 @@ from integrations.messaging_voice_notes.service import (
 )
 from integrations.telephony.channel_context import capture_non_phone_channel_turn
 from integrations.whatsapp.service import get_phone_user_not_found
+from integrations.whatsapp import ingress
 from log_config import logger
 from prompt_access import get_user_accessible_prompts
 from prompts import can_user_access_prompt
@@ -41,21 +43,16 @@ from save_images import get_or_generate_img_token
 from storage_quota import StorageQuotaExceededError
 from tools.tts import handle_tts_request, insert_tts_break
 
+from integrations.applications.messaging import (
+    resolve_messaging, application_command, application_messaging_turn,
+    check_messaging, AdmittedMessagingClient, messaging_tts_billing,
+)
+from integrations.embed.models import EmbedError
 from ai_runtime.channel_turns import StaleChannelTurnError
 from ai_runtime.messages import process_save_message, storage_quota_notice_from_response
 
 
 router = APIRouter()
-
-
-# Whatsapp
-
-# WhatsApp rate limiting (in-memory)
-_whatsapp_rate_limits = {}  # {phone_number: [timestamp, ...]}
-_whatsapp_rate_limit_notices = {}  # {phone_number: last_notice_timestamp}
-WHATSAPP_RATE_LIMIT_PER_USER = int(os.getenv("WHATSAPP_RATE_LIMIT_PER_USER", "20"))  # messages per minute
-WHATSAPP_RATE_LIMIT_GLOBAL = int(os.getenv("WHATSAPP_RATE_LIMIT_GLOBAL", "200"))  # messages per minute
-_whatsapp_global_timestamps = []
 
 
 def _whatsapp_audio_content_kind(media_type: str | None) -> str:
@@ -89,14 +86,17 @@ async def _prepare_whatsapp_audio(
     media_url: str,
     media_type: str,
     user_agent: str | None,
+    application_state=None,
 ) -> tuple[str, dict]:
     """Download once, optionally retain, and transcribe one inbound audio item."""
-    audio_content = await download_external_audio(media_url)
+    await check_messaging(application_state, "stt")
+    audio_content = await download_external_audio(media_url, max_bytes=16 * 1024 * 1024, total_timeout=60)
     attachment_ref = None
     retention_status = "disabled"
 
     if await get_voice_note_retention_enabled("whatsapp"):
         try:
+            await check_messaging(application_state, "stt")
             pending = await create_pending_audio_attachment(
                 user_id=int(user_id),
                 conversation_id=int(conversation_id),
@@ -122,6 +122,7 @@ async def _prepare_whatsapp_audio(
             retention_status = "stored"
 
     try:
+        await check_messaging(application_state, "stt")
         transcription = await transcribe_external_audio_detailed(
             user_id=int(user_id),
             audio_content=audio_content,
@@ -224,13 +225,40 @@ async def _buffer_whatsapp_runtime_output(body_iterator):
 
 @router.post("/whatsapp")
 async def whatsapp_webhook(request: Request):
-    if async_twilio is None:
+    return await _authenticated_whatsapp_webhook(request, async_twilio, twilio_validator)
+
+
+@router.post("/whatsapp/{receiver_id}")
+async def whatsapp_receiver_webhook(receiver_id: str, request: Request):
+    if not request.headers.get("X-Twilio-Signature"):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+    from integrations.applications.channels import get_application_channel_service
+    from twilio_async import AsyncTwilioClient
+    from twilio.request_validator import RequestValidator
+    receiver = await get_application_channel_service().get_receiver(receiver_id)
+    if receiver is None or receiver.channel != "whatsapp" or not receiver.enabled:
+        raise HTTPException(status_code=404, detail="Receiver unavailable")
+    token = os.environ.get(receiver.twilio_auth_token_env or "", "")
+    if not token:
+        raise HTTPException(status_code=503, detail="Receiver authentication unavailable")
+    client = AsyncTwilioClient(receiver.provider_account_id, token)
+    try:
+        return await _authenticated_whatsapp_webhook(request, client,
+            RequestValidator(token), receiver.receiver_key)
+    finally:
+        await client.close()
+
+
+async def _authenticated_whatsapp_webhook(request, client, validator, receiver_key=None):
+    if client is None:
         logger.warning("WhatsApp webhook called but Twilio is not configured")
         return Response(content="<Response></Response>", media_type="application/xml", status_code=200)
 
     # Security: Validate Twilio signature to prevent spoofed requests
-    if twilio_validator:
+    if validator:
         signature = request.headers.get("X-Twilio-Signature", "")
+        if not signature:
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
         # Reconstruct the full URL that Twilio signed.
         # Use PRIMARY_APP_DOMAIN to build the canonical URL, avoiding proxy header
         # fragility (works with nginx, Cloudflare Tunnel, or any other reverse proxy).
@@ -238,20 +266,47 @@ async def whatsapp_webhook(request: Request):
         if request.url.query:
             url += f"?{request.url.query}"
 
-        form_data = await request.form()
+        form_data = await ingress.read_form(request)
         # Convert form data to dict for validation
         params = {key: form_data[key] for key in form_data}
 
-        is_valid = twilio_validator.validate(url, params, signature)
+        is_valid = validator.validate(url, params, signature)
         if not is_valid:
             logger.warning(f"Invalid Twilio signature from {request.client.host}")
             raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
         data = form_data
     else:
-        logger.warning("Twilio validator not configured - signature validation skipped")
-        data = await request.form()
+        raise HTTPException(status_code=503, detail="Webhook authentication unavailable")
 
+    from integrations.applications.channel_models import VerifiedChannelEnvelope
+    try:
+        account_id = str(data.get("AccountSid") or "")
+        if account_id != client.account_sid:
+            raise HTTPException(status_code=403, detail="Invalid Twilio account")
+        if receiver_key is not None and str(data.get("To") or "").removeprefix("whatsapp:") != receiver_key:
+            raise HTTPException(status_code=403, detail="Invalid Twilio receiver")
+        envelope = VerifiedChannelEnvelope(channel="whatsapp", provider="twilio",
+            receiver_key=str(data.get("To") or "").removeprefix("whatsapp:"),
+            provider_identity=str(data.get("From") or "").removeprefix("whatsapp:"),
+            session_key="messaging", event_id=str(data.get("MessageSid") or ""),
+            provider_account_id=account_id)
+        async with ingress.admit(envelope) as admitted:
+            if not admitted:
+                return Response(content="<Response></Response>", media_type="application/xml")
+            state, reply = await resolve_messaging(envelope, str(data.get("Body") or ""))
+            if reply is not None:
+                if await ingress.allow_control_reply(data, connected=state is not None):
+                    await client.send_message(body=reply, from_=data.get("To"), to=data.get("From"))
+                return {"status": "success"}
+            async with application_messaging_turn(state):
+                return await _process_whatsapp_message(request, data, application_state=state,
+                    twilio_client=AdmittedMessagingClient(client, state))
+    except (EmbedError, ValueError):
+        return {"status": "denied"}
+
+
+async def _process_whatsapp_message(request, data, *, application_state=None, twilio_client):
     message_body = (data.get("Body") or "").strip()
     from_number = data.get("From")
     to_number = data.get("To")
@@ -267,54 +322,11 @@ async def whatsapp_webhook(request: Request):
     media_url = media_items[0]["url"] if media_items else None
     media_type = media_items[0]["type"] if media_items else None
 
-    # Idempotency: deduplicate Twilio retries by MessageSid
+    # Authentication, deduplication and capacity limits precede all handlers,
+    # including replies to unlinked senders, in the webhook adapter.
     message_sid = data.get("MessageSid")
-    if message_sid:
-        async with get_db_connection() as conn:
-            # Cleanup old entries (older than 24h)
-            await conn.execute("DELETE FROM WHATSAPP_PROCESSED_MESSAGES WHERE created_at < datetime('now', '-1 day')")
-            # Attempt insert - if already exists, skip processing
-            cursor = await conn.execute("INSERT OR IGNORE INTO WHATSAPP_PROCESSED_MESSAGES (message_sid) VALUES (?)", (message_sid,))
-            await conn.commit()
-            if cursor.rowcount == 0:
-                logger.info(f"Duplicate WhatsApp message detected, skipping: {message_sid}")
-                return Response(content="<Response></Response>", media_type="application/xml", status_code=200)
 
-    # Rate limiting per phone number and global
-    now = time.time()
-
-    # Global rate limit
-    _whatsapp_global_timestamps[:] = [t for t in _whatsapp_global_timestamps if now - t < 60]
-    if len(_whatsapp_global_timestamps) >= WHATSAPP_RATE_LIMIT_GLOBAL:
-        logger.warning("WhatsApp global rate limit exceeded")
-        return Response(content="<Response></Response>", media_type="application/xml", status_code=200)
-    _whatsapp_global_timestamps.append(now)
-
-    # Per-user rate limit
-    from_number_rl = data.get("From", "")
-    if from_number_rl:
-        user_timestamps = _whatsapp_rate_limits.get(from_number_rl, [])
-        user_timestamps = [t for t in user_timestamps if now - t < 60]
-        _whatsapp_rate_limits[from_number_rl] = user_timestamps
-
-        if len(user_timestamps) >= WHATSAPP_RATE_LIMIT_PER_USER:
-            # Send cooldown notice max once per 5 minutes
-            last_notice = _whatsapp_rate_limit_notices.get(from_number_rl, 0)
-            if now - last_notice > 300:
-                _whatsapp_rate_limit_notices[from_number_rl] = now
-                to_number_rl = data.get("To", "")
-                try:
-                    await async_twilio.send_message(
-                        body="You're sending too many messages. Please wait a moment before sending more.",
-                        from_=to_number_rl,
-                        to=from_number_rl
-                    )
-                except Exception:
-                    pass
-            return Response(content="<Response></Response>", media_type="application/xml", status_code=200)
-
-        user_timestamps.append(now)
-        _whatsapp_rate_limits[from_number_rl] = user_timestamps
+    tr = chat_translator()
 
     # Security: Validate all media URLs to prevent SSRF attacks
     valid_media_items = []
@@ -329,343 +341,350 @@ async def whatsapp_webhook(request: Request):
 
     voice_note_metadata = None
     try:
-        current_user = await get_user_from_phone_number(from_number)
+        current_user = (await get_user_by_id(application_state.admission.scope.user_id)
+                        if application_state is not None else await get_user_from_phone_number(from_number))
+        tr = chat_translator(current_user)
         if current_user is None:
-            response_text = get_phone_user_not_found()
-            message = await async_twilio.send_message(
-                body=response_text,
-                from_=to_number,
-                to=from_number
-            )
+            response_text = get_phone_user_not_found(tr)
+            if await ingress.allow_control_reply(data):
+                await twilio_client.send_message(body=response_text, from_=to_number, to=from_number)
             return {"status": "success", "message": "User not found"}
         logger.debug(f"WhatsApp message from user: {current_user.username}")
 
         if not current_user.is_enabled:
             return {"status": "success"}
 
-        message_lower = message_body.lower()
-
-        if message_lower == "!help":
-            help_text = (
-                "*Available commands:*\n\n"
-                "!help - Show this help message\n"
-                "!text - Switch to text response mode\n"
-                "!voice - Switch to voice response mode\n"
-                "!chats - List your recent conversations\n"
-                "!set <id> [platform] - Switch to a conversation\n"
-                "!prompt list - List available prompts\n"
-                "!prompt <name or id> - Switch to a different prompt\n"
-                "!new - Start a new conversation\n"
-            )
-            await async_twilio.send_message(body=help_text, from_=to_number, to=from_number)
-            return {"status": "success", "message": "Help sent"}
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
-                (current_user.id,),
-            )
-            result = await cursor.fetchone()
-            platforms = orjson.loads(result[0]) if result and result[0] else {}
-            whatsapp_data = platforms.get("whatsapp") or {}
-            if not isinstance(whatsapp_data, dict):
-                whatsapp_data = {}
-            is_first_whatsapp = not whatsapp_data
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            ok, _, err_msg = await can_use_platform(current_user.id, "whatsapp", cursor)
-            if not ok:
-                await async_twilio.send_message(
-                    body=err_msg,
-                    from_=to_number,
-                    to=from_number,
-                )
+        if application_state is not None:
+            command_reply = await application_command(application_state, message_body, message_sid, translator=tr)
+            if command_reply is not None:
+                await twilio_client.send_message(body=command_reply, from_=to_number, to=from_number)
                 return {"status": "success"}
+            conversation_id = application_state.admission.scope.conversation_id
+            answer_mode = application_state.admission.response_mode
+        else:
+            message_lower = message_body.lower()
 
-        if message_lower == "!chats":
-            async with get_db_connection(readonly=True) as conn:
-                chats_message = await get_chats_list(
-                    current_user.id,
-                    "whatsapp",
-                    conn,
-                    markdown=True,
+            if message_lower == "!help":
+                help_text = (
+                    tr.t("channel_notices.help_whatsapp")
                 )
-            await async_twilio.send_message(body=chats_message, from_=to_number, to=from_number)
-            return {"status": "success"}
+                await twilio_client.send_message(body=help_text, from_=to_number, to=from_number)
+                return {"status": "success", "message": "Help sent"}
 
-        if message_lower == "!set" or message_lower.startswith("!set "):
-            parts = message_body[4:].strip().split() if len(message_body) > 4 else []
-            if not parts or len(parts) > 2:
-                await async_twilio.send_message(
-                    body="Usage: !set <conversation_id> [whatsapp|telegram]",
-                    from_=to_number,
-                    to=from_number,
-                )
-                return {"status": "success"}
-
-            raw_id = parts[0]
-            clean_id = raw_id[1:] if raw_id.startswith("#") else raw_id
-            if not clean_id.isdigit() or int(clean_id) <= 0:
-                await async_twilio.send_message(
-                    body="Usage: !set <conversation_id> [whatsapp|telegram]",
-                    from_=to_number,
-                    to=from_number,
-                )
-                return {"status": "success"}
-
-            target_platform = "whatsapp"
-            if len(parts) == 2:
-                platform_map = {
-                    "whatsapp": "whatsapp",
-                    "wa": "whatsapp",
-                    "telegram": "telegram",
-                    "tg": "telegram",
-                }
-                target_platform = platform_map.get(parts[1].lower())
-                if target_platform is None:
-                    await async_twilio.send_message(
-                        body="Invalid platform. Use: whatsapp (wa) or telegram (tg).",
-                        from_=to_number,
-                        to=from_number,
-                    )
-                    return {"status": "success"}
-
-            result = await set_external_conversation(
-                current_user.id,
-                int(clean_id),
-                target_platform,
-                "whatsapp",
-            )
-            await async_twilio.send_message(
-                body=result["message"],
-                from_=to_number,
-                to=from_number,
-            )
-            return {"status": "success"}
-
-        if message_lower in ["text_mode", "text mode", "!text"]:
-            async with get_db_connection() as conn:
-                confirmation_message = await change_response_mode(current_user.id, "text", conn=conn)
-            await async_twilio.send_message(
-                body=confirmation_message,
-                from_=to_number,
-                to=from_number,
-            )
-            return {"status": "success", "message": confirmation_message}
-
-        if message_lower in ["voice_mode", "voice mode", "!voice"]:
-            async with get_db_connection() as conn:
-                confirmation_message = await change_response_mode(current_user.id, "voice", conn=conn)
-            await async_twilio.send_message(
-                body=confirmation_message,
-                from_=to_number,
-                to=from_number,
-            )
-            return {"status": "success", "message": confirmation_message}
-
-        if message_lower == "!prompt list":
             async with get_db_connection(readonly=True) as conn:
                 cursor = await conn.cursor()
-                ud_cursor = await conn.execute(
-                    "SELECT all_prompts_access, public_prompts_access, category_access FROM USER_DETAILS WHERE user_id = ?",
+                await cursor.execute(
+                    "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
                     (current_user.id,),
                 )
-                ud_row = await ud_cursor.fetchone()
-                prompts_list = await get_user_accessible_prompts(
-                    current_user,
-                    cursor,
-                    all_prompts_access=ud_row[0] if ud_row else False,
-                    public_prompts_access=ud_row[1] if ud_row else False,
-                    category_access=ud_row[2] if ud_row else None,
-                )
+                result = await cursor.fetchone()
+                platforms = orjson.loads(result[0]) if result and result[0] else {}
+                whatsapp_data = platforms.get("whatsapp") or {}
+                if not isinstance(whatsapp_data, dict):
+                    whatsapp_data = {}
+                is_first_whatsapp = not whatsapp_data
 
-            if not prompts_list:
-                await async_twilio.send_message(body="No prompts available.", from_=to_number, to=from_number)
-                return {"status": "success"}
-
-            prompt_lines = [f"*{p['id']}* - {p['name']}" for p in prompts_list[:20]]
-            msg = "*Available prompts:*\n\n" + "\n".join(prompt_lines)
-            if len(prompts_list) > 20:
-                msg += f"\n\n_...and {len(prompts_list) - 20} more_"
-            msg += "\n\nUse *!prompt <id or name>* to switch."
-
-            await async_twilio.send_message(body=msg, from_=to_number, to=from_number)
-            return {"status": "success"}
-
-        if message_lower == "!new":
-            await create_new_platform_conversation(current_user.id, "whatsapp", current_user)
-            await async_twilio.send_message(
-                body="New conversation started. Previous conversation saved and accessible from the web.",
-                from_=to_number,
-                to=from_number,
-            )
-            return {"status": "success"}
-
-        whatsapp_data, created_binding = await ensure_platform_conversation(
-            current_user.id,
-            "whatsapp",
-            current_user,
-        )
-        if created_binding and is_first_whatsapp:
-            try:
-                async with get_db_connection(readonly=True) as config_conn:
-                    config_cursor = await config_conn.execute(
-                        "SELECT value FROM SYSTEM_CONFIG WHERE key = 'whatsapp_welcome_message'"
-                    )
-                    row = await config_cursor.fetchone()
-                welcome_template = row[0] if row else None
-                if not welcome_template:
-                    welcome_template = os.getenv("WHATSAPP_WELCOME_MESSAGE", "")
-                if welcome_template:
-                    welcome_msg = welcome_template.replace("{username}", current_user.username)
-                    await async_twilio.send_message(
-                        body=welcome_msg,
-                        from_=to_number,
-                        to=from_number,
-                    )
-            except Exception as welcome_err:
-                logger.error(f"Failed to send WhatsApp welcome message: {welcome_err}")
-
-        conversation_id = whatsapp_data["conversation_id"]
-        answer_mode = whatsapp_data.get("answer", "text")
-
-        logger.debug(f"WhatsApp response mode: {answer_mode}")
-        logger.debug("WhatsApp message body received")
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
-                (conversation_id, current_user.id),
-            )
-            lock_row = await cursor.fetchone()
-            if not lock_row:
-                await async_twilio.send_message(
-                    body="Conversation not found. Send !new to start a fresh one.",
-                    from_=to_number,
-                    to=from_number,
-                )
-                return {"status": "success", "message": "Conversation not found"}
-            if lock_row[0]:
-                async with get_db_connection() as log_conn:
-                    await log_conn.execute(
-                        "INSERT INTO WHATSAPP_LOG (user_id, phone_number, direction, message_type, response_mode) VALUES (?, ?, 'in', 'text', ?)",
-                        (current_user.id, from_number, answer_mode),
-                    )
-                    await log_conn.commit()
-                logger.info(
-                    f"WhatsApp message blocked: conversation {conversation_id} locked for user {current_user.id}"
-                )
-                await async_twilio.send_message(
-                    body="This conversation is locked. Send !new to start a new one.",
-                    from_=to_number,
-                    to=from_number,
-                )
-                return {"status": "success", "message": "Conversation locked"}
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
-                (current_user.id,),
-            )
-            row = await cursor.fetchone()
-            if row and row[0]:
-                fresh_platforms = orjson.loads(row[0])
-                fresh_conv_id = (fresh_platforms.get("whatsapp", {}) or {}).get("conversation_id")
-                if fresh_conv_id and fresh_conv_id != conversation_id:
-                    conversation_id = fresh_conv_id
-                    await cursor.execute(
-                        "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
-                        (conversation_id, current_user.id),
-                    )
-                    lock_row = await cursor.fetchone()
-                    if not lock_row:
-                        await async_twilio.send_message(
-                            body="Conversation not found. Send !new to start a fresh one.",
-                            from_=to_number,
-                            to=from_number,
-                        )
-                        return {"status": "success", "message": "Conversation not found"}
-                    if lock_row[0]:
-                        await async_twilio.send_message(
-                            body="This conversation is locked. Send !new to start a new one.",
-                            from_=to_number,
-                            to=from_number,
-                        )
-                        return {"status": "success", "message": "Conversation locked"}
-
-        if message_lower.startswith("!prompt ") and message_lower != "!prompt list":
-            prompt_query = message_body[8:].strip()
-
-            async with get_db_connection() as conn:
+            async with get_db_connection(readonly=True) as conn:
                 cursor = await conn.cursor()
-                target_prompt = None
-                if prompt_query.isdigit():
-                    p_cursor = await conn.execute(
-                        "SELECT id, name FROM PROMPTS WHERE id = ?",
-                        (int(prompt_query),),
-                    )
-                    target_prompt = await p_cursor.fetchone()
-
-                if not target_prompt:
-                    p_cursor = await conn.execute(
-                        "SELECT id, name FROM PROMPTS WHERE LOWER(name) = LOWER(?)",
-                        (prompt_query,),
-                    )
-                    target_prompt = await p_cursor.fetchone()
-
-                if not target_prompt:
-                    p_cursor = await conn.execute(
-                        "SELECT id, name FROM PROMPTS WHERE LOWER(name) LIKE LOWER(?)",
-                        (f"%{prompt_query}%",),
-                    )
-                    target_prompt = await p_cursor.fetchone()
-
-                if not target_prompt:
-                    await async_twilio.send_message(
-                        body=f"Prompt not found: '{prompt_query}'. Use *!prompt list* to see available prompts.",
+                ok, _, err_msg = await can_use_platform(current_user.id, "whatsapp", cursor, translator=tr)
+                if not ok:
+                    await twilio_client.send_message(
+                        body=err_msg,
                         from_=to_number,
                         to=from_number,
                     )
                     return {"status": "success"}
 
-                if not await can_user_access_prompt(current_user, target_prompt[0], cursor):
-                    await async_twilio.send_message(
-                        body="You don't have access to this prompt.",
+            if message_lower == "!chats":
+                async with get_db_connection(readonly=True) as conn:
+                    chats_message = await get_chats_list(
+                        current_user.id,
+                        "whatsapp",
+                        conn,
+                        translator=tr,
+                        markdown=True,
+                    )
+                await twilio_client.send_message(body=chats_message, from_=to_number, to=from_number)
+                return {"status": "success"}
+
+            if message_lower == "!set" or message_lower.startswith("!set "):
+                parts = message_body[4:].strip().split() if len(message_body) > 4 else []
+                if not parts or len(parts) > 2:
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.set_usage"),
                         from_=to_number,
                         to=from_number,
                     )
                     return {"status": "success"}
 
-                update_cursor = await cursor.execute(
-                    """
-                    UPDATE CONVERSATIONS
-                    SET role_id = ?
-                    WHERE id = ? AND user_id = ? AND COALESCE(locked, 0) = 0
-                    """,
-                    (target_prompt[0], conversation_id, current_user.id),
+                raw_id = parts[0]
+                clean_id = raw_id[1:] if raw_id.startswith("#") else raw_id
+                if not clean_id.isdigit() or int(clean_id) <= 0:
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.set_usage"),
+                        from_=to_number,
+                        to=from_number,
+                    )
+                    return {"status": "success"}
+
+                target_platform = "whatsapp"
+                if len(parts) == 2:
+                    platform_map = {
+                        "whatsapp": "whatsapp",
+                        "wa": "whatsapp",
+                        "telegram": "telegram",
+                        "tg": "telegram",
+                    }
+                    target_platform = platform_map.get(parts[1].lower())
+                    if target_platform is None:
+                        await twilio_client.send_message(
+                            body=tr.t("channel_notices.invalid_platform"),
+                            from_=to_number,
+                            to=from_number,
+                        )
+                        return {"status": "success"}
+
+                result = await set_external_conversation(
+                    current_user.id,
+                    int(clean_id),
+                    target_platform,
+                    "whatsapp",
+                    translator=tr,
                 )
-                if update_cursor.rowcount == 0:
-                    await conn.rollback()
-                    await async_twilio.send_message(
-                        body="This conversation is locked. Send !new to start a new one.",
-                        from_=to_number,
-                        to=from_number,
-                    )
-                    return {"status": "success"}
-
-                await conn.commit()
-
-                await async_twilio.send_message(
-                    body=f"Switched to prompt: *{target_prompt[1]}*",
+                await twilio_client.send_message(
+                    body=result["message"],
                     from_=to_number,
                     to=from_number,
                 )
                 return {"status": "success"}
 
+            if message_lower in ["text_mode", "text mode", "!text"]:
+                async with get_db_connection() as conn:
+                    confirmation_message = await change_response_mode(current_user.id, "text", conn=conn, translator=tr)
+                await twilio_client.send_message(
+                    body=confirmation_message,
+                    from_=to_number,
+                    to=from_number,
+                )
+                return {"status": "success", "message": confirmation_message}
+
+            if message_lower in ["voice_mode", "voice mode", "!voice"]:
+                async with get_db_connection() as conn:
+                    confirmation_message = await change_response_mode(current_user.id, "voice", conn=conn, translator=tr)
+                await twilio_client.send_message(
+                    body=confirmation_message,
+                    from_=to_number,
+                    to=from_number,
+                )
+                return {"status": "success", "message": confirmation_message}
+
+            if message_lower == "!prompt list":
+                async with get_db_connection(readonly=True) as conn:
+                    cursor = await conn.cursor()
+                    ud_cursor = await conn.execute(
+                        "SELECT all_prompts_access, public_prompts_access, category_access FROM USER_DETAILS WHERE user_id = ?",
+                        (current_user.id,),
+                    )
+                    ud_row = await ud_cursor.fetchone()
+                    prompts_list = await get_user_accessible_prompts(
+                        current_user,
+                        cursor,
+                        all_prompts_access=ud_row[0] if ud_row else False,
+                        public_prompts_access=ud_row[1] if ud_row else False,
+                        category_access=ud_row[2] if ud_row else None,
+                    )
+
+                if not prompts_list:
+                    await twilio_client.send_message(body=tr.t("channel_notices.no_prompts"), from_=to_number, to=from_number)
+                    return {"status": "success"}
+
+                prompt_lines = [f"*{p['id']}* - {escape_markdown(p['name'])}" for p in prompts_list[:20]]
+                msg = tr.t("channel_notices.prompts_header") + "\n".join(prompt_lines)
+                if len(prompts_list) > 20:
+                    msg += tr.t("channel_notices.prompts_more", count=len(prompts_list) - 20)
+                msg += tr.t("channel_notices.prompts_footer")
+
+                await twilio_client.send_message(body=msg, from_=to_number, to=from_number)
+                return {"status": "success"}
+
+            if message_lower == "!new":
+                await create_new_platform_conversation(current_user.id, "whatsapp", current_user)
+                await twilio_client.send_message(
+                    body=tr.t("channel_notices.new_conversation"),
+                    from_=to_number,
+                    to=from_number,
+                )
+                return {"status": "success"}
+
+            whatsapp_data, created_binding = await ensure_platform_conversation(
+                current_user.id,
+                "whatsapp",
+                current_user,
+            )
+            if created_binding and is_first_whatsapp:
+                try:
+                    async with get_db_connection(readonly=True) as config_conn:
+                        config_cursor = await config_conn.execute(
+                            "SELECT value FROM SYSTEM_CONFIG WHERE key = 'whatsapp_welcome_message'"
+                        )
+                        row = await config_cursor.fetchone()
+                    welcome_template = row[0] if row else None
+                    if not welcome_template:
+                        welcome_template = os.getenv("WHATSAPP_WELCOME_MESSAGE", "")
+                    if welcome_template:
+                        welcome_msg = welcome_template.replace("{username}", current_user.username)
+                        await twilio_client.send_message(
+                            body=welcome_msg,
+                            from_=to_number,
+                            to=from_number,
+                        )
+                except Exception as welcome_err:
+                    logger.error(f"Failed to send WhatsApp welcome message: {welcome_err}")
+
+            conversation_id = whatsapp_data["conversation_id"]
+            answer_mode = whatsapp_data.get("answer", "text")
+
+            logger.debug(f"WhatsApp response mode: {answer_mode}")
+            logger.debug("WhatsApp message body received")
+
+            async with get_db_connection(readonly=True) as conn:
+                cursor = await conn.cursor()
+                await cursor.execute(
+                    "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
+                    (conversation_id, current_user.id),
+                )
+                lock_row = await cursor.fetchone()
+                if not lock_row:
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.conversation_missing_new"),
+                        from_=to_number,
+                        to=from_number,
+                    )
+                    return {"status": "success", "message": "Conversation not found"}
+                if lock_row[0]:
+                    async with get_db_connection() as log_conn:
+                        await log_conn.execute(
+                            "INSERT INTO WHATSAPP_LOG (user_id, phone_number, direction, message_type, response_mode) VALUES (?, ?, 'in', 'text', ?)",
+                            (current_user.id, from_number, answer_mode),
+                        )
+                        await log_conn.commit()
+                    logger.info(
+                        f"WhatsApp message blocked: conversation {conversation_id} locked for user {current_user.id}"
+                    )
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.conversation_locked_new"),
+                        from_=to_number,
+                        to=from_number,
+                    )
+                    return {"status": "success", "message": "Conversation locked"}
+
+            async with get_db_connection(readonly=True) as conn:
+                cursor = await conn.cursor()
+                await cursor.execute(
+                    "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
+                    (current_user.id,),
+                )
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    fresh_platforms = orjson.loads(row[0])
+                    fresh_conv_id = (fresh_platforms.get("whatsapp", {}) or {}).get("conversation_id")
+                    if fresh_conv_id and fresh_conv_id != conversation_id:
+                        conversation_id = fresh_conv_id
+                        await cursor.execute(
+                            "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
+                            (conversation_id, current_user.id),
+                        )
+                        lock_row = await cursor.fetchone()
+                        if not lock_row:
+                            await twilio_client.send_message(
+                                body=tr.t("channel_notices.conversation_missing_new"),
+                                from_=to_number,
+                                to=from_number,
+                            )
+                            return {"status": "success", "message": "Conversation not found"}
+                        if lock_row[0]:
+                            await twilio_client.send_message(
+                                body=tr.t("channel_notices.conversation_locked_new"),
+                                from_=to_number,
+                                to=from_number,
+                            )
+                            return {"status": "success", "message": "Conversation locked"}
+
+            if message_lower.startswith("!prompt ") and message_lower != "!prompt list":
+                prompt_query = message_body[8:].strip()
+
+                async with get_db_connection() as conn:
+                    cursor = await conn.cursor()
+                    target_prompt = None
+                    if prompt_query.isdigit():
+                        p_cursor = await conn.execute(
+                            "SELECT id, name FROM PROMPTS WHERE id = ?",
+                            (int(prompt_query),),
+                        )
+                        target_prompt = await p_cursor.fetchone()
+
+                    if not target_prompt:
+                        p_cursor = await conn.execute(
+                            "SELECT id, name FROM PROMPTS WHERE LOWER(name) = LOWER(?)",
+                            (prompt_query,),
+                        )
+                        target_prompt = await p_cursor.fetchone()
+
+                    if not target_prompt:
+                        p_cursor = await conn.execute(
+                            "SELECT id, name FROM PROMPTS WHERE LOWER(name) LIKE LOWER(?)",
+                            (f"%{prompt_query}%",),
+                        )
+                        target_prompt = await p_cursor.fetchone()
+
+                    if not target_prompt:
+                        await twilio_client.send_message(
+                            body=tr.t("channel_notices.prompt_missing", name=escape_markdown(prompt_query)),
+                            from_=to_number,
+                            to=from_number,
+                        )
+                        return {"status": "success"}
+
+                    if not await can_user_access_prompt(current_user, target_prompt[0], cursor):
+                        await twilio_client.send_message(
+                            body=tr.t("channel_notices.prompt_denied"),
+                            from_=to_number,
+                            to=from_number,
+                        )
+                        return {"status": "success"}
+
+                    update_cursor = await cursor.execute(
+                        """
+                        UPDATE CONVERSATIONS
+                        SET role_id = ?
+                        WHERE id = ? AND user_id = ? AND COALESCE(locked, 0) = 0
+                        """,
+                        (target_prompt[0], conversation_id, current_user.id),
+                    )
+                    if update_cursor.rowcount == 0:
+                        await conn.rollback()
+                        await twilio_client.send_message(
+                            body=tr.t("channel_notices.conversation_locked_new"),
+                            from_=to_number,
+                            to=from_number,
+                        )
+                        return {"status": "success"}
+
+                    await conn.commit()
+
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.prompt_changed", name=escape_markdown(target_prompt[1])),
+                        from_=to_number,
+                        to=from_number,
+                    )
+                    return {"status": "success"}
+
+        if answer_mode == "voice":
+            await check_messaging(application_state, "tts")
+        for item in media_items:
+            kind = str(item["type"]).lower()
+            capability = "stt" if "audio" in kind or kind.startswith("application/ogg") else "attachments"
+            await check_messaging(application_state, capability)
         transcribed_text = ""
         audio_content_kind = None
         file_dict = None
@@ -690,28 +709,27 @@ async def whatsapp_webhook(request: Request):
                                 media_url=m_url,
                                 media_type=m_type,
                                 user_agent=request.headers.get("user-agent"),
+                                application_state=application_state,
                             )
                         )
                         audio_content_kind = _whatsapp_audio_content_kind(m_type)
                     except Exception as e:
                         logger.error(f"Error transcribing audio: {e}")
-                        await async_twilio.send_message(
-                            body="Sorry, there was a problem processing the audio. Please try sending your message as text.",
+                        await twilio_client.send_message(
+                            body=tr.t("channel_notices.audio_failed"),
                             from_=to_number,
                             to=from_number
                         )
                         return {"status": "error", "message": "Error transcribing audio"}
                 elif "image" in m_type:
                     try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(m_url) as resp:
-                                if resp.status == 200:
-                                    img_data = await resp.read()
-                                    files_list.append({
-                                        'data': img_data,
-                                        'content_type': m_type,
-                                        'filename': f"image_{len(files_list)}.jpg"
-                                    })
+                        await check_messaging(application_state, "attachments")
+                        img_data = await download_external_media(m_url, max_bytes=5 * 1024 * 1024, total_timeout=60)
+                        files_list.append({
+                            'data': img_data,
+                            'content_type': m_type,
+                            'filename': f"image_{len(files_list)}.jpg"
+                        })
                     except Exception as e:
                         logger.error(f"Error downloading image: {e}")
                 elif "pdf" in m_type or "document" in m_type:
@@ -719,8 +737,8 @@ async def whatsapp_webhook(request: Request):
                         voice_note_metadata,
                         "whatsapp_unsupported_document",
                     )
-                    await async_twilio.send_message(
-                        body="Sorry, document attachments are not supported yet. Please send text or images.",
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.documents_unsupported"),
                         from_=to_number,
                         to=from_number
                     )
@@ -731,8 +749,8 @@ async def whatsapp_webhook(request: Request):
                         voice_note_metadata,
                         "whatsapp_unsupported_media",
                     )
-                    await async_twilio.send_message(
-                        body=f"Sorry, this media type ({m_type}) is not supported. Please send text, images, or audio.",
+                    await twilio_client.send_message(
+                        body=tr.t("channel_notices.media_unsupported", media_type=m_type),
                         from_=to_number,
                         to=from_number
                     )
@@ -766,6 +784,10 @@ async def whatsapp_webhook(request: Request):
         if voice_note_metadata is not None:
             message_provenance["voice_note"] = voice_note_metadata
 
+        if application_state is not None:
+            message_provenance["application_channel"] = application_state.admission.as_dict()
+            if application_state.operation is not None:
+                message_provenance["application_operation_id"] = application_state.operation.operation_id
         # Log incoming WhatsApp message
         msg_type = "audio" if transcribed_text else ("image" if file_dict else "text")
         async with get_db_connection() as log_conn:
@@ -792,11 +814,12 @@ async def whatsapp_webhook(request: Request):
             if answer_mode == "voice":
                 logger.debug("WhatsApp voice response mode")
                 logger.debug(f"WhatsApp conversation id: {conversation_id}")
-                audio_path, error = await handle_tts_request(None, {"text": text, "author": "bot", "conversationId": conversation_id}, current_user, is_whatsapp=True, tts_context="external")
+                await check_messaging(application_state, "tts", delivery=True)
+                audio_path, error = await handle_tts_request(None, {"text": text, "author": "bot", "conversationId": conversation_id}, current_user, is_whatsapp=True, tts_context="external", billing_adapter=messaging_tts_billing(application_state))
 
                 if error:
-                    error_message = "Sorry, there was a problem generating the voice message. I will send you the message as text."
-                    await async_twilio.send_message(
+                    error_message = tr.t("channel_notices.voice_fallback")
+                    await twilio_client.send_message(
                         body=f"{error_message}\n\n{text}",
                         from_=to_number,
                         to=from_number
@@ -809,7 +832,7 @@ async def whatsapp_webhook(request: Request):
                 media_url = f"{request.url.scheme}://{request.url.hostname}/get-audio{relative_path}?token={token}"
                 media_url = media_url.replace('\\', '/')
                 logger.debug("Generated TTS media URL for WhatsApp")
-                await async_twilio.send_message(
+                await twilio_client.send_message(
                     media_url=[media_url],
                     from_=to_number,
                     to=from_number
@@ -817,7 +840,7 @@ async def whatsapp_webhook(request: Request):
                 return
 
             logger.debug("WhatsApp text response mode")
-            await async_twilio.send_message(
+            await twilio_client.send_message(
                 body=text,
                 from_=to_number,
                 to=from_number
@@ -848,12 +871,12 @@ async def whatsapp_webhook(request: Request):
                 logger.debug("Processing image URL for WhatsApp delivery")
                 image_data = block.get('image_url', {})
                 image_url = image_data.get('url')
-                alt_text = image_data.get('alt', 'Image')
+                alt_text = image_data.get('alt') or tr.t('channel_notices.image')
                 if not image_url:
                     return False
                 logger.debug("Sending image via Twilio")
-                await async_twilio.send_message(
-                    body=f"Image: {alt_text}",
+                await twilio_client.send_message(
+                    body=tr.t("channel_notices.image_caption", description=alt_text),
                     media_url=[image_url],
                     from_=to_number,
                     to=from_number
@@ -867,7 +890,7 @@ async def whatsapp_webhook(request: Request):
                 if not audio_url:
                     return False
                 logger.debug("Sending audio via Twilio")
-                await async_twilio.send_message(
+                await twilio_client.send_message(
                     media_url=[audio_url],
                     from_=to_number,
                     to=from_number
@@ -904,6 +927,9 @@ async def whatsapp_webhook(request: Request):
             message_provenance,
         )
 
+        if application_state is not None:
+            channel_context = application_state.attach(channel_context)
+
         # --- GranSabio check: if enabled, process in background ---
         async with get_db_connection(readonly=True) as conn_gs:
             gs_row = await conn_gs.execute(
@@ -916,6 +942,7 @@ async def whatsapp_webhook(request: Request):
         is_gransabio = (
             bool((gs_result or [0])[0])
             and not foreground_turn.decision.phone_active
+            and application_state is None
         )
 
         if is_gransabio:
@@ -931,8 +958,8 @@ async def whatsapp_webhook(request: Request):
                     voice_note_metadata,
                     "whatsapp_gransabio_file_rejected",
                 )
-                await async_twilio.send_message(
-                    body="File attachments are not supported with GranSabio mode. Please send text only.",
+                await twilio_client.send_message(
+                    body=tr.t("channel_notices.gransabio_files"),
                     from_=to_number, to=from_number,
                 )
                 return JSONResponse(content={"status": "success"})
@@ -955,8 +982,8 @@ async def whatsapp_webhook(request: Request):
                     voice_note_metadata,
                     "whatsapp_gransabio_disabled",
                 )
-                await async_twilio.send_message(
-                    body="GranSabio is currently disabled.",
+                await twilio_client.send_message(
+                    body=tr.t("channel_notices.gransabio_disabled"),
                     from_=to_number, to=from_number,
                 )
                 return JSONResponse(content={"status": "success"})
@@ -1004,6 +1031,7 @@ async def whatsapp_webhook(request: Request):
 
         # --- Normal (non-GranSabio) path continues below ---
         # Use process_save_message directly to avoid Form() object issues
+        await check_messaging(application_state)
         response = await serialize_user_billing_response(
             current_user.id,
             process_save_message(
@@ -1019,7 +1047,7 @@ async def whatsapp_webhook(request: Request):
             ),
         )
 
-        quota_notice = storage_quota_notice_from_response(response)
+        quota_notice = storage_quota_notice_from_response(response, translator=tr)
 
         if isinstance(response, StreamingResponse):
             (
@@ -1059,7 +1087,7 @@ async def whatsapp_webhook(request: Request):
                         await send_chunks([item])
 
             if quota_notice and not persistence_error:
-                await async_twilio.send_message(
+                await twilio_client.send_message(
                     body=quota_notice,
                     from_=to_number,
                     to=from_number
@@ -1072,7 +1100,7 @@ async def whatsapp_webhook(request: Request):
             # Handle non-streaming responses (rate limit, insufficient balance, etc.)
             if quota_notice:
                 # Media-only message rejected for lack of storage: tell the user.
-                await async_twilio.send_message(
+                await twilio_client.send_message(
                     body=quota_notice,
                     from_=to_number,
                     to=from_number
@@ -1080,12 +1108,12 @@ async def whatsapp_webhook(request: Request):
             else:
                 status_code = response.status_code if hasattr(response, 'status_code') else 500
                 error_messages = {
-                    429: "You've sent too many messages. Please wait a moment.",
-                    402: "Insufficient balance. Please top up your account.",
-                    403: "This conversation is not available.",
+                    429: tr.t("channel_notices.message_limit"),
+                    402: tr.t("channel_notices.insufficient_balance"),
+                    403: tr.t("channel_notices.conversation_unavailable"),
                 }
-                user_msg = error_messages.get(status_code, "Sorry, your message could not be processed. Please try again.")
-                await async_twilio.send_message(
+                user_msg = error_messages.get(status_code, tr.t("channel_notices.message_failed"))
+                await twilio_client.send_message(
                     body=user_msg,
                     from_=to_number,
                     to=from_number
@@ -1099,6 +1127,9 @@ async def whatsapp_webhook(request: Request):
             )
             await log_conn.commit()
 
+    except EmbedError:
+        await _discard_voice_note_attachment(voice_note_metadata, "application_channel_denied")
+        return {"status": "denied"}
     except StaleChannelTurnError:
         await _discard_voice_note_attachment(
             voice_note_metadata,
@@ -1116,8 +1147,8 @@ async def whatsapp_webhook(request: Request):
         )
         logger.error(f"!!! Error in whatsapp_webhook: {e}")
         try:
-            error_message = "Sorry, an error occurred while processing your message. Please try again later."
-            await async_twilio.send_message(
+            error_message = tr.t("channel_notices.processing_failed_whatsapp")
+            await twilio_client.send_message(
                 body=error_message,
                 from_=to_number,
                 to=from_number

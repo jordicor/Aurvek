@@ -12,6 +12,7 @@ from database import get_db_connection
 from email_service import email_service
 from email_validation import validate_email_robust
 from log_config import logger
+from i18n import get_translator, normalize_language
 from marketplace.config import marketplace_checkout_enabled, marketplace_public_landings_enabled
 from marketplace.services.acquisition_context import handle_pack_for_existing_user
 from marketplace.services.entitlements import (
@@ -214,15 +215,23 @@ async def register_pack_submit(request: Request):
     """
     Process registration via pack landing page.
     """
+    translator = get_translator(request)
+    t = translator.t
     await cleanup_expired_registrations()
 
     if not marketplace_public_landings_enabled() or not marketplace_checkout_enabled():
-        return JSONResponse({"status": "error", "message": "Invalid pack"}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("account.registration.pack_invalid")}, status_code=400)
 
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"status": "error", "message": "Invalid request"}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("auth.error.invalid_request")}, status_code=400)
+
+    if not isinstance(body, dict):
+        return JSONResponse({"status": "error", "message": translator.t("auth.error.invalid_request")}, status_code=400)
+    language = normalize_language(body["ui_language"]) if "ui_language" in body else translator.language
+    if language is None:
+        return JSONResponse({"status": "error", "message": translator.t("account.language.invalid")}, status_code=400)
 
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
@@ -246,24 +255,24 @@ async def register_pack_submit(request: Request):
 
     if not email or not password or not password_confirm:
         record_failure(request, "register", email)
-        return JSONResponse({"status": "error", "message": "All fields are required"}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("account.registration.fields_required")}, status_code=400)
 
     if not pack_id or not public_id:
         record_failure(request, "register", email)
-        return JSONResponse({"status": "error", "message": "Invalid pack"}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("account.registration.pack_invalid")}, status_code=400)
 
     if password != password_confirm:
         record_failure(request, "register", email)
-        return JSONResponse({"status": "error", "message": "Passwords do not match"}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("account.password.error.no_match")}, status_code=400)
 
     if len(password) < 8:
         record_failure(request, "register", email)
-        return JSONResponse({"status": "error", "message": "Password must be at least 8 characters"}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("account.password.error.min_length", count=8)}, status_code=400)
 
     is_valid_email, email_error = validate_email_robust(email)
     if not is_valid_email:
         record_failure(request, "register", email)
-        return JSONResponse({"status": "error", "message": email_error}, status_code=400)
+        return JSONResponse({"status": "error", "message": t("account.registration.email_invalid")}, status_code=400)
 
     existing_user = await get_user_by_email_record(email)
     if existing_user:
@@ -275,11 +284,12 @@ async def register_pack_submit(request: Request):
                 existing_user["id"],
                 prompt_id=None,
                 pack_id=pack_id,
+                ui_language=existing_user.get("ui_language") or "en",
             )
         return JSONResponse(
             {
                 "status": "success",
-                "message": "If this email is not already registered, you will receive a verification email shortly.",
+                "message": t("account.registration.pending"),
             }
         )
 
@@ -294,13 +304,13 @@ async def register_pack_submit(request: Request):
 
         if not pack_row:
             record_failure(request, "register", email)
-            return JSONResponse({"status": "error", "message": "Invalid pack"}, status_code=400)
+            return JSONResponse({"status": "error", "message": t("account.registration.pack_invalid")}, status_code=400)
         if pack_row[1] != public_id:
             record_failure(request, "register", email)
-            return JSONResponse({"status": "error", "message": "Invalid pack"}, status_code=400)
+            return JSONResponse({"status": "error", "message": t("account.registration.pack_invalid")}, status_code=400)
         if pack_row[2] != "published" or not pack_row[3]:
             record_failure(request, "register", email)
-            return JSONResponse({"status": "error", "message": "Invalid pack"}, status_code=400)
+            return JSONResponse({"status": "error", "message": t("account.registration.pack_invalid")}, status_code=400)
 
         pack_owner_id = pack_row[4]
 
@@ -317,7 +327,7 @@ async def register_pack_submit(request: Request):
 
     if not first_prompt_id:
         return JSONResponse(
-            {"status": "error", "message": "This pack is currently unavailable"},
+            {"status": "error", "message": t("account.registration.pack_unavailable")},
             status_code=400,
         )
 
@@ -335,11 +345,12 @@ async def register_pack_submit(request: Request):
         prompt_id=first_prompt_id,
         expires_at=expires_at,
         pack_id=pack_id,
+        ui_language=language,
     )
 
     if not success:
         record_failure(request, "register", email)
-        return JSONResponse({"status": "error", "message": "Registration failed. Please try again."}, status_code=500)
+        return JSONResponse({"status": "error", "message": t("account.registration.failed")}, status_code=500)
 
     verification_url = f"{get_auth_base_url(request).rstrip('/')}/verify-email/{token}"
 
@@ -356,6 +367,7 @@ async def register_pack_submit(request: Request):
         is_user=False,
         prompt_name=None,
         branding=branding,
+        ui_language=language,
     )
     if not email_sent:
         logger.error("Failed to send pack verification email to %s", email)
@@ -365,6 +377,6 @@ async def register_pack_submit(request: Request):
     return JSONResponse(
         {
             "status": "success",
-            "message": "If this email is not already registered, you will receive a verification email shortly.",
+            "message": t("account.registration.pending"),
         }
     )

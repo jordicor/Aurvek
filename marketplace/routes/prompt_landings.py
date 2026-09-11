@@ -4,6 +4,7 @@ from pathlib import PurePosixPath
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from i18n import get_translator
 from auth import get_current_user
 from auth_flows import handle_login_request
 from captcha_service import get_captcha_config
@@ -107,7 +108,7 @@ async def public_landing_static(
                     f"/p/{public_id}/{slug}/static/{resource_path}"
                 )
                 if not isolated_url:
-                    return creator_content_unavailable_response()
+                    return creator_content_unavailable_response(get_translator(request))
                 return RedirectResponse(url=isolated_url, status_code=302)
 
         static_root = landing_data["path"] / "static"
@@ -125,7 +126,7 @@ async def public_landing_static(
 
     except HTTPException as e:
         if e.status_code == 404:
-            return landing_404_response()
+            return landing_404_response(get_translator(request))
         raise
     except Exception as e:
         logger.error(f"Error serving landing static resource: {e}")
@@ -270,7 +271,7 @@ async def public_landing_page(
                     {"preview": 1, "preview_token": preview_token},
                 )
                 if not isolated_url or not preview_token:
-                    return creator_content_unavailable_response()
+                    return creator_content_unavailable_response(get_translator(request))
                 return RedirectResponse(
                     url=isolated_url,
                     status_code=302,
@@ -302,7 +303,7 @@ async def public_landing_page(
                     {"embed": 1} if is_embed else None,
                 )
                 if not isolated_url:
-                    return creator_content_unavailable_response()
+                    return creator_content_unavailable_response(get_translator(request))
                 return RedirectResponse(url=isolated_url, status_code=302)
             # Trusted + servable: serve directly from the primary domain below.
 
@@ -317,9 +318,10 @@ async def public_landing_page(
             page=page,
             is_preview=is_preview,
             is_unlisted=bool(landing_data["is_unlisted"]),
+            ui_language=get_translator(request).language,
         )
 
-        headers = {}
+        headers = {"Vary": "Cookie, Accept-Language", "Cache-Control": "private, no-cache"}
         if landing_data["is_unlisted"]:
             headers["X-Robots-Tag"] = "noindex, nofollow"
         if is_preview:
@@ -329,11 +331,11 @@ async def public_landing_page(
 
     except HTTPException as e:
         if e.status_code == 404:
-            return landing_404_response()
+            return landing_404_response(get_translator(request))
         raise
     except Exception as e:
         logger.error(f"Error serving landing page: {e}")
-        return landing_404_response()
+        return landing_404_response(get_translator(request))
 
 
 @router.get("/internal/resolve-landing")
@@ -398,7 +400,7 @@ async def serve_custom_domain_home(request: Request):
     Serve custom-domain home.html for the core / route.
     """
     if not marketplace_public_landings_enabled():
-        return landing_404_response()
+        return landing_404_response(get_translator(request))
 
     try:
         prompt_id = request.state.prompt_id
@@ -416,7 +418,7 @@ async def serve_custom_domain_home(request: Request):
             return HTMLResponse(content=html_content)
     except Exception as e:
         logger.error(f"Error serving custom domain landing at /: {e}")
-    return landing_404_response()
+    return landing_404_response(get_translator(request))
 
 
 @custom_domain_router.get("/{page:path}")
@@ -426,9 +428,9 @@ async def custom_domain_landing(request: Request, page: str = ""):
     This router must be included after all normal routes.
     """
     if not getattr(request.state, "custom_domain", False):
-        return landing_404_response()
+        return landing_404_response(get_translator(request))
     if not marketplace_public_landings_enabled():
-        return landing_404_response()
+        return landing_404_response(get_translator(request))
 
     try:
         prompt_id = request.state.prompt_id
@@ -441,13 +443,13 @@ async def custom_domain_landing(request: Request, page: str = ""):
             page = page.strip("/").split("/")[0]
 
         if not _valid_page_name(page):
-            return landing_404_response()
+            return landing_404_response(get_translator(request))
 
         prompt_dir = build_prompt_filesystem_path(username, prompt_id, prompt_name)
         html_path = prompt_dir / f"{page}.html"
 
         if not html_path.is_file():
-            return landing_404_response()
+            return landing_404_response(get_translator(request))
 
         html_content = await render_custom_domain_landing_html(
             html_path,
@@ -457,4 +459,4 @@ async def custom_domain_landing(request: Request, page: str = ""):
 
     except Exception as e:
         logger.error(f"Error serving custom domain landing: {e}")
-        return landing_404_response()
+        return landing_404_response(get_translator(request))

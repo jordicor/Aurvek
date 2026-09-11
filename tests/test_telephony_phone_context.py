@@ -5,6 +5,7 @@ import pytest
 
 from ai_runtime.channel_turns import ChannelCommit, StaleChannelTurnError
 from integrations.telephony.foreground import ForegroundCommitGuard
+from integrations.telephony.message_audio import PhoneMessageAudioRange
 from integrations.telephony.phone_context import create_phone_channel_turn
 
 
@@ -31,6 +32,15 @@ async def _schema(conn):
             delivery_state TEXT NOT NULL DEFAULT 'consumed',
             UNIQUE(call_id, message_id),
             UNIQUE(call_id, turn_id, participant)
+        );
+        CREATE TABLE PHONE_CALL_MESSAGE_AUDIO_RANGES (
+            message_id INTEGER PRIMARY KEY,
+            call_id TEXT NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte INTEGER NOT NULL,
+            FOREIGN KEY(call_id, message_id)
+                REFERENCES PHONE_CALL_MESSAGE_LINKS(call_id, message_id)
+                ON DELETE CASCADE
         );
         CREATE TABLE MESSAGES (
             id INTEGER PRIMARY KEY,
@@ -144,6 +154,67 @@ async def test_commit_links_caller_and_confirmed_assistant_atomically():
                 "consumed",
             ),
         ]
+
+
+@pytest.mark.asyncio
+async def test_commit_links_both_phone_audio_ranges_in_the_same_transaction():
+    async with aiosqlite.connect(":memory:") as conn:
+        await _schema(conn)
+        phone_turn = create_phone_channel_turn(_guard(), turn_id="turn-audio")
+        caller_range = PhoneMessageAudioRange(start_byte=80, end_byte=240)
+        assistant_range = PhoneMessageAudioRange(start_byte=800, end_byte=1_600)
+        phone_turn.link_state.set_audio_range("caller", caller_range)
+        phone_turn.link_state.set_audio_range("assistant", assistant_range)
+        commit = ChannelCommit(
+            context=phone_turn.context,
+            user_message_id=151,
+            assistant_message_id=152,
+            confirmed_text="Stored exact reply",
+            played_ms=100,
+        )
+
+        await conn.execute("BEGIN IMMEDIATE")
+        await phone_turn.context.on_commit_in_transaction(commit, conn)
+        await phone_turn.context.on_commit_in_transaction(commit, conn)
+        linked = await (
+            await conn.execute(
+                "SELECT message_id,participant FROM PHONE_CALL_MESSAGE_LINKS "
+                "ORDER BY message_id"
+            )
+        ).fetchall()
+        ranges = await (
+            await conn.execute(
+                "SELECT message_id,call_id,start_byte,end_byte "
+                "FROM PHONE_CALL_MESSAGE_AUDIO_RANGES ORDER BY message_id"
+            )
+        ).fetchall()
+
+        assert linked == [(151, "caller"), (152, "assistant")]
+        assert ranges == [
+            (151, "call-1", caller_range.start_byte, caller_range.end_byte),
+            (
+                152,
+                "call-1",
+                assistant_range.start_byte,
+                assistant_range.end_byte,
+            ),
+        ]
+
+        # The canonical runtime owns this transaction. Rolling it back must
+        # remove both the provenance links and their audio ranges together.
+        await conn.rollback()
+        assert (
+            await (
+                await conn.execute("SELECT COUNT(*) FROM PHONE_CALL_MESSAGE_LINKS")
+            ).fetchone()
+        )[0] == 0
+        assert (
+            await (
+                await conn.execute(
+                    "SELECT COUNT(*) FROM PHONE_CALL_MESSAGE_AUDIO_RANGES"
+                )
+            ).fetchone()
+        )[0] == 0
 
 
 @pytest.mark.asyncio

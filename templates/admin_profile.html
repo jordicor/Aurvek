@@ -1,6 +1,7 @@
+{% set i18n_domains = ['account'] %}
 {% extends 'base.html' %}
 
-{% block title %}{% if auth_provider in ('google', 'google_linked') and not has_password %}Set Password{% else %}Change Password{% endif %} - AURVEK{% endblock %}
+{% block title %}{% if auth_provider in ('google', 'google_linked') and not has_password %}{{ t('account.password.set_title') }}{% else %}{{ t('account.password.change_title') }}{% endif %} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -62,9 +63,10 @@
 </style>
 {% endblock %}
 
-{% block page_title %}{% if auth_provider in ('google', 'google_linked') and not has_password %}Set Password{% else %}Change Password{% endif %}{% endblock %}
+{% block page_title %}{% if auth_provider in ('google', 'google_linked') and not has_password %}{{ t('account.password.set_title') }}{% else %}{{ t('account.password.change_title') }}{% endif %}{% endblock %}
 
 {% block back_url %}/{% endblock %}
+{% block back_title %}{{ t('common.action.back_to_chat') }}{% endblock %}
 
 {% block toolbar %}{% endblock %}
 
@@ -74,17 +76,17 @@
 <form id="set-password-form" data-form-guard>
     <!-- Info Section -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-info-circle me-2"></i>Account Info</div>
+        <div class="section-title"><i class="fas fa-info-circle me-2"></i>{{ t('account.password.account_info_title') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <p class="mb-2">
                     <span class="google-badge">
                         <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="16" height="16" alt="">
-                        Google Account
+                        {{ t('account.password.google_account') }}
                     </span>
                 </p>
                 <p class="text-muted small mb-0">
-                    Your account was created via Google sign-in. Set a password below so you can also log in with your username and password.
+                    {{ t('account.password.google_explanation') }}
                 </p>
             </div>
         </div>
@@ -92,31 +94,33 @@
 
     <!-- New Password Section -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-lock me-2"></i>Create Password</div>
+        <div class="section-title"><i class="fas fa-lock me-2"></i>{{ t('account.password.create_section') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="new-password" class="form-label">Password</label>
+                    <label for="new-password" class="form-label">{{ t('account.password.password_label') }}</label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="new-password" name="new_password"
                                required minlength="8" oninput="checkSetPasswordStrength()">
-                        <button class="btn btn-show-password" type="button" onclick="togglePassword('new-password', this)">
-                            <i class="fas fa-eye"></i>
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('new-password', this)"
+                                aria-label="{{ t('common.action.show_password') }}" title="{{ t('common.action.show_password') }}">
+                            <i class="fas fa-eye" aria-hidden="true"></i>
                         </button>
                     </div>
                     <ul class="password-requirements mt-2 list-unstyled">
-                        <li id="req-length" class="invalid">At least 8 characters</li>
+                        <li id="req-length" class="invalid">{{ t('account.password.requirement.min_length', count=8) }}</li>
                     </ul>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="confirm-password" class="form-label">Confirm Password</label>
+                    <label for="confirm-password" class="form-label">{{ t('account.password.confirm_label') }}</label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="confirm-password"
                                required oninput="checkSetPasswordMatch()">
-                        <button class="btn btn-show-password" type="button" onclick="togglePassword('confirm-password', this)">
-                            <i class="fas fa-eye"></i>
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('confirm-password', this)"
+                                aria-label="{{ t('common.action.show_password') }}" title="{{ t('common.action.show_password') }}">
+                            <i class="fas fa-eye" aria-hidden="true"></i>
                         </button>
                     </div>
                     <div id="password-match-status" class="password-match"></div>
@@ -136,10 +140,10 @@
     <!-- Action Buttons -->
     <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary" id="submit-btn">
-            <i class="fas fa-save me-1"></i> Set Password
+            <i class="fas fa-save me-1" aria-hidden="true"></i> {{ t('account.password.set_action') }}
         </button>
         <a href="/" class="btn btn-secondary">
-            <i class="fas fa-arrow-left me-1"></i> Back to Chat
+            <i class="fas fa-arrow-left me-1" aria-hidden="true"></i> {{ t('common.action.back_to_chat') }}
         </a>
     </div>
 </form>
@@ -148,18 +152,19 @@
 <form id="change-password-form" data-form-guard>
     <!-- Current Password Section -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-lock me-2"></i>Current Password</div>
+        <div class="section-title"><i class="fas fa-lock me-2"></i>{{ t('account.password.current_section') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="old-password" class="form-label">Enter your current password</label>
+                    <label for="old-password" class="form-label">{{ t('account.password.current_label') }}</label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="old-password" name="old_password" required>
-                        <button class="btn btn-show-password" type="button" onclick="togglePassword('old-password', this)">
-                            <i class="fas fa-eye"></i>
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('old-password', this)"
+                                aria-label="{{ t('common.action.show_password') }}" title="{{ t('common.action.show_password') }}">
+                            <i class="fas fa-eye" aria-hidden="true"></i>
                         </button>
                     </div>
-                    <small class="form-text text-muted">Required to verify your identity</small>
+                    <small class="form-text text-muted">{{ t('account.password.current_help') }}</small>
                 </div>
             </div>
         </div>
@@ -167,32 +172,34 @@
 
     <!-- New Password Section -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-lock-open me-2"></i>New Password</div>
+        <div class="section-title"><i class="fas fa-lock-open me-2"></i>{{ t('account.password.new_section') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="new-password" class="form-label">New Password</label>
+                    <label for="new-password" class="form-label">{{ t('account.password.new_label') }}</label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="new-password" name="new_password"
                                required minlength="8" oninput="checkPasswordStrength()">
-                        <button class="btn btn-show-password" type="button" onclick="togglePassword('new-password', this)">
-                            <i class="fas fa-eye"></i>
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('new-password', this)"
+                                aria-label="{{ t('common.action.show_password') }}" title="{{ t('common.action.show_password') }}">
+                            <i class="fas fa-eye" aria-hidden="true"></i>
                         </button>
                     </div>
                     <ul class="password-requirements mt-2 list-unstyled">
-                        <li id="req-length" class="invalid">At least 8 characters</li>
-                        <li id="req-different" class="invalid">Different from current password</li>
+                        <li id="req-length" class="invalid">{{ t('account.password.requirement.min_length', count=8) }}</li>
+                        <li id="req-different" class="invalid">{{ t('account.password.requirement.different') }}</li>
                     </ul>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="confirm-password" class="form-label">Confirm New Password</label>
+                    <label for="confirm-password" class="form-label">{{ t('account.password.confirm_new_label') }}</label>
                     <div class="input-group">
                         <input type="password" class="form-control" id="confirm-password"
                                required oninput="checkPasswordMatch()">
-                        <button class="btn btn-show-password" type="button" onclick="togglePassword('confirm-password', this)">
-                            <i class="fas fa-eye"></i>
+                        <button class="btn btn-show-password" type="button" onclick="togglePassword('confirm-password', this)"
+                                aria-label="{{ t('common.action.show_password') }}" title="{{ t('common.action.show_password') }}">
+                            <i class="fas fa-eye" aria-hidden="true"></i>
                         </button>
                     </div>
                     <div id="password-match-status" class="password-match"></div>
@@ -212,10 +219,10 @@
     <!-- Action Buttons -->
     <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary" id="submit-btn">
-            <i class="fas fa-save me-1"></i> Change Password
+            <i class="fas fa-save me-1" aria-hidden="true"></i> {{ t('account.password.change_action') }}
         </button>
         <a href="/" class="btn btn-secondary">
-            <i class="fas fa-arrow-left me-1"></i> Back to Chat
+            <i class="fas fa-arrow-left me-1" aria-hidden="true"></i> {{ t('common.action.back_to_chat') }}
         </a>
     </div>
 </form>
@@ -224,6 +231,15 @@
 
 {% block scripts_inline %}
 <script>
+    const passwordT = (key, params = {}) => AurvekI18n.t(key, params);
+
+    function setIconMessage(element, iconClasses, key, params = {}) {
+        const icon = document.createElement('i');
+        icon.className = iconClasses;
+        icon.setAttribute('aria-hidden', 'true');
+        element.replaceChildren(icon, document.createTextNode(' ' + passwordT(key, params)));
+    }
+
     function togglePassword(inputId, button) {
         const input = document.getElementById(inputId);
         const icon = button.querySelector('i');
@@ -231,10 +247,14 @@
             input.type = 'text';
             icon.classList.remove('fa-eye');
             icon.classList.add('fa-eye-slash');
+            button.setAttribute('aria-label', passwordT('common.action.hide_password'));
+            button.setAttribute('title', passwordT('common.action.hide_password'));
         } else {
             input.type = 'password';
             icon.classList.remove('fa-eye-slash');
             icon.classList.add('fa-eye');
+            button.setAttribute('aria-label', passwordT('common.action.show_password'));
+            button.setAttribute('title', passwordT('common.action.show_password'));
         }
     }
 
@@ -265,10 +285,10 @@
         }
 
         if (newPassword === confirmPassword) {
-            statusDiv.innerHTML = '<i class="fas fa-check me-1"></i>Passwords match';
+            setIconMessage(statusDiv, 'fas fa-check me-1', 'account.password.match');
             statusDiv.className = 'password-match match';
         } else {
-            statusDiv.innerHTML = '<i class="fas fa-times me-1"></i>Passwords do not match';
+            setIconMessage(statusDiv, 'fas fa-times me-1', 'account.password.no_match');
             statusDiv.className = 'password-match no-match';
         }
     }
@@ -288,19 +308,19 @@
         successDiv.style.display = 'none';
 
         if (newPassword !== confirmPassword) {
-            errorText.textContent = 'Passwords do not match.';
+            errorText.textContent = passwordT('account.password.error.no_match');
             errorDiv.style.display = 'block';
             return;
         }
 
         if (newPassword.length < 8) {
-            errorText.textContent = 'Password must be at least 8 characters.';
+            errorText.textContent = passwordT('account.password.error.min_length', { count: 8 });
             errorDiv.style.display = 'block';
             return;
         }
 
         submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Setting...';
+        setIconMessage(submitBtn, 'spinner-border spinner-border-sm me-1', 'account.password.progress.setting');
 
         try {
             const formData = new URLSearchParams();
@@ -316,24 +336,24 @@
 
             if (response.ok) {
                 FormGuard.markClean(document.getElementById('set-password-form'));
-                successText.textContent = 'Password set successfully! Redirecting...';
+                successText.textContent = passwordT('account.password.success.set_redirecting');
                 successDiv.style.display = 'block';
                 setTimeout(() => {
                     window.location.href = '/login';
                 }, 1500);
             } else {
                 const data = await response.json();
-                errorText.textContent = data.detail || 'Error setting password. Please try again.';
+                errorText.textContent = data.detail || passwordT('account.password.error.set_failed');
                 errorDiv.style.display = 'block';
                 submitBtn.disabled = false;
-                submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Set Password';
+                setIconMessage(submitBtn, 'fas fa-save me-1', 'account.password.set_action');
             }
         } catch (error) {
             console.error('Error:', error);
-            errorText.textContent = 'An unexpected error occurred. Please try again.';
+            errorText.textContent = passwordT('common.error.generic');
             errorDiv.style.display = 'block';
             submitBtn.disabled = false;
-            submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Set Password';
+            setIconMessage(submitBtn, 'fas fa-save me-1', 'account.password.set_action');
         }
     });
     {% else %}
@@ -377,10 +397,10 @@
         }
 
         if (newPassword === confirmPassword) {
-            statusDiv.innerHTML = '<i class="fas fa-check me-1"></i>Passwords match';
+            setIconMessage(statusDiv, 'fas fa-check me-1', 'account.password.match');
             statusDiv.className = 'password-match match';
         } else {
-            statusDiv.innerHTML = '<i class="fas fa-times me-1"></i>Passwords do not match';
+            setIconMessage(statusDiv, 'fas fa-times me-1', 'account.password.no_match');
             statusDiv.className = 'password-match no-match';
         }
     }
@@ -405,26 +425,26 @@
 
         // Validation
         if (newPassword !== confirmPassword) {
-            errorText.textContent = 'Passwords do not match.';
+            errorText.textContent = passwordT('account.password.error.no_match');
             errorDiv.style.display = 'block';
             return;
         }
 
         if (newPassword.length < 8) {
-            errorText.textContent = 'Password must be at least 8 characters.';
+            errorText.textContent = passwordT('account.password.error.min_length', { count: 8 });
             errorDiv.style.display = 'block';
             return;
         }
 
         if (newPassword === oldPassword) {
-            errorText.textContent = 'New password must be different from current password.';
+            errorText.textContent = passwordT('account.password.error.must_differ');
             errorDiv.style.display = 'block';
             return;
         }
 
         // Disable button during request
         submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Changing...';
+        setIconMessage(submitBtn, 'spinner-border spinner-border-sm me-1', 'account.password.progress.changing');
 
         try {
             const formData = new URLSearchParams();
@@ -441,30 +461,24 @@
 
             if (response.ok) {
                 FormGuard.markClean(document.getElementById('change-password-form'));
-                successText.textContent = 'Password changed successfully! Redirecting...';
+                successText.textContent = passwordT('account.password.success.change_redirecting');
                 successDiv.style.display = 'block';
                 setTimeout(() => {
                     window.location.href = '/login';
                 }, 1500);
             } else {
                 const data = await response.json();
-                if (response.status === 400 && data.detail === "Current password is incorrect") {
-                    errorText.textContent = 'Current password is incorrect.';
-                } else if (data.detail) {
-                    errorText.textContent = data.detail;
-                } else {
-                    errorText.textContent = 'Error changing password. Please try again.';
-                }
+                errorText.textContent = data.detail || passwordT('account.password.error.change_failed');
                 errorDiv.style.display = 'block';
                 submitBtn.disabled = false;
-                submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Change Password';
+                setIconMessage(submitBtn, 'fas fa-save me-1', 'account.password.change_action');
             }
         } catch (error) {
             console.error('Error:', error);
-            errorText.textContent = 'An unexpected error occurred. Please try again.';
+            errorText.textContent = passwordT('common.error.generic');
             errorDiv.style.display = 'block';
             submitBtn.disabled = false;
-            submitBtn.innerHTML = '<i class="fas fa-save me-1"></i> Change Password';
+            setIconMessage(submitBtn, 'fas fa-save me-1', 'account.password.change_action');
         }
     });
     {% endif %}

@@ -1,6 +1,7 @@
+{% set i18n_domains = ['admin_models'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Model Catalog Sync - AURVEK{% endblock %}
+{% block title %}{{ t('admin_models.catalog.model_catalog_sync_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -10,6 +11,10 @@
         font: inherit;
     }
     .catalog-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        backdrop-filter: blur(12px);
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -25,6 +30,15 @@
         align-items: center;
         gap: 10px;
         flex-wrap: wrap;
+    }
+    .catalog-actions button:disabled,
+    .catalog-toolbar button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+    .provider-badge {
+        background-color: var(--bg-tertiary);
+        color: var(--text-primary);
     }
     .catalog-status {
         display: flex;
@@ -74,30 +88,34 @@
 </style>
 {% endblock %}
 
-{% block page_title %}LLM Model Catalog{% endblock %}
+{% block page_title %}{{ t('admin_models.catalog.llm_model_catalog') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Discover, review and enable synchronized provider models</p>
+<p class="page-subtitle">{{ t('admin_models.catalog.provider_changes_are_detected_automatically_review_the_catalog_and_enable_several_mod') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <div class="catalog-actions">
     <button class="btn btn-outline-secondary" id="fetchProviderBtn" onclick="loadActiveProvider(true)">
         <span class="sync-spinner spinner-border spinner-border-sm me-1"></span>
-        <span class="sync-text"><i class="fas fa-cloud-download-alt me-1"></i> Fetch Provider</span>
+        <span class="sync-text"><i class="fas fa-cloud-download-alt me-1"></i> {{ t('admin_models.catalog.check_for_updates') }}</span>
+    </button>
+    <button class="btn btn-outline-secondary" id="updateCatalogBtn" onclick="updateCatalog()" disabled>
+        <span class="sync-spinner spinner-border spinner-border-sm me-1"></span>
+        <span class="sync-text"><i class="fas fa-database me-1"></i> {{ t('admin_models.catalog.update_catalog') }}</span>
     </button>
     <button class="btn-primary-gold" id="syncAllBtn" onclick="syncAllProviders()">
         <span class="sync-spinner spinner-border spinner-border-sm me-1"></span>
-        <span class="sync-text"><i class="fas fa-sync-alt me-1"></i> Sync All Providers</span>
+        <span class="sync-text"><i class="fas fa-sync-alt me-1"></i> {{ t('admin_models.catalog.sync_all_providers') }}</span>
     </button>
 </div>
 {% endblock %}
 
 {% block tabs %}
 <div class="internal-tabs">
-    <a href="/admin/llms" class="internal-tab">All Models</a>
+    <a href="/admin/llms" class="internal-tab">{{ t('admin_models.catalog.all_models') }}</a>
     <a href="/admin/models" class="internal-tab active">
-        <i class="fas fa-sync me-1"></i> Provider Sync
+        <i class="fas fa-sync me-1"></i> {{ t('admin_models.catalog.provider_sync') }}
     </a>
 </div>
 {% endblock %}
@@ -120,27 +138,32 @@
 {% endblock %}
 
 {% block content %}
+{% include 'llms/catalog_auto_update.html' %}
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-database"></i> <strong id="catalogCount">{{ catalog_count }}</strong> Catalog
+        <i class="fas fa-database"></i> <strong id="catalogCount">{{ format_number(catalog_count) }}</strong> {{ t('admin_models.catalog.catalog') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-check-circle"></i> <strong id="enabledCount">{{ enabled_count }}</strong> Enabled
+        <i class="fas fa-check-circle"></i> <strong id="enabledCount">{{ format_number(enabled_count) }}</strong> {{ t('admin_models.catalog.enabled') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-triangle-exclamation"></i> <strong id="needsReviewCount">{{ needs_review_count }}</strong> Needs Review
+        <i class="fas fa-triangle-exclamation"></i> <strong id="needsReviewCount">{{ format_number(needs_review_count) }}</strong> {{ t('admin_models.catalog.needs_review') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-cloud"></i> <strong id="remoteCount">0</strong> Remote
+        <i class="fas fa-cloud"></i> <strong id="remoteCount">0</strong> {{ t('admin_models.catalog.remote') }}
     </span>
+    <span class="stat-badge"><strong id="newCount">0</strong> {{ t('admin_models.catalog.new') }}</span>
+    <span class="stat-badge"><strong id="updatedCount">0</strong> {{ t('admin_models.catalog.updated') }}</span>
+    <span class="stat-badge"><strong id="currentCount">0</strong> {{ t('admin_models.catalog.up_to_date') }}</span>
+    <span class="stat-badge"><strong id="localOnlyCount">0</strong> {{ t('admin_models.catalog.local_only') }}</span>
     <span class="stat-badge" id="statsFiltered" style="display: none;">
-        <i class="fas fa-filter"></i> <strong id="filteredCount">0</strong> Shown
+        <i class="fas fa-filter"></i> <strong id="filteredCount">0</strong> {{ t('admin_models.catalog.shown') }}
     </span>
 </div>
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-plug"></i> Providers
+        <i class="fas fa-plug"></i> {{ t('admin_models.catalog.providers') }}
     </div>
     <div class="internal-tabs" id="providerTabs">
         {% for provider in provider_tabs %}
@@ -150,7 +173,7 @@
                 data-provider="{{ provider.key }}"
                 onclick="selectProvider('{{ provider.key }}')">
             <i class="fas {{ provider.icon }} me-1"></i>{{ provider.label }}
-            <span class="badge bg-secondary ms-1">{{ counts.get('enabled', 0) }}/{{ counts.get('total', 0) }}</span>
+            <span class="badge bg-secondary ms-1">{{ format_number(counts.get('enabled', 0)) }}/{{ format_number(counts.get('total', 0)) }}</span>
         </button>
         {% endfor %}
     </div>
@@ -158,43 +181,45 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-filter"></i> Filters
+        <i class="fas fa-filter"></i> {{ t('admin_models.catalog.filters') }}
     </div>
     <div class="flex-row">
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Search</label>
-                <input type="text" class="form-control" id="searchFilter" placeholder="Model, display name or provider..." oninput="applyFilters()">
+                <label class="form-label" for="searchFilter">{{ t('admin_models.catalog.search') }}</label>
+                <input type="text" class="form-control" id="searchFilter" placeholder="{{ t('admin_models.catalog.model_display_name_or_provider') }}" oninput="applyFilters()">
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Provider Family</label>
+                <label class="form-label" for="familyFilter">{{ t('admin_models.catalog.provider_family') }}</label>
                 <select class="form-select" id="familyFilter" onchange="applyFilters()">
-                    <option value="">All Families</option>
+                    <option value="">{{ t('admin_models.catalog.all_families') }}</option>
                 </select>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Visibility</label>
+                <label class="form-label" for="statusFilter">{{ t('admin_models.catalog.status') }}</label>
                 <select class="form-select" id="statusFilter" onchange="applyFilters()">
-                    <option value="">All</option>
-                    <option value="enabled">Enabled</option>
-                    <option value="disabled">Disabled</option>
-                    <option value="new">New Remote</option>
-                    <option value="local-only">Local Only</option>
-                    <option value="needs-review">Needs Review</option>
+                    <option value="">{{ t('admin_models.catalog.all') }}</option>
+                    <option value="enabled">{{ t('admin_models.catalog.enabled') }}</option>
+                    <option value="disabled">{{ t('admin_models.catalog.disabled') }}</option>
+                    <option value="new">{{ t('admin_models.catalog.new') }}</option>
+                    <option value="updated">{{ t('admin_models.catalog.updated') }}</option>
+                    <option value="current">{{ t('admin_models.catalog.up_to_date') }}</option>
+                    <option value="local-only">{{ t('admin_models.catalog.local_only') }}</option>
+                    <option value="needs-review">{{ t('admin_models.catalog.needs_review') }}</option>
                 </select>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Vision</label>
+                <label class="form-label" for="visionFilter">{{ t('admin_models.catalog.vision') }}</label>
                 <select class="form-select" id="visionFilter" onchange="applyFilters()">
-                    <option value="">All Models</option>
-                    <option value="yes">Vision</option>
-                    <option value="no">No Vision</option>
+                    <option value="">{{ t('admin_models.catalog.all_models') }}</option>
+                    <option value="yes">{{ t('admin_models.catalog.vision') }}</option>
+                    <option value="no">{{ t('admin_models.catalog.no_vision') }}</option>
                 </select>
             </div>
         </div>
@@ -204,43 +229,47 @@
 <div class="catalog-toolbar">
     <div>
         <input type="checkbox" class="form-check-input me-2" id="selectAllVisible" onchange="toggleSelectAllVisible()">
-        <label class="form-check-label" for="selectAllVisible">Select all visible</label>
+        <label class="form-check-label" for="selectAllVisible">{{ t('admin_models.catalog.enable_all_shown') }}</label>
     </div>
     <div class="catalog-status" id="providerStatus">
         <i class="fas fa-circle-info"></i>
-        <span>Provider catalog ready.</span>
+        <span>{{ t('admin_models.catalog.provider_catalog_ready') }}</span>
     </div>
-    <button class="btn-primary-gold" id="saveBtn" onclick="saveSelection()" disabled>
-        <span class="sync-spinner spinner-border spinner-border-sm me-1"></span>
-        <span class="sync-text"><i class="fas fa-save me-1"></i> Save Provider Selection</span>
-    </button>
+    <div class="catalog-actions">
+        <button class="btn btn-outline-secondary" id="undoChangesBtn" onclick="undoChanges()" disabled>{{ t('admin_models.catalog.undo_changes') }}</button>
+        <button class="btn-primary-gold" id="saveBtn" onclick="saveSelection()" disabled>
+            <span class="sync-spinner spinner-border spinner-border-sm me-1"></span>
+            <span class="sync-text"><i class="fas fa-save me-1"></i> <span id="saveChangesLabel">{{ t('admin_models.catalog.save_changes') }}</span></span>
+        </button>
+    </div>
 </div>
+<p class="text-muted small">{{ t('admin_models.catalog.checked_models_will_be_available_in_chats_after_saving_updating_the_catalog_preserves') }}</p>
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-table"></i> Remote Catalog
+        <i class="fas fa-table"></i> {{ t('admin_models.catalog.remote_catalog') }}
     </div>
     <div class="table-wrapper">
         <table class="table" id="modelsTable">
             <thead>
                 <tr>
-                    <th style="width: 40px;"></th>
-                    <th>Provider</th>
-                    <th>Model</th>
-                    <th>Context</th>
-                    <th>Max Output</th>
-                    <th>Input Cost</th>
-                    <th>Output Cost</th>
-                    <th>Vision</th>
-                    <th>Sync</th>
-                    <th class="text-end">Visibility</th>
+                    <th style="width: 70px;">{{ t('admin_models.catalog.enabled') }}</th>
+                    <th>{{ t('admin_models.field.provider') }}</th>
+                    <th>{{ t('admin_models.catalog.model') }}</th>
+                    <th>{{ t('admin_models.catalog.context') }}</th>
+                    <th>{{ t('admin_models.catalog.max_output') }}</th>
+                    <th>{{ t('admin_models.catalog.input_cost') }}</th>
+                    <th>{{ t('admin_models.catalog.output_cost') }}</th>
+                    <th>{{ t('admin_models.catalog.vision') }}</th>
+                    <th>{{ t('admin_models.catalog.catalog') }}</th>
+                    <th class="text-end">{{ t('admin_models.catalog.visibility') }}</th>
                 </tr>
             </thead>
             <tbody id="modelsTableBody">
                 <tr>
                     <td colspan="10" class="text-center py-5 text-muted">
                         <i class="fas fa-cloud-download-alt fa-3x mb-3 d-block"></i>
-                        Provider data not loaded.
+                        {{ t('admin_models.catalog.provider_data_not_loaded') }}
                     </td>
                 </tr>
             </tbody>
@@ -251,12 +280,28 @@
 
 {% block scripts_inline %}
 <script>
+    const modelText = (key, params) => AurvekI18n.t(`admin_models.${key}`, params);
     const providerTabs = {{ provider_tabs | tojson | safe }};
     let activeProvider = {{ active_provider | tojson | safe }};
     const providerState = {};
+    let busyAction = null;
+    let busyMessage = '';
 
-    document.addEventListener('DOMContentLoaded', function() {
-        selectProvider(activeProvider);
+    document.addEventListener('DOMContentLoaded', async function() {
+        beginMutation('autoRefresh', modelText('catalog.checking_model_catalogs'));
+        try {
+            const result = await autoUpdateLlmCatalog();
+            if (result?.freshPage) {
+                const tabs = Array.from(document.querySelectorAll('.catalog-provider-tab'));
+                result.freshPage.querySelectorAll('.catalog-provider-tab').forEach(source => {
+                    const target = tabs.find(tab => tab.dataset.provider === source.dataset.provider);
+                    if (target) target.querySelector('.badge').textContent = source.querySelector('.badge').textContent;
+                });
+            }
+        } finally {
+            endMutation();
+            selectProvider(activeProvider);
+        }
     });
 
     function emptyProviderState() {
@@ -279,6 +324,7 @@
     }
 
     function selectProvider(provider) {
+        if (busyAction) return;
         activeProvider = provider;
         document.querySelectorAll('.catalog-provider-tab').forEach(tab => {
             tab.classList.toggle('active', tab.dataset.provider === provider);
@@ -286,14 +332,15 @@
         const url = new URL(window.location.href);
         url.searchParams.set('provider', provider);
         window.history.replaceState({}, '', url.toString());
+        populateFamilyFilter();
+        renderProvider();
         if (!stateFor(provider).loaded) {
             loadProvider(provider, false);
-        } else {
-            renderProvider();
         }
     }
 
     function loadActiveProvider(force) {
+        if (busyAction || hasChanges(stateFor(activeProvider))) return;
         return loadProvider(activeProvider, force);
     }
 
@@ -301,133 +348,142 @@
         const state = stateFor(provider);
         if (state.loading) return;
         if (state.loaded && !force) {
-            renderProvider();
-            return;
+            if (provider === activeProvider) renderProvider();
+            return true;
         }
 
         state.loading = true;
         state.error = null;
-        setButtonLoading('fetchProviderBtn', true);
-        setProviderStatus('loading', 'Fetching ' + providerLabel(provider) + ' models...');
+        if (provider === activeProvider) renderProvider();
 
         try {
             const response = await fetch('/api/admin/llms/providers/' + encodeURIComponent(provider) + '/remote');
             const data = await response.json();
             if (!response.ok || data.error) {
-                throw new Error(data.error || data.detail || 'Provider fetch failed');
+                throw new Error(data.error || data.detail || modelText('catalog.provider_fetch_failed'));
             }
 
-            state.models = (data.models || []).map(normalizeModel);
-            state.remoteCount = data.remote_count || state.models.filter(m => m.remote_available).length;
+            state.models = (data.models || []).map(model => normalizeModel(model, provider));
+            state.remoteCount = data.remote_count ?? state.models.filter(m => m.remote_available).length;
             state.enabled = new Set(state.models.filter(m => m.enabled).map(m => m.id));
             state.originalEnabled = new Set(state.enabled);
             state.loaded = true;
-            state.loading = false;
-            populateFamilyFilter();
-            renderProvider();
-            showAlert('success', providerLabel(provider) + ' catalog loaded.');
+            return true;
         } catch (error) {
             state.error = error.message;
-            state.loaded = false;
-            state.loading = false;
-            renderProvider();
-            showAlert('danger', providerLabel(provider) + ': ' + error.message);
+            if (provider === activeProvider && !busyAction) {
+                showAlert('danger', providerLabel(provider) + ': ' + error.message);
+            }
+            return false;
         } finally {
-            setButtonLoading('fetchProviderBtn', false);
+            state.loading = false;
+            if (provider === activeProvider) {
+                populateFamilyFilter();
+                renderProvider();
+            } else {
+                updateControls();
+            }
         }
     }
 
     async function syncAllProviders() {
-        const btn = document.getElementById('syncAllBtn');
-        setButtonLoading('syncAllBtn', true);
-        btn.disabled = true;
-        setProviderStatus('loading', 'Syncing all providers...');
+        if (busyAction || Object.values(providerState).some(state => state.loading || hasChanges(state))) return;
+        const provider = activeProvider;
+        beginMutation('syncAllBtn', modelText('catalog.syncing_all_providers'));
 
         try {
             const response = await fetch('/api/admin/llms/sync-all', { method: 'POST' });
             const data = await response.json();
             if (!response.ok || data.error) {
-                throw new Error(data.error || data.detail || 'Sync all failed');
+                throw new Error(data.error || data.detail || modelText('catalog.sync_all_failed'));
             }
 
-            providerTabs.forEach(provider => {
-                providerState[provider.key] = emptyProviderState();
+            providerTabs.forEach(tab => {
+                if (tab.key !== provider) providerState[tab.key] = emptyProviderState();
             });
-            const messages = Object.entries(data.results || {}).map(([provider, result]) => {
-                if (result.error) return providerLabel(provider) + ': ' + result.error;
-                return providerLabel(provider) + ': +' + (result.added || 0) + ', updated ' + (result.updated || 0) + ', stale ' + (result.stale || 0);
+            const results = Object.entries(data.results || {});
+            const messages = results.map(([key, result]) => {
+                if (result.error) return providerLabel(key) + ': ' + result.error;
+                return modelText('sync.summary', {provider: providerLabel(key), added: AurvekI18n.formatNumber(result.added || 0), updated: AurvekI18n.formatNumber(result.updated || 0), stale: AurvekI18n.formatNumber(result.stale || 0)});
             });
-            showAlert('success', messages.join(' | '));
-            await loadProvider(activeProvider, true);
+            const refreshed = await loadProvider(provider, true);
+            if (!refreshed) messages.push(modelText('sync.refresh_failed', {error: stateFor(provider).error}));
+            showAlert(results.some(([, result]) => result.error) || !refreshed ? 'warning' : 'success', messages.join(' | '));
         } catch (error) {
-            showAlert('danger', 'Sync all providers failed: ' + error.message);
+            showAlert('danger', modelText('sync.all_failed', {error: error.message}));
             setProviderStatus('error', error.message);
         } finally {
-            setButtonLoading('syncAllBtn', false);
-            btn.disabled = false;
+            endMutation();
+        }
+    }
+
+    async function updateCatalog() {
+        const provider = activeProvider;
+        const state = stateFor(provider);
+        if (busyAction || state.loading || !state.loaded || hasChanges(state)) return;
+        beginMutation('updateCatalogBtn', modelText('sync.updating', {provider: providerLabel(provider)}));
+        try {
+            const data = await syncProvider(provider, {});
+            const refreshed = await loadProvider(provider, true);
+            const message = modelText('sync.updated', {provider: providerLabel(provider), added: AurvekI18n.formatNumber(data.added || 0), updated: AurvekI18n.formatNumber(data.updated || 0)});
+            showAlert(refreshed ? 'success' : 'warning', message + (refreshed ? '' : ' ' + modelText('sync.refresh_failed', {error: state.error})));
+        } catch (error) {
+            showAlert('danger', modelText('sync.update_failed', {error: error.message}));
+        } finally {
+            endMutation();
         }
     }
 
     async function saveSelection() {
-        const state = stateFor(activeProvider);
-        if (!state.loaded) return;
-
-        setButtonLoading('saveBtn', true);
-        document.getElementById('saveBtn').disabled = true;
+        const provider = activeProvider;
+        const state = stateFor(provider);
+        if (busyAction || state.loading || !state.loaded || !hasChanges(state)) return;
+        beginMutation('saveBtn', modelText('sync.saving', {provider: providerLabel(provider)}));
 
         try {
             const remoteAvailableIds = new Set(
                 state.models.filter(m => m.remote_available && !m.local_only).map(m => m.id)
             );
-            const selectedModelIds = Array.from(state.enabled).filter(id => remoteAvailableIds.has(id));
+            const selectedModelIds = Array.from(state.enabled).filter(id => remoteAvailableIds.has(id) && !state.originalEnabled.has(id));
             const disabledModelIds = Array.from(state.originalEnabled).filter(id => remoteAvailableIds.has(id) && !state.enabled.has(id));
 
-            const localOnlyChanges = state.models.filter(model => {
+            const localEnabledStates = state.models.filter(model => {
                 if (!model.local_only || !model.local_id) return false;
                 return state.enabled.has(model.id) !== state.originalEnabled.has(model.id);
+            }).map(model => ({ llm_id: model.local_id, enabled: state.enabled.has(model.id) }));
+            await syncProvider(provider, {
+                selected_model_ids: selectedModelIds,
+                disabled_model_ids: disabledModelIds,
+                local_enabled_states: localEnabledStates,
             });
-            for (const model of localOnlyChanges) {
-                const patchResponse = await fetch('/api/admin/llms/' + model.local_id + '/enabled', {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled: state.enabled.has(model.id) }),
-                });
-                const patchData = await patchResponse.json();
-                if (!patchResponse.ok || patchData.error) {
-                    throw new Error(patchData.error || 'Failed to update local-only model ' + model.id);
-                }
-            }
-
-            const response = await fetch('/api/admin/llms/providers/' + encodeURIComponent(activeProvider) + '/sync', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    selected_model_ids: selectedModelIds,
-                    disabled_model_ids: disabledModelIds,
-                }),
-            });
-            const data = await response.json();
-            if (!response.ok || data.error) {
-                throw new Error(data.error || data.detail || 'Provider sync failed');
-            }
-
-            showAlert('success', providerLabel(activeProvider) + ': added ' + data.added + ', updated ' + data.updated + ', disabled ' + data.disabled + '.');
-            await loadProvider(activeProvider, true);
+            state.originalEnabled = new Set(state.enabled);
+            const refreshed = await loadProvider(provider, true);
+            showAlert(refreshed ? 'success' : 'warning', modelText('sync.saved', {provider: providerLabel(provider)}) + (refreshed ? '' : ' ' + modelText('sync.refresh_failed', {error: state.error})));
         } catch (error) {
-            showAlert('danger', 'Save failed: ' + error.message);
+            showAlert('danger', modelText('sync.save_failed', {error: error.message}));
         } finally {
-            setButtonLoading('saveBtn', false);
-            updateSaveButtonState();
+            endMutation();
         }
     }
 
-    function normalizeModel(model) {
+    async function syncProvider(provider, payload) {
+        const response = await fetch('/api/admin/llms/providers/' + encodeURIComponent(provider) + '/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || data.detail || modelText('catalog.provider_sync_failed'));
+        return data;
+    }
+
+    function normalizeModel(model, provider) {
         const id = model.provider_model_id || model.id || model.model || '';
         return {
             id: id,
             local_id: model.local_id || null,
-            provider_key: model.provider_key || activeProvider,
-            provider_label: providerFamily(model),
+            provider_key: model.provider_key || provider,
+            provider_label: providerFamily(model, provider),
             display_name: model.display_name || model.name || id,
             description: model.description || '',
             model: model.model || id,
@@ -438,6 +494,7 @@
             vision: Boolean(model.vision),
             enabled: Boolean(model.enabled),
             sync_status: model.sync_status || model.local_sync_status || 'new',
+            catalog_change: model.catalog_change || (model.local_only ? 'local-only' : model.local_id ? 'current' : 'new'),
             metadata_source: model.metadata_source || model.sync_source || 'provider_api',
             needs_review: Boolean(model.needs_review),
             local_only: Boolean(model.local_only),
@@ -446,46 +503,55 @@
         };
     }
 
-    function providerFamily(model) {
+    function providerFamily(model, provider) {
         const id = model.provider_model_id || model.id || model.model || '';
-        if ((model.provider_key || activeProvider) === 'openrouter' && id.includes('/')) {
+        if ((model.provider_key || provider) === 'openrouter' && id.includes('/')) {
             return id.split('/')[0];
         }
-        return providerLabel(model.provider_key || activeProvider);
+        return providerLabel(model.provider_key || provider);
     }
 
     function renderProvider() {
         const state = stateFor(activeProvider);
-        document.getElementById('remoteCount').textContent = state.remoteCount || 0;
-        updateSaveButtonState();
+        const scrollX = window.scrollX;
+        const scrollY = window.scrollY;
+        document.getElementById('remoteCount').textContent = AurvekI18n.formatNumber(state.remoteCount || 0);
+        updateStats();
+        updateControls();
+        if (busyAction) {
+            setProviderStatus('loading', busyMessage);
+        } else if (state.loading) {
+            setProviderStatus('loading', modelText('sync.checking', {provider: providerLabel(activeProvider)}));
+        } else if (state.error) {
+            setProviderStatus('error', state.error);
+        } else {
+            const pending = changeCount(state);
+            setProviderStatus(pending ? 'idle' : 'ok', pending ? modelText('sync.pending', {count: pending, number: AurvekI18n.formatNumber(pending)}) : modelText('sync.checked', {provider: providerLabel(activeProvider)}));
+        }
 
-        if (state.loading) {
-            renderMessageRow('Fetching models...');
+        if (state.loading && !state.loaded) {
+            renderMessageRow(modelText('catalog.fetching_models'));
             return;
         }
-        if (state.error) {
+        if (state.error && !state.loaded) {
             renderMessageRow(state.error);
-            setProviderStatus('error', state.error);
             return;
         }
         if (!state.loaded) {
-            renderMessageRow('Provider data not loaded.');
-            setProviderStatus('idle', 'Ready to fetch ' + providerLabel(activeProvider) + '.');
+            renderMessageRow(modelText('catalog.provider_data_not_loaded'));
+            setProviderStatus('idle', modelText('sync.ready', {provider: providerLabel(activeProvider)}));
             return;
         }
 
         const filtered = getFilteredModels();
         if (!filtered.length) {
-            renderMessageRow('No models match your filters.');
-            updateStats();
-            return;
+            renderMessageRow(modelText('catalog.no_models_match_your_filters'));
+        } else {
+            const tbody = document.getElementById('modelsTableBody');
+            tbody.innerHTML = filtered.map(model => renderModelRow(model, state)).join('');
         }
-
-        const tbody = document.getElementById('modelsTableBody');
-        tbody.innerHTML = filtered.map(model => renderModelRow(model, state)).join('');
-        updateStats();
         updateSelectAllState();
-        setProviderStatus('ok', providerLabel(activeProvider) + ': ' + state.models.length + ' catalog rows loaded.');
+        window.scrollTo(scrollX, scrollY);
     }
 
     function renderModelRow(model, state) {
@@ -497,30 +563,32 @@
             !isSelected && wasSelected ? 'to-disable' : ''
         );
         const providerClass = 'provider-' + String(model.provider_label || '').replace(/[^A-Za-z0-9_-]/g, '-');
-        const disabledHint = model.remote_available ? '' : ' title="Remote model was not returned by the provider"';
+        const disabledHint = model.remote_available ? '' : ' title="' + escapeAttr(modelText('sync.remote_missing')) + '"';
         return `
             <tr class="model-row ${rowClass}" data-model-id="${escapeAttr(model.id)}">
                 <td>
                     <input type="checkbox" class="form-check-input model-checkbox"
                            data-model-id="${escapeAttr(model.id)}"
                            ${isSelected ? 'checked' : ''}
-                           onchange="toggleModel('${escapeJs(model.id)}')">
+                           ${busyAction || state.loading ? 'disabled' : ''}
+                           aria-label="${escapeAttr(modelText('action.enable_model', {model: model.display_name}))}"
+                           onchange="toggleModel(this.dataset.modelId)">
                 </td>
                 <td><span class="badge provider-badge ${escapeAttr(providerClass)}">${escapeHtml(model.provider_label)}</span></td>
                 <td>
                     <strong>${escapeHtml(model.display_name)}</strong>
-                    ${model.needs_review ? '<span class="badge bg-warning text-dark ms-1">Review</span>' : ''}
-                    ${model.local_only ? '<span class="badge bg-secondary ms-1"' + disabledHint + '>Local only</span>' : ''}
+                    ${model.needs_review ? '<span class="badge bg-warning text-dark ms-1">' + escapeHtml(modelText('label.review')) + '</span>' : ''}
+                    ${model.local_only ? '<span class="badge bg-secondary ms-1"' + disabledHint + '>' + escapeHtml(modelText('label.local_only')) + '</span>' : ''}
                     <br><small class="text-muted">${escapeHtml(model.id)}</small>
                 </td>
                 <td class="token-cell">${formatTokens(model.context_window_tokens)}</td>
                 <td class="token-cell">${formatTokens(model.max_output_tokens)}</td>
                 <td class="price-cell">${formatCost(model.input_token_cost)}</td>
                 <td class="price-cell">${formatCost(model.output_token_cost)}</td>
-                <td>${model.vision ? '<span class="vision-badge"><i class="fas fa-eye me-1"></i>Vision</span>' : '-'}</td>
+                <td>${model.vision ? '<span class="vision-badge"><i class="fas fa-eye me-1"></i>' + escapeHtml(modelText('label.vision')) + '</span>' : '-'}</td>
                 <td>
-                    ${syncStatusBadge(model)}
-                    <br><span class="badge bg-secondary source-badge">${escapeHtml(model.metadata_source)}</span>
+                    ${catalogChangeBadge(model)}
+                    <br><span class="badge bg-secondary source-badge">${escapeHtml(model.metadata_source === 'provider_api' || model.metadata_source === 'manual' ? modelText('source.' + model.metadata_source) : ['openrouter', 'openai', 'anthropic', 'google', 'xai', 'minimax', 'kimi'].includes(model.metadata_source) ? providerLabel(model.metadata_source) : modelText('source.unknown'))}</span>
                 </td>
                 <td class="text-end">${visibilityBadge(model, isSelected, wasSelected)}</td>
             </tr>
@@ -548,7 +616,7 @@
             if (vision === 'no' && model.vision) return false;
             if (status === 'enabled' && !state.enabled.has(model.id)) return false;
             if (status === 'disabled' && state.enabled.has(model.id)) return false;
-            if (status === 'new' && model.local_id) return false;
+            if (['new', 'updated', 'current'].includes(status) && model.catalog_change !== status) return false;
             if (status === 'local-only' && !model.local_only) return false;
             if (status === 'needs-review' && !model.needs_review) return false;
             if (search) {
@@ -562,12 +630,14 @@
     function populateFamilyFilter() {
         const state = stateFor(activeProvider);
         const select = document.getElementById('familyFilter');
+        const selectedFamily = select.value;
         const families = [...new Set(state.models.map(m => m.provider_label).filter(Boolean))].sort();
-        select.innerHTML = '<option value="">All Families (' + families.length + ')</option>';
+        select.innerHTML = '<option value="">' + escapeHtml(modelText('catalog.all_families')) + ' (' + AurvekI18n.formatNumber(families.length) + ')</option>';
         families.forEach(family => {
             const count = state.models.filter(m => m.provider_label === family).length;
-            select.innerHTML += '<option value="' + escapeAttr(family) + '">' + escapeHtml(family) + ' (' + count + ')</option>';
+            select.innerHTML += '<option value="' + escapeAttr(family) + '">' + escapeHtml(family) + ' (' + AurvekI18n.formatNumber(count) + ')</option>';
         });
+        if (families.includes(selectedFamily)) select.value = selectedFamily;
     }
 
     function applyFilters() {
@@ -576,6 +646,7 @@
 
     function toggleModel(modelId) {
         const state = stateFor(activeProvider);
+        if (busyAction || state.loading) return;
         if (state.enabled.has(modelId)) {
             state.enabled.delete(modelId);
         } else {
@@ -586,6 +657,7 @@
 
     function toggleSelectAllVisible() {
         const state = stateFor(activeProvider);
+        if (busyAction || state.loading) return;
         const checked = document.getElementById('selectAllVisible').checked;
         getFilteredModels().forEach(model => {
             if (checked) {
@@ -597,35 +669,92 @@
         renderProvider();
     }
 
+    function undoChanges() {
+        const state = stateFor(activeProvider);
+        if (busyAction || state.loading) return;
+        state.enabled = new Set(state.originalEnabled);
+        renderProvider();
+    }
+
     function updateSelectAllState() {
         const state = stateFor(activeProvider);
         const filtered = getFilteredModels();
-        document.getElementById('selectAllVisible').checked =
-            filtered.length > 0 && filtered.every(model => state.enabled.has(model.id));
+        const selected = filtered.filter(model => state.enabled.has(model.id)).length;
+        const checkbox = document.getElementById('selectAllVisible');
+        checkbox.checked = filtered.length > 0 && selected === filtered.length;
+        checkbox.indeterminate = selected > 0 && selected < filtered.length;
+        checkbox.disabled = Boolean(busyAction || state.loading || !state.loaded || !filtered.length);
     }
 
     function updateStats() {
         const state = stateFor(activeProvider);
         const filtered = getFilteredModels();
-        document.getElementById('enabledCount').textContent = state.loaded ? state.enabled.size : {{ enabled_count }};
-        document.getElementById('needsReviewCount').textContent = state.loaded ? state.models.filter(m => m.needs_review).length : {{ needs_review_count }};
+        const catalogCount = state.models.filter(model => model.local_id).length;
+        document.getElementById('catalogCount').textContent = AurvekI18n.formatNumber(catalogCount);
+        document.getElementById('enabledCount').textContent = AurvekI18n.formatNumber(state.originalEnabled.size);
+        if (state.loaded) {
+            const tab = document.querySelector('.catalog-provider-tab.active .badge');
+            if (tab) tab.textContent = AurvekI18n.formatNumber(state.originalEnabled.size) + '/' + AurvekI18n.formatNumber(catalogCount);
+        }
+        document.getElementById('needsReviewCount').textContent = AurvekI18n.formatNumber(state.models.filter(m => m.needs_review).length);
+        if (state.loaded) {
+            const tab = Array.from(document.querySelectorAll('.catalog-provider-tab')).find(item => item.dataset.provider === activeProvider);
+            if (tab) tab.querySelector('.badge').textContent = AurvekI18n.formatNumber(state.originalEnabled.size) + '/' + AurvekI18n.formatNumber(state.models.filter(model => model.local_id).length);
+        }
+        for (const [id, change] of [['newCount', 'new'], ['updatedCount', 'updated'], ['currentCount', 'current'], ['localOnlyCount', 'local-only']]) {
+            document.getElementById(id).textContent = AurvekI18n.formatNumber(state.models.filter(model => model.catalog_change === change).length);
+        }
         const statsFiltered = document.getElementById('statsFiltered');
         if (state.loaded && filtered.length !== state.models.length) {
             statsFiltered.style.display = 'inline-flex';
-            document.getElementById('filteredCount').textContent = filtered.length;
+            document.getElementById('filteredCount').textContent = AurvekI18n.formatNumber(filtered.length);
         } else {
             statsFiltered.style.display = 'none';
         }
     }
 
-    function updateSaveButtonState() {
+    function updateControls() {
         const state = stateFor(activeProvider);
-        const btn = document.getElementById('saveBtn');
-        if (!state.loaded || state.loading) {
-            btn.disabled = true;
-            return;
+        const pending = hasChanges(state);
+        const anyPending = Object.values(providerState).some(hasChanges);
+        const anyLoading = Object.values(providerState).some(item => item.loading);
+        for (const id of ['fetchProviderBtn', 'saveBtn', 'updateCatalogBtn', 'syncAllBtn']) {
+            setButtonLoading(id, busyAction === id || (id === 'fetchProviderBtn' && state.loading && !busyAction));
         }
-        btn.disabled = !hasChanges(state);
+        document.getElementById('fetchProviderBtn').disabled = Boolean(busyAction || state.loading || pending);
+        document.getElementById('updateCatalogBtn').disabled = Boolean(busyAction || state.loading || !state.loaded || pending);
+        document.getElementById('saveBtn').disabled = Boolean(busyAction || state.loading || !state.loaded || !pending);
+        document.getElementById('undoChangesBtn').disabled = Boolean(busyAction || state.loading || !pending);
+        document.getElementById('syncAllBtn').disabled = Boolean(busyAction || anyLoading || anyPending);
+        document.getElementById('fetchProviderBtn').title = pending ? modelText('catalog.save_your_changes_before_checking_for_updates') : modelText('catalog.check_this_provider_for_new_or_updated_models');
+        document.getElementById('updateCatalogBtn').title = pending ? modelText('catalog.save_your_changes_before_updating_the_catalog') : modelText('catalog.update_model_details_without_changing_which_models_are_enabled');
+        document.getElementById('syncAllBtn').title = anyPending ? modelText('catalog.save_pending_changes_in_each_provider_first') : modelText('catalog.update_all_provider_catalogs_without_changing_model_availability');
+        const count = changeCount(state);
+        document.getElementById('saveChangesLabel').textContent = modelText('catalog.save_changes') + (count ? ' (' + AurvekI18n.formatNumber(count) + ')' : '');
+        document.querySelectorAll('.catalog-provider-tab, #searchFilter, #familyFilter, #statusFilter, #visionFilter').forEach(control => {
+            control.disabled = Boolean(busyAction);
+        });
+        document.querySelectorAll('.model-checkbox').forEach(checkbox => {
+            checkbox.disabled = Boolean(busyAction || state.loading);
+        });
+        updateSelectAllState();
+    }
+
+    function beginMutation(buttonId, message) {
+        busyAction = buttonId;
+        busyMessage = message;
+        updateControls();
+        setProviderStatus('loading', message);
+    }
+
+    function endMutation() {
+        busyAction = null;
+        busyMessage = '';
+        renderProvider();
+    }
+
+    function changeCount(state) {
+        return state.models.filter(model => state.enabled.has(model.id) !== state.originalEnabled.has(model.id)).length;
     }
 
     function hasChanges(state) {
@@ -637,19 +766,22 @@
     }
 
     function visibilityBadge(model, isSelected, wasSelected) {
-        if (isSelected && wasSelected) return '<span class="badge bg-success">Enabled</span>';
-        if (isSelected && !wasSelected) return '<span class="badge bg-warning text-dark">Will Enable</span>';
-        if (!isSelected && wasSelected) return '<span class="badge bg-danger">Will Disable</span>';
-        if (!model.local_id) return '<span class="badge bg-secondary">New</span>';
-        return '<span class="badge bg-secondary">Disabled</span>';
+        if (isSelected && wasSelected) return '<span class="badge bg-success">' + escapeHtml(modelText('label.enabled')) + '</span>';
+        if (isSelected && !wasSelected) return '<span class="badge bg-warning text-dark">' + escapeHtml(modelText('label.will_enable')) + '</span>';
+        if (!isSelected && wasSelected) return '<span class="badge bg-danger">' + escapeHtml(modelText('label.will_disable')) + '</span>';
+        if (!model.local_id) return '<span class="badge bg-secondary">' + escapeHtml(modelText('label.new')) + '</span>';
+        return '<span class="badge bg-secondary">' + escapeHtml(modelText('label.disabled')) + '</span>';
     }
 
-    function syncStatusBadge(model) {
-        const status = model.sync_status || 'new';
-        if (model.needs_review) return '<span class="badge bg-warning text-dark">' + escapeHtml(status) + '</span>';
-        if (status === 'synced' || status === 'legacy_synced') return '<span class="badge bg-success">' + escapeHtml(status) + '</span>';
-        if (status === 'stale' || model.local_only) return '<span class="badge bg-secondary">' + escapeHtml(status) + '</span>';
-        return '<span class="badge bg-info text-dark">' + escapeHtml(status) + '</span>';
+    function catalogChangeBadge(model) {
+        const badges = {
+            'new': ['bg-info text-dark', modelText('catalog.new')],
+            'updated': ['bg-warning text-dark', modelText('catalog.updated')],
+            'current': ['bg-success', modelText('catalog.up_to_date_label')],
+            'local-only': ['bg-secondary', modelText('catalog.local_only_label')],
+        };
+        const [css, label] = badges[model.catalog_change] || badges.current;
+        return '<span class="badge ' + css + '">' + escapeHtml(label) + '</span>';
     }
 
     function providerLabel(provider) {
@@ -660,15 +792,12 @@
     function formatTokens(value) {
         const n = numberOrNull(value);
         if (!n) return '-';
-        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-        if (n >= 1000) return (n / 1000).toFixed(0) + 'K';
-        return String(n);
+        return AurvekI18n.formatNumber(n, {notation: 'compact', maximumFractionDigits: 1});
     }
 
     function formatCost(value) {
         const n = Number(value || 0);
-        if (!n) return '$0.0000';
-        return '$' + n.toFixed(4);
+        return AurvekI18n.formatCurrency(n, 'USD', 4);
     }
 
     function numberOrNull(value) {
@@ -692,9 +821,9 @@
     }
 
     function showAlert(type, message) {
-        const normalized = type === 'danger' ? 'danger' : 'success';
+        const normalized = ['danger', 'warning', 'success'].includes(type) ? type : 'success';
         if (window.NotificationModal && normalized === 'danger') {
-            NotificationModal.error('Model Catalog', message);
+            NotificationModal.error(modelText('catalog.model_catalog'), message);
         }
         const icon = normalized === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle';
         document.getElementById('alertContainer').innerHTML =
@@ -714,8 +843,5 @@
         return escapeHtml(value);
     }
 
-    function escapeJs(value) {
-        return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-    }
 </script>
 {% endblock %}

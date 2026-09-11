@@ -5,11 +5,15 @@ from types import SimpleNamespace
 
 import anthropic
 import pytest
+from starlette.requests import Request
 
 import app as app_module
 
 
-class _JsonRequest:
+class _JsonRequest(Request):
+    def __init__(self):
+        super().__init__({"type": "http", "headers": []})
+
     async def json(self) -> dict[str, str]:
         return {
             "provider": "anthropic",

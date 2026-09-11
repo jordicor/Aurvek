@@ -1,36 +1,37 @@
+{% set i18n_domains = ['admin_voices'] %}
 {% extends 'base.html' %}
 
-{% block title %}Edit Voice - AURVEK{% endblock %}
+{% block title %}{{ t('admin_voices.title.edit') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Edit Voice{% endblock %}
+{% block page_title %}{{ t('admin_voices.title.edit') }}{% endblock %}
 
 {% block back_url %}/admin/voices{% endblock %}
-{% block back_title %}Back to Voices{% endblock %}
+{% block back_title %}{{ t('admin_voices.action.back') }}{% endblock %}
 
 {% block content %}
 <form action="/admin/voices/update/{{ voice_id }}" method="post" data-form-guard>
     <!-- Voice Configuration Section -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-microphone me-2"></i>Voice Configuration</div>
+        <div class="section-title"><i class="fas fa-microphone me-2"></i>{{ t('admin_voices.title.configuration') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="name" class="form-label">Voice Name</label>
+                    <label for="name" class="form-label">{{ t('admin_voices.field.name') }}</label>
                     <input type="text" class="form-control" id="name" name="name"
                            value="{{ voice_name }}" required>
-                    <small class="form-text text-muted">Display name for this voice</small>
+                    <small class="form-text text-muted">{{ t('admin_voices.help.name') }}</small>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="voice_code" class="form-label">Voice Code</label>
+                    <label for="voice_code" class="form-label">{{ t('admin_voices.field.code') }}</label>
                     <input type="text" class="form-control" id="voice_code" name="voice_code"
                            value="{{ voice_code }}" required>
-                    <small class="form-text text-muted">OpenAI voice identifier (alloy, ash, ballad, coral, echo, fable, marin, nova, onyx, sage, shimmer, verse, cedar)</small>
+                    <small class="form-text text-muted">{{ t('admin_voices.help.code') }}</small>
                 </div>
             </div>
         </div>
@@ -38,25 +39,25 @@
 
     <!-- TTS Provider Section -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-cog me-2"></i>TTS Provider</div>
+        <div class="section-title"><i class="fas fa-cog me-2"></i>{{ t('admin_voices.title.provider') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Provider</label>
+                    <label class="form-label">{{ t('admin_voices.field.provider') }}</label>
                     <div class="form-control provider-info-box">
                         <i class="fas fa-robot me-2"></i>OpenAI TTS
                     </div>
-                    <small class="form-text text-muted">ElevenLabs voices are managed via the Sync page</small>
+                    <small class="form-text text-muted">{{ t('admin_voices.help.elevenlabs_sync') }}</small>
                     <input type="hidden" name="tts_service" value="5">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Voice ID</label>
+                    <label class="form-label">{{ t('admin_voices.field.id') }}</label>
                     <div class="form-control provider-info-box muted">
                         #{{ voice_id }}
                     </div>
-                    <small class="form-text text-muted">Internal database identifier</small>
+                    <small class="form-text text-muted">{{ t('admin_voices.help.id') }}</small>
                 </div>
             </div>
         </div>
@@ -65,10 +66,10 @@
     <!-- Action Buttons -->
     <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">
-            <i class="fas fa-save me-1"></i> Update Voice
+            <i class="fas fa-save me-1"></i> {{ t('admin_voices.action.update') }}
         </button>
         <a href="/admin/voices" class="btn btn-secondary">
-            <i class="fas fa-arrow-left me-1"></i> Back to List
+            <i class="fas fa-arrow-left me-1"></i> {{ t('admin_voices.action.back') }}
         </a>
     </div>
 </form>

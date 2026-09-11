@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+import aiosqlite
 from datetime import UTC, datetime, timedelta
 import httpx
 import json
@@ -47,6 +49,12 @@ TOKEN = "a" * 43
 
 
 class FakeRepository:
+    @asynccontextmanager
+    async def connection_factory(self, readonly=False):
+        # These native transport tests have no application receiver registry.
+        async with aiosqlite.connect(':memory:') as connection:
+            yield connection
+
     def __init__(self, call=None):
         self.call = call
         self.inbound = []
@@ -89,6 +97,9 @@ class FakeRepository:
         if self.call is None or token != TOKEN:
             return None
         return self.call
+
+    async def get_call_by_provider_sid(self, sid):
+        return self.call if self.call and self.call.get('provider_call_sid') == sid else None
 
     async def get_stream_attempt_result(self, *, call_id, stream_attempt):
         if (
@@ -461,6 +472,7 @@ async def test_call_readiness_selects_credentials_and_stt_rate_by_runtime() -> N
 
 
 def signed_headers(path: str, form: dict[str, str]):
+    form.setdefault('AccountSid', ACCOUNT_SID)
     url = f"https://aurvek.example{path}"
     signature = RequestValidator(AUTH_TOKEN).compute_signature(url, form)
     return {"X-Twilio-Signature": signature}

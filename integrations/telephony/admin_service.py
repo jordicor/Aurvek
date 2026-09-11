@@ -21,10 +21,12 @@ from typing import Any, Protocol
 
 from ai_runtime.voice_resolution import provider_from_service_name
 from database import get_db_connection
+from i18n import Translator
 from integrations.telephony.config import (
     TelephonyConfigError,
     load_telephony_config,
     serialize_config_updates,
+    serialize_telephony_config,
 )
 from integrations.telephony.billing import (
     PhoneBillingConfigurationError,
@@ -33,7 +35,7 @@ from integrations.telephony.billing import (
 )
 from integrations.telephony.ffmpeg import is_ffmpeg_available
 from integrations.telephony.greetings import (
-    DEFAULT_GLOBAL_TECHNICAL_NOTICE_TEXT,
+    DEFAULT_GLOBAL_TECHNICAL_NOTICE_KEYS,
     GLOBAL_AUDIO_REVISION_CONFIG_KEY,
     GLOBAL_TECHNICAL_NOTICE_KEYS,
     GREETING_DIRECTIONS,
@@ -76,10 +78,19 @@ NUMBER_INVENTORY_SYNC_CONFIG_KEY = "telephony_numbers_last_sync_at"
 SUPPORTED_CANONICAL_TTS_PROVIDERS = frozenset({"elevenlabs", "openai"})
 PAID_TEST_CALLS_ENABLED_ENV = "TELEPHONY_PAID_TEST_CALLS_ENABLED"
 PAID_TEST_DESTINATIONS_ENV = "TELEPHONY_PAID_TEST_DESTINATIONS"
+# This preference is loaded when a new call snapshot is created; changing it
+# neither alters active calls nor requires the dispatcher to restart.
+_RUNTIME_INDEPENDENT_CONFIG_KEYS = frozenset(
+    {"telephony_recording_default"}
+)
 
 
 class TelephonyAdminError(RuntimeError):
     """Base error for an invalid administrative operation."""
+
+    def __init__(self, message: str, *, message_key: str | None = None) -> None:
+        super().__init__(message)
+        self.message_key = message_key
 
 
 class TelephonyAdminConflict(TelephonyAdminError):
@@ -97,8 +108,10 @@ class TelephonyAdminUnavailable(TelephonyAdminError):
 class TelephonyAdminMaterializedError(TelephonyAdminUnavailable):
     """A failed request still materialized a durable administrative result."""
 
-    def __init__(self, message: str, *, materialized_state: str) -> None:
-        super().__init__(message)
+    def __init__(
+        self, message: str, *, materialized_state: str, message_key: str | None = None
+    ) -> None:
+        super().__init__(message, message_key=message_key)
         self.materialized_state = str(materialized_state)
 
 
@@ -369,14 +382,14 @@ class TelephonyAdminService:
                 await conn.rollback()
                 raise
 
-    async def dashboard(self) -> dict[str, Any]:
+    async def dashboard(self, *, ui_language: str = "en") -> dict[str, Any]:
         credentials = self._credential_provider()
         paid_test_call = self._paid_test_call_gate_provider()
         async with self._connection_factory(readonly=True) as conn:
             config = await load_telephony_config(conn=conn)
             state = await self._readiness_state(conn, credentials=credentials)
             numbers = await self._load_numbers(conn, state["callbacks"])
-            global_audio = await self._load_global_audio(conn)
+            global_audio = await self._load_global_audio(conn, ui_language=ui_language)
             operation = await self._load_operation(conn)
             diagnostics = await self._load_diagnostics(conn)
             voices = await self._load_voices(conn)
@@ -414,14 +427,23 @@ class TelephonyAdminService:
         """Return one bounded, server-filtered operations page."""
 
         if resource not in {"calls", "jobs"}:
-            raise TelephonyAdminError("resource must be calls or jobs")
+            raise TelephonyAdminError(
+                'resource must be calls or jobs',
+                message_key='admin_telephony_errors.error.resource_must_be_calls_or_jobs',
+            )
         bounded_limit = int(limit)
         bounded_offset = int(offset)
         if not 1 <= bounded_limit <= 100 or not 0 <= bounded_offset <= 100_000:
-            raise TelephonyAdminError("Invalid operations page")
+            raise TelephonyAdminError(
+                'Invalid operations page',
+                message_key='admin_telephony_errors.error.invalid_operations_page',
+            )
         normalized_status = str(status or "").strip()
         if len(normalized_status) > 40:
-            raise TelephonyAdminError("Invalid status filter")
+            raise TelephonyAdminError(
+                'Invalid status filter',
+                message_key='admin_telephony_errors.error.invalid_status_filter',
+            )
         alias = "c" if resource == "calls" else "j"
         conditions = ["c.deleted_at IS NULL"] if resource == "calls" else ["1=1"]
         params: list[Any] = []
@@ -512,7 +534,10 @@ class TelephonyAdminService:
             )
             row = await cursor.fetchone()
             if row is None:
-                raise TelephonyAdminNotFound("Phone call not found")
+                raise TelephonyAdminNotFound(
+                    'Phone call not found',
+                    message_key='admin_telephony_errors.error.phone_call_not_found',
+                )
             call = dict(row)
             cursor = await conn.execute(
                 """
@@ -587,7 +612,10 @@ class TelephonyAdminService:
             "assistant": "assistant_path",
         }.get(str(track))
         if column is None:
-            raise TelephonyAdminError("Invalid recording track")
+            raise TelephonyAdminError(
+                'Invalid recording track',
+                message_key='admin_telephony_errors.error.invalid_recording_track',
+            )
         async with self._connection_factory(readonly=True) as conn:
             cursor = await conn.execute(
                 f"""
@@ -601,17 +629,24 @@ class TelephonyAdminService:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise TelephonyAdminNotFound("Phone recording not found")
+            raise TelephonyAdminNotFound(
+                'Phone recording not found',
+                message_key='admin_telephony_errors.error.phone_recording_not_found',
+            )
         try:
             path = resolve_private_recording_path(
                 normalized, str(row[0]), root=self._recording_root
             )
         except PrivateRecordingPathError as exc:
             raise TelephonyAdminUnavailable(
-                "Private recording metadata is invalid"
+                'Private recording metadata is invalid',
+                message_key='admin_telephony_errors.error.private_recording_metadata_is_invalid',
             ) from exc
         if not path.is_file() or path.is_symlink():
-            raise TelephonyAdminNotFound("Phone recording not found")
+            raise TelephonyAdminNotFound(
+                'Phone recording not found',
+                message_key='admin_telephony_errors.error.phone_recording_not_found',
+            )
         return path, "audio/mpeg" if track == "mixed" else "audio/basic"
 
     async def cancel_job(self, job_id: str) -> dict[str, Any]:
@@ -619,12 +654,18 @@ class TelephonyAdminService:
         if str(job["status"]) == "canceled":
             return {"changed": False, "state": "already_canceled"}
         if str(job["status"]) != "scheduled":
-            raise TelephonyAdminConflict("Only an unclaimed scheduled job can be canceled")
+            raise TelephonyAdminConflict(
+                'Only an unclaimed scheduled job can be canceled',
+                message_key='admin_telephony_errors.error.only_an_unclaimed_scheduled_job_can_be_canceled',
+            )
         changed = await self._repository.cancel_scheduled_job(
             owner_user_id=int(job["owner_user_id"]), job_id=str(job["id"])
         )
         if not changed:
-            raise TelephonyAdminConflict("Job was claimed concurrently")
+            raise TelephonyAdminConflict(
+                'Job was claimed concurrently',
+                message_key='admin_telephony_errors.error.job_was_claimed_concurrently',
+            )
         return {"changed": True, "state": "canceled"}
 
     async def reschedule_job(
@@ -639,7 +680,10 @@ class TelephonyAdminService:
 
         job = await self._admin_job(job_id)
         if str(job["status"]) != "scheduled":
-            raise TelephonyAdminConflict("Only an unclaimed scheduled job can be rescheduled")
+            raise TelephonyAdminConflict(
+                'Only an unclaimed scheduled job can be rescheduled',
+                message_key='admin_telephony_errors.error.only_an_unclaimed_scheduled_job_can_be_rescheduled',
+            )
         instant = parse_local_schedule(scheduled_at, timezone_name, fold=fold)
         changed = await self._user_phone_service.outbound_service.reschedule_call(
             owner_user_id=int(job["owner_user_id"]),
@@ -648,7 +692,10 @@ class TelephonyAdminService:
             timezone_name=timezone_name,
         )
         if not changed:
-            raise TelephonyAdminConflict("Job was claimed concurrently")
+            raise TelephonyAdminConflict(
+                'Job was claimed concurrently',
+                message_key='admin_telephony_errors.error.job_was_claimed_concurrently',
+            )
         return {"changed": True, "state": "scheduled"}
 
     async def hangup_call(self, call_id: str, *, retry_unresolved: bool) -> dict[str, Any]:
@@ -658,10 +705,14 @@ class TelephonyAdminService:
             call["can_retry_hangup"]
         ):
             raise TelephonyAdminConflict(
-                "Dispatch-unresolved calls are diagnostic only"
+                'Dispatch-unresolved calls are diagnostic only',
+                message_key='admin_telephony_errors.error.dispatch_unresolved_calls_are_diagnostic_only',
             )
         if bool(retry_unresolved) and not bool(call["can_retry_hangup"]):
-            raise TelephonyAdminConflict("Call has no unresolved hangup attempt")
+            raise TelephonyAdminConflict(
+                'Call has no unresolved hangup attempt',
+                message_key='admin_telephony_errors.error.call_has_no_unresolved_hangup_attempt',
+            )
         try:
             call, claim = await self._repository.claim_owned_hangup_request(
                 owner_user_id=owner_user_id,
@@ -673,9 +724,11 @@ class TelephonyAdminService:
         if not claim.claimed:
             return {"changed": False, "state": str(claim.state)}
         if claim.attempt_token is None:
-            raise TelephonyAdminConflict("Hangup attempt lost its durable fence")
-        credentials = self._credential_provider()
-        client = self._number_client_factory(credentials)
+            raise TelephonyAdminConflict(
+                'Hangup attempt lost its durable fence',
+                message_key='admin_telephony_errors.error.hangup_attempt_lost_its_durable_fence',
+            )
+        client = None
         unresolved_materialized = False
 
         async def settle_unresolved() -> None:
@@ -690,6 +743,14 @@ class TelephonyAdminService:
 
         try:
             try:
+                credentials = self._credential_provider()
+                from .account_routing import account_for_call
+                async with self._connection_factory(readonly=True) as conn:
+                    account = await account_for_call(call, allow_inactive=True, connection=conn)
+                if account is not None:
+                    credentials = TelephonyCredentials(account.account_sid, account.auth_token,
+                        credentials.elevenlabs_available, credentials.openai_available)
+                client = self._number_client_factory(credentials)
                 changed = await client.end_call_once(str(call["provider_call_sid"]))
             except BaseException as exc:
                 if isinstance(exc, asyncio.CancelledError):
@@ -700,7 +761,8 @@ class TelephonyAdminService:
             try:
                 if type(changed) is not bool:
                     raise TelephonyAdminUnavailable(
-                        "Provider returned an invalid hangup result"
+                        'Provider returned an invalid hangup result',
+                        message_key='admin_telephony_errors.error.provider_returned_an_invalid_hangup_result',
                     )
                 if changed:
                     persisted = await self._repository.mark_owned_hangup_accepted(
@@ -720,7 +782,8 @@ class TelephonyAdminService:
                     state = "provider_absent_reconciled"
                 if not persisted:
                     raise TelephonyAdminUnavailable(
-                        "Hangup result lost its durable fence"
+                        'Hangup result lost its durable fence',
+                        message_key='admin_telephony_errors.error.hangup_result_lost_its_durable_fence',
                     )
             except BaseException as exc:
                 if isinstance(exc, asyncio.CancelledError):
@@ -736,18 +799,21 @@ class TelephonyAdminService:
         except TelephonyAdminError as exc:
             if unresolved_materialized:
                 raise TelephonyAdminMaterializedError(
-                    "Provider hangup request could not be confirmed",
-                    materialized_state="hangup_unresolved",
+                    'Provider hangup request could not be confirmed',
+                    materialized_state='hangup_unresolved',
+                    message_key='admin_telephony_errors.error.provider_hangup_request_could_not_be_confirmed',
                 ) from exc
             raise
         except Exception as exc:
             if unresolved_materialized:
                 raise TelephonyAdminMaterializedError(
-                    "Provider hangup request could not be confirmed",
-                    materialized_state="hangup_unresolved",
+                    'Provider hangup request could not be confirmed',
+                    materialized_state='hangup_unresolved',
+                    message_key='admin_telephony_errors.error.provider_hangup_request_could_not_be_confirmed',
                 ) from exc
             raise TelephonyAdminUnavailable(
-                "Provider hangup request could not be confirmed"
+                'Provider hangup request could not be confirmed',
+                message_key='admin_telephony_errors.error.provider_hangup_request_could_not_be_confirmed',
             ) from exc
         finally:
             with suppress(Exception):
@@ -764,12 +830,16 @@ class TelephonyAdminService:
         except Exception as exc:
             if inventory is not None:
                 raise TelephonyAdminMaterializedError(
-                    "Number inventory was synchronized but runtime reconciliation failed",
-                    materialized_state="inventory_synced_runtime_failed",
+                    'Number inventory was synchronized but runtime reconciliation failed',
+                    materialized_state='inventory_synced_runtime_failed',
+                    message_key='admin_telephony_errors.error.number_inventory_was_synchronized_but_runtime_reconciliation_failed',
                 ) from exc
             if isinstance(exc, TelephonyAdminError):
                 raise
-            raise TelephonyAdminUnavailable("Diagnostic resynchronization failed") from exc
+            raise TelephonyAdminUnavailable(
+                'Diagnostic resynchronization failed',
+                message_key='admin_telephony_errors.error.diagnostic_resynchronization_failed',
+            ) from exc
         dashboard = await self.dashboard()
         return {
             "runtime": _runtime_status_reason(runtime),
@@ -788,10 +858,14 @@ class TelephonyAdminService:
         if gate.configuration_error:
             raise TelephonyAdminConflict(gate.configuration_error)
         if not gate.enabled:
-            raise TelephonyAdminConflict("Paid test calls are disabled")
+            raise TelephonyAdminConflict(
+                'Paid test calls are disabled',
+                message_key='admin_telephony_errors.error.paid_test_calls_are_disabled',
+            )
         if not gate.allowed_destinations:
             raise TelephonyAdminConflict(
-                "Paid test calls have no exact destinations configured"
+                'Paid test calls have no exact destinations configured',
+                message_key='admin_telephony_errors.error.paid_test_calls_have_no_exact_destinations_configured',
             )
         async with self._connection_factory(readonly=True) as conn:
             cursor = await conn.execute(
@@ -800,7 +874,10 @@ class TelephonyAdminService:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise TelephonyAdminNotFound("Conversation not found")
+            raise TelephonyAdminNotFound(
+                'Conversation not found',
+                message_key='admin_telephony_errors.error.conversation_not_found',
+            )
         owner_user_id = int(row[0])
         try:
             job, created = await self._user_phone_service.create_paid_test_call_job(
@@ -818,7 +895,8 @@ class TelephonyAdminService:
             raise TelephonyAdminConflict(str(exc)) from exc
         except Exception as exc:
             raise TelephonyAdminUnavailable(
-                "Paid test call could not be prepared"
+                'Paid test call could not be prepared',
+                message_key='admin_telephony_errors.error.paid_test_call_could_not_be_prepared',
             ) from exc
         return {"created": bool(created), "job_id": str(job["id"]), "owner_user_id": owner_user_id}
 
@@ -831,7 +909,10 @@ class TelephonyAdminService:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise TelephonyAdminNotFound("Phone-call job not found")
+            raise TelephonyAdminNotFound(
+                'Phone-call job not found',
+                message_key='admin_telephony_errors.error.phone_call_job_not_found',
+            )
         return dict(row)
 
     async def _admin_call(self, call_id: str) -> dict[str, Any]:
@@ -849,7 +930,10 @@ class TelephonyAdminService:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise TelephonyAdminNotFound("Phone call not found")
+            raise TelephonyAdminNotFound(
+                'Phone call not found',
+                message_key='admin_telephony_errors.error.phone_call_not_found',
+            )
         return dict(row)
 
     async def save_config(self, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -860,36 +944,45 @@ class TelephonyAdminService:
         if not serialized:
             return (await self.dashboard())["config"]
 
-        lifecycle = self._require_runtime_lifecycle()
         async with _CONFIG_TRANSITION_LOCK:
             previous: dict[str, tuple[str, str | None] | None] = {}
             previous_enabled = False
+            lifecycle: TelephonyRuntimeLifecycle | None = None
             async with self._write() as conn:
                 current = await load_telephony_config(conn=conn)
                 previous_enabled = current.enabled
+                current_serialized = serialize_telephony_config(current)
+                serialized = {
+                    key: value
+                    for key, value in serialized.items()
+                    if current_serialized[key] != value
+                }
+                if not serialized:
+                    return current.public_dict()
                 requested_enabled = (
                     serialized["telephony_enabled"] == "1"
                     if "telephony_enabled" in serialized
                     else current.enabled
                 )
-                proposed_maximum = int(
-                    serialized.get(
-                        "telephony_max_call_seconds", current.max_call_seconds
-                    )
+                needs_runtime_reconcile = bool(
+                    set(serialized) - _RUNTIME_INDEPENDENT_CONFIG_KEYS
                 )
-                cursor = await conn.execute(
-                    """
-                    SELECT COUNT(*) FROM PROMPT_PHONE_SETTINGS
-                    WHERE max_duration_seconds IS NOT NULL
-                      AND max_duration_seconds > ?
-                    """,
-                    (proposed_maximum,),
-                )
-                if int((await cursor.fetchone())[0]) > 0:
-                    raise TelephonyAdminConflict(
-                        "Some prompts exceed the proposed technical duration limit"
+                if "telephony_max_call_seconds" in serialized:
+                    proposed_maximum = int(serialized["telephony_max_call_seconds"])
+                    cursor = await conn.execute(
+                        """
+                        SELECT COUNT(*) FROM PROMPT_PHONE_SETTINGS
+                        WHERE max_duration_seconds IS NOT NULL
+                          AND max_duration_seconds > ?
+                        """,
+                        (proposed_maximum,),
                     )
-                if requested_enabled:
+                    if int((await cursor.fetchone())[0]) > 0:
+                        raise TelephonyAdminConflict(
+                            'Some prompts exceed the proposed technical duration limit',
+                            message_key='admin_telephony_errors.error.some_prompts_exceed_the_proposed_technical_duration_limit',
+                        )
+                if requested_enabled and needs_runtime_reconcile:
                     readiness = (
                         await self._readiness_state(
                             conn,
@@ -898,10 +991,32 @@ class TelephonyAdminService:
                         )
                     )["readiness"]
                     if not readiness["ready_for_enable"]:
-                        raise TelephonyAdminConflict(
-                            "Telephony cannot be enabled: "
-                            + ", ".join(readiness["blocking_reasons"])
+                        reasons = list(readiness["blocking_reasons"])
+                        missing_rates = list(
+                            readiness.get("missing_billing_rates") or ()
                         )
+                        if missing_rates:
+                            reasons = [
+                                (
+                                    reason
+                                    + " ("
+                                    + ", ".join(missing_rates)
+                                    + ")"
+                                )
+                                if reason == "phone_billing_rates_missing"
+                                else reason
+                                for reason in reasons
+                            ]
+                        action = (
+                            "Telephony cannot be enabled"
+                            if not previous_enabled
+                            else "Telephone configuration cannot be applied"
+                        )
+                        raise TelephonyAdminConflict(
+                            action + ": " + ", ".join(reasons)
+                        )
+                if needs_runtime_reconcile:
+                    lifecycle = self._require_runtime_lifecycle()
                 placeholders = ",".join("?" for _ in serialized)
                 cursor = await conn.execute(
                     f"SELECT key,value,description FROM SYSTEM_CONFIG "
@@ -925,6 +1040,9 @@ class TelephonyAdminService:
                         """,
                         (key, value, "Native telephone channel administration"),
                     )
+
+            if lifecycle is None:
+                return (await self.dashboard())["config"]
 
             try:
                 status = await lifecycle.reconcile()
@@ -968,7 +1086,8 @@ class TelephonyAdminService:
         lifecycle = self._runtime_lifecycle or _registered_runtime_lifecycle
         if lifecycle is None:
             raise TelephonyAdminUnavailable(
-                "Telephone runtime lifecycle is not registered"
+                'Telephone runtime lifecycle is not registered',
+                message_key='admin_telephony_errors.error.telephone_runtime_lifecycle_is_not_registered',
             )
         return lifecycle
 
@@ -1072,7 +1191,8 @@ class TelephonyAdminService:
             remote_numbers = tuple(await client.list_incoming_phone_numbers())
         except Exception as exc:
             raise TelephonyAdminUnavailable(
-                "Twilio number inventory could not be synchronized"
+                'Twilio number inventory could not be synchronized',
+                message_key='admin_telephony_errors.error.twilio_number_inventory_could_not_be_synchronized',
             ) from exc
         finally:
             await _close_client(client)
@@ -1087,7 +1207,7 @@ class TelephonyAdminService:
                     UPDATE TELEPHONY_NUMBERS
                     SET enabled=0,inbound_enabled=0,is_outbound_default=0,
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE provider_number_sid NOT IN ({placeholders})
+                    WHERE integration_id IS NULL AND provider_number_sid NOT IN ({placeholders})
                     """,
                     remote_sids,
                 )
@@ -1097,6 +1217,7 @@ class TelephonyAdminService:
                     UPDATE TELEPHONY_NUMBERS
                     SET enabled=0,inbound_enabled=0,is_outbound_default=0,
                         updated_at=CURRENT_TIMESTAMP
+                    WHERE integration_id IS NULL
                     """
                 )
             for item in remote_numbers:
@@ -1104,14 +1225,16 @@ class TelephonyAdminService:
                     canonical_e164, derived_country = resolve_e164_country(item.e164)
                 except (PhoneUserServiceError, ValueError) as exc:
                     raise TelephonyAdminUnavailable(
-                        "Twilio number inventory contains an invalid E.164 number"
+                        'Twilio number inventory contains an invalid E.164 number',
+                        message_key='admin_telephony_errors.error.twilio_number_inventory_contains_an_invalid_e_164_number',
                     ) from exc
                 provider_country = str(item.iso_country or "").strip().upper()
                 if canonical_e164 != item.e164 or (
                     provider_country and provider_country != derived_country
                 ):
                     raise TelephonyAdminUnavailable(
-                        "Twilio number inventory contains inconsistent country data"
+                        'Twilio number inventory contains inconsistent country data',
+                        message_key='admin_telephony_errors.error.twilio_number_inventory_contains_inconsistent_country_data',
                     )
                 await conn.execute(
                     """
@@ -1131,6 +1254,7 @@ class TelephonyAdminService:
                         voice_application_sid=excluded.voice_application_sid,
                         trunk_sid=excluded.trunk_sid,
                         synced_at=excluded.synced_at,updated_at=CURRENT_TIMESTAMP
+                    WHERE TELEPHONY_NUMBERS.integration_id IS NULL
                     """,
                     (
                         item.sid,
@@ -1159,7 +1283,7 @@ class TelephonyAdminService:
                         UPDATE TELEPHONY_NUMBERS
                         SET enabled=0,inbound_enabled=0,is_outbound_default=0,
                             updated_at=CURRENT_TIMESTAMP
-                        WHERE provider_number_sid=?
+                        WHERE provider_number_sid=? AND integration_id IS NULL
                         """,
                         (item.sid,),
                     )
@@ -1190,9 +1314,15 @@ class TelephonyAdminService:
     ) -> dict[str, Any]:
         normalized_id = _positive_integer(number_id, "number id")
         if inbound_enabled and not enabled:
-            raise TelephonyAdminError("Inbound routing requires an enabled number")
+            raise TelephonyAdminError(
+                'Inbound routing requires an enabled number',
+                message_key='admin_telephony_errors.error.inbound_routing_requires_an_enabled_number',
+            )
         if is_outbound_default and not enabled:
-            raise TelephonyAdminError("The outbound default must remain enabled")
+            raise TelephonyAdminError(
+                'The outbound default must remain enabled',
+                message_key='admin_telephony_errors.error.the_outbound_default_must_remain_enabled',
+            )
 
         async with self._connection_factory(readonly=True) as conn:
             row = await _number_by_id(conn, normalized_id)
@@ -1221,7 +1351,8 @@ class TelephonyAdminService:
                 )
                 if int((await cursor.fetchone())[0]) != 1:
                     raise TelephonyAdminConflict(
-                        "Choose another outbound default before clearing this one"
+                        'Choose another outbound default before clearing this one',
+                        message_key='admin_telephony_errors.error.choose_another_outbound_default_before_clearing_this_one',
                     )
             should_configure_voice = inbound_enabled and (
                 not bool(row["inbound_enabled"]) or repair_webhook
@@ -1286,13 +1417,15 @@ class TelephonyAdminService:
                     or provider_number.trunk_sid is not None
                 ):
                     raise TelephonyAdminUnavailable(
-                        "Twilio did not confirm the exact Voice webhook configuration"
+                        'Twilio did not confirm the exact Voice webhook configuration',
+                        message_key='admin_telephony_errors.error.twilio_did_not_confirm_the_exact_voice_webhook_configuration',
                     )
             except TelephonyAdminUnavailable:
                 raise
             except Exception as exc:
                 raise TelephonyAdminUnavailable(
-                    "Twilio Voice webhook could not be configured"
+                    'Twilio Voice webhook could not be configured',
+                    message_key='admin_telephony_errors.error.twilio_voice_webhook_could_not_be_configured',
                 ) from exc
             finally:
                 await _close_client(client)
@@ -1322,7 +1455,8 @@ class TelephonyAdminService:
                 )
             elif bool(current["is_outbound_default"]):
                 raise TelephonyAdminConflict(
-                    "Choose another outbound default before clearing this one"
+                    'Choose another outbound default before clearing this one',
+                    message_key='admin_telephony_errors.error.choose_another_outbound_default_before_clearing_this_one',
                 )
             await conn.execute(
                 """
@@ -1413,7 +1547,10 @@ class TelephonyAdminService:
         except (PhoneBillingConfigurationError, TypeError, ValueError) as exc:
             raise TelephonyAdminError(str(exc)) from exc
         if row is None:
-            raise TelephonyAdminUnavailable("Telephone billing rate was not stored")
+            raise TelephonyAdminUnavailable(
+                'Telephone billing rate was not stored',
+                message_key='admin_telephony_errors.error.telephone_billing_rate_was_not_stored',
+            )
         return _public_billing_rate(dict(row))
 
     async def publish_global_audio(
@@ -1426,7 +1563,8 @@ class TelephonyAdminService:
     ) -> dict[str, Any]:
         if self._global_audio_publisher is None:
             raise TelephonyAdminUnavailable(
-                "Global phone audio rendering is not registered"
+                'Global phone audio rendering is not registered',
+                message_key='admin_telephony_errors.error.global_phone_audio_rendering_is_not_registered',
             )
         admin_id = _positive_integer(billing_user_id, "billing user id")
         normalized_voice_id = _positive_integer(voice_id, "voice id")
@@ -1480,7 +1618,8 @@ class TelephonyAdminService:
             result = await self._global_audio_publisher(publication)
         except Exception as exc:
             raise TelephonyAdminUnavailable(
-                "Global phone audio generation failed; the prior revision remains active"
+                'Global phone audio generation failed; the prior revision remains active',
+                message_key='admin_telephony_errors.error.global_phone_audio_generation_failed_the_prior_revision_remains_active',
             ) from exc
         if (
             not isinstance(result, GlobalAudioPublishResult)
@@ -1489,7 +1628,8 @@ class TelephonyAdminService:
             or not result.activation_id
         ):
             raise TelephonyAdminUnavailable(
-                "Global phone audio publisher did not confirm activation"
+                'Global phone audio publisher did not confirm activation',
+                message_key='admin_telephony_errors.error.global_phone_audio_publisher_did_not_confirm_activation',
             )
         return {
             "revision": result.revision,
@@ -1500,7 +1640,10 @@ class TelephonyAdminService:
     def _require_twilio_credentials(self) -> TelephonyCredentials:
         credentials = self._credential_provider()
         if not credentials.account_sid or not credentials.provider_credential:
-            raise TelephonyAdminUnavailable("Twilio Voice is not configured")
+            raise TelephonyAdminUnavailable(
+                'Twilio Voice is not configured',
+                message_key='admin_telephony_errors.error.twilio_voice_is_not_configured',
+            )
         return credentials
 
     async def _readiness_state(
@@ -1768,7 +1911,7 @@ class TelephonyAdminService:
                    (SELECT COUNT(*) FROM PHONE_CONVERSATION_BINDINGS b
                     WHERE b.preferred_number_id=n.id AND b.active=1)
                    AS explicit_binding_count
-            FROM TELEPHONY_NUMBERS n ORDER BY n.e164,n.id
+            FROM TELEPHONY_NUMBERS n WHERE n.integration_id IS NULL ORDER BY n.e164,n.id
             """
         )
         return [
@@ -1807,7 +1950,7 @@ class TelephonyAdminService:
             for row in await cursor.fetchall()
         ]
 
-    async def _load_global_audio(self, conn: Any) -> dict[str, Any]:
+    async def _load_global_audio(self, conn: Any, *, ui_language: str = "en") -> dict[str, Any]:
         cursor = await conn.execute(
             "SELECT value FROM SYSTEM_CONFIG WHERE key=?",
             (GLOBAL_AUDIO_REVISION_CONFIG_KEY,),
@@ -1834,7 +1977,8 @@ class TelephonyAdminService:
             "outbound": [],
         }
         notices = {
-            key: DEFAULT_GLOBAL_TECHNICAL_NOTICE_TEXT.get(key, "")
+            key: (Translator(ui_language).t("telephony_notices." + key)
+                  if key in DEFAULT_GLOBAL_TECHNICAL_NOTICE_KEYS else "")
             for key in sorted(TECHNICAL_NOTICE_KEYS)
         }
         if latest_revision:
@@ -2154,11 +2298,14 @@ def _public_billing_rate(row: Mapping[str, Any]) -> dict[str, Any]:
 
 async def _number_by_id(conn: Any, number_id: int) -> dict[str, Any]:
     cursor = await conn.execute(
-        "SELECT * FROM TELEPHONY_NUMBERS WHERE id=?", (int(number_id),)
+        "SELECT * FROM TELEPHONY_NUMBERS WHERE id=? AND integration_id IS NULL", (int(number_id),)
     )
     row = await cursor.fetchone()
     if row is None:
-        raise TelephonyAdminNotFound("Telephony number not found")
+        raise TelephonyAdminNotFound(
+            'Telephony number not found',
+            message_key='admin_telephony_errors.error.telephony_number_not_found',
+        )
     return dict(row)
 
 
@@ -2195,11 +2342,15 @@ def _require_number_available_for_configuration(
         return
     if not inventory_sync_at or row.get("synced_at") != inventory_sync_at:
         raise TelephonyAdminConflict(
-            "The number is absent from the current Twilio inventory"
+            'The number is absent from the current Twilio inventory',
+            message_key='admin_telephony_errors.error.the_number_is_absent_from_the_current_twilio_inventory',
         )
     capabilities = _safe_json_object(row.get("capabilities_json"))
     if (inbound_enabled or is_outbound_default) and capabilities.get("voice") is not True:
-        raise TelephonyAdminConflict("The number has no Twilio Voice capability")
+        raise TelephonyAdminConflict(
+            'The number has no Twilio Voice capability',
+            message_key='admin_telephony_errors.error.the_number_has_no_twilio_voice_capability',
+        )
 
 
 def _public_number(
@@ -2300,7 +2451,10 @@ async def _require_publishable_voice(conn: Any, voice_id: int) -> None:
         or provider_from_service_name(str(row[3]))
         not in SUPPORTED_CANONICAL_TTS_PROVIDERS
     ):
-        raise TelephonyAdminConflict("Canonical voice is unavailable")
+        raise TelephonyAdminConflict(
+            'Canonical voice is unavailable',
+            message_key='admin_telephony_errors.error.canonical_voice_is_unavailable',
+        )
 
 
 async def _require_current_canonical_voice(conn: Any) -> None:
@@ -2313,7 +2467,10 @@ async def _require_current_canonical_voice(conn: Any) -> None:
     )
     rows = await cursor.fetchall()
     if len(rows) != 1:
-        raise TelephonyAdminConflict("Canonical voice is unavailable")
+        raise TelephonyAdminConflict(
+            'Canonical voice is unavailable',
+            message_key='admin_telephony_errors.error.canonical_voice_is_unavailable',
+        )
     row = rows[0]
     if (
         bool(row[2])
@@ -2323,7 +2480,10 @@ async def _require_current_canonical_voice(conn: Any) -> None:
         or provider_from_service_name(str(row[3]))
         not in SUPPORTED_CANONICAL_TTS_PROVIDERS
     ):
-        raise TelephonyAdminConflict("Canonical voice is unavailable")
+        raise TelephonyAdminConflict(
+            'Canonical voice is unavailable',
+            message_key='admin_telephony_errors.error.canonical_voice_is_unavailable',
+        )
 
 
 async def _next_global_revision(conn: Any) -> int:
@@ -2370,7 +2530,8 @@ async def _stage_custom_prompt_greeting_copies(
         active_revision = settings["active_audio_revision"]
         if active_revision is None:
             raise TelephonyAdminConflict(
-                "A custom prompt greeting list has no active audio revision"
+                'A custom prompt greeting list has no active audio revision',
+                message_key='admin_telephony_errors.error.a_custom_prompt_greeting_list_has_no_active_audio_revision',
             )
         for direction in sorted(GREETING_DIRECTIONS):
             mode = str(settings[f"{direction}_greeting_mode"])
@@ -2395,7 +2556,8 @@ async def _stage_custom_prompt_greeting_copies(
                 or (mode == "random" and fixed)
             ):
                 raise TelephonyAdminConflict(
-                    "A custom prompt greeting list is incomplete"
+                    'A custom prompt greeting list is incomplete',
+                    message_key='admin_telephony_errors.error.a_custom_prompt_greeting_list_is_incomplete',
                 )
             for definition in definitions:
                 await conn.execute(
@@ -2445,7 +2607,8 @@ async def _stage_custom_prompt_notice_copies(
             )
         except PhoneGreetingConfigurationError as exc:
             raise TelephonyAdminConflict(
-                "A custom prompt technical notice set is incomplete"
+                'A custom prompt technical notice set is incomplete',
+                message_key='admin_telephony_errors.error.a_custom_prompt_technical_notice_set_is_incomplete',
             ) from exc
         if active is None:
             continue
@@ -2475,7 +2638,8 @@ async def _snapshot_prompt_audio_revisions(
     for row in await cursor.fetchall():
         if row["pending_audio_revision"] is not None:
             raise TelephonyAdminConflict(
-                "A prompt phone audio update is already pending"
+                'A prompt phone audio update is already pending',
+                message_key='admin_telephony_errors.error.a_prompt_phone_audio_update_is_already_pending',
             )
         snapshot[int(row["prompt_id"])] = (
             None
@@ -2489,15 +2653,24 @@ def _normalize_global_greetings(
     greetings: Mapping[str, AdminGreetingList],
 ) -> dict[str, AdminGreetingList]:
     if set(greetings) != set(GREETING_DIRECTIONS):
-        raise TelephonyAdminError("Inbound and outbound greetings are required")
+        raise TelephonyAdminError(
+            'Inbound and outbound greetings are required',
+            message_key='admin_telephony_errors.error.inbound_and_outbound_greetings_are_required',
+        )
     normalized: dict[str, AdminGreetingList] = {}
     for direction in GREETING_DIRECTIONS:
         item = greetings[direction]
         mode = str(item.mode or "").strip().lower()
         if mode not in {"fixed", "random"}:
-            raise TelephonyAdminError("Global greeting mode must be fixed or random")
+            raise TelephonyAdminError(
+                'Global greeting mode must be fixed or random',
+                message_key='admin_telephony_errors.error.global_greeting_mode_must_be_fixed_or_random',
+            )
         if not item.phrases or len(item.phrases) > 50:
-            raise TelephonyAdminError("Each global greeting list needs 1 to 50 phrases")
+            raise TelephonyAdminError(
+                'Each global greeting list needs 1 to 50 phrases',
+                message_key='admin_telephony_errors.error.each_global_greeting_list_needs_1_to_50_phrases',
+            )
         phrases = tuple(
             AdminGreetingPhrase(
                 normalize_literal_text(phrase.literal_text), bool(phrase.enabled)
@@ -2505,7 +2678,10 @@ def _normalize_global_greetings(
             for phrase in item.phrases
         )
         if not any(phrase.enabled for phrase in phrases):
-            raise TelephonyAdminError("Each global greeting list needs an enabled phrase")
+            raise TelephonyAdminError(
+                'Each global greeting list needs an enabled phrase',
+                message_key='admin_telephony_errors.error.each_global_greeting_list_needs_an_enabled_phrase',
+            )
         fixed_index = item.fixed_index
         if mode == "fixed":
             if (
@@ -2514,16 +2690,25 @@ def _normalize_global_greetings(
                 or not 0 <= fixed_index < len(phrases)
                 or not phrases[fixed_index].enabled
             ):
-                raise TelephonyAdminError("The fixed global greeting is invalid")
+                raise TelephonyAdminError(
+                    'The fixed global greeting is invalid',
+                    message_key='admin_telephony_errors.error.the_fixed_global_greeting_is_invalid',
+                )
         elif fixed_index is not None:
-            raise TelephonyAdminError("Random greeting lists do not use fixed_index")
+            raise TelephonyAdminError(
+                'Random greeting lists do not use fixed_index',
+                message_key='admin_telephony_errors.error.random_greeting_lists_do_not_use_fixed_index',
+            )
         normalized[direction] = AdminGreetingList(mode, phrases, fixed_index)
     return normalized
 
 
 def _normalize_notice_set(notices: Mapping[str, str]) -> dict[str, str]:
     if set(notices) != set(TECHNICAL_NOTICE_KEYS):
-        raise TelephonyAdminError("All technical notices are required")
+        raise TelephonyAdminError(
+            'All technical notices are required',
+            message_key='admin_telephony_errors.error.all_technical_notices_are_required',
+        )
     try:
         return {
             str(key): normalize_literal_text(value)
@@ -2535,11 +2720,17 @@ def _normalize_notice_set(notices: Mapping[str, str]) -> dict[str, str]:
 
 def _validate_remote_number_set(numbers: Sequence[IncomingPhoneNumber]) -> None:
     if any(not isinstance(item, IncomingPhoneNumber) for item in numbers):
-        raise TelephonyAdminUnavailable("Twilio number inventory is invalid")
+        raise TelephonyAdminUnavailable(
+            'Twilio number inventory is invalid',
+            message_key='admin_telephony_errors.error.twilio_number_inventory_is_invalid',
+        )
     sids = [item.sid for item in numbers]
     e164s = [item.e164 for item in numbers]
     if len(sids) != len(set(sids)) or len(e164s) != len(set(e164s)):
-        raise TelephonyAdminUnavailable("Twilio number inventory contains duplicates")
+        raise TelephonyAdminUnavailable(
+            'Twilio number inventory contains duplicates',
+            message_key='admin_telephony_errors.error.twilio_number_inventory_contains_duplicates',
+        )
 
 
 async def _close_client(client: Any) -> None:

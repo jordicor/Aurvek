@@ -1,0 +1,13 @@
+{
+  "conversation_filename": "conversation_{id}",
+  "usage_filename": "export_utilisation_{days}jours.csv",
+  "conversation_by": "Conversation de : {username}",
+  "model": "Modèle IA : {machine} {model}",
+  "prompt": "Prompt : {name}",
+  "sender.user": "UTILISATEUR",
+  "sender.bot": "ASSISTANT",
+  "model_number": "Modèle {number}",
+  "pdf_attached": "[PDF joint : {filename} ({pages} pages)]",
+  "file_content": "[Contenu du fichier importé : {filename} ({lines} lignes)]",
+  "file_unavailable": "[Fichier joint : {filename} -- contenu indisponible]"
+}

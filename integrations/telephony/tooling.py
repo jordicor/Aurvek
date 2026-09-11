@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+from uuid import uuid4
 
 from ai_runtime.channel_turns import ChannelContext
 
@@ -32,6 +33,26 @@ PHONE_END_CALL_TOOL = {
     },
     "strict": True,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class CallSchedulePolicy:
+    """Prompt policy authorizing future calls from the current real turn."""
+
+    mode: Literal["on_request", "proactive"]
+    prompt_id: int | None = None
+    request_nonce: str = field(
+        default_factory=lambda: uuid4().hex,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"on_request", "proactive"}:
+            raise ValueError("Call schedule mode must permit AI initiation")
+        if self.prompt_id is not None and int(self.prompt_id) <= 0:
+            raise ValueError("Call schedule prompt id must be positive")
+        if not str(self.request_nonce or "").strip():
+            raise ValueError("Call schedule request nonce is required")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,18 +126,84 @@ def _start_call_tool(mode: Literal["on_request", "proactive"]) -> dict:
     }
 
 
+def _schedule_call_tool(mode: Literal["on_request", "proactive"]) -> dict:
+    if mode == "on_request":
+        policy = (
+            "Use this only after the latest user message explicitly requests "
+            "the call, or explicitly accepts a concrete date and time you just "
+            "proposed, or supplies the missing timezone/location you just asked "
+            "for to complete their pending request. Do not infer agreement from "
+            "unrelated older messages."
+        )
+    else:
+        policy = (
+            "You may propose a future call when it is a natural consequence of "
+            "the conversation, but call this function only after the user "
+            "explicitly requests or accepts the concrete date and time."
+        )
+    return {
+        "type": "function",
+        "function": {
+            "name": "schedule_phone_call",
+            "description": (
+                "Durably schedule one future telephone call for this conversation. "
+                f"{policy} scheduled_at must be the agreed local wall-clock time "
+                "in ISO format without a UTC offset, and timezone_name must be the "
+                "agreed IANA timezone. If the timezone is unknown, ask for city and "
+                "country instead of calling this function. Never claim the call is "
+                "scheduled until this function returns status=scheduled."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scheduled_at": {
+                        "type": "string",
+                        "description": (
+                            "Agreed local date and time in ISO 8601 format without "
+                            "an offset, for example 2026-09-07T19:00:00."
+                        ),
+                    },
+                    "timezone_name": {
+                        "type": "string",
+                        "description": (
+                            "Agreed IANA timezone, for example America/New_York."
+                        ),
+                    },
+                    "fold": {
+                        "type": "string",
+                        "enum": ["not_ambiguous", "first", "second"],
+                        "description": (
+                            "Use not_ambiguous normally. If daylight-saving time "
+                            "makes the agreed local time occur twice, use first or "
+                            "second only after the user clarifies which occurrence."
+                        ),
+                    },
+                },
+                "required": ["scheduled_at", "timezone_name", "fold"],
+                "additionalProperties": False,
+            },
+        },
+        "strict": True,
+    }
+
+
 def phone_tools_for_context(context: ChannelContext | None) -> list[dict]:
     if context is None:
         return []
+    tools: list[dict] = []
     if context.channel == "phone":
-        return [PHONE_END_CALL_TOOL]
+        tools.append(PHONE_END_CALL_TOOL)
     controller = context.provenance.get("call_start_controller")
-    if not isinstance(controller, CallStartController):
-        return []
-    return [_start_call_tool(controller.mode)]
+    if context.channel != "phone" and isinstance(controller, CallStartController):
+        tools.append(_start_call_tool(controller.mode))
+    schedule_policy = context.provenance.get("call_schedule_policy")
+    if isinstance(schedule_policy, CallSchedulePolicy):
+        tools.append(_schedule_call_tool(schedule_policy.mode))
+    return tools
 
 
 __all__ = [
+    "CallSchedulePolicy",
     "CallStartController",
     "CallStartDirective",
     "PHONE_END_CALL_TOOL",

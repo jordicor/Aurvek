@@ -186,6 +186,8 @@ async def _build_snapshot(
         )
     phone_settings = await resolve_effective_phone_settings(
         prompt_id,
+        user_id=owner_user_id,
+        conversation_id=conversation_id,
         conn=conn,
     )
     audio_revision = await _resolve_active_audio_revision(conn, prompt_id)
@@ -257,7 +259,11 @@ async def _resolve_phone_model_selection(
             "Prompt phone reasoning is invalid for its runtime model"
         ) from exc
     runtime_kind = str(model["runtime_kind"])
-    if runtime_kind == "openai_realtime":
+    if runtime_kind == "openai_live":
+        backend = await _load_phone_runtime_model(conn, int(forced_llm_id or conversation_llm_id))
+        if backend["runtime_kind"] != "standard":
+            raise PhoneSnapshotError("GPT-Live requires a text model for its conversation backend")
+    if runtime_kind in {"openai_realtime", "openai_live"}:
         phone_realtime_voice = str(
             phone_realtime_voice_raw or OPENAI_REALTIME_DEFAULT_VOICE
         ).strip().lower()
@@ -335,7 +341,7 @@ async def _load_phone_runtime_model(conn: Any, llm_id: int) -> dict[str, Any]:
     model_id = str(values[2] or "")
     if not bool(values[3]):
         raise PhoneSnapshotError("Phone runtime model is disabled")
-    if machine in {"GPTSub", "GranSabio"}:
+    if machine in {"GPTSub", "GranSabio", "O1"}:
         raise PhoneSnapshotError(
             f"{machine} cannot be used as a phone runtime model"
         )
@@ -348,7 +354,7 @@ async def _load_phone_runtime_model(conn: Any, llm_id: int) -> dict[str, Any]:
     )
     runtime = capabilities.get("runtime") or {}
     runtime_kind = str(runtime.get("kind") or "")
-    if runtime_kind not in {"standard", "openai_realtime"}:
+    if runtime_kind not in {"standard", "openai_realtime", "openai_live"}:
         raise PhoneSnapshotError("Phone runtime model type is unsupported")
     return {
         "id": int(values[0]),
@@ -452,7 +458,7 @@ def runtime_kind_from_snapshot(values: Mapping[str, Any]) -> str:
     """Return the captured runtime route; legacy calls use standard dispatch."""
 
     kind = str(values.get("runtime_kind") or "standard").strip().lower()
-    if kind not in {"standard", "openai_realtime"}:
+    if kind not in {"standard", "openai_realtime", "openai_live"}:
         raise PhoneSnapshotError("Call snapshot runtime kind is invalid")
     return kind
 
@@ -469,7 +475,7 @@ def runtime_model_from_snapshot(values: Mapping[str, Any]) -> str:
 def realtime_voice_from_snapshot(values: Mapping[str, Any]) -> str | None:
     """Return the OpenAI voice only for a native Realtime call snapshot."""
 
-    if runtime_kind_from_snapshot(values) != "openai_realtime":
+    if runtime_kind_from_snapshot(values) not in {"openai_realtime", "openai_live"}:
         return None
     voice = str(
         values.get("phone_realtime_voice") or OPENAI_REALTIME_DEFAULT_VOICE
@@ -568,6 +574,9 @@ def phone_settings_from_snapshot(
             raise PhoneSnapshotError("Call snapshot silence settings are incomplete")
         settings = EffectivePhoneSettings(
             stt_locale=_bounded_text(values["stt_locale"], "STT locale", 100),
+            secondary_languages=_snapshot_secondary_languages(
+                values.get("secondary_languages", ())
+            ),
             endpointing_ms=_bounded_int(
                 values.get("endpointing_ms", 700), "endpointing_ms", 300, 3_000
             ),
@@ -617,6 +626,23 @@ def phone_settings_from_snapshot(
             raise
         raise PhoneSnapshotError("Call snapshot phone settings are invalid") from exc
     return settings
+
+
+def _snapshot_secondary_languages(value: Any) -> tuple[str, ...]:
+    """Parse the captured Scribe allow-list, retaining legacy snapshots."""
+
+    if value is None:
+        # Early snapshots predate this field.  Treat an explicit JSON null the
+        # same way as absence so already-dispatched calls remain reproducible.
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise PhoneSnapshotError(
+            "Call snapshot secondary languages are invalid"
+        )
+    return tuple(
+        _bounded_text(item, "secondary language", 100)
+        for item in value
+    )
 
 
 def _validate_tts_profile(profile: TTSProfile) -> None:

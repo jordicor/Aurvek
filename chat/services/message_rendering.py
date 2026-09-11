@@ -20,12 +20,16 @@ from file_storage import (
     THUMB_VARIANT,
     attachment_content_url,
     attachment_download_url,
+    attachment_record_to_block,
     extract_attachment_refs_from_message,
     resolve_attachment_for_user,
 )
 from models import User
 from prompts import get_user_directory
 from save_images import get_or_generate_img_token
+from chat.services.generated_media import (
+    generated_media_url, parse_generated_media_url, preload_generated_media_for_messages,
+)
 
 
 _LOCAL_MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<url>[^)]+)\)")
@@ -207,6 +211,8 @@ def normalize_local_markdown_image_url(url: str, media_owner_username: str) -> O
     candidate = (url or "").strip()
     if not candidate:
         return None
+    if parse_generated_media_url(candidate):
+        return candidate
 
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(media_owner_username)
     allowed_prefix = f"users/{hash_prefix1}/{hash_prefix2}/{user_hash}/"
@@ -308,6 +314,8 @@ async def process_message(
     message_id: Optional[int] = None,
     attachment_records: Optional[Mapping[str, dict]] = None,
     can_admin_view: Optional[bool] = None,
+    application=None,
+    generated_media_records: Optional[Mapping[str, dict]] = None,
 ):
     valid_extensions = {"png", "jpg", "jpeg", "gif", "webp"}
     start = f"{CLOUDFLARE_BASE_URL}sk" if CLOUDFLARE_BASE_URL else ""
@@ -330,6 +338,60 @@ async def process_message(
             return message
 
     if isinstance(message_json, list):
+        principal = getattr(current_user, "embed_principal", None)
+        application = application or getattr(principal, "application", None)
+        if application is not None:
+            if (application.user_id != current_user.id
+                    or application.conversation_id != conversation_id):
+                raise FastAPIHTTPException(status_code=404, detail="not_found")
+            if generated_media_records is None:
+                generated_media_records = await preload_generated_media_for_messages(
+                    [(message_id, message)], user_id=current_user.id, conversation_id=conversation_id,
+                )
+            rendered = []
+            for entry in message_json:
+                if not isinstance(entry, dict):
+                    continue
+                kind = entry.get("type")
+                if kind == "text":
+                    rendered.append(entry)
+                    continue
+                info = entry.get(kind, {})
+                attachment_ref = info.get("attachment_ref")
+                if attachment_ref and application.capabilities.get("attachments"):
+                    attachment_kind = {"image_url": "image", "document_url": "pdf", "text_file": "text"}.get(kind)
+                    if attachment_kind:
+                        attachment = await _resolve_render_attachment(
+                            public_id=attachment_ref, user_id=current_user.id,
+                            conversation_id=conversation_id, message_id=message_id,
+                            require_kind=attachment_kind, allow_admin=False,
+                            attachment_records=attachment_records,
+                        )
+                        if attachment:
+                            rendered.append(attachment_record_to_block(attachment))
+                elif kind in {"image_url", "video_url"}:
+                    record = generated_media_records.get(info.get("url", ""))
+                    required_kind = "image" if kind == "image_url" else "video"
+                    if record and record["kind"] == required_kind:
+                        media_info = {"url": generated_media_url(conversation_id, record["id"])}
+                        for key in ("alt", "mime_type"):
+                            if key in info:
+                                media_info[key] = info[key]
+                        fullsize = generated_media_records.get(info.get("fullsize_url", ""))
+                        if fullsize and fullsize["kind"] == required_kind:
+                            media_info["fullsize_url"] = generated_media_url(conversation_id, fullsize["id"])
+                        rendered.append({"type": kind, kind: media_info})
+            return orjson.dumps(rendered).decode("utf-8")
+        if principal:
+            # The text pilot must not mint native bearer media URLs. Canonical
+            # attachment serving requires its own app-scoped media acceptance.
+            # Keep text from mixed historic turns without disclosing media URLs.
+            message_json = [
+                {"type": "text", "text": entry.get("text", "")}
+                for entry in message_json
+                if isinstance(entry, dict) and entry.get("type") == "text"
+            ]
+            return orjson.dumps(message_json).decode("utf-8")
         if can_admin_view is None:
             can_admin_view = await current_user.is_admin
         for entry in message_json:

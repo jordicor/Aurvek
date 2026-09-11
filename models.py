@@ -8,6 +8,7 @@ import logging
 
 # Custom libraries
 from database import get_db_connection
+from i18n import normalize_language
 from common import tts_engine, load_service_costs
 
 # Logger configuration
@@ -66,6 +67,7 @@ class User:
         google_id: Optional[str] = None,
         auth_provider: str = "local",
         session_version: int = 1,
+        ui_language: str = "en",
     ):
         self.id = id
         self.username = username
@@ -85,6 +87,7 @@ class User:
         self.google_id = google_id
         self.auth_provider = auth_provider
         self.session_version = max(1, int(session_version or 1))
+        self.ui_language = normalize_language(ui_language) or "en"
         self.auth_time = 0
         self.session_expires_at = 0
         self.used_magic_link = False

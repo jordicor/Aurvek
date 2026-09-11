@@ -1,6 +1,7 @@
+{% set i18n_domains = ['landing_builder'] %}
 {% extends 'base.html' %}
 
-{% block title %}Edit Component: {{ component_name }}{% endblock %}
+{% block title %}{{ t('landing_builder.components.edit_named', name=component_name) }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -31,16 +32,16 @@
 {% block content %}
 <div class="container-fluid mt-5">
     <div class="editor-container">
-        <h1>Edit Component: {{ component_name }}</h1>
-        <h2>Prompt: {{ prompt_name }}</h2>
+        <h1>{{ t('landing_builder.components.edit_named', name=component_name) }}</h1>
+        <h2>{{ t('landing_builder.prompts.named', name=prompt_name) }}</h2>
         <div id="message"></div>
         <form id="editForm">
             <div class="mb-3">
-                <label for="content" class="form-label">Component Content</label>
+                <label for="content" class="form-label">{{ t('landing_builder.components.content') }}</label>
                 <textarea id="content" name="content" class="form-control" rows="20">{{ content }}</textarea>
             </div>
-            <button type="submit" class="btn btn-primary">Save Changes</button>
-            <a href="{% if is_pack %}/landing/pack/{{ prompt_id }}/components{% else %}/landing/{{ prompt_id }}/components{% endif %}" class="btn btn-secondary ms-2">Back to List</a>
+            <button type="submit" class="btn btn-primary">{{ t('landing_builder.action.save_changes') }}</button>
+            <a href="{% if is_pack %}/landing/pack/{{ prompt_id }}/components{% else %}/landing/{{ prompt_id }}/components{% endif %}" class="btn btn-secondary ms-2">{{ t('landing_builder.action.back_to_list') }}</a>
         </form>
     </div>
 </div>
@@ -92,13 +93,13 @@
                 success: function(response) {
                     if (response.success) {
                         FormGuard.markClean(_fgCMContainer);
-                        $("#message").html('<div class="alert alert-success">' + response.message + '</div>');
+                        $("#message").text(response.message).attr("class", "alert alert-success");
                     } else {
-                        $("#message").html('<div class="alert alert-danger">' + response.message + '</div>');
+                        $("#message").text(response.message).attr("class", "alert alert-danger");
                     }
                 },
                 error: function(xhr, status, error) {
-                    $("#message").html('<div class="alert alert-danger">Error: ' + error + '</div>');
+                    $("#message").text(xhr.responseJSON?.message || (typeof xhr.responseJSON?.detail === 'string' ? xhr.responseJSON.detail : null) || AurvekI18n.t('landing_builder.response.error_saving_changes')).attr('class', 'alert alert-danger');
                 }
             });
         });

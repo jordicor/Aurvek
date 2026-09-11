@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="">
+<html lang="{{ ui_language }}" data-theme="">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
-    <title>{% block title %}Admin - AURVEK{% endblock %}</title>
+    <title>{% block title %}{{ t('navigation.title.admin') }} - AURVEK{% endblock %}</title>
 
     <!-- Theme detection - sets data-theme for skeleton CSS -->
     <script>
@@ -31,6 +31,8 @@
 
     <!-- Page-specific styles -->
     {% block styles %}{% endblock %}
+
+    {% include 'includes/i18n.html' %}
 </head>
 <body>
     <!-- Skeleton Loader (shown until content is ready) -->
@@ -86,7 +88,7 @@
     <div id="page-content" style="display: none;">
         {% if readonly_mode %}
         <div style="background: #f0ad4e; color: #000; text-align: center; padding: 8px; position: sticky; top: 0; z-index: 9999; font-weight: 500;">
-            Read-only mode — You can browse but cannot send messages or make changes. Normal service will resume shortly.
+            {{ t('navigation.readonly.notice') }}
         </div>
         {% endif %}
         {% include 'navbar.html' %}
@@ -96,11 +98,11 @@
 
         <!-- Page Header -->
         <div class="page-header">
-            <a href="/" class="btn-back" title="Back to Home" data-bs-toggle="tooltip">
+            <a href="/" class="btn-back" title="{{ t('navigation.action.back_to_home') }}" data-bs-toggle="tooltip">
                 <i class="fas fa-arrow-left"></i>
             </a>
             <div class="page-header-text">
-                <h1 class="page-title">{% block page_title %}Page Title{% endblock %}</h1>
+                <h1 class="page-title">{% block page_title %}{{ t('navigation.title.page') }}{% endblock %}</h1>
                 {% block page_subtitle %}<p class="page-subtitle"></p>{% endblock %}
             </div>
         </div>

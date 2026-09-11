@@ -1,9 +1,11 @@
+from urllib.parse import urlencode
 from typing import Any
 
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from i18n import get_translator
 from auth import get_current_user
 from captcha_service import get_captcha_config
 from clients import async_twilio
@@ -25,6 +27,12 @@ from request_security import (
 
 
 router = APIRouter()
+
+
+
+def _redirect_feedback(request: Request, kind: str, key: str, **params) -> RedirectResponse:
+    message = get_translator(request).t("admin_channels." + key, **params)
+    return RedirectResponse(url="/admin/whatsapp?" + urlencode({kind: message}), status_code=303)
 
 
 async def _load_active_whatsapp_users(conn: Any) -> list[dict[str, Any]]:
@@ -80,10 +88,11 @@ async def _load_active_whatsapp_users(conn: Any) -> list[dict[str, Any]]:
 
 @router.get("/admin/whatsapp", response_class=HTMLResponse)
 async def admin_whatsapp(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_channels.access_denied"))
 
     message = request.query_params.get("message")
     error = request.query_params.get("error")
@@ -102,11 +111,11 @@ async def admin_whatsapp(request: Request, current_user: User = Depends(get_curr
                 "current_url": current_webhook_url,
                 "expected_url": expected_webhook_url,
                 "match": current_webhook_url == expected_webhook_url,
-                "service_name": ms_data.get("friendly_name", "Unknown"),
+                "service_name": ms_data.get("friendly_name") or t("admin_channels.unknown"),
             }
         except Exception as e:
             logger.error(f"Failed to fetch Twilio Messaging Service config: {e}")
-            webhook_status = {"error": str(e)}
+            webhook_status = {"error": t("admin_channels.webhook_check_error", provider="Twilio")}
 
     # Get configurable messages from SYSTEM_CONFIG
     unknown_user_message = get_phone_user_not_found()
@@ -189,10 +198,11 @@ async def admin_whatsapp(request: Request, current_user: User = Depends(get_curr
 
 @router.post("/admin/whatsapp", response_class=HTMLResponse)
 async def admin_whatsapp_save(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_channels.access_denied"))
 
     form = await request.form()
     csrf_rejection = validate_mutation_request(
@@ -238,28 +248,22 @@ async def admin_whatsapp_save(request: Request, current_user: User = Depends(get
             # Update the in-memory variable for unknown user message
             set_phone_user_not_found(unknown_msg)
 
-            return RedirectResponse(url="/admin/whatsapp?message=Configuration saved successfully", status_code=303)
+            return _redirect_feedback(request, "message", "configuration_saved")
         except Exception as e:
             logger.error(f"Error saving WhatsApp config: {e}")
-            return RedirectResponse(url="/admin/whatsapp?error=Failed to save configuration", status_code=303)
+            return _redirect_feedback(request, "error", "configuration_failed")
 
     if action == "fix_webhook":
         if not async_twilio or not twilio_messaging_service_sid:
-            return RedirectResponse(url="/admin/whatsapp?error=Twilio not configured", status_code=303)
+            return _redirect_feedback(request, "error", "twilio_not_configured")
         expected_url = f"https://{PRIMARY_APP_DOMAIN}/whatsapp"
         try:
             await async_twilio.update_messaging_service(
                 twilio_messaging_service_sid, inbound_request_url=expected_url
             )
-            return RedirectResponse(
-                url=f"/admin/whatsapp?message=Webhook URL updated to {expected_url}",
-                status_code=303
-            )
+            return _redirect_feedback(request, "message", "webhook_updated", url=expected_url)
         except Exception as e:
             logger.error(f"Failed to update Twilio webhook URL: {e}")
-            return RedirectResponse(
-                url=f"/admin/whatsapp?error=Failed to update webhook: {e}",
-                status_code=303
-            )
+            return _redirect_feedback(request, "error", "webhook_failed")
 
     return RedirectResponse(url="/admin/whatsapp", status_code=303)

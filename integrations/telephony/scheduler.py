@@ -667,6 +667,20 @@ class OutboundCallDispatcher:
             call=call,
         )
 
+    async def _create_call_for_account(self, call, request):
+        from integrations.telephony.account_routing import client_for_call, twilio_snapshot
+        if twilio_snapshot(call) is None:
+            if self.twilio_client is None:
+                raise RuntimeError('Twilio account is unavailable')
+            return await self.twilio_client.create_call_once(request)
+        async with self.repository.connection_factory(readonly=True) as connection:
+            client = await client_for_call(call, legacy_factory=lambda: self.twilio_client,
+                connection=connection)
+        try:
+            return await client.create_call_once(request)
+        finally:
+            await client.close()
+
     async def _issue_provider_request_after_boundary(
         self,
         *,
@@ -755,7 +769,7 @@ class OutboundCallDispatcher:
             )
 
         try:
-            result = await self.twilio_client.create_call_once(request)
+            result = await self._create_call_for_account(call, request)
         except TwilioVoiceAPIError as exc:
             for component in started_components:
                 await billing_meter.service.refund_component(

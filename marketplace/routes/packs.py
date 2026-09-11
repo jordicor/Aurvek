@@ -9,6 +9,7 @@ import orjson
 import logging
 import json as json_mod
 from pathlib import Path
+from html import escape
 from typing import Optional, List
 from unicodedata import normalize
 from cachetools import LRUCache
@@ -18,6 +19,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Redirect
 
 from models import User, Pack
 from auth import get_current_user
+from i18n import get_translator, template_context, Translator
+from marketplace.services.checkout_localization import discount_error_message
 from billing.discounts import (
     DiscountError,
     claim_discount_usage_for_checkout,
@@ -261,18 +264,20 @@ async def warmup_pack_landing_cache():
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _require_admin_or_user(current_user: User):
+async def _require_admin_or_user(current_user: User, translator=None):
     """Raise 403 if user is not admin or user (elevated role)."""
+    translator = translator or Translator("en")
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_admin.response.access_denied'))
 
 
-async def _require_pack_owner(pack_row, current_user: User):
+async def _require_pack_owner(pack_row, current_user: User, translator=None):
     """Raise 404 if pack not found, 403 if user is not owner (unless admin)."""
+    translator = translator or Translator("en")
     if not pack_row:
-        raise HTTPException(status_code=404, detail="Pack not found")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.pack_not_found'))
     if not await current_user.is_admin and pack_row["created_by_user_id"] != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_admin.response.access_denied'))
 
 
 def _valid_landing_resource_path(resource_path: str) -> bool:
@@ -288,8 +293,9 @@ async def _can_preview_pack(request: Request, creator_id: int) -> bool:
     return bool(await current_user.is_admin or int(current_user.id) == int(creator_id))
 
 
-async def _require_wizard_security_check(text: str, *, label: str, pack_id: int) -> None:
+async def _require_wizard_security_check(text: str, *, label: str, pack_id: int, translator=None) -> None:
     """Run the wizard guard fail-closed; the OS sandbox remains the boundary."""
+    translator = translator or Translator("en")
     try:
         result = await check_security(text)
     except Exception as exc:
@@ -301,7 +307,7 @@ async def _require_wizard_security_check(text: str, *, label: str, pack_id: int)
         )
         raise HTTPException(
             status_code=503,
-            detail="AI Wizard security check is temporarily unavailable",
+            detail=translator.t('marketplace_admin.response.ai_wizard_security_check_is_temporarily_unavailable'),
         ) from exc
 
     if not result.get("checked"):
@@ -313,7 +319,7 @@ async def _require_wizard_security_check(text: str, *, label: str, pack_id: int)
         )
         raise HTTPException(
             status_code=503,
-            detail="AI Wizard security check is temporarily unavailable",
+            detail=translator.t('marketplace_admin.response.ai_wizard_security_check_is_temporarily_unavailable'),
         )
     if not result.get("allowed"):
         logger.warning(
@@ -325,14 +331,15 @@ async def _require_wizard_security_check(text: str, *, label: str, pack_id: int)
         raise HTTPException(
             status_code=403,
             detail={
-                "message": "Your request was blocked by security check",
+                "message": translator.t('marketplace_admin.response.your_request_was_blocked_by_security_check'),
                 "reason": result.get("reason", "blocked"),
             },
         )
 
 
-def _validate_tags(tags_input) -> Optional[str]:
+def _validate_tags(tags_input, translator=None) -> Optional[str]:
     """Validate and sanitize tags (accepts JSON string or list). Returns cleaned JSON or None."""
+    translator = translator or Translator("en")
     if not tags_input:
         return None
     if isinstance(tags_input, list):
@@ -343,13 +350,13 @@ def _validate_tags(tags_input) -> Optional[str]:
         try:
             tags = orjson.loads(tags_input)
         except orjson.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid tags JSON")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_tags_json'))
     else:
-        raise HTTPException(status_code=400, detail="Invalid tags format")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_tags_format'))
     if not isinstance(tags, list):
-        raise HTTPException(status_code=400, detail="Tags must be a JSON array")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.tags_must_be_a_json_array'))
     if len(tags) > MAX_PACK_TAGS:
-        raise HTTPException(status_code=400, detail=f"Maximum {MAX_PACK_TAGS} tags allowed")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.maximum_value1_tags_allowed', value1=translator.format_number(MAX_PACK_TAGS)))
     cleaned = []
     for tag in tags:
         if not isinstance(tag, str):
@@ -402,11 +409,12 @@ def _inject_pack_analytics(html_content: str, pack_id: int) -> str:
 
 @router.get("/admin/packs", response_class=HTMLResponse)
 async def admin_packs_list(request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=translator)
 
     is_admin = await current_user.is_admin
     async with get_db_connection(readonly=True) as conn:
@@ -419,11 +427,12 @@ async def admin_packs_list(request: Request, current_user: User = Depends(get_cu
 
 @router.get("/admin/packs/new", response_class=HTMLResponse)
 async def admin_pack_new(request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=translator)
 
     pricing_config = await get_pricing_config()
     context = await get_template_context(request, current_user)
@@ -438,15 +447,16 @@ async def admin_pack_new(request: Request, current_user: User = Depends(get_curr
 
 @router.get("/admin/packs/edit/{pack_id}", response_class=HTMLResponse)
 async def admin_pack_edit(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
         items = await get_pack_items(conn, pack_id)
 
         # Get welcome message content (avoids a separate HTTP request from the frontend)
@@ -492,33 +502,34 @@ async def admin_pack_edit(request: Request, pack_id: int, current_user: User = D
 
 @router.post("/api/packs")
 async def api_create_pack(request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     body = await request.json()
     name = (body.get("name") or "").strip()
     if not name:
-        raise HTTPException(status_code=400, detail="Pack name is required")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.pack_name_is_required'))
 
     slug = slugify(body.get("slug") or name)
     if not slug:
-        raise HTTPException(status_code=400, detail="Invalid slug")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_slug'))
 
     description = (body.get("description") or "").strip()
     is_paid = bool(body.get("is_paid", False))
     try:
         price = float(body.get("price", 0.0)) if is_paid else 0.0
     except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid price value")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_price_value'))
     if price < 0 or price > MAX_PACK_PRICE:
-        raise HTTPException(status_code=400, detail=f"Price must be between 0 and {MAX_PACK_PRICE}")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.price_must_be_between_0_and_value1', value1=translator.format_number(MAX_PACK_PRICE)))
     if is_paid and price < MIN_PACK_PAID_PRICE:
-        raise HTTPException(status_code=400, detail=f"Minimum price for paid packs is ${MIN_PACK_PAID_PRICE:.2f}")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.minimum_price_for_paid_packs_is_value1', value1=translator.format_currency(MIN_PACK_PAID_PRICE)))
 
-    tags_json = _validate_tags(body.get("tags"))
+    tags_json = _validate_tags(body.get("tags"), translator=translator)
 
     # Extract and sanitize landing_reg_config (new packs are draft, use free cap)
     lrc_json = None
@@ -531,13 +542,13 @@ async def api_create_pack(request: Request, current_user: User = Depends(get_cur
                 lrc = None
         if isinstance(lrc, dict):
             lrc = sanitize_landing_reg_config(lrc, max_initial_balance=MAX_FREE_INITIAL_BALANCE)
-            lrc = await validate_shared_landing_config(lrc)
+            lrc = await validate_shared_landing_config(lrc, translator=translator)
             if lrc.get("billing_mode") == "user_pays":
                 creator_balance = await get_balance(current_user.id)
                 if creator_balance <= 0:
                     raise HTTPException(
                         status_code=400,
-                        detail="You need a positive balance to enable 'user pays' mode"
+                        detail=translator.t('marketplace_admin.response.you_need_a_positive_balance_to_enable_user_pays_mode')
                     )
             lrc_json = orjson.dumps(lrc).decode("utf-8")
 
@@ -545,16 +556,16 @@ async def api_create_pack(request: Request, current_user: User = Depends(get_cur
         # Rate limits
         total = await count_user_packs(conn, current_user.id)
         if total >= MAX_PACKS_PER_USER:
-            raise HTTPException(status_code=400, detail=f"Maximum {MAX_PACKS_PER_USER} packs allowed")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.maximum_value1_packs_allowed', value1=translator.format_number(MAX_PACKS_PER_USER)))
 
         today_count = await count_user_packs_today(conn, current_user.id)
         if today_count >= PACK_CREATION_RATE_LIMIT:
-            raise HTTPException(status_code=429, detail="Pack creation rate limit exceeded. Try again tomorrow.")
+            raise HTTPException(status_code=429, detail=translator.t('marketplace_admin.response.pack_creation_rate_limit_exceeded_try_again_tomorrow'))
 
         # Check slug uniqueness
         cursor = await conn.execute("SELECT id FROM PACKS WHERE slug = ?", (slug,))
         if await cursor.fetchone():
-            raise HTTPException(status_code=400, detail="A pack with this slug already exists")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.a_pack_with_this_slug_already_exists'))
 
         public_id = generate_public_id()
         pack_id = await create_pack(
@@ -564,16 +575,17 @@ async def api_create_pack(request: Request, current_user: User = Depends(get_cur
             landing_reg_config=lrc_json,
         )
 
-    return JSONResponse({"id": pack_id, "slug": slug, "public_id": public_id, "message": "Pack created"})
+    return JSONResponse({"id": pack_id, "slug": slug, "public_id": public_id, "message": translator.t('marketplace_admin.response.pack_created')})
 
 
 @router.get("/api/packs")
 async def api_list_packs(request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     is_admin = await current_user.is_admin
     async with get_db_connection(readonly=True) as conn:
@@ -583,16 +595,17 @@ async def api_list_packs(request: Request, current_user: User = Depends(get_curr
 
 
 @router.get("/api/packs/{pack_id}")
-async def api_get_pack(pack_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def api_get_pack(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
         items = await get_pack_items(conn, pack_id)
 
     result = dict(pack_row)
@@ -602,15 +615,16 @@ async def api_get_pack(pack_id: int, current_user: User = Depends(get_current_us
 
 @router.put("/api/packs/{pack_id}")
 async def api_update_pack(pack_id: int, request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
         body = await request.json()
         fields = {}
@@ -618,19 +632,19 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
         if "name" in body:
             name = (body["name"] or "").strip()
             if not name:
-                raise HTTPException(status_code=400, detail="Pack name is required")
+                raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.pack_name_is_required'))
             fields["name"] = name
 
         if "slug" in body:
             slug = slugify(body["slug"] or body.get("name", ""))
             if not slug:
-                raise HTTPException(status_code=400, detail="Invalid slug")
+                raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_slug'))
             # Check uniqueness (exclude current pack)
             cursor = await conn.execute(
                 "SELECT id FROM PACKS WHERE slug = ? AND id != ?", (slug, pack_id)
             )
             if await cursor.fetchone():
-                raise HTTPException(status_code=400, detail="A pack with this slug already exists")
+                raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.a_pack_with_this_slug_already_exists'))
             fields["slug"] = slug
 
         if "description" in body:
@@ -640,9 +654,9 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
             try:
                 price = float(body["price"])
             except (ValueError, TypeError):
-                raise HTTPException(status_code=400, detail="Invalid price value")
+                raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_price_value'))
             if price < 0 or price > MAX_PACK_PRICE:
-                raise HTTPException(status_code=400, detail=f"Price must be between 0 and {MAX_PACK_PRICE}")
+                raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.price_must_be_between_0_and_value1', value1=translator.format_number(MAX_PACK_PRICE)))
             fields["price"] = price
 
         if "is_paid" in body:
@@ -655,11 +669,12 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
         final_price = fields.get("price", pack_row["price"])
 
         if final_is_paid and final_price < MIN_PACK_PAID_PRICE:
-            raise HTTPException(status_code=400, detail=f"Minimum price for paid packs is ${MIN_PACK_PAID_PRICE:.2f}")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.minimum_price_for_paid_packs_is_value1', value1=translator.format_currency(MIN_PACK_PAID_PRICE)))
 
         if "tags" in body:
             fields["tags"] = _validate_tags(
-                orjson.dumps(body["tags"]).decode("utf-8") if isinstance(body["tags"], list) else body["tags"]
+                orjson.dumps(body["tags"]).decode("utf-8") if isinstance(body["tags"], list) else body["tags"],
+                translator=translator,
             )
 
         # Compute initial_balance cap based on pack pricing
@@ -679,12 +694,12 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
             if not isinstance(lrc, dict):
                 lrc = {}
             lrc = sanitize_landing_reg_config(lrc, max_initial_balance=ib_cap)
-            lrc = await validate_shared_landing_config(lrc)
+            lrc = await validate_shared_landing_config(lrc, translator=translator)
         else:
             lrc = None
             # Re-validate existing config if price/is_paid changed (cap may have tightened)
             if "is_paid" in fields or "price" in fields:
-                existing_config = pack_row.get("landing_reg_config")
+                existing_config = pack_row["landing_reg_config"]
                 if existing_config:
                     if isinstance(existing_config, str):
                         try:
@@ -698,14 +713,14 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
                             lrc = existing_config
 
         if lrc is not None:
-            lrc = await validate_shared_landing_config(lrc)
+            lrc = await validate_shared_landing_config(lrc, translator=translator)
             # Validate user_pays requires creator to have positive balance
             if lrc.get("billing_mode") == "user_pays":
                 creator_balance = await get_balance(pack_row["created_by_user_id"])
                 if creator_balance <= 0:
                     raise HTTPException(
                         status_code=400,
-                        detail="Pack creator needs a positive balance to enable 'user pays' mode"
+                        detail=translator.t('marketplace_admin.response.pack_creator_needs_a_positive_balance_to_enable_user_pays_mode')
                     )
             fields["landing_reg_config"] = orjson.dumps(lrc).decode("utf-8")
 
@@ -721,7 +736,7 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
             old_dir.rename(new_dir)
 
             # Fix cover_image path: directory and filenames embed the sanitized name
-            if pack_row.get("cover_image"):
+            if pack_row["cover_image"]:
                 old_sanitized = sanitize_name(pack_row["name"])
                 new_sanitized = sanitize_name(fields["name"])
                 img_dir = new_dir / "static" / "img"
@@ -737,20 +752,21 @@ async def api_update_pack(pack_id: int, request: Request, current_user: User = D
     if pack_row["public_id"]:
         invalidate_pack_landing_cache(pack_row["public_id"])
 
-    return JSONResponse({"message": "Pack updated"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.pack_updated')})
 
 
 @router.delete("/api/packs/{pack_id}")
-async def api_delete_pack(pack_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def api_delete_pack(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
         # Only allow deletion of draft packs or packs with no active access
         if pack_row["status"] != "draft":
@@ -764,7 +780,7 @@ async def api_delete_pack(pack_id: int, current_user: User = Depends(get_current
             if access_count > 0:
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot delete a pack with active users. Remove all access first."
+                    detail=translator.t('marketplace_admin.response.cannot_delete_a_pack_with_active_users_remove_all_access_first')
                 )
 
         # Invalidate cache before deletion
@@ -774,7 +790,7 @@ async def api_delete_pack(pack_id: int, current_user: User = Depends(get_current
         await conn.execute("DELETE FROM WELCOME_MESSAGES WHERE entity_type = 'pack' AND entity_id = ?", (pack_id,))
         await delete_pack(conn, pack_id)
 
-    return JSONResponse({"message": "Pack deleted"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.pack_deleted')})
 
 
 # ---------------------------------------------------------------------------
@@ -783,24 +799,25 @@ async def api_delete_pack(pack_id: int, current_user: User = Depends(get_current
 
 @router.post("/api/packs/{pack_id}/items")
 async def api_add_pack_item(pack_id: int, request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
         body = await request.json()
         prompt_id = body.get("prompt_id")
         if not prompt_id:
-            raise HTTPException(status_code=400, detail="prompt_id is required")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.prompt_id_is_required'))
 
         # Check item count limit
         if pack_row["item_count"] >= MAX_PACK_ITEMS:
-            raise HTTPException(status_code=400, detail=f"Maximum {MAX_PACK_ITEMS} items per pack")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.maximum_value1_items_per_pack', value1=translator.format_number(MAX_PACK_ITEMS)))
 
         # Verify prompt exists and allows packs
         cursor = await conn.execute(
@@ -808,9 +825,9 @@ async def api_add_pack_item(pack_id: int, request: Request, current_user: User =
         )
         prompt_row = await cursor.fetchone()
         if not prompt_row:
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.prompt_not_found'))
         if not prompt_row["allow_in_packs"]:
-            raise HTTPException(status_code=400, detail="This prompt does not allow pack inclusion")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.this_prompt_does_not_allow_pack_inclusion'))
 
         # Check not already active in pack (filter disable_at consistently with get_available_prompts_for_pack)
         cursor = await conn.execute(
@@ -818,7 +835,7 @@ async def api_add_pack_item(pack_id: int, request: Request, current_user: User =
             (pack_id, prompt_id),
         )
         if await cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Prompt already in this pack")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.prompt_already_in_this_pack'))
 
         # Remove any stale/expired row to avoid UNIQUE constraint violation on re-add
         await conn.execute(
@@ -828,58 +845,61 @@ async def api_add_pack_item(pack_id: int, request: Request, current_user: User =
 
         item_id = await add_pack_item(conn, pack_id, prompt_id)
 
-    return JSONResponse({"id": item_id, "message": "Prompt added to pack"})
+    return JSONResponse({"id": item_id, "message": translator.t('marketplace_admin.response.prompt_added_to_pack')})
 
 
 @router.delete("/api/packs/{pack_id}/items/{prompt_id}")
-async def api_remove_pack_item(pack_id: int, prompt_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def api_remove_pack_item(request: Request, pack_id: int, prompt_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
         await remove_pack_item(conn, pack_id, prompt_id)
 
-    return JSONResponse({"message": "Prompt removed from pack"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.prompt_removed_from_pack')})
 
 
 @router.put("/api/packs/{pack_id}/items/reorder")
 async def api_reorder_pack_items(pack_id: int, request: Request, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
         body = await request.json()
         ordered_ids = body.get("prompt_ids", [])
         if not isinstance(ordered_ids, list):
-            raise HTTPException(status_code=400, detail="prompt_ids must be a list")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.prompt_ids_must_be_a_list'))
 
         await reorder_pack_items(conn, pack_id, ordered_ids)
 
-    return JSONResponse({"message": "Items reordered"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.items_reordered')})
 
 
 @router.get("/api/packs/{pack_id}/available-prompts")
-async def api_available_prompts(pack_id: int, search: str = "", current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def api_available_prompts(request: Request, pack_id: int, search: str = "", current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
         prompts = await get_available_prompts_for_pack(conn, pack_id, search=search)
 
     return JSONResponse([dict(p) for p in prompts])
@@ -890,37 +910,38 @@ async def api_available_prompts(pack_id: int, search: str = "", current_user: Us
 # ---------------------------------------------------------------------------
 
 @router.post("/api/packs/{pack_id}/publish")
-async def api_publish_pack(pack_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def api_publish_pack(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
         if pack_row["item_count"] < MIN_PACK_ITEMS_TO_PUBLISH:
             raise HTTPException(
                 status_code=400,
-                detail=f"Pack needs at least {MIN_PACK_ITEMS_TO_PUBLISH} prompts to publish"
+                detail=translator.t('marketplace_admin.response.pack_needs_at_least_value1_prompts_to_publish', value1=translator.format_number(MIN_PACK_ITEMS_TO_PUBLISH))
             )
 
         if not pack_row["name"] or not pack_row["name"].strip():
-            raise HTTPException(status_code=400, detail="Pack name is required to publish")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.pack_name_is_required_to_publish'))
 
         if not pack_row["description"] or not pack_row["description"].strip():
-            raise HTTPException(status_code=400, detail="Pack description is required to publish")
+            raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.pack_description_is_required_to_publish'))
 
         # Re-validate initial_balance cap at publish time
-        if pack_row.get("is_paid") and pack_row.get("price", 0) > 0:
+        if pack_row["is_paid"] and pack_row["price"] > 0:
             pricing_config = await get_pricing_config()
             ib_cap = round(pack_row["price"] * (1 - pricing_config["commission"]), 2)
         else:
             ib_cap = MAX_FREE_INITIAL_BALANCE
 
-        existing_lrc = pack_row.get("landing_reg_config")
+        existing_lrc = pack_row["landing_reg_config"]
         if existing_lrc:
             if isinstance(existing_lrc, str):
                 try:
@@ -928,7 +949,7 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
                 except Exception:
                     existing_lrc = {}
             if isinstance(existing_lrc, dict):
-                existing_lrc = await validate_shared_landing_config(existing_lrc)
+                existing_lrc = await validate_shared_landing_config(existing_lrc, translator=translator)
                 current_ib = float(existing_lrc.get("initial_balance", 0))
                 if current_ib > ib_cap:
                     logger.warning(
@@ -952,7 +973,7 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
         if creator_balance < MODERATION_MIN_BALANCE:
             raise HTTPException(
                 status_code=400,
-                detail="Insufficient balance for content moderation",
+                detail=translator.t('marketplace_admin.response.insufficient_balance_for_content_moderation'),
             )
 
         tags_str = ""
@@ -974,7 +995,7 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
             )
             raise HTTPException(
                 status_code=503,
-                detail="Content moderation service is temporarily unavailable. Please try again later.",
+                detail=translator.t('marketplace_admin.response.content_moderation_service_is_temporarily_unavailable_please_try_again_later'),
             )
 
         # Check ran successfully - charge cost to the pack creator
@@ -982,7 +1003,7 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
         if not deducted:
             raise HTTPException(
                 status_code=402,
-                detail="Failed to charge moderation cost. Please check your balance and try again.",
+                detail=translator.t('marketplace_admin.response.failed_to_charge_moderation_cost_please_check_your_balance_and_try_again'),
             )
         logger.info(
             "Moderation cost $%.4f charged to creator %s (pack %s)",
@@ -1005,7 +1026,7 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "message": "Pack rejected by content moderation",
+                    "message": translator.t('marketplace_admin.response.pack_rejected_by_content_moderation'),
                     "reason": security_result.get("reason", ""),
                     "threat_level": security_result.get("threat_level", "unknown"),
                 },
@@ -1024,27 +1045,28 @@ async def api_publish_pack(pack_id: int, current_user: User = Depends(get_curren
     if pack_row["public_id"]:
         invalidate_pack_landing_cache(pack_row["public_id"])
 
-    return JSONResponse({"message": "Pack published"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.pack_published')})
 
 
 @router.post("/api/packs/{pack_id}/unpublish")
-async def api_unpublish_pack(pack_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def api_unpublish_pack(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection() as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
         await update_pack(conn, pack_id, status="draft", is_public=False)
 
     # Invalidate cache after status change
     if pack_row["public_id"]:
         invalidate_pack_landing_cache(pack_row["public_id"])
 
-    return JSONResponse({"message": "Pack unpublished"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.pack_unpublished')})
 
 
 # ---------------------------------------------------------------------------
@@ -1061,20 +1083,21 @@ def _save_pack_cover_variants(
     pack_id: int,
     sanitized_name: str,
     old_cover_image: str | None,
+    translator=None,
 ) -> None:
     """Validate and persist all cover variants in one worker-thread block."""
+    translator = translator or Translator("en")
     try:
         image = PilImage.open(io.BytesIO(content))
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid image file") from exc
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_image_file')) from exc
 
     with image:
         if image.format not in _ALLOWED_COVER_FORMATS:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Unsupported image format: {image.format}. "
-                    "Allowed: JPEG, PNG, WEBP, GIF"
+                    translator.t('marketplace_admin.response.unsupported_image_format_value1_allowed_jpeg_png_webp_gif', value1=image.format)
                 ),
             )
 
@@ -1083,8 +1106,7 @@ def _save_pack_cover_variants(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Image dimensions too large. Maximum is "
-                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                    translator.t('marketplace_admin.response.image_dimensions_too_large_maximum_is_value1_pixels', value1=translator.format_number(MAX_IMAGE_PIXELS))
                 ),
             )
 
@@ -1109,20 +1131,22 @@ def _save_pack_cover_variants(
 
 @router.post("/api/packs/{pack_id}/cover-image")
 async def api_upload_cover_image(
+    request: Request,
     pack_id: int,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
     """Upload a cover image for a pack (240, 512, fullsize at 16:9)."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
     # Read file content
     content = await file.read()
@@ -1131,7 +1155,7 @@ async def api_upload_cover_image(
     if len(content) > MAX_IMAGE_UPLOAD_SIZE:
         raise HTTPException(
             status_code=400,
-            detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024)}MB",
+            detail=translator.t('marketplace_admin.response.image_too_large_maximum_size_is_value1_mb', value1=translator.format_number(MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024))),
         )
 
     # Build directory path
@@ -1149,7 +1173,7 @@ async def api_upload_cover_image(
             )
             user_row = await cursor.fetchone()
             if not user_row:
-                raise HTTPException(status_code=404, detail="Pack owner not found")
+                raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.pack_owner_not_found'))
             pack_dir = _build_pack_filesystem_path(user_row[0], pack_id, pack_row["name"])
 
     img_dir = pack_dir / "static" / "img"
@@ -1162,6 +1186,7 @@ async def api_upload_cover_image(
         pack_id=pack_id,
         sanitized_name=sanitized,
         old_cover_image=pack_row["cover_image"],
+        translator=translator,
     )
 
     # Build base URL (without size suffix or extension)
@@ -1185,25 +1210,27 @@ async def api_upload_cover_image(
 
     # Return the servable URL (not the internal filesystem path)
     cover_url = f"/api/packs/{pack_id}/cover/512"
-    return JSONResponse({"cover_image": cover_url, "message": "Cover image uploaded"})
+    return JSONResponse({"cover_image": cover_url, "message": translator.t('marketplace_admin.response.cover_image_uploaded')})
 
 
 @router.get("/api/packs/{pack_id}/cover/{size}")
 async def serve_pack_cover(
+    request: Request,
     pack_id: int,
     size: str,
     current_user: Optional[User] = Depends(get_current_user),
 ):
     """Serve a pack cover image. Public access for published packs,
     admin/user owner access for drafts."""
+    translator = get_translator(request, current_user)
     if size not in ("240", "512", "fullsize"):
-        raise HTTPException(status_code=400, detail="Invalid size. Use 240, 512, or fullsize")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_size_use_240_512_or_fullsize'))
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
 
     if not pack_row or not pack_row["cover_image"]:
-        raise HTTPException(status_code=404, detail="No cover image")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.no_cover_image'))
 
     is_public_published = pack_row["status"] == "published" and pack_row["is_public"]
     # Allow admin (any pack) or owner to see covers even when public serving is disabled.
@@ -1214,13 +1241,13 @@ async def serve_pack_cover(
 
     if not is_authorized:
         if not is_public_published or not marketplace_public_landings_enabled():
-            raise HTTPException(status_code=404, detail="No cover image")
+            raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.no_cover_image'))
 
     # cover_image stores the internal base path; append size + extension
     image_path = DATA_DIR / f"{pack_row['cover_image']}_{size}.webp"
 
     if not image_path.is_file():
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.image_not_found'))
 
     return FileResponse(
         image_path,
@@ -1231,22 +1258,24 @@ async def serve_pack_cover(
 
 @router.delete("/api/packs/{pack_id}/cover-image")
 async def api_delete_cover_image(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """Delete all cover image files for a pack and clear the DB field."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
     if not pack_row["cover_image"]:
-        return JSONResponse({"message": "No cover image to delete"})
+        return JSONResponse({"message": translator.t('marketplace_admin.response.no_cover_image_to_delete')})
 
     # Use the stored cover_image path (kept in sync by rename handler)
     for label in ("240", "512", "fullsize"):
@@ -1262,7 +1291,7 @@ async def api_delete_cover_image(
     if pack_row["public_id"]:
         invalidate_pack_landing_cache(pack_row["public_id"])
 
-    return JSONResponse({"message": "Cover image deleted"})
+    return JSONResponse({"message": translator.t('marketplace_admin.response.cover_image_deleted')})
 
 
 # ---------------------------------------------------------------------------
@@ -1307,13 +1336,15 @@ def _save_pack_landing_image(
     original_filename: str,
     requested_name: str,
     img_dir: Path,
+    translator=None,
 ) -> str:
     """Validate and persist one pack landing image off the event loop."""
+    tr = translator or Translator("en")
     filename = _secure_filename(requested_name)
     ext = Path(original_filename).suffix.lower()
     ext_clean = ext.lstrip(".")
     if ext_clean not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"File extension {ext} not allowed")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.file_extension_extension_not_allowed', extension=ext))
     if not filename.lower().endswith(
         tuple("." + allowed_ext for allowed_ext in ALLOWED_IMAGE_EXTENSIONS)
     ):
@@ -1331,8 +1362,7 @@ def _save_pack_landing_image(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Image {original_filename} dimensions too large. Maximum is "
-                        f"{MAX_IMAGE_PIXELS:,} pixels"
+                        tr.t('landing_builder.response.image_value1_dimensions_too_large_maximum_is_value2_pixels', value1=original_filename, value2=tr.format_number(MAX_IMAGE_PIXELS, maximum_fraction_digits=0))
                     ),
                 )
             decoded_image.load()
@@ -1346,7 +1376,7 @@ def _save_pack_landing_image(
     except Exception as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid image file: {original_filename}",
+            detail=tr.t('landing_builder.response.invalid_image_file_value1', value1=original_filename),
         ) from exc
 
     if converted_image is not None:
@@ -1358,13 +1388,14 @@ def _save_pack_landing_image(
     return file_path.name
 
 
-async def _get_pack_dir_and_info(pack_id: int, pack_row) -> tuple:
+async def _get_pack_dir_and_info(pack_id: int, pack_row, translator=None) -> tuple:
     """
     Get pack directory path and owner username. Creates directory if needed.
 
     Returns:
         (pack_dir: Path, username: str)
     """
+    translator = translator or Translator("en")
     username = pack_row.get("username") if hasattr(pack_row, "get") else (
         pack_row["username"] if "username" in pack_row.keys() else None
     )
@@ -1376,7 +1407,7 @@ async def _get_pack_dir_and_info(pack_id: int, pack_row) -> tuple:
             )
             user_row = await cursor.fetchone()
             if not user_row:
-                raise HTTPException(status_code=404, detail="Pack owner not found")
+                raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.pack_owner_not_found'))
             username = user_row[0]
 
     pack_dir = _build_pack_filesystem_path(username, pack_id, pack_row["name"])
@@ -1434,18 +1465,19 @@ async def admin_pack_landing_config(
     current_user: User = Depends(get_current_user),
 ):
     """Configuration page for Pack Landing Pages."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     # List existing pages (.html files in root)
     pages = []
@@ -1513,27 +1545,28 @@ async def pack_ai_wizard_generate(
     current_user: User = Depends(get_current_user),
 ):
     """Start a background job to generate a landing page for a pack via AI Wizard."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     # The wizard is available only through a verified OS sandbox runner.
     claude_available, _ = is_claude_available()
     if not claude_available:
         raise HTTPException(
             status_code=503,
-            detail="AI Wizard is disabled until a verified OS sandbox is configured",
+            detail=tr.t('landing_builder.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is_2'),
         )
 
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_json_body'))
     description = (body.get("description") or "").strip()
     if not description or len(description) < 20:
-        raise HTTPException(status_code=400, detail="Description must be at least 20 characters")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.description_must_be_at_least_20_characters'))
 
     style = body.get("style", "modern")
     if style not in ("modern", "minimalist", "corporate", "creative"):
@@ -1555,21 +1588,22 @@ async def pack_ai_wizard_generate(
         description,
         label="pack landing wizard",
         pack_id=pack_id,
+        translator=tr,
     )
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
     # Check for active job
     existing_job = get_active_job_for_pack(pack_id)
     if existing_job:
         raise HTTPException(status_code=409, detail={
-            "message": "A job is already running for this pack",
+            "message": tr.t('landing_builder.response.a_job_is_already_running_for_this_pack'),
             "existing_task_id": existing_job["task_id"],
         })
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     # Create directory if it doesn't exist
     if not pack_dir.exists():
@@ -1613,13 +1647,13 @@ async def pack_ai_wizard_generate(
         logger.info("AI wizard job started for pack %s: task_id=%s", pack_id, result["task_id"])
         return JSONResponse({
             "success": True,
-            "message": "Job started",
+            "message": tr.t('landing_builder.response.job_started'),
             "task_id": result["task_id"],
             "status": result["status"],
         })
 
     logger.error("Failed to start AI wizard job for pack %s: %s", pack_id, result.get("error"))
-    raise HTTPException(status_code=500, detail=result.get("error", "Failed to start job"))
+    raise HTTPException(status_code=500, detail=tr.t('landing_builder.ui.failed_to_start_job'))
 
 
 # ---- AI Wizard: Modify ----
@@ -1631,26 +1665,27 @@ async def pack_ai_wizard_modify(
     current_user: User = Depends(get_current_user),
 ):
     """Start a background job to modify an existing pack landing page via AI Wizard."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     claude_available, _ = is_claude_available()
     if not claude_available:
         raise HTTPException(
             status_code=503,
-            detail="AI Wizard is disabled until a verified OS sandbox is configured",
+            detail=tr.t('landing_builder.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is_2'),
         )
 
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_json_body'))
     instructions = (body.get("instructions") or "").strip()
     if not instructions or len(instructions) < 10:
-        raise HTTPException(status_code=400, detail="Instructions must be at least 10 characters")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.instructions_must_be_at_least_10_characters'))
 
     try:
         timeout_minutes = int(body.get("timeout_minutes", 5))
@@ -1663,28 +1698,29 @@ async def pack_ai_wizard_modify(
         instructions,
         label="pack landing modify",
         pack_id=pack_id,
+        translator=tr,
     )
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
     existing_job = get_active_job_for_pack(pack_id)
     if existing_job:
         raise HTTPException(status_code=409, detail={
-            "message": "A job is already running for this pack",
+            "message": tr.t('landing_builder.response.a_job_is_already_running_for_this_pack'),
             "existing_task_id": existing_job["task_id"],
         })
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     if not pack_dir.exists():
-        raise HTTPException(status_code=404, detail="Pack directory not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.pack_directory_not_found'))
 
     # Check if there are files to modify
     files = list_prompt_files(str(pack_dir))
     if files["total_count"] == 0:
-        raise HTTPException(status_code=400, detail="No files to modify. Use 'Create new' instead.")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.no_files_to_modify_use_create_new_instead'))
 
     product_description = await _build_pack_product_description(pack_row, pack_id)
 
@@ -1719,40 +1755,42 @@ async def pack_ai_wizard_modify(
         logger.info("Modify wizard job started for pack %s: task_id=%s", pack_id, result["task_id"])
         return JSONResponse({
             "success": True,
-            "message": "Job started",
+            "message": tr.t('landing_builder.response.job_started'),
             "task_id": result["task_id"],
             "status": result["status"],
         })
 
     logger.error("Failed to start modify wizard job for pack %s: %s", pack_id, result.get("error"))
-    raise HTTPException(status_code=500, detail=result.get("error", "Failed to start job"))
+    raise HTTPException(status_code=500, detail=tr.t('landing_builder.ui.failed_to_start_job'))
 
 
 # ---- AI Wizard: Status ----
 
 @router.get("/api/landing/pack/{pack_id}/ai/status/{task_id}")
 async def pack_ai_wizard_status(
+    request: Request,
     pack_id: int,
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
     """Get the status of a pack landing page generation/modification job."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
     job = get_job(task_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.job_not_found'))
 
     if job.get("pack_id") != pack_id:
-        raise HTTPException(status_code=403, detail="Job does not belong to this pack")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.job_does_not_belong_to_this_pack'))
 
     response = {
         "success": True,
@@ -1767,10 +1805,10 @@ async def pack_ai_wizard_status(
     if job["status"] == "completed":
         response["files_created"] = job.get("files_created", [])
         # Update has_custom_landing based on whether home.html exists now
-        pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
-        await _update_has_custom_landing(pack_id, pack_dir, pack_row.get("public_id"))
+        pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
+        await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
     elif job["status"] in ("failed", "timeout"):
-        response["error"] = job.get("error")
+        response["error"] = tr.t('landing_builder.ui.the_ai_job_did_not_complete_please_try_again')
 
     return JSONResponse(response)
 
@@ -1779,19 +1817,21 @@ async def pack_ai_wizard_status(
 
 @router.get("/api/landing/pack/{pack_id}/ai/active-job")
 async def pack_ai_wizard_active_job(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """Check if there's an active (pending/running) job for this pack."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
     job = get_active_job_for_pack(pack_id)
     if job:
@@ -1816,25 +1856,26 @@ async def pack_welcome_wizard_generate(
     current_user: User = Depends(get_current_user),
 ):
     """Start a background job to generate a welcome page for a pack via AI Wizard."""
+    translator = get_translator(request, current_user)
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     # The wizard is available only through a verified OS sandbox runner.
     claude_available, _ = is_claude_available()
     if not claude_available:
         raise HTTPException(
             status_code=503,
-            detail="AI Wizard is disabled until a verified OS sandbox is configured",
+            detail=translator.t('marketplace_admin.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is_configured'),
         )
 
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_json_body'))
     description = (body.get("description") or "").strip()
     if not description or len(description) < 20:
-        raise HTTPException(status_code=400, detail="Description must be at least 20 characters")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.description_must_be_at_least_20_characters'))
 
     style = body.get("style", "modern")
     if style not in ("modern", "minimalist", "corporate", "creative"):
@@ -1856,21 +1897,22 @@ async def pack_welcome_wizard_generate(
         description,
         label="pack welcome wizard",
         pack_id=pack_id,
+        translator=translator,
     )
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
     # Check for active welcome job
     existing_job = get_active_welcome_job_for_pack(pack_id)
     if existing_job:
         raise HTTPException(status_code=409, detail={
-            "message": "A welcome job is already running for this pack",
+            "message": translator.t('marketplace_admin.response.a_welcome_job_is_already_running_for_this_pack'),
             "existing_task_id": existing_job["task_id"],
         })
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=translator)
 
     # Create directory if it doesn't exist
     if not pack_dir.exists():
@@ -1908,13 +1950,13 @@ async def pack_welcome_wizard_generate(
         logger.info("Welcome wizard job started for pack %s: task_id=%s", pack_id, result["task_id"])
         return JSONResponse({
             "success": True,
-            "message": "Job started",
+            "message": translator.t('marketplace_admin.response.job_started'),
             "task_id": result["task_id"],
             "status": result["status"],
         })
 
     logger.error("Failed to start welcome wizard job for pack %s: %s", pack_id, result.get("error"))
-    raise HTTPException(status_code=500, detail=result.get("error", "Failed to start job"))
+    raise HTTPException(status_code=500, detail=translator.t("marketplace_admin.response.job_start_failed"))
 
 
 # ---- Welcome Wizard: Modify ----
@@ -1926,24 +1968,25 @@ async def pack_welcome_wizard_modify(
     current_user: User = Depends(get_current_user),
 ):
     """Start a background job to modify an existing pack welcome page via AI Wizard."""
+    translator = get_translator(request, current_user)
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     claude_available, _ = is_claude_available()
     if not claude_available:
         raise HTTPException(
             status_code=503,
-            detail="AI Wizard is disabled until a verified OS sandbox is configured",
+            detail=translator.t('marketplace_admin.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is_configured'),
         )
 
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.invalid_json_body'))
     instructions = (body.get("instructions") or "").strip()
     if not instructions or len(instructions) < 10:
-        raise HTTPException(status_code=400, detail="Instructions must be at least 10 characters")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.instructions_must_be_at_least_10_characters'))
 
     try:
         timeout_minutes = int(body.get("timeout_minutes", 5))
@@ -1956,28 +1999,29 @@ async def pack_welcome_wizard_modify(
         instructions,
         label="pack welcome modify",
         pack_id=pack_id,
+        translator=translator,
     )
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
     existing_job = get_active_welcome_job_for_pack(pack_id)
     if existing_job:
         raise HTTPException(status_code=409, detail={
-            "message": "A welcome job is already running for this pack",
+            "message": translator.t('marketplace_admin.response.a_welcome_job_is_already_running_for_this_pack'),
             "existing_task_id": existing_job["task_id"],
         })
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=translator)
 
     if not pack_dir.exists():
-        raise HTTPException(status_code=404, detail="Pack directory not found")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.pack_directory_not_found'))
 
     # Check if there are welcome files to modify
     files = list_welcome_files(str(pack_dir))
     if files["total_count"] == 0:
-        raise HTTPException(status_code=400, detail="No welcome files to modify. Use 'Create new' instead.")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.no_welcome_files_to_modify_use_create_new_instead'))
 
     product_description = await _build_pack_product_description(pack_row, pack_id)
 
@@ -2006,38 +2050,40 @@ async def pack_welcome_wizard_modify(
         logger.info("Welcome modify wizard job started for pack %s: task_id=%s", pack_id, result["task_id"])
         return JSONResponse({
             "success": True,
-            "message": "Job started",
+            "message": translator.t('marketplace_admin.response.job_started'),
             "task_id": result["task_id"],
             "status": result["status"],
         })
 
     logger.error("Failed to start welcome modify wizard job for pack %s: %s", pack_id, result.get("error"))
-    raise HTTPException(status_code=500, detail=result.get("error", "Failed to start job"))
+    raise HTTPException(status_code=500, detail=translator.t("marketplace_admin.response.job_start_failed"))
 
 
 # ---- Welcome Wizard: Status ----
 
 @router.get("/api/welcome/pack/{pack_id}/ai/status/{task_id}")
 async def pack_welcome_wizard_status(
+    request: Request,
     pack_id: int,
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
     """Get the status of a pack welcome page generation/modification job."""
+    translator = get_translator(request, current_user)
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
     job = get_job(task_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_admin.response.job_not_found'))
 
     if job.get("pack_id") != pack_id:
-        raise HTTPException(status_code=403, detail="Job does not belong to this pack")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_admin.response.job_does_not_belong_to_this_pack'))
 
     response = {
         "success": True,
@@ -2060,7 +2106,7 @@ async def pack_welcome_wizard_status(
             # Column may not exist yet until migration runs
             logger.warning("Could not update has_welcome_page for pack %s: %s", pack_id, e)
     elif job["status"] in ("failed", "timeout"):
-        response["error"] = job.get("error")
+        response["error"] = translator.t("marketplace_admin.response.job_timeout" if job["status"] == "timeout" else "marketplace_admin.response.job_failed")
 
     return JSONResponse(response)
 
@@ -2069,17 +2115,19 @@ async def pack_welcome_wizard_status(
 
 @router.get("/api/welcome/pack/{pack_id}/ai/active-job")
 async def pack_welcome_wizard_active_job(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """Check if there's an active (pending/running) welcome job for this pack."""
+    translator = get_translator(request, current_user)
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
     job = get_active_welcome_job_for_pack(pack_id)
     if job:
@@ -2097,19 +2145,21 @@ async def pack_welcome_wizard_active_job(
 
 @router.get("/api/welcome/pack/{pack_id}/files")
 async def pack_welcome_list_files(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """List all files in the pack's welcome page directory."""
+    translator = get_translator(request, current_user)
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=translator)
 
     if not pack_dir.exists():
         return JSONResponse({
@@ -2125,22 +2175,24 @@ async def pack_welcome_list_files(
 
 @router.delete("/api/welcome/pack/{pack_id}/files")
 async def pack_welcome_delete_all_files(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """Delete all welcome page files for a pack (preserves images)."""
+    translator = get_translator(request, current_user)
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=translator)
 
     if not pack_dir.exists():
-        return JSONResponse({"success": True, "message": "No files to delete", "deleted_count": 0})
+        return JSONResponse({"success": True, "message": translator.t('marketplace_admin.response.no_files_to_delete'), "deleted_count": 0})
 
     logger.info("Deleting welcome files for pack %s, user %s", pack_id, current_user.id)
     result = delete_all_welcome_files(str(pack_dir), keep_images=True)
@@ -2154,32 +2206,34 @@ async def pack_welcome_delete_all_files(
             logger.warning("Could not update has_welcome_page for pack %s: %s", pack_id, e)
         return JSONResponse({
             "success": True,
-            "message": result.get("message", "Files deleted"),
+            "message": translator.t("marketplace_admin.response.files_deleted"),
             "deleted_count": result.get("deleted_count", 0),
         })
 
-    raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete files"))
+    raise HTTPException(status_code=500, detail=translator.t("marketplace_admin.response.files_delete_failed"))
 
 
 # ---- Files: List ----
 
 @router.get("/api/landing/pack/{pack_id}/files")
 async def pack_landing_list_files(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """List all files in the pack's landing page directory."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     if not pack_dir.exists():
         return JSONResponse({
@@ -2195,39 +2249,41 @@ async def pack_landing_list_files(
 
 @router.delete("/api/landing/pack/{pack_id}/files")
 async def pack_landing_delete_all_files(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """Delete all landing page files for a pack (preserves images)."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     if not pack_dir.exists():
-        return JSONResponse({"success": True, "message": "No files to delete", "deleted_count": 0})
+        return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
 
     logger.info("Deleting landing files for pack %s, user %s", pack_id, current_user.id)
     result = delete_all_landing_files(str(pack_dir), keep_images=True)
 
     # Update has_custom_landing to False since we just deleted everything
-    await _update_has_custom_landing(pack_id, pack_dir, pack_row.get("public_id"))
+    await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
 
     if result["success"]:
         return JSONResponse({
             "success": True,
-            "message": result.get("message", "Files deleted"),
+            "message": tr.t('landing_builder.response.files_deleted'),
             "deleted_count": result.get("deleted_count", 0),
         })
 
-    raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete files"))
+    raise HTTPException(status_code=500, detail=tr.t('landing_builder.response.failed_to_delete_files'))
 
 
 # ---- Pages: Create ----
@@ -2239,25 +2295,26 @@ async def pack_landing_create_page(
     current_user: User = Depends(get_current_user),
 ):
     """Create a new HTML page in the pack landing directory."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_json_body'))
     page_name = (body.get("page_name") or "").strip().lower()
     if not page_name or not re.match(r"^[a-zA-Z0-9_-]+$", page_name):
-        raise HTTPException(status_code=400, detail="Invalid page name")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_page_name'))
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     # Ensure directory exists
     if not pack_dir.exists():
@@ -2265,7 +2322,7 @@ async def pack_landing_create_page(
 
     page_path = pack_dir / f"{page_name}.html"
     if page_path.exists():
-        raise HTTPException(status_code=400, detail="Page already exists")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.page_already_exists'))
 
     # Create with basic template
     page_path.write_text(
@@ -2289,44 +2346,46 @@ async def pack_landing_create_page(
 
     # Update has_custom_landing if we just created home
     if page_name == "home":
-        await _update_has_custom_landing(pack_id, pack_dir, pack_row.get("public_id"))
+        await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
 
-    return JSONResponse({"success": True, "message": f"Page '{page_name}' created successfully"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.page_value1_created_successfully', value1=page_name)})
 
 
 # ---- Pages: Delete ----
 
 @router.delete("/api/landing/pack/{pack_id}/pages/{page_name}")
 async def pack_landing_delete_page(
+    request: Request,
     pack_id: int,
     page_name: str,
     current_user: User = Depends(get_current_user),
 ):
     """Delete an HTML page from the pack landing directory."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=tr)
 
     if not page_name or not re.match(r"^[a-zA-Z0-9_-]+$", page_name):
-        raise HTTPException(status_code=400, detail="Invalid page name")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_page_name'))
 
     if page_name.lower() == "home":
-        raise HTTPException(status_code=400, detail="Cannot delete the home page")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.cannot_delete_the_home_page'))
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     page_path = pack_dir / f"{page_name}.html"
 
     if not page_path.is_file():
-        raise HTTPException(status_code=404, detail="Page not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.page_not_found'))
 
     page_path.unlink()
-    return JSONResponse({"success": True, "message": f"Page '{page_name}' deleted successfully"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.page_value1_deleted_successfully', value1=page_name)})
 
 
 # ---- Pages: Edit (HTML editor page) ----
@@ -2339,21 +2398,22 @@ async def pack_landing_edit_page(
     current_user: User = Depends(get_current_user),
 ):
     """Render the CodeMirror editor for a pack landing page."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
 
     if not re.match(r"^[a-zA-Z0-9_-]+$", section):
-        raise HTTPException(status_code=400, detail="Invalid section name")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_section_name'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     # Ensure directory exists
     if not pack_dir.exists():
@@ -2378,8 +2438,8 @@ async def pack_landing_edit_page(
     pack_info = {"name": pack_row["name"], "created_by_username": username}
 
     # Build pack public URL for TEST button
-    public_id = pack_row.get("public_id")
-    slug = pack_row.get("slug") or slugify(pack_row["name"])
+    public_id = pack_row["public_id"]
+    slug = pack_row["slug"] or slugify(pack_row["name"])
     base_url = str(request.base_url).rstrip("/")
     pack_public_url = f"{base_url}/pack/{public_id}/{slug}/" if public_id else ""
 
@@ -2406,21 +2466,22 @@ async def pack_landing_save_page(
     current_user: User = Depends(get_current_user),
 ):
     """Save a pack landing page from the CodeMirror editor (base64-encoded content)."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
     if not re.match(r"^[a-zA-Z0-9_-]+$", section):
-        raise HTTPException(status_code=400, detail="Invalid section name")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_section_name'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     # Ensure directory exists
     if not pack_dir.exists():
@@ -2434,9 +2495,9 @@ async def pack_landing_save_page(
     # Fix SEO metadata with absolute URLs when saving the home page
     if section.lower() == "home":
         primary_domain = os.getenv("PRIMARY_APP_DOMAIN", "")
-        public_id = pack_row.get("public_id")
+        public_id = pack_row["public_id"]
         if primary_domain and public_id:
-            pack_slug = pack_row.get("slug") or slugify(pack_row["name"])
+            pack_slug = pack_row["slug"] or slugify(pack_row["name"])
             canonical = f"https://{primary_domain}/pack/{public_id}/{pack_slug}/"
             content = fix_landing_seo_tags(content, canonical, canonical)
 
@@ -2449,9 +2510,9 @@ async def pack_landing_save_page(
 
     # Update has_custom_landing if section is home
     if section.lower() == "home":
-        await _update_has_custom_landing(pack_id, pack_dir, pack_row.get("public_id"))
+        await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
 
-    return JSONResponse({"success": True, "message": "Changes saved successfully"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.changes_saved_successfully')})
 
 
 # ---- Components: List page ----
@@ -2463,18 +2524,19 @@ async def pack_landing_list_components(
     current_user: User = Depends(get_current_user),
 ):
     """Render the components list page for a pack."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.authentication_required'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     _ensure_pack_directories(pack_dir)
 
     def list_files(directory, extension):
@@ -2510,23 +2572,24 @@ async def pack_landing_edit_component(
     current_user: User = Depends(get_current_user),
 ):
     """Render the editor for a pack landing component."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
 
     if component_type not in ALLOWED_COMPONENT_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid component type")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_component_type'))
 
     component_name = _secure_filename(component_name)
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     base_dir = pack_dir
 
     if component_type == "html":
@@ -2542,7 +2605,7 @@ async def pack_landing_edit_component(
     validated_path = validate_path_within_directory(filename, target_dir)
 
     if not validated_path.exists():
-        raise HTTPException(status_code=404, detail="Component not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.component_not_found'))
 
     with open(str(validated_path), "r", encoding="utf-8") as f:
         component_content = f.read()
@@ -2572,23 +2635,24 @@ async def pack_landing_save_component(
     current_user: User = Depends(get_current_user),
 ):
     """Save a pack landing component (base64-encoded content)."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
     if component_type not in ALLOWED_COMPONENT_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid component type")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_component_type'))
 
     component_name = _secure_filename(component_name)
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     _ensure_pack_directories(pack_dir)
 
     if component_type == "html":
@@ -2610,7 +2674,7 @@ async def pack_landing_save_component(
     with open(str(validated_path), "w", encoding="utf-8") as f:
         f.write(content)
 
-    return JSONResponse({"success": True, "message": "Component saved successfully"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.component_saved_successfully')})
 
 
 # ---- Components: Create ----
@@ -2622,32 +2686,33 @@ async def pack_landing_create_component(
     current_user: User = Depends(get_current_user),
 ):
     """Create a new component file for a pack landing page."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_json_body'))
     component_type = (body.get("component_type") or "").strip()
     component_name = (body.get("component_name") or "").strip()
 
     if component_type not in ALLOWED_COMPONENT_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid component type")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_component_type'))
     if not component_name:
-        raise HTTPException(status_code=400, detail="Component name is required")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.component_name_is_required'))
 
     component_name = _secure_filename(component_name)
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     _ensure_pack_directories(pack_dir)
 
     if component_type == "html":
@@ -2664,7 +2729,7 @@ async def pack_landing_create_component(
     validated_path = validate_path_within_directory(filename, target_dir)
 
     if validated_path.exists():
-        raise HTTPException(status_code=400, detail="Component already exists")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.component_already_exists'))
 
     with open(str(validated_path), "w", encoding="utf-8") as f:
         if component_type == "html":
@@ -2676,7 +2741,7 @@ async def pack_landing_create_component(
 
     return JSONResponse({
         "success": True,
-        "message": "Component created successfully",
+        "message": tr.t('landing_builder.response.component_created_successfully'),
         "redirect_url": f"/landing/pack/{pack_id}/components",
     })
 
@@ -2685,30 +2750,32 @@ async def pack_landing_create_component(
 
 @router.delete("/api/landing/pack/{pack_id}/components/{component_type}/{component_name}")
 async def pack_landing_delete_component(
+    request: Request,
     pack_id: int,
     component_type: str,
     component_name: str,
     current_user: User = Depends(get_current_user),
 ):
     """Delete a component file from a pack landing page."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
     if component_type not in {"html", "css", "js"}:
-        raise HTTPException(status_code=400, detail="Invalid component type")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_component_type'))
 
     if not component_name or not re.match(r"^[a-zA-Z0-9_-]+$", component_name):
-        raise HTTPException(status_code=400, detail="Invalid component name")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_component_name'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
     if component_type == "html":
         file_path = pack_dir / "templates" / "components" / f"{component_name}.html"
@@ -2718,32 +2785,34 @@ async def pack_landing_delete_component(
         file_path = pack_dir / "static" / "js" / f"{component_name}.js"
 
     if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Component not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.component_not_found'))
 
     file_path.unlink()
-    return JSONResponse({"success": True, "message": f"Component '{component_name}' deleted successfully"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.component_value1_deleted_successfully', value1=component_name)})
 
 
 # ---- Images: List ----
 
 @router.get("/api/landing/pack/{pack_id}/images")
 async def pack_landing_list_images(
+    request: Request,
     pack_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """List images in the pack's static/img/ directory."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     img_dir = pack_dir / "static" / "img"
 
     public_id = pack_row["public_id"]
@@ -2767,42 +2836,45 @@ async def pack_landing_list_images(
 
 @router.post("/api/landing/pack/{pack_id}/images")
 async def pack_landing_upload_images(
+    request: Request,
     pack_id: int,
     images: List[UploadFile] = File(...),
     names: List[str] = Form(...),
     current_user: User = Depends(get_current_user),
 ):
     """Upload images to the pack's static/img/ directory."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, username = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     img_dir = pack_dir / "static" / "img"
 
     uploaded_files = []
     for image, name in zip(images, names):
         if not image or not _allowed_image_file(image.filename):
-            raise HTTPException(status_code=400, detail=f"Invalid file format: {image.filename}")
+            raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_file_format_value1', value1=image.filename))
 
         # Validate image
         content = await image.read()
         if len(content) > MAX_IMAGE_UPLOAD_SIZE:
             raise HTTPException(
                 status_code=400,
-                detail=f"Image {image.filename} too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024)}MB",
+                detail=tr.t('landing_builder.response.image_value1_too_large_maximum_size_is_value2_mb', value1=image.filename, value2=tr.format_number(MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024), maximum_fraction_digits=0)),
             )
 
         stored_filename = await asyncio.to_thread(
             _save_pack_landing_image,
             content,
+            translator=tr,
             original_filename=image.filename,
             requested_name=name,
             img_dir=img_dir,
@@ -2814,7 +2886,7 @@ async def pack_landing_upload_images(
         })
 
     return JSONResponse({
-        "message": f"Successfully uploaded {len(uploaded_files)} images",
+        "message": tr.t('landing_builder.response.successfully_uploaded_value1_images', value1=tr.format_number(len(uploaded_files), maximum_fraction_digits=0)),
         "images": uploaded_files,
     })
 
@@ -2823,35 +2895,37 @@ async def pack_landing_upload_images(
 
 @router.delete("/api/landing/pack/{pack_id}/images/{image_id}")
 async def pack_landing_delete_image(
+    request: Request,
     pack_id: int,
     image_id: str,
     current_user: User = Depends(get_current_user),
 ):
     """Delete an image from a pack landing page's static/img/ directory."""
+    tr = get_translator(request, current_user)
     require_creator_tools_enabled()
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.not_authenticated'))
 
-    await _require_admin_or_user(current_user)
+    await _require_admin_or_user(current_user, translator=tr)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=tr)
 
-    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row)
+    pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
     img_dir = pack_dir / "static" / "img"
 
     safe_name = _secure_filename(image_id)
     if not safe_name:
-        raise HTTPException(status_code=400, detail="Invalid image filename")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_image_filename'))
 
     validated_path = validate_path_within_directory(safe_name, img_dir)
     if not validated_path.exists():
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.image_not_found'))
 
     validated_path.unlink()
-    return JSONResponse({"success": True, "message": "Image deleted successfully"})
+    return JSONResponse({"success": True, "message": tr.t('landing_builder.response.image_deleted_successfully')})
 
 
 # ---------------------------------------------------------------------------
@@ -2988,24 +3062,25 @@ async def api_explore_pack_items(pack_id: int):
 
 
 @router.post("/api/packs/{pack_id}/claim-free")
-async def api_claim_free_pack(pack_id: int, current_user: User = Depends(get_current_user)):
+async def api_claim_free_pack(pack_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Claim a free pack for the logged-in user."""
-    require_checkout_enabled()
+    translator = get_translator(request, current_user)
+    require_checkout_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=translator.t("marketplace.checkout.not_authenticated"))
 
     async with get_db_connection() as conn:
         pack = await get_pack(conn, pack_id)
         if not pack or pack["status"] != "published" or not pack["is_public"]:
-            raise HTTPException(status_code=404, detail="Pack not found")
+            raise HTTPException(status_code=404, detail=translator.t("marketplace.checkout.pack_not_found"))
 
         if pack["is_paid"]:
-            raise HTTPException(status_code=400, detail="This pack requires a purchase")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.pack_requires_purchase"))
 
         has_access = await user_has_pack_entitlement_access(conn, user_id=current_user.id, pack_id=pack_id)
         if has_access:
-            return JSONResponse({"message": "You already have access to this pack", "redirect": "/chat"})
+            return JSONResponse({"message": translator.t("marketplace.checkout.pack_owned"), "redirect": "/chat"})
 
         active_cursor = await conn.execute(
             """SELECT 1 FROM PACK_ITEMS
@@ -3015,7 +3090,7 @@ async def api_claim_free_pack(pack_id: int, current_user: User = Depends(get_cur
             (pack_id,)
         )
         if not await active_cursor.fetchone():
-            raise HTTPException(status_code=400, detail="This pack is currently unavailable")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.pack_unavailable"))
 
         await grant_pack_entitlement(
             conn,
@@ -3039,7 +3114,7 @@ async def api_claim_free_pack(pack_id: int, current_user: User = Depends(get_cur
                 logger.warning(f"Could not record creator relationship for free claim: {ucr_err}")
         await conn.commit()
 
-    return JSONResponse({"message": "Pack claimed successfully", "redirect": "/chat"})
+    return JSONResponse({"message": translator.t("marketplace.checkout.pack_claimed"), "redirect": "/chat"})
 
 
 @router.get("/api/packs/{pack_id}/check-access")
@@ -3057,13 +3132,14 @@ async def check_pack_access_endpoint(pack_id: int, current_user: User = Depends(
 @router.post("/api/packs/{pack_id}/purchase")
 async def api_purchase_pack(pack_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Create a Stripe Checkout Session to purchase a paid pack."""
-    require_checkout_enabled()
+    translator = get_translator(request, current_user)
+    require_checkout_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=translator.t("marketplace.checkout.not_authenticated"))
 
     if ios_purchase_blocked(request):
-        return ios_purchase_disabled_response()
+        return ios_purchase_disabled_response(message=translator.t("marketplace.checkout.ios_unavailable"))
 
     try:
         body = await request.json()
@@ -3075,17 +3151,17 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
     async with get_db_connection() as conn:
         pack = await get_pack(conn, pack_id)
         if not pack or pack["status"] != "published" or not pack["is_public"]:
-            raise HTTPException(status_code=404, detail="Pack not found")
+            raise HTTPException(status_code=404, detail=translator.t("marketplace.checkout.pack_not_found"))
 
         if not pack["is_paid"]:
-            raise HTTPException(status_code=400, detail="This pack is free. Use the claim endpoint instead.")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.pack_free"))
 
         if pack["created_by_user_id"] == current_user.id:
-            raise HTTPException(status_code=400, detail="You cannot purchase your own pack")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.pack_self_purchase"))
 
         has_access = await user_has_pack_entitlement_access(conn, user_id=current_user.id, pack_id=pack_id)
         if has_access:
-            return JSONResponse({"message": "You already have access to this pack", "redirect": "/chat"})
+            return JSONResponse({"message": translator.t("marketplace.checkout.pack_owned"), "redirect": "/chat"})
 
         active_cursor = await conn.execute(
             """SELECT 1 FROM PACK_ITEMS
@@ -3095,7 +3171,7 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
             (pack_id,)
         )
         if not await active_cursor.fetchone():
-            raise HTTPException(status_code=400, detail="This pack is currently unavailable")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.pack_unavailable"))
 
         original_price = float(pack["price"])
         final_amount = original_price
@@ -3106,7 +3182,7 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
             try:
                 discount = await validate_discount_code(discount_code, original_price, conn=conn)
             except DiscountError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+                raise HTTPException(status_code=exc.status_code, detail=discount_error_message(exc, translator)) from exc
             discount_value = discount.discount_value
             final_amount = discount.final_amount
 
@@ -3114,7 +3190,7 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
     if 0 < final_amount < 0.50:
         raise HTTPException(
             status_code=400,
-            detail=f"Final price after discount (${final_amount:.2f}) is below the minimum processing amount ($0.50). The discount must either cover the full price or leave at least $0.50."
+            detail=translator.t("marketplace.checkout.minimum_amount", amount=translator.format_currency(final_amount), minimum=translator.format_currency(0.50))
         )
 
     # True 100% discount (final_amount == 0): process immediately without Stripe
@@ -3127,9 +3203,9 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
                     try:
                         discount = await validate_discount_code(discount_code, original_price, conn=conn)
                     except DiscountError as exc:
-                        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+                        raise HTTPException(status_code=exc.status_code, detail=discount_error_message(exc, translator)) from exc
                     if discount.final_amount != 0:
-                        raise HTTPException(status_code=400, detail="Discount does not fully cover this payment")
+                        raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.discount_incomplete"))
 
                 # Inline create_pack_purchase (avoid intermediate commit)
                 purchase_cursor = await conn.execute(
@@ -3156,7 +3232,7 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
                 )
 
                 # Apply landing_reg_config to buyer
-                await _apply_pack_config_to_user(conn, pack, current_user.id, discount_pct=100)
+                await _apply_pack_config_to_user(conn, pack, current_user.id, discount_pct=100, translator=translator)
 
                 # Set current_prompt_id to first active prompt in pack
                 first_prompt_cursor = await conn.execute(
@@ -3211,14 +3287,14 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
             logger.info(f"Free purchase (100% discount): user={current_user.id}, pack={pack_id}, code={discount_code}")
 
         return JSONResponse({
-            "message": "Pack claimed successfully with discount",
+            "message": translator.t("marketplace.checkout.pack_discount_claimed"),
             "redirect": "/chat",
             "free_purchase": True
         })
 
     # Stripe is only needed when there's an actual charge
     if not STRIPE_SECRET_KEY:
-        raise HTTPException(status_code=503, detail="Payment service is not configured")
+        raise HTTPException(status_code=503, detail=translator.t("marketplace.checkout.not_configured"))
 
     # Create Stripe Checkout Session
     base_url = str(request.base_url).rstrip('/')
@@ -3230,19 +3306,19 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
             try:
                 discount = await claim_discount_usage_for_checkout(discount_code, original_price)
             except DiscountError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+                raise HTTPException(status_code=exc.status_code, detail=discount_error_message(exc, translator)) from exc
             discount_claimed = True
             discount_value = discount.discount_value
             final_amount = discount.final_amount
             if final_amount == 0:
                 raise HTTPException(
                     status_code=400,
-                    detail="Discount now fully covers this purchase. Please retry to claim it without Stripe.",
+                    detail=translator.t("marketplace.checkout.discount_now_full"),
                 )
             if 0 < final_amount < 0.50:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Final price after discount (${final_amount:.2f}) is below the minimum processing amount ($0.50). The discount must either cover the full price or leave at least $0.50."
+                    detail=translator.t("marketplace.checkout.minimum_amount", amount=translator.format_currency(final_amount), minimum=translator.format_currency(0.50))
                 )
 
         session = await asyncio.to_thread(
@@ -3254,12 +3330,13 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
                     'unit_amount': int(final_amount * 100),
                     'product_data': {
                         'name': pack["name"],
-                        'description': (pack["description"] or "AI prompt pack")[:500],
+                        'description': (pack["description"] or translator.t("marketplace.purchase.ai_pack"))[:500],
                     },
                 },
                 'quantity': 1,
             }],
             mode='payment',
+            locale=translator.language,
             success_url=f"{base_url}/pack-purchase-success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{base_url}/pack/{pack['public_id']}/{pack['slug']}/?cancelled=true",
             metadata={
@@ -3284,29 +3361,30 @@ async def api_purchase_pack(pack_id: int, request: Request, current_user: User =
                 user_id=current_user.id,
             )
         raise
-    except stripe.error.StripeError as e:
+    except Exception as e:
         if discount_claimed:
             await restore_discount_usage_for_checkout(
                 discount_code,
                 reference_id=discount_claim_reference,
                 user_id=current_user.id,
             )
-        logger.error(f"Stripe error creating pack checkout: {e}")
-        raise HTTPException(status_code=500, detail="Payment service error")
+        logger.error(f"Error creating pack checkout: {e}")
+        raise HTTPException(status_code=500, detail=translator.t("marketplace.checkout.service_error"))
 
 
 @router.get("/api/packs/{pack_id}/purchases")
-async def api_get_pack_purchases(pack_id: int, current_user: User = Depends(get_current_user)):
+async def api_get_pack_purchases(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
     """Return purchase history for a pack (admin or pack creator only)."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator=translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    await _require_admin_or_user(current_user)
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_admin.response.not_authenticated'))
+    await _require_admin_or_user(current_user, translator=translator)
 
     async with get_db_connection(readonly=True) as conn:
         pack_row = await get_pack(conn, pack_id)
-        await _require_pack_owner(pack_row, current_user)
+        await _require_pack_owner(pack_row, current_user, translator=translator)
         rows = await get_pack_purchases(conn, pack_id)
 
     purchases = [dict(r) for r in rows]
@@ -3321,7 +3399,7 @@ async def api_get_pack_purchases(pack_id: int, current_user: User = Depends(get_
     })
 
 
-async def _apply_pack_config_to_user(conn, pack, user_id, discount_pct=0):
+async def _apply_pack_config_to_user(conn, pack, user_id, discount_pct=0, *, translator):
     """Apply a pack's landing_reg_config to a user after purchase.
     discount_pct: 0-100, scales initial_balance proportionally.
     NOTE: Does NOT commit -- caller is responsible for committing the transaction."""
@@ -3367,7 +3445,7 @@ async def _apply_pack_config_to_user(conn, pack, user_id, discount_pct=0):
         if creator_balance <= 0:
             raise HTTPException(
                 status_code=503,
-                detail="This pack is temporarily unavailable"
+                detail=translator.t("marketplace.checkout.pack_unavailable")
             )
         # Only set billing_account_id if not already managed by someone else
         if cur_billing is None:
@@ -3444,18 +3522,20 @@ def _build_pack_filesystem_path(username: str, pack_id: int, pack_name: str) -> 
     )
 
 
-def _landing_404() -> HTMLResponse:
+def _landing_404(translator=None) -> HTMLResponse:
     """Minimal 404 page for pack landings."""
+    translator = translator or Translator('en')
+    not_found = escape(translator.t('pack_public.not_found'))
     return HTMLResponse(
-        content='<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        content=f'<!DOCTYPE html><html lang="{translator.language}"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
-        '<title>404 - Not Found</title><style>'
+        f'<title>404 - {not_found}</title><style>'
         'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
         'display:flex;align-items:center;justify-content:center;min-height:100vh;'
         'margin:0;background:#f5f5f5;color:#333}'
         '.c{text-align:center;padding:2rem}'
         'h1{font-size:6rem;margin:0;color:#ccc}p{font-size:1.2rem;color:#666}'
-        '</style></head><body><div class="c"><h1>404</h1><p>Page not found</p></div></body></html>',
+        f'</style></head><body><div class="c"><h1>404</h1><p>{not_found}</p></div></body></html>',
         status_code=404,
     )
 
@@ -3531,7 +3611,7 @@ async def pack_landing_static(
                 f"/pack/{public_id}/{slug}/static/{resource_path}"
             )
             if not isolated_url:
-                return creator_content_unavailable_response()
+                return creator_content_unavailable_response(get_translator(request))
             return RedirectResponse(isolated_url, status_code=302)
 
         pack_dir = cached["path"]
@@ -3567,22 +3647,23 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
     If has_custom_landing=true and home.html exists, serve the custom file.
     Otherwise render the default Jinja2 template with pack data.
     """
+    translator = get_translator(request)
     try:
-        require_public_landings_enabled()
+        require_public_landings_enabled(translator)
 
         if not re.match(r'^[a-zA-Z0-9]{8}$', public_id):
-            return _landing_404()
+            return _landing_404(translator)
 
         cached = await get_pack_landing_cached(public_id)
         if not cached:
-            return _landing_404()
+            return _landing_404(translator)
 
         # Only serve published, public packs
         if cached["status"] != "published" or not cached["is_public"]:
-            return _landing_404()
+            return _landing_404(translator)
 
         if slug != cached["slug"]:
-            return _landing_404()
+            return _landing_404(translator)
 
         pack_id = cached["pack_id"]
         is_preview = request.query_params.get("preview") == "1"
@@ -3600,10 +3681,10 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
                         request.query_params.get("preview_token"),
                         expected=expected,
                     ) is None:
-                        return _landing_404()
+                        return _landing_404(translator)
             elif is_preview:
                 if not await _can_preview_pack(request, cached["created_by_user_id"]):
-                    raise HTTPException(status_code=403, detail="Access denied")
+                    raise HTTPException(status_code=403, detail=translator.t("pack_public.access_denied"))
                 preview_token = sign_content_token(
                     {"purpose": "pack_preview", "pack_id": int(pack_id)},
                     ttl_seconds=300,
@@ -3613,7 +3694,7 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
                     {"preview": 1, "preview_token": preview_token},
                 )
                 if not isolated_url or not preview_token:
-                    return creator_content_unavailable_response()
+                    return creator_content_unavailable_response(get_translator(request))
                 return RedirectResponse(
                     isolated_url,
                     status_code=302,
@@ -3625,7 +3706,7 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
                     {"embed": 1} if is_embed else None,
                 )
                 if not isolated_url:
-                    return creator_content_unavailable_response()
+                    return creator_content_unavailable_response(get_translator(request))
                 return RedirectResponse(isolated_url, status_code=302)
 
             html_path = cached["path"] / "home.html"
@@ -3636,9 +3717,14 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
                 return HTMLResponse(content=html_content)
 
         if is_creator_content_request(request):
-            return _landing_404()
-        if is_preview and not await _can_preview_pack(request, cached["created_by_user_id"]):
-            raise HTTPException(status_code=403, detail="Access denied")
+            return _landing_404(translator)
+        current_user = await get_current_user(request)
+        translator = get_translator(request, current_user)
+        if is_preview and not (
+            current_user is not None
+            and (await current_user.is_admin or int(current_user.id) == int(cached["created_by_user_id"]))
+        ):
+            raise HTTPException(status_code=403, detail=translator.t("pack_public.access_denied"))
 
         # Default: render Jinja2 template (pack_items still queried fresh)
         async with get_db_connection(readonly=True) as conn:
@@ -3669,12 +3755,13 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
         }
         site_url = str(request.base_url).rstrip("/")
         context = {
+            **template_context(request),
             "request": request,
             "pack": pack_dict,
             "items": [dict(item) for item in items],
             "tags": tags,
             "is_paid": bool(pack_dict.get("is_paid")),
-            "price_display": f"${pack_dict['price']:.2f}" if pack_dict.get("is_paid") else "FREE",
+            "price_display": translator.format_currency(pack_dict["price"]) if pack_dict.get("is_paid") else translator.t("marketplace.store.free"),
             "base_url": f"/pack/{public_id}/{slug}",
             "site_url": site_url,
             "google_oauth_available": bool(GOOGLE_CLIENT_ID),
@@ -3685,10 +3772,10 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
         template_html = template_response.body.decode("utf-8")
         if not is_preview:
             template_html = _inject_pack_analytics(template_html, pack_id)
-        return HTMLResponse(content=template_html)
+        return HTMLResponse(content=template_html, headers={"Content-Language": translator.language, "Vary": "Cookie, Accept-Language"})
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error serving pack landing page: {e}")
-        return _landing_404()
+        return _landing_404(translator)

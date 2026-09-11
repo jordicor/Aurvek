@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
+import math
 import time
 from typing import Any, TYPE_CHECKING
 
 from ai_runtime.voice_resolution import resolve_default_voice
 from database import get_db_connection
-from integrations.telephony.audio import iter_pcmu_frames
+from integrations.telephony.audio import (
+    PCMU_SAMPLE_RATE_HZ,
+    PcmuFrame,
+    iter_pcmu_frames,
+)
 from integrations.telephony.greetings import (
     CachedPhoneAudio,
     GLOBAL_AUDIO_REVISION_CONFIG_KEY,
@@ -32,6 +37,7 @@ from integrations.telephony.media_streams import (
     build_mark_message,
     build_media_message,
 )
+from integrations.telephony.message_audio import PhoneMessageAudioRange
 from integrations.telephony.provider_repository import TelephonyProviderRepository
 from integrations.telephony.recording import LocalCallRecorder
 from integrations.telephony.snapshot import (
@@ -45,11 +51,18 @@ if TYPE_CHECKING:
 
 
 SendMessage = Callable[[Mapping[str, Any]], Awaitable[None]]
-PersistAudiblePrefix = Callable[[str, int, bool], Awaitable[int | None]]
+PersistAudiblePrefix = Callable[
+    [str, int, bool, PhoneMessageAudioRange | None],
+    Awaitable[int | None],
+]
 
 
 class CachedAudioPlaybackError(RuntimeError):
     """Activated phone audio could not be confirmed safely."""
+
+
+class _CachedPlaybackInterrupted(Exception):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +71,8 @@ class CachedAudioPlaybackResult:
     played_ms: int
     interrupted: bool
     message_id: int | None = None
+    audio_start_byte: int | None = field(default=None, compare=False)
+    audio_end_byte: int | None = field(default=None, compare=False)
 
 
 class CachedAudioPlayback:
@@ -87,6 +102,10 @@ class CachedAudioPlayback:
         self._result: CachedAudioPlaybackResult | None = None
         self._error: BaseException | None = None
         self._interrupted = False
+        self._recording_enabled = False
+        self._recorder: LocalCallRecorder | None = None
+        self._playback_start_ms: int | None = None
+        self._wire_audio_bytes = 0
         identity = f"{asset.cache_id}\n{asset.content_hash}".encode("utf-8")
         self._mark_name = f"cache-{hashlib.sha256(identity).hexdigest()[:20]}"
 
@@ -111,7 +130,12 @@ class CachedAudioPlayback:
 
         if self._persist is None:
             return None
-        return await self._persist(str(text), int(played_ms), bool(interrupted))
+        return await self._persist(
+            str(text),
+            int(played_ms),
+            bool(interrupted),
+            self._retained_audio_range(str(text), bool(interrupted)),
+        )
 
     async def run(
         self,
@@ -129,6 +153,9 @@ class CachedAudioPlayback:
         playback_start_ms = max(
             0, int((now - float(call_started_monotonic)) * 1_000)
         )
+        self._recording_enabled = recorder.enabled
+        self._recorder = recorder
+        self._playback_start_ms = playback_start_ms
         async with self._state_lock:
             if self._send_message is not None:
                 raise CachedAudioPlaybackError("cached audio playback already started")
@@ -138,18 +165,14 @@ class CachedAudioPlayback:
             self.ledger.bind_mark(self._mark_name)
         try:
             for frame in frames:
-                if self._interrupted:
+                try:
+                    await self._send_media_frame(
+                        frame,
+                        recorder=recorder,
+                        playback_start_ms=playback_start_ms,
+                    )
+                except _CachedPlaybackInterrupted:
                     break
-                await self._send(
-                    build_media_message(stream_sid=str(stream_sid), audio=frame.payload)
-                )
-                self.playback_clock.note_audio_sent(
-                    frame.payload, sent_at=float(self._monotonic())
-                )
-                recorder.record_assistant(
-                    frame.payload,
-                    start_ms=playback_start_ms + frame.start_ms,
-                )
             if not self._interrupted:
                 await self._send(
                     build_mark_message(
@@ -229,6 +252,7 @@ class CachedAudioPlayback:
         except Exception:
             if not tolerate_clear_failure:
                 raise
+        self._truncate_assistant_audio(text, interrupted=True)
         return await self._finish(
             text=text,
             played_ms=played_ms,
@@ -247,8 +271,14 @@ class CachedAudioPlayback:
         if self._result is not None:
             return self._result
         try:
+            audio_range = self._retained_audio_range(text, interrupted)
             message_id = (
-                await self._persist(text, int(played_ms), bool(interrupted))
+                await self._persist(
+                    text,
+                    int(played_ms),
+                    bool(interrupted),
+                    audio_range,
+                )
                 if self._persist is not None and text
                 else None
             )
@@ -257,6 +287,12 @@ class CachedAudioPlayback:
                 played_ms=int(played_ms),
                 interrupted=bool(interrupted),
                 message_id=message_id,
+                audio_start_byte=(
+                    audio_range.start_byte if audio_range is not None else None
+                ),
+                audio_end_byte=(
+                    audio_range.end_byte if audio_range is not None else None
+                ),
             )
         except BaseException as exc:
             self._error = exc
@@ -264,6 +300,86 @@ class CachedAudioPlayback:
             raise
         self._done.set()
         return self._result
+
+    def _retained_audio_range(
+        self,
+        text: str,
+        interrupted: bool,
+    ) -> PhoneMessageAudioRange | None:
+        if (
+            not text
+            or not self._recording_enabled
+            or self._playback_start_ms is None
+            or self._wire_audio_bytes <= 0
+        ):
+            return None
+        retained_bytes = self._wire_audio_bytes
+        if interrupted:
+            if not self.asset.literal_text.startswith(text):
+                raise CachedAudioPlaybackError(
+                    "cached phone prefix is not aligned to its audio"
+                )
+            completed_characters = len(text)
+            if completed_characters <= 0:
+                return None
+            boundary_ms = self.asset.alignment.character_end_ms[
+                completed_characters - 1
+            ]
+            retained_bytes = min(
+                retained_bytes,
+                max(
+                    1,
+                    math.ceil(boundary_ms * PCMU_SAMPLE_RATE_HZ / 1_000),
+                ),
+            )
+        start_byte = self._playback_start_ms * PCMU_SAMPLE_RATE_HZ // 1_000
+        return PhoneMessageAudioRange(
+            start_byte=start_byte,
+            end_byte=start_byte + retained_bytes,
+        )
+
+    def _truncate_assistant_audio(self, text: str, *, interrupted: bool) -> None:
+        recorder = self._recorder
+        if (
+            recorder is None
+            or not recorder.enabled
+            or self._playback_start_ms is None
+        ):
+            return
+        audio_range = self._retained_audio_range(text, interrupted)
+        end_byte = (
+            audio_range.end_byte
+            if audio_range is not None
+            else self._playback_start_ms * PCMU_SAMPLE_RATE_HZ // 1_000
+        )
+        recorder.truncate_assistant(end_byte=end_byte)
+
+    async def _send_media_frame(
+        self,
+        frame: PcmuFrame,
+        *,
+        recorder: LocalCallRecorder,
+        playback_start_ms: int,
+    ) -> None:
+        async with self._send_lock:
+            async with self._state_lock:
+                if self._interrupted:
+                    raise _CachedPlaybackInterrupted
+            await self._send_message(
+                build_media_message(
+                    stream_sid=str(self._stream_sid),
+                    audio=frame.payload,
+                )
+            )
+            self.playback_clock.note_audio_sent(
+                frame.payload,
+                sent_at=float(self._monotonic()),
+            )
+            recorder.record_assistant(
+                frame.payload,
+                start_ms=playback_start_ms + frame.start_ms,
+            )
+            self._wire_audio_bytes += len(frame.payload)
 
     async def _send(self, message: Mapping[str, Any]) -> None:
         sender = self._send_message
@@ -321,7 +437,12 @@ class PhoneCachedAudioBackend:
             audio_revision=asset.audio_revision,
         )
 
-        async def persist(text: str, played_ms: int, interrupted: bool) -> int | None:
+        async def persist(
+            text: str,
+            played_ms: int,
+            interrupted: bool,
+            audio_range: PhoneMessageAudioRange | None,
+        ) -> int | None:
             return await self.repository.persist_greeting_prefix(
                 call_id=context.call_id,
                 greeting_id=int(asset.greeting_id),
@@ -330,6 +451,7 @@ class PhoneCachedAudioBackend:
                 interrupted=interrupted,
                 fencing_token=context.foreground_epoch,
                 lease_owner=context.foreground_lease_owner,
+                audio_range=audio_range,
             )
 
         return CachedAudioPlayback(asset, persist_audible_prefix=persist)

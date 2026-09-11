@@ -1,10 +1,12 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_operations'] %}
 
-{% block title %}Chat Administration - AURVEK{% endblock %}
+{% block title %}{{ t('admin_operations.chat_administration_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
     .chat-name-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chat-user-link { display: block; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .modal-conv-info { font-size: 0.85rem; padding: 10px 14px; background: var(--bg-tertiary, #f8f9fa); border-radius: 6px; margin-bottom: 12px; }
     .load-more-btn { display: block; margin: 10px auto; }
     tr[data-locked="1"] { border-left: 3px solid var(--danger, #dc3545); }
@@ -19,28 +21,28 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Chat Administration{% endblock %}
+{% block page_title %}{{ t('admin_operations.chat_administration') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Manage conversations and chat data</p>
+<p class="page-subtitle">{{ t('admin_operations.manage_conversations_and_chat_data') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <span class="stat-badge" style="margin-right: 8px;">
     <i class="fas fa-list"></i>
     {% if conversations|length > 0 %}
-        Showing <strong>{{ showing_start }}-{{ showing_end }}</strong> of <strong>{{ stats.total }}</strong>
+        {{ t('admin_operations.range', start=format_number(showing_start), end=format_number(showing_end), total=format_number(stats.total)) }}
     {% else %}
-        <strong>0</strong> conversations
+        {{ t('admin_operations.range', start=0, end=0, total=0) }}
     {% endif %}
 </span>
 <span class="stat-badge" style="margin-right: 12px;">
-    <i class="fas fa-lock"></i> <strong>{{ stats.locked }}</strong> Locked
+    <i class="fas fa-lock"></i> {{ t('admin_operations.stats.locked', count=format_number(stats.locked)) }}
 </span>
 <button id="selectBtn" onclick="toggleSelection()" class="btn btn-outline-secondary btn-sm">
-    <i class="fas fa-check-square me-1"></i> Select
+    <i class="fas fa-check-square me-1"></i> {{ t('admin_operations.select') }}
 </button>
-<a href="/admin/chat" class="btn btn-outline-primary btn-sm" title="Refresh">
+<a href="/admin/chat" class="btn btn-outline-primary btn-sm" title="{{ t('admin_operations.refresh') }}">
     <i class="fas fa-sync-alt"></i>
 </a>
 {% endblock %}
@@ -51,7 +53,7 @@
 <!-- Filters -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-filter"></i> Filters
+        <i class="fas fa-filter"></i> {{ t('admin_operations.filters') }}
     </div>
     <form method="get" action="/admin/chat" id="filterForm">
         <input type="hidden" name="page" value="1">
@@ -60,17 +62,17 @@
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Search</label>
+                    <label class="form-label">{{ t('admin_operations.search') }}</label>
                     <input name="search" type="text" class="form-control" id="filterSearch"
-                           placeholder="Username or chat name..."
+                           placeholder="{{ t('admin_operations.username_or_chat_name') }}"
                            value="{{ filters.search }}" autocomplete="off">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Bot</label>
+                    <label class="form-label">{{ t('admin_operations.bot') }}</label>
                     <select name="prompt_id" class="form-select">
-                        <option value="">All prompts</option>
+                        <option value="">{{ t('admin_operations.all_prompts') }}</option>
                         {% for p in prompts %}
                         <option value="{{ p.id }}" {% if filters.prompt_id == p.id %}selected{% endif %}>{{ p.name }}</option>
                         {% endfor %}
@@ -79,18 +81,18 @@
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Status</label>
+                    <label class="form-label">{{ t('admin_operations.status') }}</label>
                     <select name="locked" class="form-select">
-                        <option value="">All statuses</option>
-                        <option value="locked" {% if filters.locked == 'locked' %}selected{% endif %}>Locked</option>
-                        <option value="unlocked" {% if filters.locked == 'unlocked' %}selected{% endif %}>Unlocked</option>
+                        <option value="">{{ t('admin_operations.all_statuses') }}</option>
+                        <option value="locked" {% if filters.locked == 'locked' %}selected{% endif %}>{{ t('admin_operations.locked') }}</option>
+                        <option value="unlocked" {% if filters.locked == 'unlocked' %}selected{% endif %}>{{ t('admin_operations.unlocked') }}</option>
                     </select>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Conversation ID</label>
-                    <input name="conversation_id" type="text" class="form-control" placeholder="Filter by ID"
+                    <label class="form-label">{{ t('admin_operations.conversation_id') }}</label>
+                    <input name="conversation_id" type="text" class="form-control" placeholder="{{ t('admin_operations.filter_by_id') }}"
                            value="{{ filters.conversation_id }}">
                 </div>
             </div>
@@ -98,19 +100,19 @@
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Date from</label>
+                    <label class="form-label">{{ t('admin_operations.date_from') }}</label>
                     <input name="date_from" type="date" class="form-control" value="{{ filters.date_from }}">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Date to</label>
+                    <label class="form-label">{{ t('admin_operations.date_to') }}</label>
                     <input name="date_to" type="date" class="form-control" value="{{ filters.date_to }}">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Min tokens</label>
+                    <label class="form-label">{{ t('admin_operations.min_tokens') }}</label>
                     <input name="min_tokens" type="number" class="form-control" placeholder="0"
                            value="{{ filters.min_tokens }}" min="0">
                 </div>
@@ -119,10 +121,10 @@
         </div>
         <div class="mt-2 d-flex gap-2">
             <button type="submit" class="btn btn-primary btn-sm">
-                <i class="fas fa-search me-1"></i> Apply
+                <i class="fas fa-search me-1"></i> {{ t('admin_operations.apply') }}
             </button>
             <a href="/admin/chat" class="btn btn-outline-secondary btn-sm">
-                <i class="fas fa-times me-1"></i> Clear
+                <i class="fas fa-times me-1"></i> {{ t('admin_operations.clear') }}
             </a>
         </div>
     </form>
@@ -131,12 +133,12 @@
 <!-- Conversations Table -->
 <div class="section-container">
     <div class="section-title" style="display: flex; align-items: center; justify-content: space-between;">
-        <span><i class="fas fa-comments"></i> Conversations</span>
-        <span class="btn-group btn-group-sm" role="group" aria-label="Rows per page" style="font-weight: 400;">
+        <span><i class="fas fa-comments"></i> {{ t('admin_operations.conversations_2') }}</span>
+        <span class="btn-group btn-group-sm" role="group" aria-label="{{ t('admin_operations.rows_per_page') }}" style="font-weight: 400;">
             {% for n in [25, 50, 100] %}
             <a href="/admin/chat?{{ base_qs|replace('per_page=' ~ per_page, 'per_page=' ~ n) }}&page=1"
                class="btn btn-outline-secondary{% if per_page == n %} active{% endif %}"
-               style="font-size: 0.75rem; padding: 2px 10px;">{{ n }}</a>
+               style="font-size: 0.75rem; padding: 2px 10px;">{{ format_number(n) }}</a>
             {% endfor %}
         </span>
     </div>
@@ -144,17 +146,17 @@
     <!-- Bulk Toolbar (hidden by default) -->
     <div class="table-toolbar" id="bulkToolbar" style="display: none;">
         <div class="toolbar-left">
-            <span><strong id="selectedCount">0</strong> selected</span>
+            <span><strong id="selectedCount">{{ t('admin_operations.selected_count', count=0) }}</strong></span>
         </div>
         <div class="toolbar-right">
             <button onclick="bulkAction('lock')" class="btn btn-outline-warning btn-sm">
-                <i class="fas fa-lock me-1"></i> Lock
+                <i class="fas fa-lock me-1"></i> {{ t('admin_operations.lock') }}
             </button>
             <button onclick="bulkAction('unlock')" class="btn btn-outline-success btn-sm">
-                <i class="fas fa-lock-open me-1"></i> Unlock
+                <i class="fas fa-lock-open me-1"></i> {{ t('admin_operations.unlock') }}
             </button>
             <button onclick="bulkAction('delete')" class="btn btn-outline-danger btn-sm">
-                <i class="fas fa-trash me-1"></i> Delete
+                <i class="fas fa-trash me-1"></i> {{ t('admin_operations.delete') }}
             </button>
         </div>
     </div>
@@ -167,14 +169,14 @@
                         <input type="checkbox" id="selectAll" onclick="toggleSelectAll()" style="display: none; cursor: pointer;">
                     </th>
                     <th class="sortable {% if sort_by == 'id' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('id')" style="width:60px;">ID</th>
-                    <th class="sortable {% if sort_by == 'chat_name' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('chat_name')">Chat</th>
-                    <th class="sortable {% if sort_by == 'username' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('username')">User</th>
-                    <th class="sortable {% if sort_by == 'prompt_name' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('prompt_name')">Bot</th>
-                    <th class="sortable {% if sort_by == 'message_count' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('message_count')" title="Messages"><i class="fas fa-comment"></i></th>
-                    <th class="sortable {% if sort_by == 'total_tokens' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('total_tokens')" title="Tokens"><i class="fas fa-coins"></i></th>
-                    <th class="sortable {% if sort_by == 'start_date' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('start_date')" title="Created"><i class="fas fa-calendar-plus"></i></th>
-                    <th class="sortable {% if sort_by == 'last_activity' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('last_activity')" title="Last Active"><i class="fas fa-clock"></i></th>
-                    <th class="sortable {% if sort_by == 'locked' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('locked')" title="Locked"><i class="fas fa-lock"></i></th>
+                    <th class="sortable {% if sort_by == 'chat_name' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('chat_name')">{{ t('admin_operations.chat') }}</th>
+                    <th class="sortable {% if sort_by == 'username' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('username')">{{ t('admin_operations.user') }}</th>
+                    <th class="sortable {% if sort_by == 'prompt_name' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('prompt_name')">{{ t('admin_operations.bot') }}</th>
+                    <th class="sortable {% if sort_by == 'message_count' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('message_count')" title="{{ t('admin_operations.messages') }}"><i class="fas fa-comment"></i></th>
+                    <th class="sortable {% if sort_by == 'total_tokens' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('total_tokens')" title="{{ t('admin_operations.tokens') }}"><i class="fas fa-coins"></i></th>
+                    <th class="sortable {% if sort_by == 'start_date' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('start_date')" title="{{ t('admin_operations.created') }}"><i class="fas fa-calendar-plus"></i></th>
+                    <th class="sortable {% if sort_by == 'last_activity' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('last_activity')" title="{{ t('admin_operations.last_active') }}"><i class="fas fa-clock"></i></th>
+                    <th class="sortable {% if sort_by == 'locked' %}sort-{{ sort_dir }}{% endif %}" onclick="sortBy('locked')" title="{{ t('admin_operations.locked') }}"><i class="fas fa-lock"></i></th>
                     <th style="width:40px;"></th>
                 </tr>
             </thead>
@@ -188,36 +190,32 @@
                     <td><strong>#{{ conv.id }}</strong></td>
                     <td class="chat-name-cell" title="{{ conv.chat_name or '' }}">{{ (conv.chat_name or '-')[:40] }}</td>
                     <td>
-                        <a href="/admin/chat?user_exact={{ conv.username|urlencode }}" class="text-decoration-none">
+                        <a href="/admin/chat?user_exact={{ conv.username|urlencode }}" class="chat-user-link text-decoration-none" title="{{ conv.username }}">
                             {{ conv.username }}
                         </a>
                     </td>
                     <td title="{{ conv.prompt_name or '' }}"><small>{{ (conv.prompt_name or '-')[:18] }}</small></td>
-                    <td>{{ conv.message_count }}</td>
-                    <td title="{{ '{:,}'.format(conv.total_tokens|int) }} tokens">
-                        {%- set tk = conv.total_tokens|int -%}
-                        {%- if tk >= 1000000 -%}{{ '%.1f'|format(tk / 1000000) }}M
-                        {%- elif tk >= 1000 -%}{{ '%.1f'|format(tk / 1000) }}K
-                        {%- else -%}{{ tk }}
-                        {%- endif -%}
+                    <td>{{ format_number(conv.message_count) }}</td>
+                    <td title="{{ t('admin_operations.tokens_count', count=conv.total_tokens|int) }}">
+                        {{ format_number(conv.total_tokens|int) }}
                     </td>
-                    <td><small>{{ conv.start_date[:10] if conv.start_date else '-' }}</small></td>
-                    <td title="{{ conv.last_activity or '' }}"><small>{{ conv.last_activity[5:16] if conv.last_activity else '-' }}</small></td>
+                    <td><time data-operation-date="{{ conv.start_date or '' }}" data-date-only>{{ conv.start_date[:10] if conv.start_date else '-' }}</time></td>
+                    <td title="{{ conv.last_activity or '' }}"><time data-operation-date="{{ conv.last_activity or '' }}">{{ conv.last_activity[5:16] if conv.last_activity else '-' }}</time></td>
                     <td>
                         {% if conv.locked %}
-                        <i class="fas fa-lock text-danger" title="{{ conv.locked_reason or 'Locked' }}"></i>
+                        <i class="fas fa-lock text-danger" title="{{ conv.locked_reason or t('admin_operations.locked') }}"></i>
                         {% endif %}
                     </td>
                     <td class="text-end">
                         <div class="dropdown">
-                            <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" title="Actions">
+                            <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" title="{{ t('admin_operations.actions') }}">
                                 <i class="fas fa-ellipsis-v"></i>
                             </button>
                             <ul class="dropdown-menu dropdown-menu-end">
-                                <li><a class="dropdown-item" href="#" onclick="viewConversation({{ conv.id }}); return false;"><i class="fas fa-eye me-2"></i>View</a></li>
-                                <li><a class="dropdown-item" href="#" onclick="toggleLock({{ conv.id }}, {{ 'false' if conv.locked else 'true' }}); return false;"><i class="fas fa-{{ 'lock-open' if conv.locked else 'lock' }} me-2"></i>{{ 'Unlock' if conv.locked else 'Lock' }}</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="viewConversation({{ conv.id }}); return false;"><i class="fas fa-eye me-2"></i>{{ t('admin_operations.view') }}</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="toggleLock({{ conv.id }}, {{ 'false' if conv.locked else 'true' }}); return false;"><i class="fas fa-{{ 'lock-open' if conv.locked else 'lock' }} me-2"></i>{{ t('admin_operations.unlock') if conv.locked else t('admin_operations.lock') }}</a></li>
                                 <li><hr class="dropdown-divider"></li>
-                                <li><a class="dropdown-item text-danger" href="#" onclick="deleteConversation({{ conv.id }}); return false;"><i class="fas fa-trash me-2"></i>Delete</a></li>
+                                <li><a class="dropdown-item text-danger" href="#" onclick="deleteConversation({{ conv.id }}); return false;"><i class="fas fa-trash me-2"></i>{{ t('admin_operations.delete') }}</a></li>
                             </ul>
                         </div>
                     </td>
@@ -226,7 +224,7 @@
                 <tr>
                     <td colspan="11" class="text-center text-muted py-4">
                         <i class="fas fa-comments fa-2x mb-2 d-block opacity-50"></i>
-                        No conversations found.
+                        {{ t('admin_operations.no_conversations_found') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -236,11 +234,11 @@
 
     <!-- Pagination -->
     {% if total_pages > 1 %}
-    <nav aria-label="Conversations pagination" class="mt-3">
+    <nav aria-label="{{ t('admin_operations.conversations_pagination') }}" class="mt-3">
         <ul class="pagination justify-content-center mb-0">
             <!-- Previous -->
             <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ page - 1 }}" aria-label="Previous">
+                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ page - 1 }}" aria-label="{{ t('admin_operations.previous') }}">
                     <span aria-hidden="true">&laquo;</span>
                 </a>
             </li>
@@ -260,7 +258,7 @@
             <!-- Neighbor pages around current (skip 1 and total_pages, shown separately) -->
             {% for p in range([page - 2, 2]|max, [page + 3, total_pages]|min) %}
             <li class="page-item {% if p == page %}active{% endif %}">
-                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ p }}">{{ p }}</a>
+                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ p }}">{{ format_number(p) }}</a>
             </li>
             {% endfor %}
 
@@ -274,13 +272,13 @@
             <!-- Last page (if more than 1 page) -->
             {% if total_pages > 1 %}
             <li class="page-item {% if page == total_pages %}active{% endif %}">
-                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ total_pages }}">{{ total_pages }}</a>
+                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ total_pages }}">{{ format_number(total_pages) }}</a>
             </li>
             {% endif %}
 
             <!-- Next -->
             <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ page + 1 }}" aria-label="Next">
+                <a class="page-link" href="/admin/chat?{{ base_qs }}&page={{ page + 1 }}" aria-label="{{ t('admin_operations.next') }}">
                     <span aria-hidden="true">&raquo;</span>
                 </a>
             </li>
@@ -294,15 +292,15 @@
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="modalTitle">Conversation Detail</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <h5 class="modal-title" id="modalTitle">{{ t('admin_operations.conversation_detail') }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('admin_operations.close') }}"></button>
             </div>
             <div class="modal-body" id="modalBody"></div>
             <div class="modal-footer">
                 <button id="modalLockBtn" class="btn btn-warning btn-sm" style="display: none;" onclick="modalToggleLock()">
-                    <i class="fas fa-lock"></i> Lock
+                    <i class="fas fa-lock"></i> {{ t('admin_operations.lock') }}
                 </button>
-                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">{{ t('admin_operations.close') }}</button>
             </div>
         </div>
     </div>
@@ -310,6 +308,24 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+    function formatOperationDate(value, dateOnly = false) {
+        if (!value) return '-';
+        let normalized = String(value).replace(' ', 'T');
+        if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)) normalized += 'Z';
+        const date = new Date(normalized);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return dateOnly
+            ? date.toLocaleDateString(AurvekI18n.locale, {timeZone: 'UTC'})
+            : date.toLocaleString(AurvekI18n.locale);
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('[data-operation-date]').forEach(element => {
+            element.textContent = formatOperationDate(element.dataset.operationDate, element.hasAttribute('data-date-only'));
+        });
+    });
+</script>
+
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
 {% endblock %}
@@ -366,12 +382,12 @@
             checks.forEach(function(c) { c.style.display = 'none'; c.checked = false; });
             selectAll.style.display = 'none';
             selectAll.checked = false;
-            btn.innerHTML = '<i class="fas fa-check-square me-1"></i> Select';
+            btn.innerHTML = '<i class="fas fa-check-square me-1"></i> ' + AurvekI18n.t('admin_operations.select') + '';
             toolbar.style.display = 'none';
         } else {
             checks.forEach(function(c) { c.style.display = 'inline'; });
             selectAll.style.display = 'inline';
-            btn.innerHTML = '<i class="fas fa-times me-1"></i> Cancel';
+            btn.innerHTML = '<i class="fas fa-times me-1"></i> ' + AurvekI18n.t('admin_operations.cancel') + '';
             toolbar.style.display = 'flex';
         }
         updateSelected();
@@ -385,13 +401,13 @@
 
     function updateSelected() {
         const count = document.querySelectorAll('.row-check:checked').length;
-        document.getElementById('selectedCount').textContent = count;
+        document.getElementById('selectedCount').textContent = AurvekI18n.t('admin_operations.selected_count', {count});
     }
 
     // --- Lock/Unlock ---
     function toggleLock(convId, lock) {
-        var title = lock ? 'Lock Conversation' : 'Unlock Conversation';
-        var msg = (lock ? 'Lock' : 'Unlock') + ' conversation #' + convId + '?';
+        var title = lock ? AurvekI18n.t('admin_operations.lock_conversation') : AurvekI18n.t('admin_operations.unlock_conversation');
+        var msg = AurvekI18n.t(lock ? 'admin_operations.confirm.lock' : 'admin_operations.confirm.unlock', {id: convId});
         NotificationModal.confirm(title, msg, async function() {
             try {
                 var resp = await fetch('/api/conversations/' + convId + '/lock', {
@@ -400,9 +416,9 @@
                     body: JSON.stringify({lock: lock})
                 });
                 if (resp.ok) location.reload();
-                else NotificationModal.error('Error', 'Failed to toggle lock');
-            } catch(e) { NotificationModal.error('Error', e.message); }
-        }, null, { type: lock ? 'warning' : 'info', confirmText: lock ? 'Lock' : 'Unlock' });
+                else NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('admin_operations.failed_to_toggle_lock'));
+            } catch(e) { NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('common.error.generic')); }
+        }, null, { type: lock ? 'warning' : 'info', confirmText: lock ? AurvekI18n.t('admin_operations.lock') : AurvekI18n.t('admin_operations.unlock') });
     }
 
     // --- Bulk Actions ---
@@ -411,7 +427,7 @@
         if (!ids.length) return;
 
         if (action === 'delete') {
-            NotificationModal.confirm('Delete Conversations', 'Delete ' + ids.length + ' conversation(s)? This cannot be undone.', async function() {
+            NotificationModal.confirm(AurvekI18n.t('admin_operations.delete_conversations'), AurvekI18n.t('admin_operations.confirm.bulk_delete', {count: ids.length}), async function() {
                 try {
                     var resp = await fetch('/admin/api/conversations/bulk_delete', {
                         method: 'POST',
@@ -419,13 +435,13 @@
                         body: JSON.stringify({conversation_ids: ids})
                     });
                     if (resp.ok) location.reload();
-                    else NotificationModal.error('Error', 'Failed to delete');
-                } catch(e) { NotificationModal.error('Error', e.message); }
-            }, null, { type: 'error', confirmText: 'Delete' });
+                    else NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('admin_operations.failed_to_delete'));
+                } catch(e) { NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('common.error.generic')); }
+            }, null, { type: 'error', confirmText: AurvekI18n.t('admin_operations.delete') });
         } else {
             var lock = (action === 'lock');
-            var title = lock ? 'Lock Conversations' : 'Unlock Conversations';
-            NotificationModal.confirm(title, (lock ? 'Lock' : 'Unlock') + ' ' + ids.length + ' conversation(s)?', async function() {
+            var title = lock ? AurvekI18n.t('admin_operations.lock_conversations') : AurvekI18n.t('admin_operations.unlock_conversations');
+            NotificationModal.confirm(title, AurvekI18n.t(lock ? 'admin_operations.confirm.bulk_lock' : 'admin_operations.confirm.bulk_unlock', {count: ids.length}), async function() {
                 try {
                     var resp = await fetch('/admin/api/conversations/bulk_lock', {
                         method: 'POST',
@@ -433,9 +449,9 @@
                         body: JSON.stringify({conversation_ids: ids, lock: lock})
                     });
                     if (resp.ok) location.reload();
-                    else NotificationModal.error('Error', 'Failed to update');
-                } catch(e) { NotificationModal.error('Error', e.message); }
-            }, null, { type: lock ? 'warning' : 'info', confirmText: lock ? 'Lock' : 'Unlock' });
+                    else NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('admin_operations.failed_to_update'));
+                } catch(e) { NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('common.error.generic')); }
+            }, null, { type: lock ? 'warning' : 'info', confirmText: lock ? AurvekI18n.t('admin_operations.lock') : AurvekI18n.t('admin_operations.unlock') });
         }
     }
 
@@ -445,13 +461,15 @@
     async function viewConversation(convId) {
         currentModalConvId = convId;
         oldestLoadedMsgId = null;
+        document.getElementById('modalLockBtn').style.display = 'none';
         const body = document.getElementById('modalBody');
-        body.innerHTML = '<div class="text-center py-4"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
-        document.getElementById('modalTitle').textContent = 'Conversation #' + convId;
+        body.innerHTML = '<div class="text-center py-4"><i class="fas fa-spinner fa-spin"></i> ' + AurvekI18n.t('admin_operations.loading') + '</div>';
+        document.getElementById('modalTitle').textContent = AurvekI18n.t('admin_operations.conversation_title', {id: convId});
         convModal.show();
 
         try {
             const resp = await fetch('/api/conversations/' + convId + '/messages');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const data = await resp.json();
             body.innerHTML = '';
 
@@ -459,21 +477,21 @@
             const info = data.conversation_info || {};
             const infoDiv = document.createElement('div');
             infoDiv.className = 'modal-conv-info';
-            let infoHtml = '<strong>Prompt:</strong> ' + escapeHtml(info.prompt_name || '-') +
-                ' | <strong>LLM:</strong> ' + escapeHtml((info.machine || '') + ' / ' + (info.model || ''));
-            if (info.message_count !== undefined) infoHtml += ' | <strong>Messages:</strong> ' + info.message_count;
-            if (info.total_tokens !== undefined) infoHtml += ' | <strong>Tokens:</strong> ' + Number(info.total_tokens).toLocaleString();
+            let infoHtml = '<strong>' + AurvekI18n.t('admin_operations.prompt_2') + '</strong> ' + escapeHtml(info.prompt_name || '-') +
+                ' | <strong>' + AurvekI18n.t('admin_operations.llm') + '</strong> ' + escapeHtml((info.machine || '') + ' / ' + (info.model || ''));
+            if (info.message_count !== undefined) infoHtml += ' | <strong>' + AurvekI18n.t('admin_operations.messages_2') + '</strong> ' + AurvekI18n.formatNumber(info.message_count);
+            if (info.total_tokens !== undefined) infoHtml += ' | <strong>' + AurvekI18n.t('admin_operations.tokens_2') + '</strong> ' + AurvekI18n.formatNumber(info.total_tokens);
             if (info.locked !== undefined) {
                 currentModalLocked = info.locked;
-                infoHtml += ' | <strong>Status:</strong> ' + (info.locked
-                    ? '<span class="text-danger"><i class="fas fa-lock"></i> Locked</span>'
-                    : '<span class="text-success">Active</span>');
+                infoHtml += ' | <strong>' + AurvekI18n.t('admin_operations.status_2') + '</strong> ' + (info.locked
+                    ? '<span class="text-danger"><i class="fas fa-lock"></i> ' + AurvekI18n.t('admin_operations.locked') + '</span>'
+                    : '<span class="text-success">' + AurvekI18n.t('admin_operations.active') + '</span>');
                 if (info.locked_reason) infoHtml += ' (' + escapeHtml(info.locked_reason) + ')';
                 const lockBtn = document.getElementById('modalLockBtn');
                 lockBtn.style.display = 'inline-block';
                 lockBtn.innerHTML = info.locked
-                    ? '<i class="fas fa-lock-open"></i> Unlock'
-                    : '<i class="fas fa-lock"></i> Lock';
+                    ? '<i class="fas fa-lock-open"></i> ' + AurvekI18n.t('admin_operations.unlock') + ''
+                    : '<i class="fas fa-lock"></i> ' + AurvekI18n.t('admin_operations.lock') + '';
                 lockBtn.className = info.locked ? 'btn btn-success btn-sm' : 'btn btn-warning btn-sm';
             }
             infoDiv.innerHTML = infoHtml;
@@ -484,7 +502,7 @@
                 const loadBtn = document.createElement('button');
                 loadBtn.className = 'btn btn-outline-secondary btn-sm load-more-btn';
                 loadBtn.id = 'loadOlderBtn';
-                loadBtn.textContent = 'Load older messages';
+                loadBtn.textContent = AurvekI18n.t('admin_operations.load_older_messages');
                 loadBtn.onclick = function() { loadOlderMessages(convId); };
                 body.appendChild(loadBtn);
             }
@@ -495,7 +513,7 @@
                 oldestLoadedMsgId = data.messages[0].id;
             }
         } catch(e) {
-            body.innerHTML = '<div class="text-center py-4 text-danger">Error loading messages.</div>';
+            body.innerHTML = '<div class="text-center py-4 text-danger">' + AurvekI18n.t('admin_operations.error_loading_messages') + '</div>';
         }
     }
 
@@ -506,6 +524,7 @@
 
         try {
             const resp = await fetch('/api/conversations/' + convId + '/messages?before_id=' + oldestLoadedMsgId);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const data = await resp.json();
             const body = document.getElementById('modalBody');
             const loadBtn = document.getElementById('loadOlderBtn');
@@ -531,8 +550,8 @@
             const meta = document.createElement('small');
             meta.className = 'text-muted d-block mb-2';
             meta.innerHTML = '<strong>' + (msg.type === 'user'
-                ? '<i class="fas fa-user me-1"></i>User'
-                : '<i class="fas fa-robot me-1"></i>Bot') + ':</strong> ' + escapeHtml(msg.date || '');
+                ? '<i class="fas fa-user me-1"></i>' + AurvekI18n.t('admin_operations.user') + ''
+                : '<i class="fas fa-robot me-1"></i>' + AurvekI18n.t('admin_operations.bot') + '') + ':</strong> ' + escapeHtml(formatOperationDate(msg.date));
             el.appendChild(meta);
 
             const content = msg.message || '';
@@ -585,13 +604,13 @@
 
     // --- Delete ---
     function deleteConversation(convId) {
-        NotificationModal.confirm('Delete Conversation', 'Delete conversation #' + convId + '? This cannot be undone.', async function() {
+        NotificationModal.confirm(AurvekI18n.t('admin_operations.delete_conversation'), AurvekI18n.t('admin_operations.confirm.delete', {id: convId}), async function() {
             try {
                 var resp = await fetch('/admin/api/conversations/' + convId, { method: 'DELETE' });
                 if (resp.ok) location.reload();
-                else NotificationModal.error('Error', 'Failed to delete');
-            } catch(e) { NotificationModal.error('Error', e.message); }
-        }, null, { type: 'error', confirmText: 'Delete' });
+                else NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('admin_operations.failed_to_delete'));
+            } catch(e) { NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('common.error.generic')); }
+        }, null, { type: 'error', confirmText: AurvekI18n.t('admin_operations.delete') });
     }
 </script>
 {% endblock %}

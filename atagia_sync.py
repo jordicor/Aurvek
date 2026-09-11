@@ -264,6 +264,18 @@ async def _sync_one_message(
             PhoneMemoryWriteBlocked,
             phone_memory_operation_lease,
         )
+        from memory.sync import _capture_sync_namespace
+
+        allowed, namespace = await _capture_sync_namespace(
+            provider="atagia", conversation_id=conversation_id,
+            user_id=user_id, message_id=message_id,
+        )
+        if not allowed:
+            summary.skipped_messages += 1
+            await _update_sync_state(conversation_id, message_id)
+            return
+        if namespace is not None:
+            ingest_kwargs["namespace"] = namespace
 
         async with phone_memory_operation_lease(
             conversation_id,
@@ -291,7 +303,8 @@ async def _sync_one_message(
                 changed = await _insert_message_link(
                     conn,
                     message_id=message_id,
-                    atagia_message_id=_aurvek_atagia_message_id(message_id),
+                    atagia_message_id=(namespace.provider_message_id(message_id)
+                                       if namespace is not None else _aurvek_atagia_message_id(message_id)),
                     conversation_id=conversation_id,
                     user_id=user_id,
                     role=role,
@@ -332,6 +345,14 @@ async def _ingest_with_transient_retries(
         (*TRANSIENT_INGEST_RETRY_DELAYS_SECONDS, None)
     ):
         try:
+            from memory.sync import _capture_sync_namespace
+
+            allowed, current = await _capture_sync_namespace(
+                provider="atagia", conversation_id=ingest_kwargs["conversation_id"],
+                user_id=ingest_kwargs["user_id"], message_id=message_id,
+            )
+            if not allowed or current != ingest_kwargs.get("namespace"):
+                raise RuntimeError("Memory destination is no longer authorized")
             ok = await bridge.ingest_message(**ingest_kwargs)
         except Exception as exc:
             if delay_seconds is None or not _is_transient_sqlite_lock_error(exc):

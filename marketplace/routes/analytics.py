@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from i18n import get_translator
 from auth import get_current_user, unauthenticated_response
 from captcha_service import get_captcha_config
 from common import GOOGLE_CLIENT_ID, SECURE_COOKIES, get_template_context, templates
@@ -25,7 +26,8 @@ router = APIRouter()
 @router.get("/user/landing-analytics")
 async def user_landing_analytics_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the landing page analytics dashboard."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return templates.TemplateResponse(
@@ -38,7 +40,7 @@ async def user_landing_analytics_page(request: Request, current_user: User = Dep
         )
 
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only users can access analytics")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_earnings.only_users_can_access_analytics'))
 
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("user_landing_analytics.html", context)
@@ -47,19 +49,20 @@ async def user_landing_analytics_page(request: Request, current_user: User = Dep
 @router.post("/api/analytics/track-visit")
 async def track_landing_visit(request: Request):
     """Track a public prompt or pack landing-page visit."""
-    require_public_landings_enabled()
+    translator = get_translator(request)
+    require_public_landings_enabled(translator)
 
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse(content={"error": "Invalid JSON"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('marketplace_earnings.invalid_json')}, status_code=400)
 
     prompt_id = data.get("prompt_id")
     pack_id = data.get("pack_id")
     if prompt_id and pack_id:
-        return JSONResponse(content={"error": "Cannot track both prompt_id and pack_id in a single visit"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('marketplace_earnings.cannot_track_both_prompt_id_and_pack_id_in_a_single_visit')}, status_code=400)
     if not prompt_id and not pack_id:
-        return JSONResponse(content={"error": "prompt_id or pack_id required"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('marketplace_earnings.prompt_id_or_pack_id_required')}, status_code=400)
 
     visitor_id = request.cookies.get("_aurvek_visitor")
     if not visitor_id:
@@ -91,7 +94,7 @@ async def track_landing_visit(request: Request):
                 prompt_id = None
 
         if not pack_id and not prompt_id:
-            return JSONResponse(content={"error": "Invalid or missing entity"}, status_code=400)
+            return JSONResponse(content={"error": translator.t('marketplace_earnings.invalid_or_missing_entity')}, status_code=400)
 
         if pack_id:
             await cursor.execute(
@@ -142,13 +145,14 @@ async def track_landing_visit(request: Request):
 @router.get("/api/user/landing-analytics")
 async def get_landing_analytics(request: Request, current_user: User = Depends(get_current_user)):
     """Get landing page analytics summary for all prompts owned by the user."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('marketplace_earnings.access_denied')}, status_code=403)
 
     today = datetime.now().strftime("%Y-%m-%d")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -259,13 +263,14 @@ async def get_landing_analytics(request: Request, current_user: User = Depends(g
 @router.get("/api/user/landing-analytics/{prompt_id}")
 async def get_prompt_analytics(prompt_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Get detailed analytics for a specific prompt."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('marketplace_earnings.access_denied')}, status_code=403)
 
     month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     async with get_db_connection(readonly=True) as conn:
@@ -277,7 +282,7 @@ async def get_prompt_analytics(prompt_id: int, request: Request, current_user: U
         )
         prompt = await cursor.fetchone()
         if not prompt:
-            return JSONResponse(content={"error": "Prompt not found"}, status_code=404)
+            return JSONResponse(content={"error": translator.t('marketplace_earnings.prompt_not_found')}, status_code=404)
 
         prompt_name = prompt[0]
         await cursor.execute(
@@ -344,15 +349,16 @@ async def get_prompt_analytics(prompt_id: int, request: Request, current_user: U
 
 
 @router.get("/api/user/pack-landing-analytics")
-async def get_pack_landing_analytics(current_user: User = Depends(get_current_user)):
+async def get_pack_landing_analytics(request: Request, current_user: User = Depends(get_current_user)):
     """Get landing page analytics for packs owned by the current user."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_earnings.not_authorized'))
 
     async with get_db_connection(readonly=True) as conn:
         if await current_user.is_admin:
@@ -409,27 +415,28 @@ async def get_pack_landing_analytics(current_user: User = Depends(get_current_us
 
 
 @router.get("/api/user/pack-landing-analytics/{pack_id}")
-async def get_pack_analytics_detail(pack_id: int, current_user: User = Depends(get_current_user)):
+async def get_pack_analytics_detail(request: Request, pack_id: int, current_user: User = Depends(get_current_user)):
     """Get detailed analytics for a specific pack landing page."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_earnings.not_authorized'))
 
     async with get_db_connection(readonly=True) as conn:
         if not await current_user.is_admin:
             pack = await conn.execute("SELECT created_by_user_id FROM PACKS WHERE id = ?", (pack_id,))
             pack_row = await pack.fetchone()
             if not pack_row or pack_row[0] != current_user.id:
-                raise HTTPException(status_code=404, detail="Pack not found")
+                raise HTTPException(status_code=404, detail=translator.t('marketplace_earnings.pack_not_found'))
 
         pack_info = await conn.execute("SELECT name FROM PACKS WHERE id = ?", (pack_id,))
         pack_name_row = await pack_info.fetchone()
         if not pack_name_row:
-            raise HTTPException(status_code=404, detail="Pack not found")
+            raise HTTPException(status_code=404, detail=translator.t('marketplace_earnings.pack_not_found'))
 
         stats = await (
             await conn.execute(
@@ -467,7 +474,7 @@ async def get_pack_analytics_detail(pack_id: int, current_user: User = Depends(g
         ref_rows = await (
             await conn.execute(
                 """
-                SELECT COALESCE(referrer, 'direct') as referrer, COUNT(*) as count
+                SELECT referrer, COUNT(*) as count
                 FROM LANDING_PAGE_ANALYTICS
                 WHERE pack_id = ? AND visit_timestamp > datetime('now', '-30 days')
                 GROUP BY referrer
@@ -491,14 +498,15 @@ async def get_pack_analytics_detail(pack_id: int, current_user: User = Depends(g
                 {"date": r[0], "visits": r[1], "visitors": r[2], "conversions": r[3]}
                 for r in daily_rows
             ],
-            "referrers": [{"referrer": r[0], "count": r[1]} for r in ref_rows],
+            "referrers": [{"referrer": r[0] if r[0] is not None else "direct", "count": r[1], "is_direct": not r[0]} for r in ref_rows],
         }
 
 
 @router.get("/my-earnings")
 async def my_earnings_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the creator earnings dashboard page."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return templates.TemplateResponse(
@@ -511,7 +519,7 @@ async def my_earnings_page(request: Request, current_user: User = Depends(get_cu
         )
 
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only creators can access earnings dashboard")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_earnings.only_creators_can_access_earnings_dashboard'))
 
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("creator_earnings.html", context)
@@ -520,13 +528,14 @@ async def my_earnings_page(request: Request, current_user: User = Depends(get_cu
 @router.get("/api/my-earnings")
 async def get_my_earnings(request: Request, current_user: User = Depends(get_current_user)):
     """Get creator earnings data for the dashboard."""
-    require_creator_tools_enabled()
+    translator = get_translator(request, current_user)
+    require_creator_tools_enabled(translator)
 
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('marketplace_earnings.access_denied')}, status_code=403)
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(

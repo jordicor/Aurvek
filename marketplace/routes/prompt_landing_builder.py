@@ -1,3 +1,5 @@
+from i18n import LANGUAGES, get_translator, Translator
+from babel.dates import format_datetime
 import asyncio
 import base64
 import io
@@ -83,32 +85,33 @@ _LANDING_SAVE_LOCK_DIR = JOBS_DIR / "save-locks"
 _LANDING_SAVE_LOCK_TIMEOUT_SECONDS = 30
 
 
-def _run_landing_publication_check(prompt_id: int, content: str) -> List[str]:
+def _run_landing_publication_check(prompt_id: int, content: str, translator=None) -> List[str]:
     """Run the private verifier synchronously, failing closed on any gap."""
     if not _PROMPT_PIPELINE_DIR.is_dir():
-        return [PUBLICATION_VERIFICATION_UNAVAILABLE]
+        return [translator.t("landing_publication.unavailable") if translator else PUBLICATION_VERIFICATION_UNAVAILABLE]
 
     try:
         truth_sheet = import_module("tools.prompt_pipeline.truth_sheet")
         verifier = import_module("tools.prompt_pipeline.verifier")
         truth = truth_sheet.load_truth_sheet(prompt_id)
         if truth is None:
-            return [PUBLICATION_VERIFICATION_UNAVAILABLE]
-        return verifier.check_publication_readiness(content, truth) or []
+            return [translator.t("landing_publication.unavailable") if translator else PUBLICATION_VERIFICATION_UNAVAILABLE]
+        return verifier.check_publication_readiness(content, truth, translator=translator) or []
     except Exception:
         logger.exception(
             "Landing publication verification failed for prompt %s",
             prompt_id,
         )
-        return [PUBLICATION_VERIFICATION_UNAVAILABLE]
+        return [translator.t("landing_publication.unavailable") if translator else PUBLICATION_VERIFICATION_UNAVAILABLE]
 
 
-async def _get_landing_publication_errors(prompt_id: int, content: str) -> List[str]:
+async def _get_landing_publication_errors(prompt_id: int, content: str, translator=None) -> List[str]:
     """Offload publication verification so its SQLite work cannot block async I/O."""
     return await asyncio.to_thread(
         _run_landing_publication_check,
         prompt_id,
         content,
+        translator=translator,
     )
 
 
@@ -160,8 +163,10 @@ async def _persist_landing_page(
     use_default_template: bool,
     prompt_info: dict,
     is_admin: bool,
+    translator=None,
 ) -> JSONResponse:
     """Persist one landing section while the prompt-level save lock is held."""
+    tr = translator or Translator("en")
     prompt_dir = create_prompt_directory(
         prompt_info["created_by_username"],
         prompt_id,
@@ -209,6 +214,7 @@ async def _persist_landing_page(
         publication_errors = await _get_landing_publication_errors(
             prompt_id,
             content,
+            translator=tr,
         )
         if publication_errors:
             logger.warning(
@@ -222,7 +228,7 @@ async def _persist_landing_page(
                     "success": True,
                     "published": False,
                     "publication_errors": publication_errors,
-                    "message": "Changes saved, but the landing was NOT published: fix the listed issues first.",
+                    "message": tr.t('landing_builder.response.changes_saved_but_the_landing_was_not_published_fix_the'),
                 }
             )
 
@@ -253,7 +259,7 @@ async def _persist_landing_page(
         {
             "success": True,
             "published": True,
-            "message": "Changes saved and section configuration updated!",
+            "message": tr.t('landing_builder.response.changes_saved_and_section_configuration_updated'),
         }
     )
 
@@ -291,8 +297,10 @@ def _save_prompt_landing_image(
     original_filename: str,
     requested_name: str,
     img_dir: Path,
+    translator=None,
 ) -> tuple[str, str]:
     """Validate and persist one prompt landing image off the event loop."""
+    tr = translator or Translator("en")
     filename = secure_filename(requested_name)
     ext = Path(original_filename).suffix.lower()
     if not filename.lower().endswith(tuple(ALLOWED_EXTENSIONS)):
@@ -306,7 +314,7 @@ def _save_prompt_landing_image(
             verified_image.verify()
     except (UnidentifiedImageError, OSError) as exc:
         raise _LandingImageValidationError(
-            f"Invalid image file: {original_filename}"
+            tr.t('landing_builder.response.invalid_image_file_value1', value1=original_filename)
         ) from exc
 
     try:
@@ -314,8 +322,7 @@ def _save_prompt_landing_image(
             width, height = decoded_image.size
             if width * height > MAX_IMAGE_PIXELS:
                 raise _LandingImageValidationError(
-                    f"Image {original_filename} dimensions too large. Maximum is "
-                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                    tr.t('landing_builder.response.image_value1_dimensions_too_large_maximum_is_value2_pixels', value1=original_filename, value2=tr.format_number(MAX_IMAGE_PIXELS, maximum_fraction_digits=0))
                 )
             decoded_image.load()
             converted_image = (
@@ -327,7 +334,7 @@ def _save_prompt_landing_image(
         raise
     except Exception as exc:
         raise _LandingImageValidationError(
-            f"Could not process image: {original_filename}"
+            tr.t('landing_builder.response.could_not_process_image_value1', value1=original_filename)
         ) from exc
 
     if converted_image is not None:
@@ -367,7 +374,8 @@ async def landing_config(
     """
     Configuration page for Public Profile / Landing Pages.
     """
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return _login_template(request)
@@ -377,10 +385,10 @@ async def landing_config(
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
             raise HTTPException(
                 status_code=403,
-                detail="Access denied. You don't have permission to manage this prompt.",
+                detail=tr.t('landing_builder.response.access_denied_you_don_t_have_permission_to_manage_this'),
             )
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
 
         async with get_db_connection(readonly=True) as conn:
             async with conn.execute(
@@ -418,8 +426,8 @@ async def landing_config(
                 "is_active": bool(domain_row[2]),
                 "activated_by_admin": bool(domain_row[3]),
                 "last_check": domain_row[4],
-                "verification_error": domain_row[5],
-                "activated_at": domain_row[6],
+                "verification_error": tr.t('landing_builder.ui.domain_verification_failed_check_your_dns_configuration_and_verify_again') if domain_row[5] else None,
+                "activated_at": format_datetime(datetime.fromisoformat(domain_row[6]), locale=LANGUAGES[tr.language].replace("-", "_")) if domain_row[6] else None,
             }
 
         user_slots = await get_user_slots_info(current_user.id)
@@ -497,7 +505,7 @@ async def landing_config(
         raise
     except Exception as e:
         logger.error(f"Error in admin_landing_config: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=tr.t('landing_builder.response.internal_server_error'))
 
 
 @router.post("/api/landing/{prompt_id}/pages", response_class=JSONResponse)
@@ -507,7 +515,8 @@ async def create_landing_page(
     current_user: User = Depends(get_current_user),
 ):
     """Create a new landing page for a prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -515,15 +524,15 @@ async def create_landing_page(
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         data = await request.json()
         page_name = data.get("page_name", "").strip().lower()
 
         if not page_name or not re.match(r"^[a-zA-Z0-9_-]+$", page_name):
-            return JSONResponse({"success": False, "message": "Invalid page name"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_page_name')}, status_code=400)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = create_prompt_directory(
             prompt_info["created_by_username"],
             prompt_id,
@@ -532,7 +541,7 @@ async def create_landing_page(
         page_path = os.path.join(prompt_dir, f"{page_name}.html")
 
         if os.path.exists(page_path):
-            return JSONResponse({"success": False, "message": "Page already exists"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.page_already_exists')}, status_code=400)
 
         default_dir = os.path.join(prompt_dir, "default")
         default_template = os.path.join(default_dir, f"{page_name}.html")
@@ -559,21 +568,23 @@ async def create_landing_page(
 </html>"""
                 )
 
-        return JSONResponse({"success": True, "message": f"Page '{page_name}' created successfully"})
+        return JSONResponse({"success": True, "message": tr.t('landing_builder.response.page_value1_created_successfully', value1=page_name)})
 
     except Exception as e:
         logger.error(f"Error creating landing page: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.delete("/api/landing/{prompt_id}/pages/{page_name}", response_class=JSONResponse)
 async def delete_landing_page(
+    request: Request,
     prompt_id: int,
     page_name: str,
     current_user: User = Depends(get_current_user),
 ):
     """Delete a landing page from a prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -581,36 +592,38 @@ async def delete_landing_page(
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         if not page_name or not re.match(r"^[a-zA-Z0-9_-]+$", page_name):
-            return JSONResponse({"success": False, "message": "Invalid page name"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_page_name')}, status_code=400)
 
         if page_name.lower() == "home":
-            return JSONResponse({"success": False, "message": "Cannot delete the home page"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.cannot_delete_the_home_page')}, status_code=400)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
         page_path = os.path.join(prompt_dir, f"{page_name}.html")
 
         if not os.path.exists(page_path):
-            return JSONResponse({"success": False, "message": "Page not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.page_not_found')}, status_code=404)
 
         os.remove(page_path)
-        return JSONResponse({"success": True, "message": f"Page '{page_name}' deleted successfully"})
+        return JSONResponse({"success": True, "message": tr.t('landing_builder.response.page_value1_deleted_successfully', value1=page_name)})
 
     except Exception as e:
         logger.error(f"Error deleting landing page: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/landing/{prompt_id}/registration", response_class=JSONResponse)
 async def get_landing_config_endpoint(
+    request: Request,
     prompt_id: int,
     current_user: User = Depends(get_current_user),
 ):
     """Get the landing registration configuration for a prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -618,7 +631,7 @@ async def get_landing_config_endpoint(
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         config = await get_landing_registration_config(prompt_id)
         preserved_llm_ids = []
@@ -649,7 +662,7 @@ async def get_landing_config_endpoint(
         return JSONResponse({"success": False, "message": he.detail}, status_code=he.status_code)
     except Exception as e:
         logger.error(f"Error getting landing config for prompt {prompt_id}: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.put("/api/landing/{prompt_id}/registration", response_class=JSONResponse)
@@ -659,7 +672,8 @@ async def set_landing_config_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """Set the landing registration configuration for a prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -667,12 +681,12 @@ async def set_landing_config_endpoint(
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         try:
             data = await request.json()
         except Exception:
-            return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_json')}, status_code=400)
 
         billing_mode = data.get("billing_mode", "customer_pays")
         if billing_mode == "user_pays":
@@ -688,7 +702,7 @@ async def set_landing_config_endpoint(
                 return JSONResponse(
                     {
                         "success": False,
-                        "message": "You need a positive balance to enable 'user pays' mode",
+                        "message": tr.t('landing_builder.response.you_need_a_positive_balance_to_enable_user_pays_mode'),
                     },
                     status_code=400,
                 )
@@ -699,7 +713,7 @@ async def set_landing_config_endpoint(
                 return JSONResponse(
                     {
                         "success": False,
-                        "message": "Restricting marketplace access requires an active custom domain. Configure and activate a domain first.",
+                        "message": tr.t('landing_builder.response.restricting_marketplace_access_requires_an_active_custom_domain_configure_and'),
                     },
                     status_code=400,
                 )
@@ -707,20 +721,21 @@ async def set_landing_config_endpoint(
         success = await set_landing_registration_config(prompt_id, data)
 
         if success:
-            return JSONResponse({"success": True, "message": "Registration settings saved successfully"})
-        return JSONResponse({"success": False, "message": "Failed to save registration settings"}, status_code=500)
+            return JSONResponse({"success": True, "message": tr.t('landing_builder.response.registration_settings_saved_successfully')})
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.failed_to_save_registration_settings')}, status_code=500)
 
     except HTTPException as he:
         return JSONResponse({"success": False, "message": he.detail}, status_code=he.status_code)
     except Exception as e:
         logger.error(f"Error setting landing config for prompt {prompt_id}: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/landing/{prompt_id}/geo", response_class=JSONResponse)
-async def get_landing_geo(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def get_landing_geo(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """Get geo-blocking policy for a landing page and global blocks."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -728,17 +743,17 @@ async def get_landing_geo(prompt_id: int, current_user: User = Depends(get_curre
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         client = CloudflareGeoClient()
         if not client.is_configured():
-            return JSONResponse({"success": False, "message": "Cloudflare not configured"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.cloudflare_not_configured')}, status_code=404)
 
         async with get_db_connection(readonly=True) as conn:
             async with conn.execute("SELECT geo_policy FROM PROMPTS WHERE id = ?", (prompt_id,)) as cursor:
                 row = await cursor.fetchone()
                 if not row:
-                    return JSONResponse({"success": False, "message": "Prompt not found"}, status_code=404)
+                    return JSONResponse({"success": False, "message": tr.t('landing_builder.response.prompt_not_found')}, status_code=404)
 
             policy = None
             try:
@@ -764,18 +779,19 @@ async def get_landing_geo(prompt_id: int, current_user: User = Depends(get_curre
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+        geo_data = get_all_geo_data(tr.language)
         return JSONResponse(
             {
                 "success": True,
                 "policy": policy,
                 "global_blocks": sorted(global_blocks),
-                "geo_data": get_all_geo_data(),
+                "geo_data": geo_data,
             }
         )
 
     except Exception as e:
         logger.error(f"Error getting geo policy for prompt {prompt_id}: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.put("/api/landing/{prompt_id}/geo", response_class=JSONResponse)
@@ -785,7 +801,8 @@ async def set_landing_geo(
     current_user: User = Depends(get_current_user),
 ):
     """Save geo-blocking policy for a landing page and sync to Cloudflare."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -793,14 +810,14 @@ async def set_landing_geo(
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         data = await request.json()
 
         enabled = bool(data.get("enabled", False))
         mode = data.get("mode", "deny")
         if mode not in ("deny", "allow"):
-            return JSONResponse({"success": False, "message": "Invalid mode"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_mode')}, status_code=400)
 
         countries = validate_country_codes(data.get("countries", []))
         continents = validate_continent_codes(data.get("continents", []))
@@ -834,17 +851,18 @@ async def set_landing_geo(
         return JSONResponse(
             {
                 "success": True,
-                "message": "Geo-blocking policy saved" + (" and synced to Cloudflare" if sync_result else ""),
+                "message": tr.t('landing_builder.ui.geo_blocking_policy_saved_and_synced_to_cloudflare') if sync_result and sync_result.get('success') else tr.t('landing_builder.ui.geo_blocking_policy_saved_cloudflare_synchronization_is_pending'),
                 "sync": sync_result,
             }
         )
 
     except Exception as e:
         logger.error(f"Error saving geo policy for prompt {prompt_id}: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
-async def _run_security_check(text: str, *, prompt_id: int, label: str):
+async def _run_security_check(text: str, *, prompt_id: int, label: str, translator=None):
+    tr = translator or Translator("en")
     try:
         security_result = await check_security(text)
         if not security_result.get("checked"):
@@ -855,7 +873,7 @@ async def _run_security_check(text: str, *, prompt_id: int, label: str):
             return JSONResponse(
                 {
                     "success": False,
-                    "message": "AI Wizard security check is temporarily unavailable",
+                    "message": tr.t('landing_builder.response.ai_wizard_security_check_is_temporarily_unavailable'),
                     "error_code": "SECURITY_GUARD_UNAVAILABLE",
                 },
                 status_code=503,
@@ -870,7 +888,7 @@ async def _run_security_check(text: str, *, prompt_id: int, label: str):
             return JSONResponse(
                 {
                     "success": False,
-                    "message": "Your request was blocked by security check",
+                    "message": tr.t('landing_builder.response.your_request_was_blocked_by_security_check'),
                     "security_block": True,
                     "threat_level": security_result["threat_level"],
                     "reason": security_result["reason"],
@@ -882,7 +900,7 @@ async def _run_security_check(text: str, *, prompt_id: int, label: str):
         return JSONResponse(
             {
                 "success": False,
-                "message": "AI Wizard security check is temporarily unavailable",
+                "message": tr.t('landing_builder.response.ai_wizard_security_check_is_temporarily_unavailable'),
                 "error_code": "SECURITY_GUARD_UNAVAILABLE",
             },
             status_code=503,
@@ -897,7 +915,8 @@ async def generate_landing_with_wizard(
     current_user: User = Depends(get_current_user),
 ):
     """Starts a background job to generate a landing page using Claude Code."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -907,7 +926,7 @@ async def generate_landing_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": "AI Wizard is disabled until a verified OS sandbox is configured.",
+                "message": tr.t('landing_builder.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is'),
                 "error_code": "WIZARD_SANDBOX_UNAVAILABLE",
             },
             status_code=503,
@@ -916,13 +935,13 @@ async def generate_landing_with_wizard(
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_json')}, status_code=400)
 
     description = data.get("description", "").strip()
     if not description:
-        return JSONResponse({"success": False, "message": "Description is required"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.description_is_required')}, status_code=400)
     if len(description) < 20:
-        return JSONResponse({"success": False, "message": "Description must be at least 20 characters"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.description_must_be_at_least_20_characters')}, status_code=400)
 
     style = data.get("style", "modern")
     if style not in ["modern", "minimalist", "corporate", "creative"]:
@@ -940,32 +959,32 @@ async def generate_landing_with_wizard(
     timeout_minutes = max(1, min(60, timeout_minutes))
     timeout_seconds = timeout_minutes * 60
 
-    security_response = await _run_security_check(description, prompt_id=prompt_id, label="landing wizard")
+    security_response = await _run_security_check(description, prompt_id=prompt_id, label="landing wizard", translator=tr)
     if security_response:
         return security_response
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         existing_job = get_active_job_for_prompt(prompt_id)
         if existing_job:
             return JSONResponse(
                 {
                     "success": False,
-                    "message": "A job is already running for this prompt",
+                    "message": tr.t('landing_builder.response.a_job_is_already_running_for_this_prompt'),
                     "existing_task_id": existing_job["task_id"],
                     "existing_status": existing_job["status"],
                 },
                 status_code=409,
             )
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
 
         if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": False, "message": "Prompt directory not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.prompt_directory_not_found')}, status_code=404)
 
         ai_system_prompt = ""
         product_description = ""
@@ -1013,7 +1032,7 @@ async def generate_landing_with_wizard(
             return JSONResponse(
                 {
                     "success": True,
-                    "message": "Job started",
+                    "message": tr.t('landing_builder.response.job_started'),
                     "task_id": result["task_id"],
                     "status": result["status"],
                 }
@@ -1022,7 +1041,7 @@ async def generate_landing_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": result.get("error", "Failed to start job"),
+                "message": tr.t('landing_builder.ui.failed_to_start_job'),
                 "existing_task_id": result.get("existing_task_id"),
             },
             status_code=500,
@@ -1030,13 +1049,14 @@ async def generate_landing_with_wizard(
 
     except Exception as e:
         logger.error(f"Error in generate_landing_with_wizard: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/landing/{prompt_id}/files", response_class=JSONResponse)
-async def get_landing_files(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def get_landing_files(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """List files in the prompt's landing page directory."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -1044,9 +1064,9 @@ async def get_landing_files(prompt_id: int, current_user: User = Depends(get_cur
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
 
         if not prompt_dir or not os.path.exists(prompt_dir):
@@ -1062,17 +1082,19 @@ async def get_landing_files(prompt_id: int, current_user: User = Depends(get_cur
 
     except Exception as e:
         logger.error(f"Error in get_landing_files: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/landing/{prompt_id}/ai/status/{task_id}", response_class=JSONResponse)
 async def get_landing_job_status(
+    request: Request,
     prompt_id: int,
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
     """Get the status of a landing page generation/modification job."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -1080,13 +1102,13 @@ async def get_landing_job_status(
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         job = get_job(task_id)
         if not job:
-            return JSONResponse({"success": False, "message": "Job not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.job_not_found')}, status_code=404)
         if job.get("prompt_id") != prompt_id:
-            return JSONResponse({"success": False, "message": "Job does not belong to this prompt"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.job_does_not_belong_to_this_prompt')}, status_code=403)
 
         response = {
             "success": True,
@@ -1100,19 +1122,20 @@ async def get_landing_job_status(
         if job["status"] == "completed":
             response["files_created"] = job.get("files_created", [])
         elif job["status"] in ("failed", "timeout"):
-            response["error"] = job.get("error")
+            response["error"] = tr.t('landing_builder.ui.the_ai_job_did_not_complete_please_try_again')
 
         return JSONResponse(response)
 
     except Exception as e:
         logger.error(f"Error in get_landing_job_status: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/landing/{prompt_id}/ai/active-job", response_class=JSONResponse)
-async def get_active_landing_job(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def get_active_landing_job(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """Check if there's an active landing job for this prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -1120,7 +1143,7 @@ async def get_active_landing_job(prompt_id: int, current_user: User = Depends(ge
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         job = get_active_job_for_prompt(prompt_id)
         if job:
@@ -1138,7 +1161,7 @@ async def get_active_landing_job(prompt_id: int, current_user: User = Depends(ge
 
     except Exception as e:
         logger.error(f"Error in get_active_landing_job: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.post("/api/landing/{prompt_id}/ai/modify", response_class=JSONResponse)
@@ -1148,7 +1171,8 @@ async def modify_landing_with_wizard(
     current_user: User = Depends(get_current_user),
 ):
     """Starts a background job to modify an existing landing page."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -1158,7 +1182,7 @@ async def modify_landing_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": "AI Wizard is disabled until a verified OS sandbox is configured.",
+                "message": tr.t('landing_builder.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is'),
                 "error_code": "WIZARD_SANDBOX_UNAVAILABLE",
             },
             status_code=503,
@@ -1167,13 +1191,13 @@ async def modify_landing_with_wizard(
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_json')}, status_code=400)
 
     instructions = data.get("instructions", "").strip()
     if not instructions:
-        return JSONResponse({"success": False, "message": "Instructions are required"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.instructions_are_required')}, status_code=400)
     if len(instructions) < 10:
-        return JSONResponse({"success": False, "message": "Instructions must be at least 10 characters"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.instructions_must_be_at_least_10_characters')}, status_code=400)
 
     try:
         timeout_minutes = int(data.get("timeout_minutes", 5))
@@ -1182,37 +1206,37 @@ async def modify_landing_with_wizard(
     timeout_minutes = max(1, min(60, timeout_minutes))
     timeout_seconds = timeout_minutes * 60
 
-    security_response = await _run_security_check(instructions, prompt_id=prompt_id, label="landing modify")
+    security_response = await _run_security_check(instructions, prompt_id=prompt_id, label="landing modify", translator=tr)
     if security_response:
         return security_response
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         existing_job = get_active_job_for_prompt(prompt_id)
         if existing_job:
             return JSONResponse(
                 {
                     "success": False,
-                    "message": "A job is already running for this prompt",
+                    "message": tr.t('landing_builder.response.a_job_is_already_running_for_this_prompt'),
                     "existing_task_id": existing_job["task_id"],
                     "existing_status": existing_job["status"],
                 },
                 status_code=409,
             )
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
 
         if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": False, "message": "Prompt directory not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.prompt_directory_not_found')}, status_code=404)
 
         files = list_prompt_files(str(prompt_dir))
         if files["total_count"] == 0:
             return JSONResponse(
-                {"success": False, "message": "No files to modify. Use 'Create new' instead."},
+                {"success": False, "message": tr.t('landing_builder.response.no_files_to_modify_use_create_new_instead')},
                 status_code=400,
             )
 
@@ -1258,7 +1282,7 @@ async def modify_landing_with_wizard(
             return JSONResponse(
                 {
                     "success": True,
-                    "message": "Job started",
+                    "message": tr.t('landing_builder.response.job_started'),
                     "task_id": result["task_id"],
                     "status": result["status"],
                 }
@@ -1267,7 +1291,7 @@ async def modify_landing_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": result.get("error", "Failed to start job"),
+                "message": tr.t('landing_builder.ui.failed_to_start_job'),
                 "existing_task_id": result.get("existing_task_id"),
             },
             status_code=500,
@@ -1275,13 +1299,14 @@ async def modify_landing_with_wizard(
 
     except Exception as e:
         logger.error(f"Error in modify_landing_with_wizard: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.delete("/api/landing/{prompt_id}/files", response_class=JSONResponse)
-async def delete_landing_files(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def delete_landing_files(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """Delete all landing page files for a prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
@@ -1289,13 +1314,13 @@ async def delete_landing_files(prompt_id: int, current_user: User = Depends(get_
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
 
         if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": True, "message": "No files to delete", "deleted_count": 0})
+            return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
 
         logger.info(f"Deleting landing files for prompt {prompt_id}, user {current_user.id}")
         result = delete_all_landing_files(str(prompt_dir), keep_images=True)
@@ -1322,7 +1347,7 @@ async def delete_landing_files(prompt_id: int, current_user: User = Depends(get_
             return JSONResponse(
                 {
                     "success": True,
-                    "message": result.get("message", "Files deleted"),
+                    "message": tr.t('landing_builder.response.files_deleted'),
                     "deleted_count": result.get("deleted_count", 0),
                 }
             )
@@ -1330,7 +1355,7 @@ async def delete_landing_files(prompt_id: int, current_user: User = Depends(get_
         return JSONResponse(
             {
                 "success": False,
-                "message": result.get("error", "Unknown error"),
+                "message": tr.t('landing_builder.ui.unknown_error'),
                 "deleted_count": result.get("deleted_count", 0),
             },
             status_code=500,
@@ -1338,7 +1363,7 @@ async def delete_landing_files(prompt_id: int, current_user: User = Depends(get_
 
     except Exception as e:
         logger.error(f"Error in delete_landing_files: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.post("/api/welcome/{prompt_id}/ai/generate", response_class=JSONResponse)
@@ -1348,6 +1373,7 @@ async def generate_welcome_with_wizard(
     current_user: User = Depends(get_current_user),
 ):
     """Starts a background job to generate a welcome page."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
@@ -1356,7 +1382,7 @@ async def generate_welcome_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": "AI Wizard is disabled until a verified OS sandbox is configured.",
+                "message": tr.t('landing_builder.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is'),
                 "error_code": "WIZARD_SANDBOX_UNAVAILABLE",
             },
             status_code=503,
@@ -1365,13 +1391,13 @@ async def generate_welcome_with_wizard(
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_json')}, status_code=400)
 
     description = data.get("description", "").strip()
     if not description:
-        return JSONResponse({"success": False, "message": "Description is required"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.description_is_required')}, status_code=400)
     if len(description) < 20:
-        return JSONResponse({"success": False, "message": "Description must be at least 20 characters"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.description_must_be_at_least_20_characters')}, status_code=400)
 
     style = data.get("style", "modern")
     if style not in ["modern", "minimalist", "corporate", "creative"]:
@@ -1389,31 +1415,31 @@ async def generate_welcome_with_wizard(
     timeout_minutes = max(1, min(60, timeout_minutes))
     timeout_seconds = timeout_minutes * 60
 
-    security_response = await _run_security_check(description, prompt_id=prompt_id, label="welcome wizard")
+    security_response = await _run_security_check(description, prompt_id=prompt_id, label="welcome wizard", translator=tr)
     if security_response:
         return security_response
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         existing_job = get_active_welcome_job_for_prompt(prompt_id)
         if existing_job:
             return JSONResponse(
                 {
                     "success": False,
-                    "message": "A job is already running for this prompt",
+                    "message": tr.t('landing_builder.response.a_job_is_already_running_for_this_prompt'),
                     "existing_task_id": existing_job["task_id"],
                     "existing_status": existing_job["status"],
                 },
                 status_code=409,
             )
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
         if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": False, "message": "Prompt directory not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.prompt_directory_not_found')}, status_code=404)
 
         ai_system_prompt = ""
         product_description = ""
@@ -1464,7 +1490,7 @@ async def generate_welcome_with_wizard(
             return JSONResponse(
                 {
                     "success": True,
-                    "message": "Job started",
+                    "message": tr.t('landing_builder.response.job_started'),
                     "task_id": result["task_id"],
                     "status": result["status"],
                 }
@@ -1473,7 +1499,7 @@ async def generate_welcome_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": result.get("error", "Failed to start job"),
+                "message": tr.t('landing_builder.ui.failed_to_start_job'),
                 "existing_task_id": result.get("existing_task_id"),
             },
             status_code=500,
@@ -1481,7 +1507,7 @@ async def generate_welcome_with_wizard(
 
     except Exception as e:
         logger.error(f"Error in generate_welcome_with_wizard: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.post("/api/welcome/{prompt_id}/ai/modify", response_class=JSONResponse)
@@ -1491,6 +1517,7 @@ async def modify_welcome_with_wizard(
     current_user: User = Depends(get_current_user),
 ):
     """Starts a background job to modify an existing welcome page."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
@@ -1499,7 +1526,7 @@ async def modify_welcome_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": "AI Wizard is disabled until a verified OS sandbox is configured.",
+                "message": tr.t('landing_builder.response.ai_wizard_is_disabled_until_a_verified_os_sandbox_is'),
                 "error_code": "WIZARD_SANDBOX_UNAVAILABLE",
             },
             status_code=503,
@@ -1508,13 +1535,13 @@ async def modify_welcome_with_wizard(
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_json')}, status_code=400)
 
     instructions = data.get("instructions", "").strip()
     if not instructions:
-        return JSONResponse({"success": False, "message": "Instructions are required"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.instructions_are_required')}, status_code=400)
     if len(instructions) < 10:
-        return JSONResponse({"success": False, "message": "Instructions must be at least 10 characters"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.instructions_must_be_at_least_10_characters')}, status_code=400)
 
     try:
         timeout_minutes = int(data.get("timeout_minutes", 5))
@@ -1523,36 +1550,36 @@ async def modify_welcome_with_wizard(
     timeout_minutes = max(1, min(60, timeout_minutes))
     timeout_seconds = timeout_minutes * 60
 
-    security_response = await _run_security_check(instructions, prompt_id=prompt_id, label="welcome modify")
+    security_response = await _run_security_check(instructions, prompt_id=prompt_id, label="welcome modify", translator=tr)
     if security_response:
         return security_response
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         existing_job = get_active_welcome_job_for_prompt(prompt_id)
         if existing_job:
             return JSONResponse(
                 {
                     "success": False,
-                    "message": "A job is already running for this prompt",
+                    "message": tr.t('landing_builder.response.a_job_is_already_running_for_this_prompt'),
                     "existing_task_id": existing_job["task_id"],
                     "existing_status": existing_job["status"],
                 },
                 status_code=409,
             )
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
         if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": False, "message": "Prompt directory not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.prompt_directory_not_found')}, status_code=404)
 
         files = list_welcome_files(str(prompt_dir))
         if files["total_count"] == 0:
             return JSONResponse(
-                {"success": False, "message": "No files to modify. Use 'Create new' instead."},
+                {"success": False, "message": tr.t('landing_builder.response.no_files_to_modify_use_create_new_instead')},
                 status_code=400,
             )
 
@@ -1601,7 +1628,7 @@ async def modify_welcome_with_wizard(
             return JSONResponse(
                 {
                     "success": True,
-                    "message": "Job started",
+                    "message": tr.t('landing_builder.response.job_started'),
                     "task_id": result["task_id"],
                     "status": result["status"],
                 }
@@ -1610,7 +1637,7 @@ async def modify_welcome_with_wizard(
         return JSONResponse(
             {
                 "success": False,
-                "message": result.get("error", "Failed to start job"),
+                "message": tr.t('landing_builder.ui.failed_to_start_job'),
                 "existing_task_id": result.get("existing_task_id"),
             },
             status_code=500,
@@ -1618,29 +1645,31 @@ async def modify_welcome_with_wizard(
 
     except Exception as e:
         logger.error(f"Error in modify_welcome_with_wizard: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/welcome/{prompt_id}/ai/status/{task_id}", response_class=JSONResponse)
 async def get_welcome_job_status(
+    request: Request,
     prompt_id: int,
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
     """Get the status of a welcome page generation/modification job."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         job = get_job(task_id)
         if not job:
-            return JSONResponse({"success": False, "message": "Job not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.job_not_found')}, status_code=404)
         if job.get("prompt_id") != prompt_id:
-            return JSONResponse({"success": False, "message": "Job does not belong to this prompt"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.job_does_not_belong_to_this_prompt')}, status_code=403)
 
         response = {
             "success": True,
@@ -1661,25 +1690,26 @@ async def get_welcome_job_status(
             except Exception as db_err:
                 logger.warning(f"Could not update has_welcome_page for prompt {prompt_id}: {db_err}")
         elif job["status"] in ("failed", "timeout"):
-            response["error"] = job.get("error")
+            response["error"] = tr.t('landing_builder.ui.the_ai_job_did_not_complete_please_try_again')
 
         return JSONResponse(response)
 
     except Exception as e:
         logger.error(f"Error in get_welcome_job_status: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/welcome/{prompt_id}/ai/active-job", response_class=JSONResponse)
-async def get_active_welcome_job(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def get_active_welcome_job(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """Check if there's an active welcome job for this prompt."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
         job = get_active_welcome_job_for_prompt(prompt_id)
         if job:
@@ -1697,21 +1727,22 @@ async def get_active_welcome_job(prompt_id: int, current_user: User = Depends(ge
 
     except Exception as e:
         logger.error(f"Error in get_active_welcome_job: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/welcome/{prompt_id}/files", response_class=JSONResponse)
-async def get_welcome_files(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def get_welcome_files(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """List files in the prompt's welcome page directory."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
         if not prompt_dir or not os.path.exists(prompt_dir):
             return JSONResponse(
@@ -1726,24 +1757,25 @@ async def get_welcome_files(prompt_id: int, current_user: User = Depends(get_cur
 
     except Exception as e:
         logger.error(f"Error in get_welcome_files: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.delete("/api/welcome/{prompt_id}/files", response_class=JSONResponse)
-async def delete_welcome_files(prompt_id: int, current_user: User = Depends(get_current_user)):
+async def delete_welcome_files(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
     """Delete all welcome page files for a prompt."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
     try:
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
         if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": True, "message": "No files to delete", "deleted_count": 0})
+            return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
 
         logger.info(f"Deleting welcome files for prompt {prompt_id}, user {current_user.id}")
         result = delete_all_welcome_files(str(prompt_dir), keep_images=True)
@@ -1759,7 +1791,7 @@ async def delete_welcome_files(prompt_id: int, current_user: User = Depends(get_
             return JSONResponse(
                 {
                     "success": True,
-                    "message": result.get("message", "Files deleted"),
+                    "message": tr.t('landing_builder.response.files_deleted'),
                     "deleted_count": result.get("deleted_count", 0),
                 }
             )
@@ -1767,7 +1799,7 @@ async def delete_welcome_files(prompt_id: int, current_user: User = Depends(get_
         return JSONResponse(
             {
                 "success": False,
-                "message": result.get("error", "Unknown error"),
+                "message": tr.t('landing_builder.ui.unknown_error'),
                 "deleted_count": result.get("deleted_count", 0),
             },
             status_code=500,
@@ -1775,7 +1807,7 @@ async def delete_welcome_files(prompt_id: int, current_user: User = Depends(get_
 
     except Exception as e:
         logger.error(f"Error in delete_welcome_files: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/landing/{prompt_id}/pages/{section}/edit", response_class=HTMLResponse)
@@ -1785,20 +1817,21 @@ async def edit_landing_page(
     section: str,
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return _login_template(request)
 
     try:
         if not re.match(r"^[a-zA-Z0-9_-]+$", section):
-            raise HTTPException(status_code=400, detail="Invalid section name")
+            raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_section_name'))
 
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.access_denied'))
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
 
         prompt_base = Path(prompt_dir)
@@ -1849,7 +1882,7 @@ async def edit_landing_page(
         raise http_exc
     except Exception as e:
         logger.error(f"Unexpected error in edit_section: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=tr.t('landing_builder.response.internal_server_error'))
 
 
 @router.put("/api/landing/{prompt_id}/pages/{section}", response_class=JSONResponse)
@@ -1861,20 +1894,21 @@ async def save_landing_page(
     use_default_template: bool = Form(False),
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return _login_template(request)
 
     try:
         if not re.match(r"^[a-zA-Z0-9_-]+$", section):
-            return JSONResponse({"success": False, "message": "Invalid section name"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_section_name')}, status_code=400)
 
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
 
         content = base64.b64decode(encodedContent).decode("utf-8")
         content = re.sub(r"\n\s*\n", "\n", content.strip())
@@ -1888,6 +1922,7 @@ async def save_landing_page(
                 use_default_template=use_default_template,
                 prompt_info=prompt_info,
                 is_admin=is_admin,
+                translator=tr,
             )
 
     except FileLockTimeout:
@@ -1895,13 +1930,13 @@ async def save_landing_page(
         return JSONResponse(
             {
                 "success": False,
-                "message": "Another landing save is still in progress; try again.",
+                "message": tr.t('landing_builder.response.another_landing_save_is_still_in_progress_try_again'),
             },
             status_code=503,
         )
     except Exception as e:
         logger.exception(f"Error saving landing page for prompt {prompt_id}: {e}")
-        return JSONResponse({"success": False, "message": "Error saving changes"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.error_saving_changes')}, status_code=500)
 
 
 @router.get("/landing/{prompt_id}/components", response_class=HTMLResponse)
@@ -1910,16 +1945,17 @@ async def list_components(
     prompt_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.authentication_required'))
     is_admin = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.access_denied'))
 
     try:
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         ensure_directories(prompt_id, prompt_info)
 
         base_dir = get_prompt_path(prompt_id, prompt_info)
@@ -1949,7 +1985,7 @@ async def list_components(
         )
         return templates.TemplateResponse("web/components_list.html", context)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing components: {str(e)}")
+        raise HTTPException(status_code=500, detail=tr.t('landing_builder.response.error_listing_components_value1', value1=tr.t('landing_builder.response.internal_server_error')))
 
 
 @router.get("/landing/{prompt_id}/components/{component_type}/{component_name}/edit", response_class=HTMLResponse)
@@ -1960,21 +1996,22 @@ async def edit_component(
     component_name: str,
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return _login_template(request)
 
     if component_type not in ALLOWED_COMPONENT_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid component type")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_component_type'))
 
     component_name = secure_filename(component_name)
 
     is_admin = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.access_denied'))
 
-    prompt_info = await get_prompt_info(prompt_id)
+    prompt_info = await get_prompt_info(prompt_id, translator=tr)
     base_dir = Path(get_prompt_path(prompt_id, prompt_info))
 
     if component_type == "html":
@@ -1990,7 +2027,7 @@ async def edit_component(
     validated_path = validate_path_within_directory(filename, target_dir)
 
     if not validated_path.exists():
-        raise HTTPException(status_code=404, detail="Component not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.component_not_found'))
 
     with open(str(validated_path), "r", encoding="utf-8") as file:
         component_content = file.read()
@@ -2018,22 +2055,23 @@ async def save_component(
     encodedContent: str = Form(...),
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     try:
         if current_user is None:
             return unauthenticated_response()
 
         if component_type not in ALLOWED_COMPONENT_TYPES:
-            return JSONResponse(content={"success": False, "message": "Invalid component type"}, status_code=400)
+            return JSONResponse(content={"success": False, "message": tr.t('landing_builder.response.invalid_component_type')}, status_code=400)
 
         component_name = secure_filename(component_name)
 
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse(content={"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse(content={"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         ensure_directories(prompt_id, prompt_info)
 
         base_dir = Path(get_prompt_path(prompt_id, prompt_info))
@@ -2057,9 +2095,9 @@ async def save_component(
         with open(str(validated_path), "w", encoding="utf-8") as file:
             file.write(content)
 
-        return JSONResponse(content={"success": True, "message": "Component saved successfully"})
+        return JSONResponse(content={"success": True, "message": tr.t('landing_builder.response.component_saved_successfully')})
     except Exception as e:
-        return JSONResponse(content={"success": False, "message": str(e)}, status_code=500)
+        return JSONResponse(content={"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.post("/api/landing/{prompt_id}/components", response_class=JSONResponse)
@@ -2070,21 +2108,22 @@ async def create_component(
     component_name: str = Form(...),
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
 
     if component_type not in ALLOWED_COMPONENT_TYPES:
-        return JSONResponse({"success": False, "message": "Invalid component type"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_component_type')}, status_code=400)
 
     component_name = secure_filename(component_name)
 
     is_admin = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-        return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-    prompt_info = await get_prompt_info(prompt_id)
+    prompt_info = await get_prompt_info(prompt_id, translator=tr)
     base_dir = Path(get_prompt_path(prompt_id, prompt_info))
 
     if component_type == "html":
@@ -2101,7 +2140,7 @@ async def create_component(
     validated_path = validate_path_within_directory(filename, target_dir)
 
     if validated_path.exists():
-        return JSONResponse({"success": False, "message": "Component already exists"}, status_code=400)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.component_already_exists')}, status_code=400)
 
     try:
         with open(str(validated_path), "w", encoding="utf-8") as file:
@@ -2115,38 +2154,40 @@ async def create_component(
         return JSONResponse(
             {
                 "success": True,
-                "message": "Component created successfully",
+                "message": tr.t('landing_builder.response.component_created_successfully'),
                 "redirect_url": f"/landing/{prompt_id}/components",
             }
         )
     except Exception as e:
-        return JSONResponse({"success": False, "message": f"Error creating component: {str(e)}"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.error_creating_component_value1', value1=tr.t('landing_builder.response.internal_server_error'))}, status_code=500)
 
 
 @router.delete("/api/landing/{prompt_id}/components/{component_type}/{component_name}", response_class=JSONResponse)
 async def delete_component(
+    request: Request,
     prompt_id: int,
     component_type: str,
     component_name: str,
     current_user: User = Depends(get_current_user),
 ):
     """Delete a component from a prompt."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
         return unauthenticated_response()
 
     try:
         if component_type not in {"html", "css", "js"}:
-            return JSONResponse({"success": False, "message": "Invalid component type"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_component_type')}, status_code=400)
         if not component_name or not re.match(r"^[a-zA-Z0-9_-]+$", component_name):
-            return JSONResponse({"success": False, "message": "Invalid component name"}, status_code=400)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.invalid_component_name')}, status_code=400)
 
         is_admin = await current_user.is_admin
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            return JSONResponse({"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.access_denied')}, status_code=403)
 
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = Path(get_prompt_path(prompt_id, prompt_info))
 
         if component_type == "html":
@@ -2157,27 +2198,28 @@ async def delete_component(
             file_path = prompt_dir / "static" / "js" / f"{component_name}.js"
 
         if not file_path.exists():
-            return JSONResponse({"success": False, "message": "Component not found"}, status_code=404)
+            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.component_not_found')}, status_code=404)
 
         os.remove(str(file_path))
-        return JSONResponse({"success": True, "message": f"Component '{component_name}' deleted successfully"})
+        return JSONResponse({"success": True, "message": tr.t('landing_builder.response.component_value1_deleted_successfully', value1=component_name)})
 
     except Exception as e:
         logger.error(f"Error deleting component: {e}")
-        return JSONResponse({"success": False, "message": "Internal server error"}, status_code=500)
+        return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
 
 
 @router.get("/api/landing/{prompt_id}/images")
-async def get_images(prompt_id: int, current_user: User = Depends(get_current_user)):
-    require_creator_tools_enabled()
+async def get_images(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.authentication_required'))
     is_admin = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.access_denied'))
 
-    prompt_info = await get_prompt_info(prompt_id)
+    prompt_info = await get_prompt_info(prompt_id, translator=tr)
     base_dir = get_prompt_path(prompt_id, prompt_info)
     img_dir = os.path.join(base_dir, "static", "img")
 
@@ -2200,21 +2242,23 @@ async def get_images(prompt_id: int, current_user: User = Depends(get_current_us
 
 @router.post("/api/landing/{prompt_id}/images")
 async def upload_images(
+    request: Request,
     prompt_id: int,
     images: List[UploadFile] = File(...),
     names: List[str] = Form(...),
     current_user: User = Depends(get_current_user),
 ):
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.authentication_required'))
 
     is_admin = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.access_denied'))
 
-    prompt_info = await get_prompt_info(prompt_id)
+    prompt_info = await get_prompt_info(prompt_id, translator=tr)
     base_dir = get_prompt_path(prompt_id, prompt_info)
     img_dir = Path(base_dir) / "static" / "img"
 
@@ -2224,7 +2268,7 @@ async def upload_images(
             content = await image.read()
             if len(content) > MAX_IMAGE_UPLOAD_SIZE:
                 return {
-                    "message": f"Image {image.filename} too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024)}MB",
+                    "message": tr.t('landing_builder.response.image_value1_too_large_maximum_size_is_value2_mb', value1=image.filename, value2=tr.format_number(MAX_IMAGE_UPLOAD_SIZE // (1024 * 1024), maximum_fraction_digits=0)),
                     "images": 0,
                 }
 
@@ -2235,6 +2279,7 @@ async def upload_images(
                     original_filename=image.filename,
                     requested_name=name,
                     img_dir=img_dir,
+                    translator=tr,
                 )
             except _LandingImageValidationError as exc:
                 return {"message": str(exc), "images": 0}
@@ -2243,48 +2288,50 @@ async def upload_images(
 
             uploaded_files.append({"id": filename, "name": filename, "url": image_url})
         else:
-            return {"message": f"Invalid file format: {image.filename}", "images": 0}
+            return {"message": tr.t('landing_builder.response.invalid_file_format_value1', value1=image.filename), "images": 0}
 
     if uploaded_files:
-        return {"message": f"Successfully uploaded {len(uploaded_files)} images", "images": uploaded_files}
-    return {"message": "No valid images were uploaded", "images": 0}
+        return {"message": tr.t('landing_builder.response.successfully_uploaded_value1_images', value1=tr.format_number(len(uploaded_files), maximum_fraction_digits=0)), "images": uploaded_files}
+    return {"message": tr.t('landing_builder.response.no_valid_images_were_uploaded'), "images": 0}
 
 
 @router.delete("/api/landing/{prompt_id}/images/{image_id}")
 async def delete_landing_image(
+    request: Request,
     prompt_id: int,
     image_id: str,
     current_user: User = Depends(get_current_user),
 ):
     """Delete an image from a landing page's static/img directory."""
-    require_creator_tools_enabled()
+    tr = get_translator(request, current_user)
+    require_creator_tools_enabled(tr)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=tr.t('landing_builder.response.authentication_required'))
 
     is_admin = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.access_denied'))
 
-    prompt_info = await get_prompt_info(prompt_id)
+    prompt_info = await get_prompt_info(prompt_id, translator=tr)
     base_dir = get_prompt_path(prompt_id, prompt_info)
     img_dir = Path(base_dir) / "static" / "img"
 
     safe_filename = secure_filename(image_id)
     if not safe_filename:
-        raise HTTPException(status_code=400, detail="Invalid image filename")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_image_filename'))
 
     try:
         validated_path = validate_path_within_directory(safe_filename, img_dir)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid image path")
+        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.invalid_image_path'))
 
     if not validated_path.exists():
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail=tr.t('landing_builder.response.image_not_found'))
 
     try:
         validated_path.unlink()
-        return {"success": True, "message": "Image deleted successfully"}
+        return {"success": True, "message": tr.t('landing_builder.response.image_deleted_successfully')}
     except Exception as e:
         logger.error(f"Error deleting landing image: {e}")
-        raise HTTPException(status_code=500, detail="Error deleting image")
+        raise HTTPException(status_code=500, detail=tr.t('landing_builder.ui.error_deleting_image'))

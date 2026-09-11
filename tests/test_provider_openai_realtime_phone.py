@@ -99,6 +99,12 @@ async def test_provider_leaves_tool_to_runtime_then_continues_and_saves(monkeypa
         provider, "accumulate_openai_realtime_response_usage", fake_bill
     )
 
+    prompt = (
+        "Prompt instructions\n\n"
+        "[TRUSTED_INPUT]\n"
+        "current origin=phone.live_call; perception=audio_native\n"
+        "[/TRUSTED_INPUT]"
+    )
     first_chunks = [
         chunk
         async for chunk in provider.call_openai_realtime_phone_api(
@@ -106,7 +112,7 @@ async def test_provider_leaves_tool_to_runtime_then_continues_and_saves(monkeypa
             "gpt-realtime-2.1-mini",
             0,
             500,
-            "Prompt instructions",
+            prompt,
             77,
             SimpleNamespace(id=9),
             None,
@@ -124,9 +130,13 @@ async def test_provider_leaves_tool_to_runtime_then_continues_and_saves(monkeypa
     ]
     assert any('"tool_call"' in chunk for chunk in first_chunks)
     assert not saved
-    assert bridge.started[1]["instructions"].startswith("Prompt instructions\n\n")
-    assert "without speaking a preamble" in bridge.started[1]["instructions"]
-    assert "answer naturally in speech" in bridge.started[1]["instructions"]
+    instructions = bridge.started[1]["instructions"]
+    assert instructions.startswith(provider._PHONE_TOOL_AUDIO_INSTRUCTION + "\n\n")
+    assert instructions.index("without speaking a preamble") < instructions.index(
+        "Prompt instructions"
+    )
+    assert "answer naturally in speech" in instructions
+    assert instructions.endswith("[/TRUSTED_INPUT]")
     assert bridge.started[1]["reasoning_effort"] == "minimal"
     assert bridge.started[1]["tools"] == [
         {"type": "function", "name": "lookup", "description": "", "parameters": {}}

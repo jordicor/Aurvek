@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="{{ language }}" data-theme="{{ theme }}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ t('profile.account.title') }}</title>
+<link rel="stylesheet" href="{{ assets.css }}"></head>
+<body><main>
+<p data-i18n="application.profile_scope">{{ t('application.profile_scope') }}</p>
+<form id="profile-form">
+<label><span data-i18n="profile.alter_ego.name">{{ t('profile.alter_ego.name') }}</span><input id="preferred_name" maxlength="120" autocomplete="given-name"></label>
+<label><span data-i18n="profile.language.conversation_primary_label">{{ t('profile.language.conversation_primary_label') }}</span>
+<select id="primary_language"><option value="">—</option>{% for item in languages %}<option value="{{ item.code }}">{{ item.label }}</option>{% endfor %}</select></label>
+<label><span data-i18n="profile.language.additional_label">{{ t('profile.language.additional_label') }}</span>
+<select id="additional_languages" multiple size="4">{% for item in languages %}<option value="{{ item.code }}">{{ item.label }}</option>{% endfor %}</select></label>
+<label><span data-i18n="profile.account.timezone">{{ t('profile.account.timezone') }}</span>
+<select id="timezone_name"><option value="">—</option>{% for zone in timezones %}<option>{{ zone }}</option>{% endfor %}</select></label>
+<button id="device-zone" type="button" data-i18n="profile.account.use_device_timezone">{{ t('profile.account.use_device_timezone') }}</button>
+<label><span data-i18n="profile.user.about">{{ t('profile.user.about') }}</span><textarea id="about_me" maxlength="4000" rows="4"></textarea></label>
+<p data-i18n="profile.user.about_help">{{ t('profile.user.about_help') }}</p>
+<button id="save" type="submit" data-i18n="profile.action.save_changes">{{ t('profile.action.save_changes') }}</button>
+</form>
+<section><h2 data-i18n="profile.account.phone">{{ t('profile.account.phone') }}</h2><p id="contact"></p><ul id="channels"></ul>
+<details id="phone-editor" hidden><summary id="phone-action"></summary>
+<form id="phone-form"><label><span data-i18n="profile.account.phone">{{ t('profile.account.phone') }}</span><input id="phone_number" type="tel" autocomplete="tel" maxlength="40" required></label>
+<button id="request-phone" type="button" data-i18n="profile.phone.send_code">{{ t('profile.phone.send_code') }}</button>
+<label><span data-i18n="profile.phone.verification_code">{{ t('profile.phone.verification_code') }}</span><input id="phone_code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" pattern="[0-9]{4,10}" required></label>
+<button id="verify-phone" type="submit" data-i18n="profile.phone.verify_code">{{ t('profile.phone.verify_code') }}</button></form></details></section>
+<p id="status" role="status" aria-live="polite"></p>
+</main><script id="profile-metadata" type="application/json">{{ metadata|tojson }}</script>
+<script src="{{ assets.js }}" defer></script></body></html>

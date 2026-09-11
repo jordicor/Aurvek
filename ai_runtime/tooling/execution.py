@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from hashlib import sha256
 
 from ai_runtime.dependencies import *
 from billing.usage_reservations import (
@@ -11,7 +12,11 @@ from billing.usage_reservations import (
 from tools import function_handlers
 from rediscfg import redis_client
 from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
-from ai_runtime.channel_turns import current_channel_turn
+from ai_runtime.channel_turns import (
+    StaleChannelTurnError,
+    assert_commit_guard_in_transaction,
+    current_channel_turn,
+)
 from ai_runtime.providers.claude import call_claude_api
 from ai_runtime.providers.gemini import call_gemini_api
 from ai_runtime.providers.kimi import call_kimi_api
@@ -21,11 +26,38 @@ from ai_runtime.providers.openai_responses import call_gpt_responses_api
 from ai_runtime.providers.openrouter import call_openrouter_api
 from ai_runtime.providers.xai import call_xai_responses_api
 from integrations.telephony.clock import CallEndController, EndCallDirective
-from integrations.telephony.tooling import CallStartController
+from integrations.telephony.repository import (
+    TelephonyConflictError,
+    TelephonyRepository,
+)
+from integrations.telephony.tooling import (
+    CallSchedulePolicy,
+    CallStartController,
+)
+from integrations.telephony.user_service import (
+    PhoneUserServiceError,
+    UserPhoneService,
+)
 
 
 TOOL_RESULT_MAX_BYTES = 64 * 1024
 TOOL_CALL_SERIALIZATION_BYTES_PER_OUTPUT_TOKEN = 16
+
+
+def _phone_schedule_idempotency_key(
+    *,
+    conversation_id: int,
+    tool_call: dict | None,
+    request_nonce: str,
+) -> str:
+    """Return a stable, non-user-controlled key for one provider tool call."""
+
+    provider_call_id = str((tool_call or {}).get("id") or "").strip()
+    identity = provider_call_id or str(request_nonce)
+    digest = sha256(
+        f"{int(conversation_id)}:{identity}".encode("utf-8")
+    ).hexdigest()
+    return f"assistant-schedule-{digest}"
 
 
 async def finish_pending_realtime_tool_output(api_func_override=None) -> bool:
@@ -600,14 +632,36 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                                 billing_followup_hold_amount: float = 0.0,
                                 tool_call: dict | None = None,
                                 provider_tools: list | None = None,
-                                api_func_override=None):
+                                api_func_override=None,
+                                application_tool_budget=None):
     save_to_db = True
     final_content = ""
     delivery_ack = None
     deferred_delivery_chunks = []
     realtime_tool_continuation = api_func_override is not None
     realtime_tool_result = None
+    force_provider_tool_followup = False
     followup_hold_extended = False
+    followup_billing_prevalidated = False
+    pending_application_handoff = None
+    from integrations.applications.billing import (
+        current_application_operation, revalidate_application_operation,
+    )
+    from integrations.embed.models import EmbedError
+    application_operation = current_application_operation(current_user.id)
+    application_context = None
+    if application_operation is not None:
+        from integrations.applications.tools import authorize_application_tool
+        application_context = await authorize_application_tool(
+            current_user.id, conversation_id, function_name, function_arguments)
+
+    async def _application_effect_error():
+        try:
+            await revalidate_application_operation(application_operation)
+        except EmbedError as exc:
+            await finish_pending_realtime_tool_output(api_func_override)
+            return f"data: {orjson.dumps({'error': exc.code}).decode()}\n\n"
+        return None
 
     async def _extend_followup_hold_once() -> str | None:
         nonlocal followup_hold_extended
@@ -631,10 +685,97 @@ async def handle_function_call(function_name, function_arguments, messages, mode
         followup_hold_extended = True
         return None
 
+    # Native handlers can also perform effects with no extra token charge.
+    # Authorization of their catalog is not current funding authorization.
+    if application_context is not None:
+        admission_error = await _application_effect_error()
+        if admission_error:
+            yield admission_error
+            return
+
     # Initialize with pre-tool content from Claude (if any)
     content_to_save = content + "\n\n" if content else ""
 
-    if function_name in function_handlers:
+    if application_context is not None and (
+            function_name.startswith("app_http_") or function_name == "set_entry_assistant"):
+        # Both success and failure are private model input, using the existing
+        # provider-native tool roundtrip and the same sponsored reservation.
+        if application_tool_budget is None:
+            from .context_budget import prepare_application_tool_budget
+            application_tool_budget = await prepare_application_tool_budget(messages,
+                tool_call or {"name": function_name, "arguments": function_arguments, "id": f"call_{function_name}"},
+                machine=client, full_prompt=prompt, llm_id=llm_id, prompt_id=prompt_id,
+                max_tokens=max_tokens, provider_tools=provider_tools)
+        admission_error = await _application_effect_error()
+        if admission_error:
+            yield admission_error
+            return
+        follow_up_error = await _extend_followup_hold_once()
+        if follow_up_error:
+            yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
+            return
+        if not await revalidate_user_billing(current_user.id, billing_preflight_amount):
+            yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+            return
+        admission_error = await _application_effect_error()
+        if admission_error:
+            yield admission_error
+            return
+        from integrations.embed.models import EmbedError
+        try:
+            if function_name == "set_entry_assistant":
+                from integrations.applications.tools import set_entry_from_tool
+                result = await set_entry_from_tool(application_context, function_arguments)
+            else:
+                from integrations.applications.http_tools import ApplicationHTTPToolService
+                from integrations.applications.tools import _services
+                from integrations.applications.billing import current_application_operation
+                import hashlib
+                operation = current_application_operation(current_user.id)
+                if operation is None:
+                    raise EmbedError("application_funding_required", 403)
+                operation_id = hashlib.sha256((operation.operation_id + ":" + function_name + ":" +
+                    str((tool_call or {}).get("id") or "single-tool")).encode()).hexdigest()
+                result = await ApplicationHTTPToolService(await _services()).run_http_tool(
+                    application_context, function_name, function_arguments, operation_id)
+        except EmbedError as exc:
+            result = {"ok": False, "error_code": exc.code,
+                      "instruction": "Explain that the operation could not be confirmed. Do not claim success or repeat it."}
+        realtime_tool_result = orjson.dumps(result).decode()
+        force_provider_tool_followup = True
+        # The HTTP operation may take time: recheck live access/funding again
+        # before starting the model continuation with the existing hold.
+    elif application_context is not None and function_name == "transfer_to_assistant":
+        from integrations.applications.tool_handoff import request_tool_handoff
+        try:
+            pending_application_handoff = await request_tool_handoff(
+                application_context, function_arguments, billing_reservation_id)
+        except EmbedError as exc:
+            realtime_tool_result = orjson.dumps({
+                "ready": False, "error_code": exc.code,
+                "instruction": "Explain briefly that the transfer could not be prepared. Continue with the current assistant.",
+            }).decode()
+            force_provider_tool_followup = True
+        else:
+            reply = function_arguments["reply_message"]
+            if realtime_tool_continuation:
+                # Native voice must speak its own confirmation so the transcript
+                # and playback acknowledgement describe the same provider audio.
+                realtime_tool_result = orjson.dumps({
+                    "ready": True,
+                    "reply_message": reply,
+                    "instruction": "Say only the reply_message to announce the transfer.",
+                }).decode()
+            else:
+                if content.strip() == reply.strip():
+                    content_to_save = content
+                else:
+                    content_to_save += reply
+                    # The prefix was already streamed; emit the same separator
+                    # retained in the canonical draft for playback confirmation.
+                    reply_chunk = ("\n\n" if content else "") + reply
+                    yield f"data: {orjson.dumps({'content': reply_chunk}).decode()}\n\n"
+    elif function_name in function_handlers:
         handler = function_handlers[function_name]
         tool_error_message = None
         tool_result_parts = []
@@ -706,12 +847,15 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 return
 
             # Build tool response messages: the AI sees its own tool call + the error result
-            _build_tool_response_messages(
-                messages,
-                tool_call or {"name": function_name, "arguments": function_arguments, "id": f"call_{function_name}"},
-                f"Error: {tool_error_message}",
-                client,
-            )
+            if application_tool_budget is not None:
+                messages[:] = application_tool_budget.result_messages(f"Error: {tool_error_message}")
+            else:
+                _build_tool_response_messages(
+                    messages,
+                    tool_call or {"name": function_name, "arguments": function_arguments, "id": f"call_{function_name}"},
+                    f"Error: {tool_error_message}",
+                    client,
+                )
 
             # Select the right API function and configure for second-pass
             if api_func_override is not None:
@@ -791,6 +935,11 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 await finish_pending_realtime_tool_output(api_func_override)
                 yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
                 return
+            if application_context is not None:
+                admission_error = await _application_effect_error()
+                if admission_error:
+                    yield admission_error
+                    return
             try:
                 async for chunk in api_func(**second_kwargs):
                     yield chunk
@@ -961,6 +1110,155 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                     content += reply_message
                     if not realtime_tool_continuation:
                         yield f"data: {orjson.dumps({'content': reply_message, 'action': 'phone_call_requested'}).decode()}\n\n"
+
+        elif function_name == "schedule_phone_call":
+            bound_channel = current_channel_turn()
+            schedule_policy = (
+                bound_channel.context.provenance.get("call_schedule_policy")
+                if bound_channel is not None
+                else None
+            )
+            arguments = (
+                function_arguments if isinstance(function_arguments, dict) else {}
+            )
+            scheduled_at = str(arguments.get("scheduled_at") or "").strip()
+            timezone_name = str(arguments.get("timezone_name") or "").strip()
+            fold_argument = arguments.get("fold")
+            fold_values = {
+                "not_ambiguous": None,
+                "first": 0,
+                "second": 1,
+                # Accept the original internal representation defensively.
+                None: None,
+                0: 0,
+                1: 1,
+            }
+            fold = fold_values.get(fold_argument)
+            result: dict[str, object]
+            if not isinstance(schedule_policy, CallSchedulePolicy):
+                logger.error(
+                    "schedule_phone_call rejected outside a permitted channel turn"
+                )
+                result = {
+                    "status": "error",
+                    "error": (
+                        "Phone-call scheduling is unavailable for this conversation."
+                    ),
+                    "result": (
+                        "Phone-call scheduling is unavailable for this conversation."
+                    ),
+                    "instruction": (
+                        "Do not claim that a call was scheduled. Explain that phone "
+                        "scheduling is not available for this conversation."
+                    ),
+                }
+            elif (
+                not scheduled_at
+                or not timezone_name
+                or isinstance(fold_argument, bool)
+                or fold_argument not in fold_values
+            ):
+                result = {
+                    "status": "error",
+                    "error": (
+                        "A local ISO date and time, an IANA timezone, and a valid "
+                        "daylight-saving fold are required."
+                    ),
+                    "result": (
+                        "The scheduling request is missing valid date, timezone, "
+                        "or daylight-saving information."
+                    ),
+                    "instruction": (
+                        "Do not claim that a call was scheduled. Ask only for the "
+                        "missing or ambiguous scheduling information."
+                    ),
+                }
+            else:
+                follow_up_error = await _extend_followup_hold_once()
+                if follow_up_error:
+                    await finish_pending_realtime_tool_output(api_func_override)
+                    yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
+                    return
+                elif not await revalidate_user_billing(
+                    current_user.id,
+                    billing_preflight_amount,
+                ):
+                    await finish_pending_realtime_tool_output(api_func_override)
+                    yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                    return
+                else:
+                    followup_billing_prevalidated = True
+
+                    async def guard_schedule_transaction(conn):
+                        await assert_commit_guard_in_transaction(
+                            bound_channel.context,
+                            conn,
+                        )
+
+                    try:
+                        service = UserPhoneService(TelephonyRepository())
+                        job, created = await service.create_ai_scheduled_call_job(
+                            owner_user_id=int(current_user.id),
+                            conversation_id=int(conversation_id),
+                            scheduled_at=scheduled_at,
+                            timezone_name=timezone_name,
+                            fold=fold,
+                            idempotency_key=_phone_schedule_idempotency_key(
+                                conversation_id=int(conversation_id),
+                                tool_call=tool_call,
+                                request_nonce=schedule_policy.request_nonce,
+                            ),
+                            expected_prompt_id=int(schedule_policy.prompt_id or 0),
+                            expected_initiation_mode=schedule_policy.mode,
+                            transaction_guard=guard_schedule_transaction,
+                        )
+                        result = {
+                            "status": "scheduled",
+                            "created": bool(created),
+                            "job_id": str(job["id"]),
+                            "scheduled_at_local": scheduled_at,
+                            "scheduled_at_utc": str(job["scheduled_at_utc"]),
+                            "timezone_name": str(job["timezone_name"]),
+                            "instruction": (
+                                "The call is now durably scheduled. Confirm the exact "
+                                "local date, time, and timezone naturally; do not ask "
+                                "for another confirmation."
+                            ),
+                        }
+                    except StaleChannelTurnError:
+                        raise
+                    except (
+                        PhoneUserServiceError,
+                        TelephonyConflictError,
+                        ValueError,
+                    ) as exc:
+                        result = {
+                            "status": "error",
+                            "error": str(exc),
+                            "result": str(exc),
+                            "instruction": (
+                                "Do not claim that a call was scheduled. Explain the "
+                                "problem naturally and ask only for information needed "
+                                "to correct it."
+                            ),
+                        }
+                    except Exception:
+                        logger.exception("schedule_phone_call failed unexpectedly")
+                        result = {
+                            "status": "error",
+                            "error": (
+                                "Phone-call scheduling is temporarily unavailable."
+                            ),
+                            "result": (
+                                "Phone-call scheduling is temporarily unavailable."
+                            ),
+                            "instruction": (
+                                "Do not claim that a call was scheduled. Explain that "
+                                "scheduling could not be completed right now."
+                            ),
+                        }
+            realtime_tool_result = orjson.dumps(result).decode()
+            force_provider_tool_followup = True
 
         elif function_name == "end_call":
             bound_channel = current_channel_turn()
@@ -1338,16 +1636,13 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
             return
 
-        _build_tool_response_messages(
-            messages,
-            tool_call or {
-                "name": function_name,
-                "arguments": function_arguments,
-                "id": f"call_{function_name}",
-            },
-            realtime_tool_result,
-            client,
-        )
+        if application_tool_budget is not None:
+            messages[:] = application_tool_budget.result_messages(realtime_tool_result)
+        else:
+            _build_tool_response_messages(
+                messages,
+                tool_call or {"name": function_name, "arguments": function_arguments, "id": f"call_{function_name}"},
+                realtime_tool_result, client)
         second_kwargs = {
             "messages": messages,
             "model": model,
@@ -1375,21 +1670,78 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             second_kwargs["user_api_key"] = user_api_key
         if api_model:
             second_kwargs["api_model"] = api_model
+        if (
+            client == "Claude"
+            and reasoning_selection is None
+            and thinking_budget_tokens
+        ):
+            second_kwargs["thinking_budget_tokens"] = thinking_budget_tokens
+        if client == "Claude" and provider_tools:
+            second_kwargs["tools"] = provider_tools
+            second_kwargs["tool_choice"] = {"type": "none"}
 
-        if not await revalidate_user_billing(
-            current_user.id,
-            billing_preflight_amount,
+        followup_api = api_func_override
+        if followup_api is None and force_provider_tool_followup:
+            if client == "Gemini":
+                followup_api = call_gemini_api
+            elif client == "O1":
+                followup_api = call_o1_api
+            elif client == "GPT":
+                followup_api = call_gpt_responses_api
+            elif client == "Claude":
+                followup_api = call_claude_api
+            elif client == "xAI":
+                followup_api = call_xai_responses_api
+            elif client == "OpenRouter":
+                followup_api = call_openrouter_api
+            elif client == "MiniMax":
+                followup_api = call_minimax_api
+            elif client == "Kimi":
+                followup_api = call_kimi_api
+        if followup_api is None:
+            await finish_pending_realtime_tool_output(api_func_override)
+            error = {"error": "The tool result could not be delivered to the model"}
+            yield f"data: {orjson.dumps(error).decode()}\n\n"
+            return
+
+        if client in ("OpenRouter", "MiniMax", "Kimi"):
+            if (
+                messages
+                and isinstance(messages[0], dict)
+                and messages[0].get("role") == "system"
+            ):
+                messages.pop(0)
+
+        if (
+            not followup_billing_prevalidated
+            and not await revalidate_user_billing(
+                current_user.id,
+                billing_preflight_amount,
+            )
         ):
             await finish_pending_realtime_tool_output(api_func_override)
             yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
             return
+        if application_context is not None:
+            admission_error = await _application_effect_error()
+            if admission_error:
+                yield admission_error
+                return
         try:
-            async for chunk in api_func_override(**second_kwargs):
+            async for chunk in followup_api(**second_kwargs):
+                if pending_application_handoff is not None and chunk.startswith("data: "):
+                    try:
+                        ids = orjson.loads(chunk[6:]).get("message_ids", {})
+                        if ids.get("bot"):
+                            from integrations.applications.tool_handoff import record_tool_handoff_message
+                            record_tool_handoff_message(pending_application_handoff, ids["bot"])
+                    except (orjson.JSONDecodeError, AttributeError):
+                        pass
                 yield chunk
         finally:
             await finish_pending_realtime_tool_output(api_func_override)
-        # The Realtime provider persists the final spoken transcript.  Never
-        # persist the internal function result as an assistant message.
+        # The provider persists its natural confirmation/failure response.
+        # Never persist the private function result as an assistant message.
         return
 
     #logger.info(f"antes de save_content_to_db, content: {content}")
@@ -1409,6 +1761,9 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                                                                         if delivery_ack else None
                                                                     ))
         if user_message_id and bot_message_id:
+            if pending_application_handoff is not None:
+                from integrations.applications.tool_handoff import record_tool_handoff_message
+                record_tool_handoff_message(pending_application_handoff, bot_message_id)
             if delivery_ack:
                 ack_channel = str(delivery_ack.get("channel") or "")
                 ack_token = str(delivery_ack.get("token") or "")
@@ -1423,8 +1778,13 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 yield deferred_chunk
             yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
         else:
-            yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
-            return
-
-
+            from ai_runtime.persistence.messages import persistence_result_payload
+            persisted = persistence_result_payload(user_message_id, bot_message_id)
+            yield f"data: {orjson.dumps(persisted).decode()}\n\n"
+            if persisted.get("persistence_error"):
+                return
+    if pending_application_handoff is not None:
+        # The following handoff event must start on its own SSE line. All
+        # visible transfer text has already been emitted and persisted above.
+        return
     yield content.strip()

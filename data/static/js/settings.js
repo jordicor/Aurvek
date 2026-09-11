@@ -4,6 +4,8 @@
 (function() {
     'use strict';
 
+    const t = (key, params = {}) => window.AurvekI18n.t(`profile.${key}`, params);
+
     const TAB_MAP = {
         '#profile': 'profile-tab',
         '#calls': 'calls-tab',
@@ -82,28 +84,28 @@
 
     function phoneCallStatus(value) {
         const labels = {
-            created: 'Preparing',
-            dispatching: 'Preparing',
-            dispatch_unknown: 'Checking status',
-            queued: 'Preparing',
-            initiated: 'Calling',
-            ringing: 'Ringing',
-            in_progress: 'In call',
-            completed: 'Completed',
-            busy: 'Busy',
-            no_answer: 'No answer',
-            machine: 'Voicemail',
-            failed: 'Failed',
-            canceled: 'Canceled',
-            unresolved: 'Status unavailable'
+            created: t('calls.status.preparing'),
+            dispatching: t('calls.status.preparing'),
+            dispatch_unknown: t('calls.status.checking'),
+            queued: t('calls.status.preparing'),
+            initiated: t('calls.status.calling'),
+            ringing: t('calls.status.ringing'),
+            in_progress: t('calls.status.in_call'),
+            completed: t('calls.status.completed'),
+            busy: t('calls.status.busy'),
+            no_answer: t('calls.status.no_answer'),
+            machine: t('calls.status.voicemail'),
+            failed: t('calls.status.failed'),
+            canceled: t('calls.status.canceled'),
+            unresolved: t('calls.status.unavailable')
         };
-        return labels[String(value || '').toLowerCase()] || 'Unknown';
+        return labels[String(value || '').toLowerCase()] || t('calls.status.unknown');
     }
 
     function phoneCallDirection(value) {
-        if (String(value || '').toLowerCase() === 'inbound') return 'Incoming call';
-        if (String(value || '').toLowerCase() === 'outbound') return 'Outgoing call';
-        return 'Phone call';
+        if (String(value || '').toLowerCase() === 'inbound') return t('calls.direction.incoming');
+        if (String(value || '').toLowerCase() === 'outbound') return t('calls.direction.outgoing');
+        return t('calls.direction.phone');
     }
 
     function phoneCallDate(value) {
@@ -112,7 +114,7 @@
         const date = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(raw)
             ? raw
             : `${raw.replace(' ', 'T')}Z`);
-        return Number.isNaN(date.getTime()) ? raw : date.toLocaleString();
+        return Number.isNaN(date.getTime()) ? raw : date.toLocaleString(window.AurvekI18n.locale);
     }
 
     function phoneCallDuration(value) {
@@ -122,9 +124,9 @@
         const rounded = Math.round(total);
         const minutes = Math.floor(rounded / 60);
         const seconds = rounded % 60;
-        if (minutes === 0) return `${seconds} sec`;
-        if (seconds === 0) return `${minutes} min`;
-        return `${minutes} min ${seconds} sec`;
+        if (minutes === 0) return t('calls.seconds', { count: seconds });
+        if (seconds === 0) return t('calls.minutes', { count: minutes });
+        return t('calls.duration', { minutes, seconds });
     }
 
     function phoneCallCost(call) {
@@ -134,7 +136,7 @@
         if (!Number.isFinite(amount)) return '';
         const currency = String(call.currency || 'USD');
         try {
-            return new Intl.NumberFormat(undefined, {
+            return new Intl.NumberFormat(window.AurvekI18n.locale, {
                 style: 'currency',
                 currency
             }).format(amount);
@@ -145,7 +147,9 @@
 
     function callConversationTitle(call) {
         return call.conversation_title || call.conversation_name || call.chat_name || call.prompt_name ||
-            (call.conversation_id ? `Conversation #${call.conversation_id}` : 'Conversation');
+            (call.conversation_id
+                ? t('calls.conversation_number', { id: call.conversation_id })
+                : t('calls.conversation'));
     }
 
     function openCallConversation(conversationId) {
@@ -158,7 +162,7 @@
         const csrfToken = document.querySelector('meta[name="aurvek-csrf-token"]')?.content;
         if (!csrfToken) {
             status.hidden = false;
-            status.textContent = 'Call cancellation security is unavailable. Reload the page and try again.';
+            status.textContent = t('calls.cancel_security_error');
             return;
         }
         button.disabled = true;
@@ -172,13 +176,11 @@
                     headers: {'X-GPTSub-CSRF': csrfToken}
                 }
             );
-            if (!response || !response.ok) throw new Error('The scheduled call could not be canceled.');
+            if (!response || !response.ok) throw new Error(t('calls.cancel_failed'));
             await loadCallsTab();
         } catch (error) {
             status.hidden = false;
-            status.textContent = error instanceof Error
-                ? error.message
-                : 'The scheduled call could not be canceled.';
+            status.textContent = t('calls.cancel_failed');
             button.disabled = false;
         }
     }
@@ -194,7 +196,7 @@
                 !job.call_id && Number.isFinite(dueAt) && dueAt > Date.now();
         });
         if (calls.length === 0 && scheduled.length === 0) {
-            status.textContent = 'No phone calls yet.';
+            status.textContent = t('calls.empty');
             status.hidden = false;
             return;
         }
@@ -208,14 +210,14 @@
             main.className = 'settings-call-main';
             const title = document.createElement('p');
             title.className = 'settings-call-title';
-            title.textContent = `${callConversationTitle(job)} · Scheduled call`;
+            title.textContent = t('calls.scheduled_title', { conversation: callConversationTitle(job) });
             const meta = document.createElement('p');
             meta.className = 'settings-call-meta';
             const prompt = job.prompt_name && job.prompt_name !== callConversationTitle(job)
                 ? job.prompt_name
                 : '';
             meta.textContent = [
-                `Scheduled for ${phoneCallDate(job.scheduled_at_utc)}`,
+                t('calls.scheduled_for', { date: phoneCallDate(job.scheduled_at_utc) }),
                 prompt
             ].filter(Boolean).join(' · ');
             main.append(title, meta);
@@ -224,11 +226,11 @@
             actions.className = 'settings-call-actions';
             const badge = document.createElement('span');
             badge.className = 'settings-call-status';
-            badge.textContent = 'Scheduled';
+            badge.textContent = t('calls.scheduled');
             const cancel = document.createElement('button');
             cancel.type = 'button';
             cancel.className = 'btn btn-sm btn-outline-danger';
-            cancel.textContent = 'Cancel';
+            cancel.textContent = t('action.cancel');
             cancel.addEventListener('click', () => cancelScheduledCall(job, cancel));
             actions.append(badge, cancel);
             item.append(main, actions);
@@ -242,7 +244,10 @@
             main.className = 'settings-call-main';
             const title = document.createElement('p');
             title.className = 'settings-call-title';
-            title.textContent = `${callConversationTitle(call)} · ${phoneCallDirection(call.direction)}`;
+            title.textContent = t('calls.call_title', {
+                conversation: callConversationTitle(call),
+                direction: phoneCallDirection(call.direction)
+            });
             const meta = document.createElement('p');
             meta.className = 'settings-call-meta';
             const prompt = call.prompt_name && call.prompt_name !== callConversationTitle(call)
@@ -267,7 +272,7 @@
                 const open = document.createElement('button');
                 open.type = 'button';
                 open.className = 'btn btn-sm btn-outline-primary';
-                open.textContent = 'Open conversation';
+                open.textContent = t('calls.open_conversation');
                 open.addEventListener('click', () => openCallConversation(call.conversation_id));
                 actions.appendChild(open);
             }
@@ -286,7 +291,7 @@
         const generation = callsLoadGeneration;
         const signal = callsLoadController.signal;
         status.hidden = false;
-        status.textContent = 'Loading calls…';
+        status.textContent = t('calls.loading');
         list.replaceChildren();
         try {
             const fetcher = typeof secureFetch === 'function' ? secureFetch : fetch;
@@ -294,7 +299,7 @@
                 credentials: 'include',
                 signal
             });
-            if (!response || !response.ok) throw new Error('Calls could not be loaded.');
+            if (!response || !response.ok) throw new Error(t('calls.load_failed'));
             const payload = await response.json();
             if (signal.aborted || generation !== callsLoadGeneration) return;
             const calls = Array.isArray(payload) ? payload : (Array.isArray(payload.calls) ? payload.calls : []);
@@ -302,11 +307,11 @@
             renderCalls(calls, jobs);
         } catch (_error) {
             if (signal.aborted || generation !== callsLoadGeneration) return;
-            status.textContent = 'Calls could not be loaded.';
+            status.textContent = t('calls.load_failed');
             const retry = document.createElement('button');
             retry.type = 'button';
             retry.className = 'btn btn-sm btn-outline-primary ms-2';
-            retry.textContent = 'Try again';
+            retry.textContent = t('action.try_again');
             retry.addEventListener('click', loadCallsTab);
             status.appendChild(retry);
         }
@@ -352,23 +357,26 @@
         } catch (error) {
             console.error('Error loading usage data:', error);
             if (typeof NotificationModal !== 'undefined') {
-                NotificationModal.error('Error', 'Failed to load usage data');
+                NotificationModal.error(t('modal.error'), t('usage.load_failed'));
             }
         }
     }
 
     function updateBalance(balance) {
         const el = document.getElementById('usageCurrentBalance');
-        if (el) el.textContent = '$' + (balance || 0).toFixed(2);
+        if (el) el.textContent = formatCurrency(balance);
     }
 
     function updateStats(stats) {
         const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
         setEl('statOperations', formatNumber(stats.total_operations || 0));
         setEl('statTokens', formatNumber(stats.total_tokens || 0));
-        setEl('statTokensBreakdown', formatNumber(stats.tokens_in || 0) + ' in / ' + formatNumber(stats.tokens_out || 0) + ' out');
-        setEl('statCost', '$' + (stats.total_cost || 0).toFixed(2));
-        setEl('statAvgDaily', '$' + (stats.avg_daily || 0).toFixed(2));
+        setEl('statTokensBreakdown', t('usage.tokens_breakdown', {
+            input: formatNumber(stats.tokens_in || 0),
+            output: formatNumber(stats.tokens_out || 0)
+        }));
+        setEl('statCost', formatCurrency(stats.total_cost));
+        setEl('statAvgDaily', formatCurrency(stats.avg_daily));
     }
 
     // --- Storage quota card (fed by the `storage` object in /api/my-usage) ---
@@ -376,10 +384,10 @@
 
     function formatStorageBytes(bytes) {
         const value = Math.max(0, Number(bytes) || 0);
-        if (value >= GB_BYTES) return (value / GB_BYTES).toFixed(1) + ' GB';
-        if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' MB';
-        if (value >= 1024) return (value / 1024).toFixed(1) + ' KB';
-        return Math.round(value) + ' B';
+        if (value >= GB_BYTES) return formatDecimal(value / GB_BYTES) + ' GB';
+        if (value >= 1024 * 1024) return formatDecimal(value / (1024 * 1024)) + ' MB';
+        if (value >= 1024) return formatDecimal(value / 1024) + ' KB';
+        return formatDecimal(Math.round(value), 0) + ' B';
     }
 
     function updateStorage(storage) {
@@ -399,8 +407,10 @@
         const quota = storage.quota_bytes || 0;
 
         card.classList.remove('d-none', 'info', 'success', 'warning', 'danger');
-        breakdown.textContent = 'Uploads ' + formatStorageBytes(storage.uploads_bytes || 0) +
-            ' - Generated ' + formatStorageBytes(storage.generated_bytes || 0);
+        breakdown.textContent = t('usage.storage_breakdown', {
+            uploads: formatStorageBytes(storage.uploads_bytes || 0),
+            generated: formatStorageBytes(storage.generated_bytes || 0)
+        });
 
         if (quota === 0) {
             // Unlimited quota: used bytes only, no bar, no "of".
@@ -412,10 +422,13 @@
 
         const percent = (used / quota) * 100;
         const clamped = Math.max(0, Math.min(100, percent));
-        amount.textContent = formatStorageBytes(used) + ' of ' + (quota / GB_BYTES).toFixed(1) + ' GB';
+        amount.textContent = t('usage.storage_of', {
+            used: formatStorageBytes(used),
+            quota: `${formatDecimal(quota / GB_BYTES)} GB`
+        });
         bar.classList.remove('d-none');
         bar.setAttribute('aria-valuenow', String(Math.round(clamped)));
-        bar.setAttribute('aria-label', 'Storage usage ' + percent.toFixed(1) + '%');
+        bar.setAttribute('aria-label', t('usage.storage_percent', { percent: formatDecimal(percent) }));
         fill.style.width = clamped + '%';
         fill.classList.remove('warn', 'danger');
         if (percent >= 95) {
@@ -434,7 +447,11 @@
         if (!container) return;
 
         if (!byType || byType.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted py-4">No usage data yet</div>';
+            container.replaceChildren();
+            const empty = document.createElement('div');
+            empty.className = 'text-center text-muted py-4';
+            empty.textContent = t('usage.empty');
+            container.appendChild(empty);
             return;
         }
 
@@ -443,22 +460,31 @@
             'image': 'fa-image', 'video': 'fa-video', 'domain': 'fa-globe'
         };
         const typeLabels = {
-            'ai_tokens': 'AI Conversations', 'tts': 'Text-to-Speech', 'stt': 'Speech-to-Text',
-            'image': 'Image Generation', 'video': 'Video Generation', 'domain': 'Custom Domains'
+            'ai_tokens': t('usage.type.ai'), 'tts': t('usage.type.tts'), 'stt': t('usage.type.stt'),
+            'image': t('usage.type.image'), 'video': t('usage.type.video'), 'domain': t('usage.type.domain')
         };
 
-        container.innerHTML = byType.map(t => `
-            <div class="usage-item">
-                <div class="details">
-                    <span class="type-badge ${t.type}">
-                        <i class="fas ${typeIcons[t.type] || 'fa-circle'}"></i>
-                        ${typeLabels[t.type] || t.type}
-                    </span>
-                    <span class="ops">${formatNumber(t.operations)} operations</span>
-                </div>
-                <div class="cost">$${t.total_cost.toFixed(2)}</div>
-            </div>
-        `).join('');
+        container.replaceChildren();
+        byType.forEach(item => {
+            const row = document.createElement('div');
+            row.className = 'usage-item';
+            const details = document.createElement('div');
+            details.className = 'details';
+            const badge = document.createElement('span');
+            badge.className = `type-badge ${item.type}`;
+            const icon = document.createElement('i');
+            icon.className = `fas ${typeIcons[item.type] || 'fa-circle'}`;
+            badge.append(icon, document.createTextNode(` ${typeLabels[item.type] || t('usage.by_type')}`));
+            const operations = document.createElement('span');
+            operations.className = 'ops';
+            operations.textContent = t('usage.operations', { count: Number(item.operations) || 0 });
+            const cost = document.createElement('div');
+            cost.className = 'cost';
+            cost.textContent = formatCurrency(item.total_cost);
+            details.append(badge, operations);
+            row.append(details, cost);
+            container.appendChild(row);
+        });
     }
 
     function updateChart(daily) {
@@ -478,7 +504,7 @@
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Daily Spending',
+                    label: t('usage.daily_spending'),
                     data: costData,
                     borderColor: 'rgb(250, 166, 26)',
                     backgroundColor: 'rgba(250, 166, 26, 0.15)',
@@ -493,7 +519,7 @@
                 maintainAspectRatio: false,
                 plugins: {
                     legend: { display: false },
-                    tooltip: { callbacks: { label: ctx => '$' + ctx.parsed.y.toFixed(2) } }
+                    tooltip: { callbacks: { label: ctx => formatCurrency(ctx.parsed.y) } }
                 },
                 scales: {
                     x: {
@@ -506,7 +532,7 @@
                     y: {
                         ticks: {
                             color: getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim() || '#72767d',
-                            callback: v => '$' + v.toFixed(2)
+                            callback: v => formatCurrency(v)
                         },
                         grid: { color: 'rgba(255,255,255,0.05)' }
                     }
@@ -520,21 +546,40 @@
         if (!container) return;
 
         if (!daily || daily.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted py-4">No activity yet</div>';
+            container.replaceChildren();
+            const empty = document.createElement('div');
+            empty.className = 'text-center text-muted py-4';
+            empty.textContent = t('usage.no_activity');
+            container.appendChild(empty);
             return;
         }
 
         const sorted = [...daily].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14);
-        container.innerHTML = sorted.map(d => `
-            <div class="daily-item">
-                <div class="date">${formatDateLong(d.date)}</div>
-                <div class="stats">
-                    <span class="stat-val"><strong>${formatNumber(d.operations)}</strong> ops</span>
-                    <span class="stat-val"><strong>${formatNumber(d.tokens_in + d.tokens_out)}</strong> tokens</span>
-                    <span class="stat-val"><strong>$${d.total_cost.toFixed(2)}</strong></span>
-                </div>
-            </div>
-        `).join('');
+        container.replaceChildren();
+        sorted.forEach(item => {
+            const row = document.createElement('div');
+            row.className = 'daily-item';
+            const date = document.createElement('div');
+            date.className = 'date';
+            date.textContent = formatDateLong(item.date);
+            const stats = document.createElement('div');
+            stats.className = 'stats';
+            const values = [
+                [formatNumber(item.operations), t('usage.ops_short')],
+                [formatNumber(item.tokens_in + item.tokens_out), t('usage.tokens_short')],
+                [formatCurrency(item.total_cost), '']
+            ];
+            values.forEach(([value, suffix]) => {
+                const stat = document.createElement('span');
+                stat.className = 'stat-val';
+                const strong = document.createElement('strong');
+                strong.textContent = value;
+                stat.append(strong, document.createTextNode(suffix ? ` ${suffix}` : ''));
+                stats.appendChild(stat);
+            });
+            row.append(date, stats);
+            container.appendChild(row);
+        });
     }
 
     // --- Break Reminders Tab ---
@@ -548,6 +593,7 @@
         const resetBtn = document.getElementById('wellbeingResetSessionBtn');
         if (form && !form.dataset.bound) {
             form.dataset.bound = '1';
+            FormGuard.watch(form);
             form.addEventListener('submit', saveWellbeingPreferences);
         }
         if (resetBtn && !resetBtn.dataset.bound) {
@@ -569,16 +615,23 @@
     }
 
     async function loadWellbeingPreferences() {
+        const form = document.getElementById('wellbeingPreferencesForm');
+        const stateBeforeLoad = readWellbeingPreferenceInputs();
         try {
             const response = await wellbeingFetch('/api/wellbeing/preferences');
-            if (!response.ok) throw new Error('Failed to load break reminder settings');
+            if (!response.ok) throw new Error(t('wellbeing.load_failed'));
             const data = await response.json();
+            const currentState = readWellbeingPreferenceInputs();
             renderWellbeingPreferences(data.preferences || {});
+            FormGuard.markClean(form);
+            if (!sameWellbeingPreferenceInputs(currentState, stateBeforeLoad)) {
+                renderWellbeingPreferences(currentState);
+            }
             renderWellbeingStatus(data.status || {});
         } catch (error) {
             console.error('Error loading break reminder settings:', error);
             if (typeof NotificationModal !== 'undefined') {
-                NotificationModal.error('Error', 'Failed to load break reminder settings');
+                NotificationModal.error(t('modal.error'), t('wellbeing.load_failed'));
             }
         }
     }
@@ -592,50 +645,79 @@
         if (preferredMinutes) preferredMinutes.value = preferences.preferred_soft_minutes || '';
     }
 
+    function readWellbeingPreferenceInputs() {
+        const preferredMinutes = document.getElementById('wellbeingPreferredSoftMinutes');
+        return {
+            reminders_enabled: document.getElementById('wellbeingRemindersEnabled')?.checked,
+            intense_reminders_enabled: document.getElementById('wellbeingIntenseEnabled')?.checked,
+            preferred_soft_minutes: preferredMinutes?.value || ''
+        };
+    }
+
+    function sameWellbeingPreferenceInputs(left, right) {
+        return left.reminders_enabled === right.reminders_enabled
+            && left.intense_reminders_enabled === right.intense_reminders_enabled
+            && left.preferred_soft_minutes === right.preferred_soft_minutes;
+    }
+
     function renderWellbeingStatus(status) {
         const session = status.session || {};
         const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
         setEl('wellbeingActiveMinutes', session.active_minutes !== undefined ? formatNumber(session.active_minutes) : '-');
         setEl('wellbeingUserMessages', session.user_messages_count !== undefined ? formatNumber(session.user_messages_count) : '-');
         setEl('wellbeingRemindersShown', session.reminders_shown !== undefined ? formatNumber(session.reminders_shown) : '-');
-        setEl('wellbeingSeverity', session.current_severity || 'normal');
+        const severity = String(session.current_severity || 'normal').toLowerCase();
+        const severityKeys = new Set(['normal', 'soft', 'strong', 'mandatory']);
+        setEl('wellbeingSeverity', t(`wellbeing.severity.${severityKeys.has(severity) ? severity : 'normal'}`));
 
         const statusText = document.getElementById('wellbeingStatusText');
         if (statusText) {
             if (!session.id) {
-                statusText.textContent = 'No active continuous session.';
+                statusText.textContent = t('wellbeing.no_active_session');
             } else if (status.active_pause && status.pause_until) {
-                statusText.textContent = 'Pause active until ' + new Date(status.pause_until).toLocaleTimeString();
+                statusText.textContent = t('wellbeing.pause_until', {
+                    time: new Date(status.pause_until).toLocaleTimeString(window.AurvekI18n.locale)
+                });
             } else {
-                statusText.textContent = 'Current session started ' + formatDateTime(session.started_at) + '.';
+                statusText.textContent = t('wellbeing.session_started', {
+                    date: formatDateTime(session.started_at)
+                });
             }
         }
     }
 
     async function saveWellbeingPreferences(event) {
         event.preventDefault();
-        const preferredMinutes = document.getElementById('wellbeingPreferredSoftMinutes');
+        const form = document.getElementById('wellbeingPreferencesForm');
+        const submittedState = readWellbeingPreferenceInputs();
         const payload = {
-            reminders_enabled: document.getElementById('wellbeingRemindersEnabled')?.checked,
-            intense_reminders_enabled: document.getElementById('wellbeingIntenseEnabled')?.checked,
-            preferred_soft_minutes: preferredMinutes && preferredMinutes.value ? Number(preferredMinutes.value) : null
+            reminders_enabled: submittedState.reminders_enabled,
+            intense_reminders_enabled: submittedState.intense_reminders_enabled,
+            preferred_soft_minutes: submittedState.preferred_soft_minutes
+                ? Number(submittedState.preferred_soft_minutes)
+                : null
         };
         try {
             const response = await wellbeingFetch('/api/wellbeing/preferences', {
                 method: 'PUT',
                 body: JSON.stringify(payload)
             });
-            if (!response.ok) throw new Error('Failed to save break reminder settings');
+            if (!response.ok) throw new Error(t('wellbeing.save_failed'));
             const data = await response.json();
+            const currentState = readWellbeingPreferenceInputs();
             renderWellbeingPreferences(data.preferences || {});
+            FormGuard.markClean(form);
+            if (!sameWellbeingPreferenceInputs(currentState, submittedState)) {
+                renderWellbeingPreferences(currentState);
+            }
             renderWellbeingStatus(data.status || {});
             if (typeof NotificationModal !== 'undefined') {
-                NotificationModal.success('Saved', 'Break reminder settings updated');
+                NotificationModal.success(t('modal.saved'), t('wellbeing.saved'));
             }
         } catch (error) {
             console.error('Error saving break reminder settings:', error);
             if (typeof NotificationModal !== 'undefined') {
-                NotificationModal.error('Error', 'Failed to save break reminder settings');
+                NotificationModal.error(t('modal.error'), t('wellbeing.save_failed'));
             }
         }
     }
@@ -646,16 +728,16 @@
                 method: 'POST',
                 body: JSON.stringify({})
             });
-            if (!response.ok) throw new Error('Failed to reset current counter');
+            if (!response.ok) throw new Error(t('wellbeing.reset_failed'));
             const status = await response.json();
             renderWellbeingStatus(status || {});
             if (typeof NotificationModal !== 'undefined') {
-                NotificationModal.success('Reset', 'Current break reminder counter reset');
+                NotificationModal.success(t('modal.reset'), t('wellbeing.reset'));
             }
         } catch (error) {
             console.error('Error resetting break reminder counter:', error);
             if (typeof NotificationModal !== 'undefined') {
-                NotificationModal.error('Error', 'Failed to reset current counter');
+                NotificationModal.error(t('modal.error'), t('wellbeing.reset_failed'));
             }
         }
     }
@@ -664,24 +746,37 @@
         if (!value) return '-';
         const normalized = String(value).replace(' ', 'T') + (String(value).includes('Z') ? '' : 'Z');
         const date = new Date(normalized);
-        return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString(window.AurvekI18n.locale);
     }
 
     function formatNumber(num) {
-        if (num >= 1000000000) return (num / 1000000000).toFixed(1) + 'B';
-        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-        return num.toString();
+        return new Intl.NumberFormat(window.AurvekI18n.locale, {
+            notation: 'compact',
+            maximumFractionDigits: 1
+        }).format(Number(num) || 0);
+    }
+
+    function formatDecimal(value, maximumFractionDigits = 1) {
+        return new Intl.NumberFormat(window.AurvekI18n.locale, {
+            maximumFractionDigits
+        }).format(Number(value) || 0);
+    }
+
+    function formatCurrency(value) {
+        return new Intl.NumberFormat(window.AurvekI18n.locale, {
+            style: 'currency',
+            currency: 'USD'
+        }).format(Number(value) || 0);
     }
 
     function formatDateShort(dateStr) {
         const date = new Date(dateStr + 'T00:00:00');
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        return date.toLocaleDateString(window.AurvekI18n.locale, { month: 'short', day: 'numeric' });
     }
 
     function formatDateLong(dateStr) {
         const date = new Date(dateStr + 'T00:00:00');
-        return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        return date.toLocaleDateString(window.AurvekI18n.locale, { weekday: 'short', month: 'short', day: 'numeric' });
     }
 
     // Expose loadUsageData for the date range filter

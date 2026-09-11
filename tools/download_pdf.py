@@ -34,6 +34,9 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from i18n import LANGUAGES, Translator
+from babel.dates import format_datetime
 from reportlab.pdfbase import pdfmetrics
 from PIL import Image as PilImage
 from dotenv import load_dotenv
@@ -93,7 +96,13 @@ max_height = 500  # maximum height in pixels
 # Auxiliary Functions
 # =============================
 
-def get_styles():
+def get_styles(ui_language: str = "en"):
+    main_font = MAIN_FONT_NAME
+    if Translator(ui_language).language == "ja":
+        main_font = "HeiseiKakuGo-W5"
+        pdfmetrics.registerFont(UnicodeCIDFont(main_font))
+        pdfmetrics.registerFontFamily(main_font, normal=main_font, bold=main_font, italic=main_font, boldItalic=main_font)
+    bold_font = main_font if main_font != MAIN_FONT_NAME else f"{main_font}-Bold"
     # Register emoji font
     emoji_font_path = os.path.join(FONT_PATH, EMOJI_FONT_FILE)
     if os.path.exists(emoji_font_path):
@@ -104,10 +113,10 @@ def get_styles():
         sys.exit(1)
 
     # Ensure main font is registered
-    if MAIN_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
-        main_font_path = os.path.join(FONT_PATH, f"{MAIN_FONT_NAME}.ttf")
+    if main_font not in pdfmetrics.getRegisteredFontNames():
+        main_font_path = os.path.join(FONT_PATH, f"{main_font}.ttf")
         if os.path.exists(main_font_path):
-            pdfmetrics.registerFont(TTFont(MAIN_FONT_NAME, main_font_path))
+            pdfmetrics.registerFont(TTFont(main_font, main_font_path))
         else:
             logger.error(f"Main font not found at: {main_font_path}")
             sys.exit(1)
@@ -117,53 +126,53 @@ def get_styles():
 
     # Modify header styles to use main font
     for heading in ['Heading1', 'Heading2', 'Heading3', 'Heading4', 'Heading5', 'Heading6']:
-        styles[heading].fontName = MAIN_FONT_NAME
+        styles[heading].fontName = main_font
 
     # Modify normal style to use main font
-    styles['Normal'].fontName = MAIN_FONT_NAME
+    styles['Normal'].fontName = main_font
 
     # Create or modify custom styles
     custom_styles = {
         'small_italic': {
             'parent': styles['Normal'],
-            'fontName': MAIN_FONT_NAME,
+            'fontName': main_font,
             'fontSize': 8,
             'leading': 10,
             'italic': True,
         },
         'title': {
             'parent': styles['Normal'],
-            'fontName': f"{MAIN_FONT_NAME}-Bold",
+            'fontName': bold_font,
             'fontSize': 18,
             'alignment': TA_CENTER,
         },
         'subtitle': {
             'parent': styles['Normal'],
-            'fontName': MAIN_FONT_NAME,
+            'fontName': main_font,
             'fontSize': 14,
             'alignment': TA_CENTER,
         },
         'user': {
             'parent': styles['Normal'],
-            'fontName': f"{MAIN_FONT_NAME}-Bold",
+            'fontName': bold_font,
             'fontSize': 12,
             'leading': 14,
         },
         'bot': {
             'parent': styles['Normal'],
-            'fontName': MAIN_FONT_NAME,
+            'fontName': main_font,
             'fontSize': 12,
             'leading': 14,
         },
         'multi_ai_model': {
             'parent': styles['Normal'],
-            'fontName': f"{MAIN_FONT_NAME}-Bold",
+            'fontName': bold_font,
             'fontSize': 11,
             'leading': 13,
         },
         'multi_ai_error': {
             'parent': styles['Normal'],
-            'fontName': MAIN_FONT_NAME,
+            'fontName': main_font,
             'fontSize': 10,
             'leading': 12,
             'textColor': colors.red,
@@ -295,7 +304,7 @@ def process_inline(element):
     else:
         return ""
 
-def process_p_tag(element, styles, hash_prefixes):
+def process_p_tag(element, styles, hash_prefixes, image_paths=None):
     flowables = []
     for child in element.contents:
         if isinstance(child, NavigableString) or (isinstance(child, Tag) and child.name != "img"):
@@ -304,7 +313,7 @@ def process_p_tag(element, styles, hash_prefixes):
                 paragraph = Paragraph(inline_html, styles["Normal"])
                 flowables.append(paragraph)
         elif isinstance(child, Tag) and child.name == "img":
-            flowables.extend(process_element(child, styles, hash_prefixes))
+            flowables.extend(process_element(child, styles, hash_prefixes, image_paths=image_paths))
     return flowables
 
 
@@ -338,7 +347,7 @@ def image_file_to_flowables(full_image_path: str):
         elements.append(img_rl)
     return elements
 
-def process_element(element, styles, hash_prefixes):
+def process_element(element, styles, hash_prefixes, image_paths=None):
     """
     Process a BeautifulSoup element and convert it into a list of ReportLab flowables.
     """
@@ -352,7 +361,7 @@ def process_element(element, styles, hash_prefixes):
     elif isinstance(element, Tag):
         if element.name == "p":
             # Use helper function to handle mixed content
-            return process_p_tag(element, styles, hash_prefixes)
+            return process_p_tag(element, styles, hash_prefixes, image_paths=image_paths)
         elif element.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
             content = "".join(process_inline(child) for child in element.contents)
             heading_level = int(element.name[1])
@@ -386,7 +395,7 @@ def process_element(element, styles, hash_prefixes):
                 # Process nested lists if any
                 nested_lists = li.find_all(["ul", "ol"], recursive=False)
                 for nested_list in nested_lists:
-                    nested_flowables = process_element(nested_list, styles, hash_prefixes)
+                    nested_flowables = process_element(nested_list, styles, hash_prefixes, image_paths=image_paths)
                     li_flowables.extend(nested_flowables)
 
                 if li_flowables:
@@ -430,6 +439,10 @@ def process_element(element, styles, hash_prefixes):
             src = element.get("src", "")
             alt = element.get("alt", "")
 
+            if image_paths is not None:
+                path = image_paths.get(src)
+                return image_file_to_flowables(str(path) if path else image_not_found_path)
+
             # Check if filename has '_256.webp' suffix
             if "_256.webp" in src:
                 # Replace with '_fullsize.webp'
@@ -461,7 +474,7 @@ def process_element(element, styles, hash_prefixes):
             return elements
         else:
             for child in element.contents:
-                elements.extend(process_element(child, styles, hash_prefixes))
+                elements.extend(process_element(child, styles, hash_prefixes, image_paths=image_paths))
             return elements
     else:
         return elements
@@ -497,21 +510,26 @@ def process_table(table, styles):
 
     return [Table(data, style=table_style)]
 
-def html_to_reportlab(html_text, styles, hash_prefixes):
+def html_to_reportlab(html_text, styles, hash_prefixes, image_paths=None):
     elements = []
     if "<body>" not in html_text:
         html_text = f"<body>{html_text}</body>"
     soup = BeautifulSoup(html_text, "html.parser")
     for element in soup.body.contents:
-        elements.extend(process_element(element, styles, hash_prefixes))
+        elements.extend(process_element(element, styles, hash_prefixes, image_paths=image_paths))
     return elements
 
 # =============================
 # Function to Generate and Save PDF
 # =============================
 
-async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bool):
+async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bool, ui_language: str = "en",
+                               *, check_access=None):
+    translator = Translator(ui_language)
+    t = translator.t
     logger.debug(f"Starting PDF generation for conversation_id: {conversation_id}")
+    if check_access is not None:
+        await check_access()
 
     # Use get_db_connection from database.py
     async with get_db_connection(readonly=True) as conn:
@@ -542,11 +560,20 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
         async with conn.execute(query_messages, (conversation_id,)) as cursor:
             messages = await cursor.fetchall()
 
+    image_paths = None
+    if check_access is not None:
+        from chat.services.generated_media import preload_generated_media_for_messages, generated_media_path
+        records = await preload_generated_media_for_messages(
+            [(row["id"], custom_unescape(row["message"])) for row in messages],
+            user_id=int(conversation["owner_user_id"]), conversation_id=conversation_id)
+        image_paths = {url: generated_media_path(record) for url, record in records.items()
+                       if record["kind"] == "image"}
+
     # Generate PDF
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=50, bottomMargin=50)
     elements = []
-    styles = get_styles()
+    styles = get_styles(translator.language)
 
     # Calculate hash prefixes
     username = conversation["username"]
@@ -558,25 +585,28 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
     elements.append(
         HRFlowable(width="100%", thickness=1, lineCap="round", spaceBefore=10, spaceAfter=10, color=colors.grey)
     )
-    elements.append(Paragraph(f'Conversation by: {conversation["username"]}', styles["title"]))
+    elements.append(Paragraph(html.escape(t("exports.conversation_by", username=str(conversation["username"]))), styles["title"]))
     elements.append(Spacer(1, 0.2 * inch))
-    elements.append(Paragraph(f'LLM: {conversation["machine"]} {conversation["model"]}', styles["subtitle"]))
+    elements.append(Paragraph(html.escape(t("exports.model", machine=str(conversation["machine"] or ""), model=str(conversation["model"] or ""))), styles["subtitle"]))
     elements.append(Spacer(1, 0.1 * inch))
-    elements.append(Paragraph(f'Prompt: {conversation["prompt_name"]}', styles["subtitle"]))
+    elements.append(Paragraph(html.escape(t("exports.prompt", name=str(conversation["prompt_name"] or ""))), styles["subtitle"]))
     elements.append(Spacer(1, 0.3 * inch))
 
     for message in messages:
+        if check_access is not None:
+            await check_access()
         date, text, sender_type = message["date"], message["message"], message["type"]
-        sender_type_upper = sender_type.upper()
+        sender_type_upper = (t("exports.sender." + sender_type.lower())
+                             if sender_type.lower() in {"user", "bot"} else sender_type.upper())
 
         try:
             date_obj = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
-            date_str = date_obj.strftime("%Y-%m-%d %H:%M")
+            date_str = format_datetime(date_obj, format="short", locale=LANGUAGES[translator.language].replace("-", "_"))
         except ValueError:
             date_str = date
 
         text = html.unescape(custom_unescape(text))
-        logger.info(f"Processing message: {text}")
+        logger.debug("Processing PDF message_id=%s", message["id"])
 
         try:
             parsed_json = None
@@ -597,7 +627,7 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
                 for idx, response in enumerate(responses):
                     if not isinstance(response, dict):
                         continue
-                    model_label = response.get("model") or response.get("machine") or f"Model {idx + 1}"
+                    model_label = response.get("model") or response.get("machine") or t("exports.model_number", number=idx + 1)
                     model_label = html.escape(str(model_label))
                     response_content = response.get("content", "")
                     if response_content is None:
@@ -613,7 +643,7 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
                         cleaned_response = strip_html(response_text)
                         if cleaned_response.strip():
                             html_text = markdown_to_html(response_text)
-                            message_elements = html_to_reportlab(html_text, styles, hash_prefixes)
+                            message_elements = html_to_reportlab(html_text, styles, hash_prefixes, image_paths=image_paths)
                             elements.extend(message_elements)
                     elements.append(Spacer(1, 0.04 * inch))
 
@@ -629,7 +659,7 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
                         continue
                     if element_json.get("type") == "text":
                         html_text = markdown_to_html(str(element_json.get("text", "")))
-                        message_elements = html_to_reportlab(html_text, styles, hash_prefixes)
+                        message_elements = html_to_reportlab(html_text, styles, hash_prefixes, image_paths=image_paths)
                         elements.extend(message_elements)
                         elements.append(Spacer(1, 0.05 * inch))
                         elements.append(Paragraph(date_str, styles["small_italic"]))
@@ -649,21 +679,23 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
                                 filename = text_info.get("filename", "file.txt")
                                 lines = text_info.get("lines", 0)
                                 content = file_data.decode("utf-8", errors="replace")
-                                file_text = f"[Content of uploaded file: {filename} ({lines} lines)]\n\n{content}"
+                                file_text = t("exports.file_content", filename=filename, lines=lines) + "\n\n" + content
                             else:
                                 file_text = text_file_block_to_text(
                                     element_json,
                                     owner_username=username,
                                     conversation_id=conversation_id,
+                                    ui_language=translator.language,
                                 )
                         else:
                             file_text = text_file_block_to_text(
                                 element_json,
                                 owner_username=username,
                                 conversation_id=conversation_id,
+                                ui_language=translator.language,
                             )
                         html_text = markdown_to_html(file_text)
-                        message_elements = html_to_reportlab(html_text, styles, hash_prefixes)
+                        message_elements = html_to_reportlab(html_text, styles, hash_prefixes, image_paths=image_paths)
                         elements.extend(message_elements)
                         elements.append(Spacer(1, 0.05 * inch))
                         elements.append(Paragraph(date_str, styles["small_italic"]))
@@ -687,15 +719,15 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
                         if image_url:
                             img_tag = f'<img src="{image_url}" alt="Image"/>'
                             html_text = markdown_to_html(img_tag)
-                            message_elements = html_to_reportlab(html_text, styles, hash_prefixes)
+                            message_elements = html_to_reportlab(html_text, styles, hash_prefixes, image_paths=image_paths)
                             elements.extend(message_elements)
                             elements.append(Spacer(1, 0.05 * inch))
                             elements.append(Paragraph(date_str, styles["small_italic"]))
                     elif element_json.get("type") == "document_url":
                         doc_info = element_json.get("document_url", {})
-                        filename = html.escape(str(doc_info.get("filename") or "document.pdf"))
+                        filename = str(doc_info.get("filename") or "document.pdf")
                         pages = doc_info.get("pages") or 0
-                        elements.append(Paragraph(f"[PDF attached: {filename} ({pages} pages)]", styles["small_italic"]))
+                        elements.append(Paragraph(html.escape(t("exports.pdf_attached", filename=filename, pages=pages)), styles["small_italic"]))
                         elements.append(Spacer(1, 0.05 * inch))
                         elements.append(Paragraph(date_str, styles["small_italic"]))
 
@@ -706,7 +738,7 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
                     # If text is empty after removing HTML, skip
                     continue
                 html_text = markdown_to_html(text)
-                message_elements = html_to_reportlab(html_text, styles, hash_prefixes)
+                message_elements = html_to_reportlab(html_text, styles, hash_prefixes, image_paths=image_paths)
                 elements.append(Spacer(1, 0.1 * inch))
                 elements.append(Paragraph(f"{sender_type_upper}:", styles[sender_type.lower()]))
                 elements.extend(message_elements)
@@ -744,7 +776,8 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
 
     # 3. Define PDF filename with timestamp
     # We use 'prompt_name' as name. You can adjust this according to your needs.
-    prompt_name_safe = ''.join(c for c in conversation["prompt_name"] if c.isalnum() or c in (' ', '_')).rstrip()
+    prompt_name = str(conversation["prompt_name"] or t("exports.conversation_filename", id=conversation_id))
+    prompt_name_safe = ''.join(c for c in prompt_name if c.isalnum() or c in (' ', '_')).rstrip()
     prompt_name_safe = prompt_name_safe.replace(' ', '_')  # Replace spaces with underscores
     pdf_filename = f"{prompt_name_safe}_{timestamp}.pdf"
 
@@ -752,6 +785,8 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
     pdf_file_path = os.path.join(pdf_convo_folder, pdf_filename)
 
     # 5. Save PDF to specified path
+    if check_access is not None:
+        await check_access()
     try:
         with open(pdf_file_path, 'wb') as f:
             f.write(pdf_bytes)
@@ -778,3 +813,4 @@ async def generate_and_save_pdf(conversation_id: int, user_id: int, is_admin: bo
             except OSError:
                 logger.warning("Could not remove unaccounted PDF file at %s", pdf_file_path)
         raise
+    return os.path.abspath(pdf_file_path)

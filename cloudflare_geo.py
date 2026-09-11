@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from babel import Locale
 
 from database import get_db_connection
+from i18n import LANGUAGES
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +55,19 @@ for _country in _geo_data.get("countries", []):
     _CONTINENT_TO_COUNTRIES[_continent].append(_country["code"])
 
 
-def get_all_geo_data() -> dict:
-    """Return the full geo data dict (countries + continents)."""
-    return _geo_data
+def get_all_geo_data(language: str | None = None) -> dict:
+    """Return geo codes, optionally with a localized copy of their display names."""
+    if language is None:
+        return _geo_data
+    territories = Locale.parse(LANGUAGES[language], sep="-").territories
+    regions = {"AF": "002", "AN": "AQ", "AS": "142", "EU": "150", "NA": "003", "OC": "009", "SA": "005"}
+    return {
+        **_geo_data,
+        "continents": {code: territories.get(regions.get(code, code), name)
+                       for code, name in _geo_data.get("continents", {}).items()},
+        "countries": [{**country, "name": territories.get(country["code"], country["name"])}
+                      for country in _geo_data.get("countries", [])],
+    }
 
 
 def validate_country_codes(codes: list[str]) -> list[str]:

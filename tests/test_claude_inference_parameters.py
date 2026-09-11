@@ -90,6 +90,19 @@ def test_claude_temperature_capability(model, expected):
     assert claude_omits_temperature(model) is expected
 
 
+def test_claude_image_context_keeps_user_uploads_and_image_only_assistant_authorship():
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "synthetic"}}
+    native = [{"role": "user", "content": [image, {"type": "text", "text": "Describe my upload."}]},
+              {"role": "assistant", "content": [{"type": "text", "text": "An uploaded image."}]}]
+    assert claude._claude_assistant_image_context(native) == native
+    prepared = claude._claude_assistant_image_context([
+        {"role": "assistant", "content": [image]}, {"role": "user", "content": "Describe your image."}])
+    assert prepared[0]["role"] == "assistant" and prepared[0]["content"][0]["type"] == "text"
+    assert prepared[1]["content"][1] is image
+    assert "not a user upload" in prepared[1]["content"][0]["text"]
+    assert claude._claude_assistant_image_context(prepared) == prepared
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("model", "expected_temperature"),

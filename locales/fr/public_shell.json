@@ -1,0 +1,18 @@
+{
+  "support": "Assistance Aurvek",
+  "support_contact": "Pour toute question concernant votre compte, la sécurité, la facturation ou le contenu, contactez-nous à {email}.",
+  "welcome": "Bienvenue",
+  "home": "Accueil",
+  "chat": "Discussion",
+  "settings": "Paramètres",
+  "classic_home": "Accueil classique",
+  "related": "Assistants associés",
+  "page_not_found": "Page introuvable",
+  "domain_not_found": "Domaine non configuré",
+  "unavailable": "Page temporairement indisponible",
+  "unavailable_title": "Page indisponible",
+  "retry": "Veuillez réessayer plus tard.",
+  "copied": "Copié !",
+  "expired": "Offre expirée",
+  "countdown": "{days}j {hours}h {minutes}min {seconds}s"
+}

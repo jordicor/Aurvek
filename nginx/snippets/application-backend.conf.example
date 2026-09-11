@@ -1,0 +1,27 @@
+# Include in the canonical IDENTITY host. This replaces its default deny for
+# /api/applications/v1/. Do not include in an embed or custom prompt domain.
+# Public ingress here assumes the EXISTING local Cloudflare tunnel has terminated
+# HTTPS. Its transport peer must be loopback; forwarded visitor headers do not
+# establish that trust. A direct TLS vhost may instead require $scheme = https.
+# Each app also needs explicit remote_backend_access=true and its backend secret.
+location ^~ /api/applications/v1/ {
+    if ($realip_remote_addr !~ "^(127\\.0\\.0\\.1|::1)$") { return 404; }
+    if ($http_x_forwarded_proto != "https") { return 404; }
+    client_max_body_size 32k;
+    client_body_timeout 30s;
+    access_log off;
+    error_log /dev/null crit;
+    proxy_pass http://127.0.0.1:{{FASTAPI_PORT}};
+    proxy_http_version 1.1;
+    proxy_set_header Host {{IDENTITY_HOST}};
+    # Always overwrite both headers, including client-supplied private markers.
+    proxy_set_header X-Aurvek-Backend-Ingress public;
+    proxy_set_header X-Aurvek-Backend-TLS https;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host "";
+    proxy_set_header X-Original-Host "";
+    proxy_set_header Connection "";
+    proxy_cache off;
+    proxy_buffering off;
+    proxy_read_timeout 60s;
+}

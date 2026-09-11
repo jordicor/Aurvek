@@ -72,14 +72,14 @@ function populateFilterDropdowns() {
     const llmSelect = document.getElementById('filterLLM');
 
     if (promptSelect) {
-        promptSelect.innerHTML = '<option value="">All Prompts</option>';
+        promptSelect.innerHTML = '<option value="">' + AurvekI18n.t('admin_users.all_prompts') + '</option>';
         prompts.forEach(p => {
             if (p) promptSelect.innerHTML += `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`;
         });
     }
 
     if (llmSelect) {
-        llmSelect.innerHTML = '<option value="">All LLMs</option>';
+        llmSelect.innerHTML = '<option value="">' + AurvekI18n.t('admin_users.all_llms') + '</option>';
         llms.forEach(l => {
             if (l) llmSelect.innerHTML += `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`;
         });
@@ -130,7 +130,7 @@ function setupEventListeners() {
             const count = checked.length;
             if (count === 0) return;
 
-            NotificationModal.confirm('Delete Users', `Are you sure you want to delete ${count} user(s)? This action cannot be undone.`, async () => {
+            NotificationModal.confirm(AurvekI18n.t('admin_users.delete_users'), AurvekI18n.t('admin_users.flow.delete_confirm', {count}), async () => {
                 try {
                     const formData = new FormData(usersForm);
                     const response = await secureFetch('/admin/delete-users', {
@@ -141,15 +141,15 @@ function setupEventListeners() {
 
                     const data = await response.json();
                     if (response.ok) {
-                        NotificationModal.success('Deleted', data.message || 'Users deleted successfully.');
+                        NotificationModal.success(AurvekI18n.t('admin_users.deleted'), data.message || AurvekI18n.t('admin_users.users_deleted_successfully'));
                         setTimeout(() => window.location.reload(), 1000);
                     } else {
-                        NotificationModal.error('Delete Failed', data.detail || data.error || 'Could not delete users.');
+                        NotificationModal.error(AurvekI18n.t('admin_users.delete_failed'), data.detail || data.error || AurvekI18n.t('admin_users.could_not_delete_users'));
                     }
                 } catch (error) {
-                    NotificationModal.error('Error', 'An unexpected error occurred.');
+                    NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.an_unexpected_error_occurred'));
                 }
-            }, null, { type: 'error', confirmText: 'Delete' });
+            }, null, { type: 'error', confirmText: AurvekI18n.t('admin_users.delete_2') });
         });
     }
 }
@@ -289,16 +289,16 @@ function updateStats(filteredCount) {
     const noLink = UsersListState.users.filter(u => u.status === 'no_link').length;
     const disabled = UsersListState.users.filter(u => !u.enabled).length;
 
-    document.getElementById('statTotal').textContent = total;
-    document.getElementById('statActive').textContent = active;
-    document.getElementById('statExpired').textContent = expired;
+    document.getElementById('statTotal').textContent = AurvekI18n.formatNumber(total);
+    document.getElementById('statActive').textContent = AurvekI18n.formatNumber(active);
+    document.getElementById('statExpired').textContent = AurvekI18n.formatNumber(expired);
 
     const statPassword = document.getElementById('statPassword');
-    if (statPassword) statPassword.textContent = password;
+    if (statPassword) statPassword.textContent = AurvekI18n.formatNumber(password);
     const statNoLink = document.getElementById('statNoLink');
-    if (statNoLink) statNoLink.textContent = noLink;
+    if (statNoLink) statNoLink.textContent = AurvekI18n.formatNumber(noLink);
     const statDisabled = document.getElementById('statDisabled');
-    if (statDisabled) statDisabled.textContent = disabled;
+    if (statDisabled) statDisabled.textContent = AurvekI18n.formatNumber(disabled);
 
     const filteredStat = document.getElementById('statFiltered');
     const filteredContainer = document.getElementById('statFilteredContainer');
@@ -306,7 +306,7 @@ function updateStats(filteredCount) {
     if (filteredContainer) {
         if (filteredCount !== total) {
             filteredContainer.style.display = 'inline-flex';
-            if (filteredStat) filteredStat.textContent = filteredCount;
+            if (filteredStat) filteredStat.textContent = AurvekI18n.formatNumber(filteredCount);
         } else {
             filteredContainer.style.display = 'none';
         }
@@ -337,10 +337,12 @@ function updateSelectedCount() {
     const disableBtn = document.getElementById('disableBtn');
     const enableBtn = document.getElementById('enableBtn');
 
-    if (countSpan) countSpan.textContent = checkedCount;
-    document.querySelectorAll('.selected-count').forEach(span => {
-        span.textContent = checkedCount;
-    });
+    const number = AurvekI18n.formatNumber(checkedCount);
+    if (countSpan) countSpan.textContent = AurvekI18n.t('admin_users.flow.delete_label', {number});
+    const disableLabel = document.getElementById('disableSelectedLabel');
+    const enableLabel = document.getElementById('enableSelectedLabel');
+    if (disableLabel) disableLabel.textContent = AurvekI18n.t('admin_users.flow.disable_label', {number});
+    if (enableLabel) enableLabel.textContent = AurvekI18n.t('admin_users.flow.enable_label', {number});
     if (deleteBtn) deleteBtn.disabled = checkedCount === 0;
     if (disableBtn) disableBtn.disabled = checkedCount === 0;
     if (enableBtn) enableBtn.disabled = checkedCount === 0;
@@ -382,30 +384,30 @@ function showMagicLink(magicLink, username, isExpired, isPasswordOnly) {
 
     if (!container || !input || !actionButton || !title) return;
 
-    title.innerHTML = '<i class="fas fa-magic me-2"></i>Magic Link for: <strong>' + escapeHtml(username) + '</strong>';
+    title.textContent = AurvekI18n.t('admin_users.flow.magic_link_for', {name: username});
     container.style.display = 'block';
 
     const copyMessage = document.getElementById('copyMessage');
     if (copyMessage) copyMessage.style.display = 'none';
 
-    if (!magicLink || magicLink === 'None') {
+    if (!magicLink) {
         input.value = isPasswordOnly
-            ? 'No magic link (password-only user)'
-            : 'No magic link generated';
+            ? AurvekI18n.t('admin_users.no_magic_link_password_only_user')
+            : AurvekI18n.t('admin_users.no_magic_link_generated');
         input.style.opacity = '0.6';
-        actionButton.innerHTML = '<i class="fas fa-magic me-1"></i> Generate';
+        actionButton.innerHTML = '<i class="fas fa-magic me-1"></i> ' + AurvekI18n.t('admin_users.generate') + '';
         actionButton.className = 'btn btn-info';
         actionButton.onclick = function() { renewMagicLink(username); };
     } else if (isExpired) {
         input.value = magicLink;
         input.style.opacity = '1';
-        actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> Renew';
+        actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> ' + AurvekI18n.t('admin_users.renew') + '';
         actionButton.className = 'btn btn-warning';
         actionButton.onclick = function() { renewMagicLink(username); };
     } else {
         input.value = magicLink;
         input.style.opacity = '1';
-        actionButton.innerHTML = '<i class="fas fa-copy me-1"></i> Copy';
+        actionButton.innerHTML = '<i class="fas fa-copy me-1"></i> ' + AurvekI18n.t('admin_users.copy') + '';
         actionButton.className = 'btn btn-success';
         actionButton.onclick = copyToClipboard;
     }
@@ -436,9 +438,9 @@ function copyToClipboard() {
 
     const actionButton = document.getElementById('actionButton');
     if (actionButton) {
-        actionButton.innerHTML = '<i class="fas fa-check me-1"></i> Copied!';
+        actionButton.innerHTML = '<i class="fas fa-check me-1"></i> ' + AurvekI18n.t('admin_users.copied') + '';
         setTimeout(() => {
-            actionButton.innerHTML = '<i class="fas fa-copy me-1"></i> Copy';
+            actionButton.innerHTML = '<i class="fas fa-copy me-1"></i> ' + AurvekI18n.t('admin_users.copy') + '';
         }, 2000);
     }
 }
@@ -450,7 +452,7 @@ async function renewMagicLink(username) {
     const actionButton = document.getElementById('actionButton');
     if (!actionButton) return;
 
-    actionButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Renewing...';
+    actionButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + AurvekI18n.t('admin_users.renewing') + '';
     actionButton.disabled = true;
 
     try {
@@ -461,7 +463,7 @@ async function renewMagicLink(username) {
 
         if (!response) {
             actionButton.disabled = false;
-            actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> Renew';
+            actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> ' + AurvekI18n.t('admin_users.renew') + '';
             return;
         }
 
@@ -469,8 +471,8 @@ async function renewMagicLink(username) {
         actionButton.disabled = false;
 
         if (data.error) {
-            NotificationModal.error('Renewal Failed', data.error);
-            actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> Renew';
+            NotificationModal.error(AurvekI18n.t('admin_users.renewal_failed'), data.error);
+            actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> ' + AurvekI18n.t('admin_users.renew') + '';
         } else {
             showMagicLink(data.magic_link, username, false, false);
 
@@ -481,7 +483,7 @@ async function renewMagicLink(username) {
                 row.dataset.magicLink = data.magic_link;
                 const statusCell = row.querySelector('.status-cell');
                 if (statusCell) {
-                    statusCell.innerHTML = '<span class="status-active" title="Magic link active"><i class="fas fa-check-circle"></i></span>';
+                    statusCell.innerHTML = '<span class="status-active" title="' + escapeHtml(AurvekI18n.t('admin_users.magic_link_active')) + '"><i class="fas fa-check-circle"></i></span>';
                 }
                 const usernameLink = row.querySelector('.username-link');
                 if (usernameLink) {
@@ -504,8 +506,8 @@ async function renewMagicLink(username) {
     } catch (error) {
         console.error('Error:', error);
         actionButton.disabled = false;
-        actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> Renew';
-        NotificationModal.error('Error', 'An error occurred while renewing the magic link.');
+        actionButton.innerHTML = '<i class="fas fa-sync me-1"></i> ' + AurvekI18n.t('admin_users.renew') + '';
+        NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.an_error_occurred_while_renewing_the_magic_link'));
     }
 }
 
@@ -515,15 +517,15 @@ function getUserStateByUsername(username) {
 
 function renderAccountStatusHtml(isEnabled) {
     return isEnabled
-        ? '<span class="status-active" title="Account enabled"><i class="fas fa-user-check"></i></span>'
-        : '<span class="status-disabled" title="Account disabled"><i class="fas fa-user-slash"></i></span>';
+        ? '<span class="status-active" title="' + escapeHtml(AurvekI18n.t('admin_users.account_enabled')) + '"><i class="fas fa-user-check"></i></span>'
+        : '<span class="status-disabled" title="' + escapeHtml(AurvekI18n.t('admin_users.account_disabled')) + '"><i class="fas fa-user-slash"></i></span>';
 }
 
 function updateActivationButton(button, isEnabled) {
     if (!button) return;
 
     button.dataset.enabled = isEnabled ? 'true' : 'false';
-    button.title = isEnabled ? 'Deactivate user' : 'Activate user';
+    button.title = isEnabled ? AurvekI18n.t('admin_users.deactivate_user') : AurvekI18n.t('admin_users.activate_user');
     button.classList.toggle('btn-outline-warning', isEnabled);
     button.classList.toggle('btn-outline-success', !isEnabled);
     button.innerHTML = isEnabled
@@ -564,7 +566,6 @@ function updateUserActivationInUI(username, isEnabled) {
 async function setUsersActivation(usernames, enabled) {
     setActivationControlsDisabled(true);
 
-    const actionPast = enabled ? 'enabled' : 'disabled';
     const errors = [];
     let updatedCount = 0;
 
@@ -586,10 +587,10 @@ async function setUsersActivation(usernames, enabled) {
                 updateUserActivationInUI(data.username || username, Boolean(data.is_enabled));
                 updatedCount++;
             } else {
-                errors.push(`${username}: ${data.error || data.detail || 'Request failed'}`);
+                errors.push(`${username}: ${data.error || data.detail || AurvekI18n.t('admin_users.request_failed')}`);
             }
         } catch (error) {
-            errors.push(`${username}: Unexpected error`);
+            errors.push(`${username}: ${AurvekI18n.t('admin_users.an_unexpected_error_occurred')}`);
         }
     }
 
@@ -598,10 +599,10 @@ async function setUsersActivation(usernames, enabled) {
     applyFiltersAndSort();
 
     if (updatedCount > 0) {
-        NotificationModal.success('Users Updated', `${updatedCount} user(s) ${actionPast}.`);
+        NotificationModal.success(AurvekI18n.t('admin_users.users_updated'), AurvekI18n.t(enabled ? 'admin_users.flow.enabled_count' : 'admin_users.flow.disabled_count', {count: updatedCount}));
     }
     if (errors.length > 0) {
-        NotificationModal.error('Activation Update Failed', errors.join('<br>'), { allowHtml: true });
+        NotificationModal.error(AurvekI18n.t('admin_users.activation_update_failed'), errors.join('\n'));
     }
 }
 
@@ -611,13 +612,13 @@ function toggleUserActivation(button) {
 
     const currentlyEnabled = button.dataset.enabled === 'true';
     const enabled = !currentlyEnabled;
-    const action = enabled ? 'Enable' : 'Disable';
+    const action = enabled ? AurvekI18n.t('admin_users.enable_2') : AurvekI18n.t('admin_users.disable_2');
     const message = enabled
-        ? `Enable ${escapeHtml(username)} and allow login again?`
-        : `Disable ${escapeHtml(username)}? Their chats and data will stay stored, but they will be signed out and blocked from login.`;
+        ? AurvekI18n.t('admin_users.flow.enable_confirm', {name: username})
+        : AurvekI18n.t('admin_users.flow.disable_confirm', {name: username});
 
     NotificationModal.confirm(
-        `${action} User`,
+        AurvekI18n.t(enabled ? 'admin_users.activate_user' : 'admin_users.deactivate_user'),
         message,
         () => setUsersActivation([username], enabled),
         null,
@@ -629,13 +630,13 @@ function setSelectedUsersActivation(enabled) {
     const usernames = Array.from(document.querySelectorAll('.user-checkbox:checked')).map(cb => cb.value);
     if (usernames.length === 0) return;
 
-    const action = enabled ? 'Enable' : 'Disable';
+    const action = enabled ? AurvekI18n.t('admin_users.enable_2') : AurvekI18n.t('admin_users.disable_2');
     const message = enabled
-        ? `Enable ${usernames.length} selected user(s) and allow login again?`
-        : `Disable ${usernames.length} selected user(s)? Their chats and data will stay stored, but they will be signed out and blocked from login.`;
+        ? AurvekI18n.t('admin_users.flow.enable_selected', {count: usernames.length})
+        : AurvekI18n.t('admin_users.flow.disable_selected', {count: usernames.length});
 
     NotificationModal.confirm(
-        `${action} Users`,
+        AurvekI18n.t(enabled ? 'admin_users.flow.enable_users' : 'admin_users.flow.disable_users'),
         message,
         () => setUsersActivation(usernames, enabled),
         null,
@@ -691,7 +692,7 @@ function debounce(func, wait) {
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /**
@@ -721,21 +722,7 @@ function copyPhone(element) {
  * Format number with K, M, B abbreviations
  */
 function formatNumber(num) {
-    if (num === null || num === undefined || isNaN(num)) return '0';
-
-    const absNum = Math.abs(num);
-
-    if (absNum >= 1000000000) {
-        return (num / 1000000000).toFixed(1).replace(/\.0$/, '') + 'B';
-    }
-    if (absNum >= 1000000) {
-        return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-    }
-    if (absNum >= 1000) {
-        return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-    }
-
-    return num.toString();
+    return AurvekI18n.formatNumber(num, {notation: 'compact', maximumFractionDigits: 1});
 }
 
 // ==========================================================
@@ -783,17 +770,17 @@ async function requestUltraAdminCode() {
         if (response.ok) {
             document.getElementById('ultraAdminStep1').style.display = 'none';
             document.getElementById('ultraAdminStep2').style.display = 'block';
-            document.getElementById('ultraAdminEmailHint').textContent = data.email_hint || '';
+            document.getElementById('ultraAdminEmailHint').textContent = AurvekI18n.t('admin_users.flow.code_sent', {email: data.email_hint || ''});
             document.getElementById('ultraAdminCodeInput').focus();
         } else if (response.status === 429) {
-            NotificationModal.warning('Cooldown', data.error || 'Please wait before requesting another code.');
+            NotificationModal.warning(AurvekI18n.t('admin_users.cooldown'), data.error || AurvekI18n.t('admin_users.please_wait_before_requesting_another_code'));
         } else if (response.status === 409) {
-            NotificationModal.warning('Unavailable', data.error || 'Another admin is currently elevated.');
+            NotificationModal.warning(AurvekI18n.t('admin_users.unavailable'), data.error || AurvekI18n.t('admin_users.another_admin_is_currently_elevated'));
         } else {
-            NotificationModal.error('Error', data.error || 'Could not send code.');
+            NotificationModal.error(AurvekI18n.t('admin_users.error'), data.error || AurvekI18n.t('admin_users.could_not_send_code'));
         }
     } catch (error) {
-        NotificationModal.error('Error', 'Unexpected error requesting code.');
+        NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.unexpected_error_requesting_code'));
     }
 }
 
@@ -803,7 +790,7 @@ async function requestUltraAdminCode() {
 async function verifyUltraAdminCode() {
     const code = document.getElementById('ultraAdminCodeInput').value.trim();
     if (code.length !== 6 || !/^\d{6}$/.test(code)) {
-        NotificationModal.warning('Invalid Code', 'Enter a 6-digit numeric code.');
+        NotificationModal.warning(AurvekI18n.t('admin_users.invalid_code'), AurvekI18n.t('admin_users.enter_a_6_digit_numeric_code'));
         return;
     }
 
@@ -820,15 +807,15 @@ async function verifyUltraAdminCode() {
         if (response.ok && data.status === 'elevated') {
             const modal = bootstrap.Modal.getInstance(document.getElementById('ultraAdminModal'));
             if (modal) modal.hide();
-            NotificationModal.success('Ultra Admin+ Active', 'Elevated privileges granted for 30 minutes.');
+            NotificationModal.success(AurvekI18n.t('admin_users.ultra_admin_active'), AurvekI18n.t('admin_users.elevated_privileges_granted_for_30_minutes'));
             activateUltraAdminUI(data.ttl);
         } else {
-            NotificationModal.error('Verification Failed', data.error || 'Incorrect code.');
+            NotificationModal.error(AurvekI18n.t('admin_users.verification_failed'), data.error || AurvekI18n.t('admin_users.incorrect_code'));
             document.getElementById('ultraAdminCodeInput').value = '';
             document.getElementById('ultraAdminCodeInput').focus();
         }
     } catch (error) {
-        NotificationModal.error('Error', 'Unexpected error verifying code.');
+        NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.unexpected_error_verifying_code'));
     }
 }
 
@@ -865,8 +852,8 @@ function updateUltraAdminTimer(btn, seconds) {
     const sec = seconds % 60;
     btn.innerHTML =
         '<i class="fas fa-bolt me-1"></i>' +
-        'Ultra Admin+ (' + min + ':' + sec.toString().padStart(2, '0') + ') ' +
-        '<i class="fas fa-times-circle ms-1" style="cursor:pointer;" onclick="revokeUltraAdmin(event)" title="Deactivate"></i>';
+        escapeHtml(AurvekI18n.t('admin_users.flow.timer', {time: AurvekI18n.formatNumber(min) + ':' + AurvekI18n.formatNumber(sec, {minimumIntegerDigits: 2})})) + ' ' +
+        '<i class="fas fa-times-circle ms-1" style="cursor:pointer;" onclick="revokeUltraAdmin(event)" title="' + escapeHtml(AurvekI18n.t('admin_users.deactivate_user')) + '"></i>';
 }
 
 /**
@@ -881,7 +868,7 @@ function deactivateUltraAdminUI() {
 
     btn.classList.remove('btn-warning');
     btn.classList.add('btn-outline-warning');
-    btn.innerHTML = '<i class="fas fa-bolt me-1"></i><span id="ultraAdminLabel">Ultra Admin+</span>';
+    btn.innerHTML = '<i class="fas fa-bolt me-1"></i><span id="ultraAdminLabel">' + AurvekI18n.t('admin_users.ultra_admin') + '</span>';
     btn.onclick = openUltraAdminModal;
     btn.style.cursor = 'pointer';
 }
@@ -894,8 +881,8 @@ async function revokeUltraAdmin(event) {
     try {
         await secureFetch('/api/ultra-admin/revoke', { method: 'POST' });
         deactivateUltraAdminUI();
-        NotificationModal.info('Ultra Admin+ Deactivated', 'Privileges returned to normal.');
+        NotificationModal.info(AurvekI18n.t('admin_users.ultra_admin_deactivated'), AurvekI18n.t('admin_users.privileges_returned_to_normal'));
     } catch (error) {
-        NotificationModal.error('Error', 'Could not revoke elevation.');
+        NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.could_not_revoke_elevation'));
     }
 }

@@ -245,6 +245,7 @@ async def phone_data_purge_runtime_operational(
 ) -> bool:
     try:
         required_tables = {
+            "PHONE_CALL_MESSAGE_AUDIO_RANGES",
             "PHONE_DATA_PURGE_JOBS",
             "PHONE_CALL_TOMBSTONES",
             "PHONE_RECORDING_TOMBSTONES",

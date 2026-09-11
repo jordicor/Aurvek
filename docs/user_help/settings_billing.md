@@ -18,10 +18,12 @@ keywords:
   - facturacion
   - consumo
   - discount code
+  - storage
+  - quota
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
@@ -36,9 +38,10 @@ Your current balance and usage details are on the **Usage & Billing** tab in Set
 2. Your **Current Balance** is displayed at the top.
 3. Use the **Time Period** filter (7 days, 30 days, 90 days, or all time) to adjust the reporting window.
 4. Review your usage stats: total operations, tokens used, total spent, and average daily cost.
-5. The **Usage by Type** section breaks down spending across categories (AI tokens, TTS, STT, images, video, domains).
-6. The **Spending Trend** chart shows your daily costs over the selected period.
-7. **Recent Activity** lists individual days with their operation counts and costs.
+5. The **Storage** card shows space used by uploads and generated media, together with your quota when one applies.
+6. The **Usage by Type** section breaks down spending across categories such as AI tokens, TTS, STT, images, video, and domains.
+7. The **Spending Trend** chart shows your daily costs over the selected period.
+8. **Recent Activity** lists individual days with their operation counts and costs.
 
 ### Adding funds
 
@@ -55,6 +58,7 @@ Your current balance and usage details are on the **Usage & Billing** tab in Set
 - If a 100% discount code is applied, the balance is credited immediately without a Stripe redirect.
 - Your balance is displayed in US dollars with three decimal places (e.g., $12.450).
 - The balance shown on the Profile tab is read-only. Use the Usage & Billing tab or the `/payment` page to add funds.
+- Storage quota depends on your account configuration. Stored uploads and generated media count toward it.
 
 ## Related
 

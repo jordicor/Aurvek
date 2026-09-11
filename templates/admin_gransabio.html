@@ -1,11 +1,12 @@
+{% set i18n_domains = ['ai_config'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}GranSabio Integration - AURVEK{% endblock %}
+{% block title %}{{ t('ai_config.gransabio_title') }} - AURVEK{% endblock %}
 
-{% block page_title %}GranSabio Integration{% endblock %}
+{% block page_title %}{{ t('ai_config.gransabio_title') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Configure the GranSabio multi-model orchestration pipeline</p>
+<p class="page-subtitle">{{ t('ai_config.gransabio_subtitle') }}</p>
 {% endblock %}
 
 {% block styles %}
@@ -61,32 +62,32 @@
 <!-- Connection Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-plug"></i> Connection
+        <i class="fas fa-plug"></i> {{ t('ai_config.connection') }}
     </div>
     <div class="mb-3">
-        <label class="form-label" for="gransabio_url">GranSabio URL</label>
+        <label class="form-label" for="gransabio_url">{{ t('ai_config.gransabio_url') }}</label>
         <div class="d-flex gap-2">
             <input class="form-control" type="url" id="gransabio_url" name="gransabio_url"
                    value="{{ config.url or '' }}" placeholder="http://127.0.0.1:8000">
             <button type="button" class="btn btn-outline-secondary flex-shrink-0" id="testConnectionBtn" onclick="testConnection()">
                 <span id="testSpinner" class="spinner-border spinner-border-sm me-1" style="display: none;"></span>
-                <i class="fas fa-satellite-dish me-1" id="testIcon"></i> Test
+                <i class="fas fa-satellite-dish me-1" id="testIcon"></i> {{ t('ai_config.test') }}
             </button>
         </div>
-        <p class="field-note"><i class="fas fa-shield-alt me-1"></i>URL must be an IP literal in private range (SSRF protection)</p>
+        <p class="field-note"><i class="fas fa-shield-alt me-1"></i>{{ t('ai_config.url_help') }}</p>
     </div>
     <div class="connection-status" id="connectionStatus">
         <div class="status-item">
             <i class="fas fa-circle-check" id="connStatusIcon" style="color: var(--success);"></i>
-            <span id="connStatusText">Connected</span>
+            <span id="connStatusText">{{ t('ai_config.connected') }}</span>
         </div>
         <div class="status-item">
             <i class="fas fa-code-branch" style="color: var(--text-muted);"></i>
-            <span>Version: <strong id="connVersion">-</strong></span>
+            <span>{{ t('ai_config.version') }} <strong id="connVersion">-</strong></span>
         </div>
         <div class="status-item">
             <i class="fas fa-cubes" style="color: var(--text-muted);"></i>
-            <span>Models: <strong id="connModelCount">-</strong></span>
+            <span>{{ t('ai_config.models') }} <strong id="connModelCount">-</strong></span>
         </div>
     </div>
 </div>
@@ -94,13 +95,13 @@
 <!-- Global Enable/Disable -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-power-off"></i> Global Status
+        <i class="fas fa-power-off"></i> {{ t('ai_config.global_status') }}
     </div>
     <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="gransabio_enabled" name="gransabio_enabled"
                {% if config.enabled %}checked{% endif %}>
         <label class="form-check-label" for="gransabio_enabled">
-            <strong>Enable GranSabio</strong> -- Route qualifying requests through the multi-model pipeline
+            <strong>{{ t('ai_config.enable_gransabio') }}</strong> {{ t('ai_config.gransabio_enable_help') }}
         </label>
     </div>
 </div>
@@ -108,47 +109,47 @@
 <!-- Default Settings Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-brain"></i> Default Settings
+        <i class="fas fa-brain"></i> {{ t('ai_config.defaults') }}
     </div>
     <div class="flex-row">
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="generator_model">Generator Model</label>
+                <label class="form-label" for="generator_model">{{ t('ai_config.generator') }}</label>
                 <input class="form-control" type="text" id="generator_model" name="generator_model"
-                       value="{{ config.generator_model or '' }}" placeholder="e.g. gpt-4o">
+                       value="{{ config.generator_model or '' }}" placeholder="gpt-4o">
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="gran_sabio_model">Gran Sabio Model</label>
+                <label class="form-label" for="gran_sabio_model">{{ t('ai_config.gran_model') }}</label>
                 <input class="form-control" type="text" id="gran_sabio_model" name="gran_sabio_model"
-                       value="{{ config.gran_sabio_model or '' }}" placeholder="e.g. claude-sonnet-4-20250514">
+                       value="{{ config.gran_sabio_model or '' }}" placeholder="claude-sonnet-4-20250514">
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="arbiter_model">Arbiter Model</label>
+                <label class="form-label" for="arbiter_model">{{ t('ai_config.arbiter') }}</label>
                 <input class="form-control" type="text" id="arbiter_model" name="arbiter_model"
-                       value="{{ config.arbiter_model or '' }}" placeholder="e.g. gpt-4o">
+                       value="{{ config.arbiter_model or '' }}" placeholder="gpt-4o">
             </div>
         </div>
     </div>
 
     <!-- QA Models (dynamic list) -->
     <div class="mb-3">
-        <label class="form-label">QA Models</label>
+        <label class="form-label">{{ t('ai_config.qa_models') }}</label>
         <div class="qa-model-list" id="qaModelList">
             {% for model in config.qa_models or [] %}
             <div class="qa-model-entry">
-                <input class="form-control qa-model-input" type="text" value="{{ model }}" placeholder="e.g. claude-sonnet-4-20250514">
-                <button type="button" class="btn btn-sm btn-outline-danger btn-remove-qa" onclick="removeQaModel(this)" title="Remove">
+                <input class="form-control qa-model-input" type="text" value="{{ model }}" placeholder="claude-sonnet-4-20250514">
+                <button type="button" class="btn btn-sm btn-outline-danger btn-remove-qa" onclick="removeQaModel(this)" title="{{ t('ai_config.remove') }}">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             {% endfor %}
         </div>
         <button type="button" class="btn btn-sm btn-outline-secondary mt-2" onclick="addQaModel()">
-            <i class="fas fa-plus me-1"></i> Add QA Model
+            <i class="fas fa-plus me-1"></i> {{ t('ai_config.add_qa') }}
         </button>
     </div>
 
@@ -157,29 +158,29 @@
     <div class="flex-row">
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="min_global_score">Min Global Score</label>
+                <label class="form-label" for="min_global_score">{{ t('ai_config.min_score') }}</label>
                 <input class="form-control" type="number" id="min_global_score" name="min_global_score"
                        value="{{ config.min_global_score if config.min_global_score is not none else 8.0 }}"
                        min="0" max="10" step="0.1">
-                <p class="field-note">Threshold score (0.0 - 10.0) for accepting generated content</p>
+                <p class="field-note">{{ t('ai_config.score_help') }}</p>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="max_iterations">Max Iterations</label>
+                <label class="form-label" for="max_iterations">{{ t('ai_config.iterations') }}</label>
                 <input class="form-control" type="number" id="max_iterations" name="max_iterations"
                        value="{{ config.max_iterations if config.max_iterations is not none else 3 }}"
                        min="1" max="20" step="1">
-                <p class="field-note">Maximum generation-review cycles (1 - 20)</p>
+                <p class="field-note">{{ t('ai_config.iterations_help') }}</p>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="smart_editing_mode">Smart Editing Mode</label>
+                <label class="form-label" for="smart_editing_mode">{{ t('ai_config.smart_edit') }}</label>
                 <select class="form-select" id="smart_editing_mode" name="smart_editing_mode">
-                    <option value="auto" {% if (config.smart_editing_mode or 'auto') == 'auto' %}selected{% endif %}>Auto</option>
-                    <option value="always" {% if config.smart_editing_mode == 'always' %}selected{% endif %}>Always</option>
-                    <option value="never" {% if config.smart_editing_mode == 'never' %}selected{% endif %}>Never</option>
+                    <option value="auto" {% if (config.smart_editing_mode or 'auto') == 'auto' %}selected{% endif %}>{{ t('ai_config.auto') }}</option>
+                    <option value="always" {% if config.smart_editing_mode == 'always' %}selected{% endif %}>{{ t('ai_config.always') }}</option>
+                    <option value="never" {% if config.smart_editing_mode == 'never' %}selected{% endif %}>{{ t('ai_config.never') }}</option>
                 </select>
             </div>
         </div>
@@ -189,47 +190,47 @@
         <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="gran_sabio_fallback" name="gran_sabio_fallback"
                    {% if config.gran_sabio_fallback %}checked{% endif %}>
-            <label class="form-check-label" for="gran_sabio_fallback">Gran Sabio Fallback</label>
+            <label class="form-check-label" for="gran_sabio_fallback">{{ t('ai_config.fallback') }}</label>
         </div>
     </div>
     <div class="mb-3">
         <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="verbose" name="verbose"
                    {% if config.verbose %}checked{% endif %}>
-            <label class="form-check-label" for="verbose">Verbose by Default</label>
+            <label class="form-check-label" for="verbose">{{ t('ai_config.verbose') }}</label>
         </div>
-        <p class="field-note">Enable for debugging -- logs full pipeline traces to console</p>
+        <p class="field-note">{{ t('ai_config.verbose_help') }}</p>
     </div>
 </div>
 
 <!-- Advanced Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-sliders-h"></i> Advanced
+        <i class="fas fa-sliders-h"></i> {{ t('ai_config.advanced') }}
     </div>
     <div class="flex-row">
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="context_max_tokens">Context Max Tokens</label>
+                <label class="form-label" for="context_max_tokens">{{ t('ai_config.context_tokens') }}</label>
                 <input class="form-control" type="number" id="context_max_tokens" name="context_max_tokens"
-                       value="{{ config.context_max_tokens or '' }}" placeholder="e.g. 128000" min="1">
+                       value="{{ config.context_max_tokens or '' }}" placeholder="128000" min="1">
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="cost_safety_multiplier">Cost Safety Multiplier</label>
+                <label class="form-label" for="cost_safety_multiplier">{{ t('ai_config.cost_multiplier') }}</label>
                 <input class="form-control" type="number" id="cost_safety_multiplier" name="cost_safety_multiplier"
                        value="{{ config.cost_safety_multiplier if config.cost_safety_multiplier is not none else 3 }}"
                        min="1" max="10" step="1">
-                <p class="field-note">Multiplier applied to estimated cost before deducting balance (1 - 10)</p>
+                <p class="field-note">{{ t('ai_config.cost_help') }}</p>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label" for="extra_allowed_ips">Extra Allowed IPs</label>
+                <label class="form-label" for="extra_allowed_ips">{{ t('ai_config.extra_ips') }}</label>
                 <input class="form-control" type="text" id="extra_allowed_ips" name="extra_allowed_ips"
-                       value="{{ config.extra_allowed_ips or '' }}" placeholder="e.g. 10.0.200.5/32, fd00::1/128">
-                <p class="field-note">Comma-separated CIDRs (only /32 or /128 host addresses)</p>
+                       value="{{ config.extra_allowed_ips or '' }}" placeholder="10.0.200.5/32, fd00::1/128">
+                <p class="field-note">{{ t('ai_config.cidr_help') }}</p>
             </div>
         </div>
     </div>
@@ -239,13 +240,19 @@
 <div class="d-flex justify-content-end mb-4">
     <button type="button" class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()">
         <span id="saveSpinner" class="spinner-border spinner-border-sm me-1" style="display: none;"></span>
-        <i class="fas fa-save me-1" id="saveIcon"></i> Save Configuration
+        <i class="fas fa-save me-1" id="saveIcon"></i> {{ t('ai_config.save_config') }}
     </button>
 </div>
 {% endblock %}
 
 {% block scripts_inline %}
 <script>
+    const aiText = (key, params) => AurvekI18n.t(`ai_config.${key}`, params);
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+    }
+
     // -- QA Models dynamic list --
 
     function addQaModel(value) {
@@ -253,8 +260,8 @@
         var entry = document.createElement('div');
         entry.className = 'qa-model-entry';
         entry.innerHTML =
-            '<input class="form-control qa-model-input" type="text" value="' + (value || '') + '" placeholder="e.g. claude-sonnet-4-20250514">' +
-            '<button type="button" class="btn btn-sm btn-outline-danger btn-remove-qa" onclick="removeQaModel(this)" title="Remove">' +
+            '<input class="form-control qa-model-input" type="text" value="' + escapeHtml(value || '') + '" placeholder="claude-sonnet-4-20250514">' +
+            ("<button type=\"button\" class=\"btn btn-sm btn-outline-danger btn-remove-qa\" onclick=\"removeQaModel(this)\" title=\"" + escapeHtml(aiText('remove')) + "\">") +
             '<i class="fas fa-times"></i></button>';
         list.appendChild(entry);
     }
@@ -280,7 +287,7 @@
     async function testConnection() {
         var url = document.getElementById('gransabio_url').value.trim();
         if (!url) {
-            NotificationModal.error('Missing URL', 'Enter the GranSabio URL before testing.');
+            NotificationModal.error(aiText('missing_url'), aiText('enter_url'));
             return;
         }
 
@@ -294,6 +301,7 @@
         icon.style.display = 'none';
         statusDiv.classList.remove('visible');
 
+        var failureMessage = aiText('connection_failed');
         try {
             var response = await fetch('/admin/gransabio/test-connection', {
                 method: 'POST',
@@ -302,21 +310,22 @@
             });
             var data = await response.json();
 
-            if (!response.ok || data.error) {
-                throw new Error(data.error || data.detail || 'Connection failed');
+            if (!response.ok || data.error || data.success === false) {
+                failureMessage = data.error || data.message || data.detail || aiText('connection_failed');
+                throw new Error(failureMessage);
             }
 
             document.getElementById('connStatusIcon').style.color = 'var(--success)';
             document.getElementById('connStatusIcon').className = 'fas fa-circle-check';
-            document.getElementById('connStatusText').textContent = 'Connected';
+            document.getElementById('connStatusText').textContent = aiText('connected');
             document.getElementById('connVersion').textContent = data.version || '-';
-            document.getElementById('connModelCount').textContent = data.model_count != null ? data.model_count : '-';
+            document.getElementById('connModelCount').textContent = data.model_count != null ? AurvekI18n.formatNumber(data.model_count) : '-';
             statusDiv.classList.add('visible');
 
         } catch (err) {
             document.getElementById('connStatusIcon').style.color = 'var(--danger)';
             document.getElementById('connStatusIcon').className = 'fas fa-circle-xmark';
-            document.getElementById('connStatusText').textContent = 'Failed: ' + err.message;
+            document.getElementById('connStatusText').textContent = aiText('failed_detail', {error: failureMessage});
             document.getElementById('connVersion').textContent = '-';
             document.getElementById('connModelCount').textContent = '-';
             statusDiv.classList.add('visible');
@@ -357,6 +366,7 @@
             extra_allowed_ips: document.getElementById('extra_allowed_ips').value.trim()
         };
 
+        var failureMessage = aiText('save_failed');
         try {
             var response = await fetch('/admin/gransabio', {
                 method: 'POST',
@@ -365,13 +375,14 @@
             });
             var data = await response.json();
 
-            if (!response.ok || data.error) {
-                throw new Error(data.error || data.detail || 'Save failed');
+            if (!response.ok || data.error || data.success === false) {
+                failureMessage = data.error || data.message || data.detail || aiText('save_failed');
+                throw new Error(failureMessage);
             }
 
             // Show success state briefly
-            btn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
-            showAlert('success', 'Configuration saved successfully.');
+            btn.innerHTML = ("<i class=\"fas fa-check me-1\"></i> " + escapeHtml(aiText('saved')));
+            showAlert('success', data.message || aiText('config_saved'));
 
             setTimeout(function() {
                 btn.innerHTML = originalHtml;
@@ -379,7 +390,7 @@
             }, 2000);
 
         } catch (err) {
-            NotificationModal.error('Save Error', 'Failed to save configuration: ' + err.message);
+            NotificationModal.error(aiText('save_error'), aiText('save_detail', {error: failureMessage}));
             btn.innerHTML = originalHtml;
             btn.disabled = false;
         }
@@ -393,8 +404,8 @@
         var alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
         var alertHtml =
             '<div class="alert ' + alertClass + ' alert-dismissible fade show" role="alert">' +
-            '<i class="fas ' + iconClass + ' me-2"></i>' + message +
-            '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>' +
+            '<i class="fas ' + iconClass + ' me-2"></i>' + escapeHtml(message) +
+            ("<button type=\"button\" class=\"btn-close\" data-bs-dismiss=\"alert\" aria-label=\"" + escapeHtml(aiText('close')) + "\"></button>") +
             '</div>';
         container.innerHTML = alertHtml;
     }

@@ -231,7 +231,10 @@ async def test_chunk_failure_keeps_billed_partial_assessment_visible(
     payload = json.loads(comparison_json)
     assert verdict == "uncertain"
     assert confidence == 0.0
-    assert "1 de 2 partes" in rationale
+    assert rationale == payload["assessments"][0]["rationale"]
+    assert payload["rationale_source"] == "aurvek"
+    assert payload["rationale_code"] == "comparison_incomplete"
+    assert payload["generated_rationale"] == rationale
     assert payload["completed_parts"] == 1
     assert payload["total_parts"] == 2
     assert payload["assessments"][0]["verdict"] == "better"

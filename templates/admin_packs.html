@@ -1,31 +1,32 @@
+{% set i18n_domains = ['marketplace_admin'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Manage Packs - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace_admin.ui.manage_packs') }} - AURVEK{% endblock %}
 
-{% block page_title %}Packs{% endblock %}
-{% block page_subtitle %}<p class="page-subtitle">Manage your AI prompt packs</p>{% endblock %}
+{% block page_title %}{{ t('marketplace_admin.ui.packs') }}{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">{{ t('marketplace_admin.ui.manage_your_ai_prompt_packs') }}</p>{% endblock %}
 
 {% block page_actions %}
 <a href="/admin/packs/new" class="btn btn-primary">
-    <i class="fas fa-plus me-1"></i> Create New Pack
+    <i class="fas fa-plus me-1"></i> {{ t('marketplace_admin.ui.create_new_pack') }}
 </a>
 {% endblock %}
 
 {% block content %}
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-box"></i> Your Packs
+        <i class="fas fa-box"></i> {{ t('marketplace_admin.ui.your_packs') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Items</th>
-                    <th>Price</th>
-                    <th>Created</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('marketplace_admin.ui.name') }}</th>
+                    <th>{{ t('marketplace_admin.ui.status') }}</th>
+                    <th>{{ t('marketplace_admin.ui.items') }}</th>
+                    <th>{{ t('marketplace_admin.ui.price') }}</th>
+                    <th>{{ t('marketplace_admin.ui.created') }}</th>
+                    <th class="text-end">{{ t('marketplace_admin.ui.actions') }}</th>
                 </tr>
             </thead>
             <tbody id="packsTableBody">
@@ -34,37 +35,37 @@
                     <td>
                         <strong>{{ pack.name }}</strong>
                         {% if pack.created_by_username and is_admin %}
-                        <br><small class="text-muted">by @{{ pack.created_by_username }}</small>
+                        <br><small class="text-muted">{{ t('marketplace_admin.ui.by_creator', name=pack.created_by_username) }}</small>
                         {% endif %}
                     </td>
                     <td>
                         {% if pack.status == 'published' %}
-                        <span class="badge bg-success">Published</span>
+                        <span class="badge bg-success">{{ t('marketplace_admin.ui.published') }}</span>
                         {% elif pack.status == 'draft' %}
-                        <span class="badge bg-secondary">Draft</span>
+                        <span class="badge bg-secondary">{{ t('marketplace_admin.ui.draft') }}</span>
                         {% elif pack.status == 'rejected' %}
-                        <span class="badge bg-danger">Rejected</span>
+                        <span class="badge bg-danger">{{ t('marketplace_admin.ui.rejected') }}</span>
                         {% elif pack.status == 'suspended' %}
-                        <span class="badge bg-warning text-dark">Suspended</span>
+                        <span class="badge bg-warning text-dark">{{ t('marketplace_admin.ui.suspended') }}</span>
                         {% elif pack.status == 'pending_review' %}
-                        <span class="badge bg-info">Pending Review</span>
+                        <span class="badge bg-info">{{ t('marketplace_admin.ui.pending_review') }}</span>
                         {% endif %}
                     </td>
-                    <td>{{ pack.item_count }} / {{ pack.max_items }}</td>
+                    <td>{{ format_number(pack.item_count) }} / {{ format_number(pack.max_items) }}</td>
                     <td>
                         {% if pack.is_paid %}
-                        ${{ "%.2f"|format(pack.price) }}
+                        {{ format_currency(pack.price) }}
                         {% else %}
-                        <span class="text-muted">FREE</span>
+                        <span class="text-muted">{{ t('marketplace_admin.ui.free') }}</span>
                         {% endif %}
                     </td>
-                    <td>{{ pack.created_at[:10] if pack.created_at else '--' }}</td>
+                    <td data-pack-date="{{ pack.created_at[:10] if pack.created_at else '' }}">--</td>
                     <td class="text-end table-actions">
-                        <a href="/admin/packs/edit/{{ pack.id }}" class="btn btn-sm btn-outline-primary" title="Edit" data-bs-toggle="tooltip">
+                        <a href="/admin/packs/edit/{{ pack.id }}" class="btn btn-sm btn-outline-primary" title="{{ t('marketplace_admin.ui.edit') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-edit"></i>
                         </a>
-                        <button class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="tooltip"
-                                onclick="deletePack({{ pack.id }}, '{{ pack.name|e }}', '{{ pack.status }}')">
+                        <button class="btn btn-sm btn-outline-danger" title="{{ t('marketplace_admin.ui.delete') }}" data-bs-toggle="tooltip"
+                                data-delete-pack="{{ pack.id }}" data-pack-name="{{ pack.name }}">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
@@ -73,7 +74,7 @@
                 <tr id="emptyRow">
                     <td colspan="6" class="text-center text-muted py-4">
                         <i class="fas fa-box-open fa-2x mb-2 d-block"></i>
-                        No packs yet. Create your first pack!
+                        {{ t('marketplace_admin.ui.no_packs_yet_create_your_first_pack') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -89,32 +90,44 @@ function showAlert(message, type) {
     const container = document.getElementById('alertContainer');
     const alert = document.createElement('div');
     alert.className = 'alert alert-' + type + ' alert-dismissible fade show';
-    alert.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+    alert.textContent = typeof message === 'string' ? message : AurvekI18n.t('marketplace_admin.ui.failed_to_delete_pack');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn-close';
+    close.setAttribute('data-bs-dismiss', 'alert');
+    close.setAttribute('aria-label', AurvekI18n.t('marketplace_admin.ui.close'));
+    alert.appendChild(close);
     container.appendChild(alert);
     setTimeout(function() { alert.remove(); }, 5000);
 }
 
-async function deletePack(id, name, status) {
+async function deletePack(id, name) {
     NotificationModal.confirm(
-        'Delete Pack',
-        'Are you sure you want to delete "' + name + '"? This cannot be undone.',
+        AurvekI18n.t('marketplace_admin.ui.delete_pack'),
+        AurvekI18n.t('marketplace_admin.ui.delete_pack_confirm', { name }),
         async () => {
             try {
                 const response = await fetch('/api/packs/' + id, { method: 'DELETE' });
                 const result = await response.json();
                 if (response.ok) {
-                    showAlert('Pack deleted successfully', 'success');
+                    showAlert(AurvekI18n.t('marketplace_admin.ui.pack_deleted_successfully'), 'success');
                     setTimeout(function() { location.reload(); }, 1000);
                 } else {
-                    showAlert(result.detail || 'Failed to delete pack', 'danger');
+                    showAlert(result.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_delete_pack'), 'danger');
                 }
             } catch (error) {
-                showAlert('Error: ' + error.message, 'danger');
+                showAlert(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
             }
         },
         null,
-        { type: 'error', confirmText: 'Delete' }
+        { type: 'error', confirmText: AurvekI18n.t('marketplace_admin.ui.delete') }
     );
 }
+document.querySelectorAll('[data-delete-pack]').forEach(button => {
+    button.addEventListener('click', () => deletePack(button.dataset.deletePack, button.dataset.packName));
+});
+document.querySelectorAll('[data-pack-date]').forEach(cell => {
+    if (cell.dataset.packDate) cell.textContent = new Date(cell.dataset.packDate + 'T00:00:00').toLocaleDateString(AurvekI18n.locale);
+});
 </script>
 {% endblock %}

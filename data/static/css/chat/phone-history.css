@@ -84,6 +84,26 @@
     text-transform: capitalize;
 }
 
+.message-interruption-state {
+    align-items: center;
+    background: color-mix(in srgb, var(--bs-warning, #ffc107) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bs-warning, #ffc107) 42%, transparent);
+    border-radius: 999px;
+    color: inherit;
+    display: inline-flex;
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1.35;
+    margin: 0 0 0.35rem 0.3rem;
+    padding: 0.12rem 0.48rem;
+    vertical-align: middle;
+}
+
+.message-interruption-ellipsis {
+    opacity: 0.72;
+    white-space: nowrap;
+}
+
 .phone-history-marker {
     align-items: center;
     color: var(--bs-secondary-color, #8b93a1);

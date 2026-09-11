@@ -2,10 +2,12 @@ from ai_runtime.dependencies import *
 from ai_runtime.config import _log_truncated_response
 from ai_runtime.channel_turns import StaleChannelTurnError
 from ai_runtime.errors import _provider_error_payload
-from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, persistence_result_payload, save_content_to_db
 from ai_runtime.tooling.citations import build_citation_event
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
+from billing.usage_reservations import BillingReservationError
+from billing.hosted_search import prepare_hosted_search
 from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
 
 
@@ -54,6 +56,12 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
     logger.info("Entering call_gemini_api")
     user_id = current_user.id
     error_yielded = False
+    hosted_prompt_billing = web_search_mode == 'native' and str(model).startswith('gemini-2.5')
+    if web_search_mode == 'native' and not hosted_prompt_billing:
+        from integrations.applications.billing import current_application_operation
+        from integrations.embed.models import EmbedError
+        if current_application_operation(user_id) is not None:
+            raise EmbedError('application_search_connector_required', 403)
 
     # Determine API key: user's custom key or global
     api_key = user_api_key if user_api_key else gemini_key
@@ -94,8 +102,19 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
     last_chunk = None
     citations = []
     thinking_open = False
+    search_usage = None
+    search_usage_complete = False
+    search_terminal_seen = False
+    search_request_rejected = False
+    search_grounded = False
+    unresolved_search_billing = False
 
     try:
+        if hosted_prompt_billing:
+            # Gemini 2.5 bills a grounded prompt, regardless of its query count.
+            search_usage = await prepare_hosted_search('gemini', user_id,
+                byok=bool(byok or user_api_key), max_uses=1)
+            await search_usage.claim()
         async for chunk in await client.aio.models.generate_content_stream(
             model=model,
             contents=contents,
@@ -106,6 +125,21 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
             if stop_signals.get(conversation_id):
                 logger.info("Stop signal received, exiting Gemini API call loop.")
                 break
+
+            if search_usage is not None:
+                for candidate in chunk.candidates or []:
+                    metadata = getattr(candidate, 'grounding_metadata', None)
+                    if metadata is not None:
+                        queries = getattr(metadata, 'web_search_queries', None) or []
+                        groundings = getattr(metadata, 'grounding_chunks', None) or []
+                        search_grounded = search_grounded or any(isinstance(query, str) and query.strip() for query in queries)
+                        search_grounded = search_grounded or any(
+                            getattr(getattr(item, 'web', None), 'uri', None) for item in groundings)
+                    finish = getattr(candidate, 'finish_reason', None)
+                    finish_text = getattr(finish, 'name', None) or str(finish or '')
+                    search_terminal_seen = search_terminal_seen or bool(
+                        finish_text and finish_text.upper() not in {'FINISH_REASON_UNSPECIFIED', '0'})
+                search_usage.observe_usage(int(bool(search_grounded)))
 
             # Check for safety blocks
             if chunk.prompt_feedback and chunk.prompt_feedback.block_reason:
@@ -149,7 +183,7 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                     if function_call_detected:
                         break
 
-            if function_call_detected:
+            if function_call_detected and search_usage is None:
                 break
 
             # SDK ``chunk.text`` is a convenience aggregate.  Once parts are
@@ -160,6 +194,10 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                     yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
                 content += chunk.text
                 yield f"data: {orjson.dumps({'content': chunk.text}).decode()}\n\n"
+        else:
+            # EOF alone is not a provider confirmation. Require a terminal
+            # candidate and retain unknown/cancelled streams for reconciliation.
+            search_usage_complete = search_terminal_seen
 
         # Get real token usage from the last chunk if available
         if last_chunk and last_chunk.usage_metadata:
@@ -217,11 +255,20 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                     yield build_citation_event(citations, search_queries or None, widget_html)
                     logger.info(f"[call_gemini_api] - Native search: {len(citations)} citations from {len(search_queries)} queries")
 
+    except BillingReservationError as e:
+        yield f"data: {orjson.dumps({'error': str(e), 'error_code': 'hosted_search_billing_unavailable'}).decode()}\n\n"
+        error_yielded = True
     except Exception as e:
+        status = getattr(e, 'code', None) or getattr(e, 'status_code', None)
+        search_request_rejected = status in {400, 401, 403, 404, 413, 422, 429}
         logger.error(f"[call_gemini_api] - Error calling Gemini API: {e}")
         await record_provider_error_for_label("Gemini", message=str(e), exception=e, model=model, byok=byok)
         yield f"data: {orjson.dumps(_provider_error_payload('Gemini', str(e), user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
         error_yielded = True
+    finally:
+        if search_usage is not None:
+            unresolved_search_billing = not await search_usage.finish(
+                complete=search_usage_complete, rejected=search_request_rejected)
 
     if thinking_open:
         yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
@@ -249,6 +296,10 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                 byok=byok,
             )
         )
+
+    if unresolved_search_billing:
+        yield f"data: {orjson.dumps({'error': 'Hosted search usage could not be confirmed; its reservation is retained for reconciliation.', 'error_code': 'hosted_search_usage_unconfirmed'}).decode()}\n\n"
+        return
 
     # Handle function calls (skip when save_to_db=False, i.e. Multi-AI mode)
     if function_call_detected and save_to_db:
@@ -283,10 +334,9 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                                                                             strip_device_action_blocks=strip_device_action_blocks,
                                                                             billing_reservation_id=billing_reservation_id,
                                                                             billing_only_accumulated_usage=bool(billing_reservation_id))
-                if user_message_id and bot_message_id:
-                    yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
-                else:
-                    yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+                persisted = persistence_result_payload(user_message_id, bot_message_id)
+                yield f"data: {orjson.dumps(persisted).decode()}\n\n"
+                if persisted.get("persistence_error"):
                     return
             except StaleChannelTurnError:
                 raise

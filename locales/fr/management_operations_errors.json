@@ -1,0 +1,12 @@
+{
+  "admin_required": "Accès administrateur requis",
+  "invalid_llm": "Sélection de LLM invalide",
+  "unsupported_key": "Type de clé non pris en charge",
+  "task_not_found": "Tâche introuvable dans la file des échecs.",
+  "invalid_ip": "Saisissez une adresse IP valide.",
+  "conversation_ids_required": "Sélectionnez au moins une conversation.",
+  "conversation_deleted": "Conversation supprimée.",
+  "conversation_folder_failed": "Conversation supprimée de la base de données, mais son dossier n’a pas pu être supprimé.",
+  "conversations_folder_failed": "Certaines conversations ont été supprimées de la base de données, mais leurs dossiers n’ont pas pu être supprimés.",
+  "conversations_deleted": "Conversations supprimées."
+}

@@ -1,0 +1,30 @@
+{
+  "description": "AI Pack on AURVEK",
+  "twitter_description": "AI prompt pack on AURVEK",
+  "cover": "Cover for {name}",
+  "by_creator": "by {creator}",
+  "get_started": "Get Started",
+  "create_first": "Create an account first, then purchase this pack.",
+  "minimum_password": "Min. 8 characters",
+  "repeat_password": "Repeat password",
+  "sign_up": "Sign Up",
+  "sign_up_access": "Sign Up & Get Access",
+  "login_purchase": "Login & Purchase",
+  "login_add": "Login & Add Pack",
+  "purchase_price": "Purchase - {price}",
+  "already_owned": "You already own this pack!",
+  "start_chatting": "Start Chatting",
+  "get_free_pack": "Get This Pack - Free",
+  "already_have": "You already have this pack!",
+  "powered_by": "Powered by {brand}",
+  "fields_required": "Please fill in all fields.",
+  "account_created_paid": "Account created! Check your email to verify, then come back to purchase.",
+  "account_created": "Account created! Check your email to verify.",
+  "claiming": "Claiming...",
+  "not_found": "Page not found",
+  "access_denied": "Access denied",
+  "inside": {
+    "one": "What's inside ({number} prompt)",
+    "other": "What's inside ({number} prompts)"
+  }
+}

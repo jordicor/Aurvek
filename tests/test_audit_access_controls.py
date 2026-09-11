@@ -191,6 +191,11 @@ async def test_transcribe_preserves_insufficient_balance(monkeypatch):
         lambda *args, **kwargs: SimpleNamespace(duration_seconds=60),
     )
     monkeypatch.setattr(
+        voice_io,
+        "_load_primary_stt_language",
+        AsyncMock(return_value=voice_io.DEFAULT_STT_LANGUAGE),
+    )
+    monkeypatch.setattr(
         media,
         "reserve_fixed_usage",
         AsyncMock(side_effect=InsufficientBalanceError("Insufficient balance")),
@@ -198,7 +203,7 @@ async def test_transcribe_preserves_insufficient_balance(monkeypatch):
 
     with pytest.raises(HTTPException) as error:
         await voice_io.transcribe(
-            SimpleNamespace(headers={"user-agent": "test"}),
+            SimpleNamespace(headers={"user-agent": "test"}, state=SimpleNamespace()),
             audio=AudioUpload(),
             user_id=1,
         )
@@ -450,7 +455,7 @@ async def _save_prompt_as_editor(
     )
 
     response = await prompts.update_prompt(
-        request=SimpleNamespace(),
+        request=Request({"type": "http", "headers": []}),
         prompt_id=7,
         current_user=SimpleNamespace(id=2, role_id=2),
         csrf_token="test-csrf-token",
@@ -700,7 +705,7 @@ async def test_real_prompt_update_keeps_null_voice_with_active_phone_audio(
     )
 
     response = await prompts.update_prompt(
-        request=SimpleNamespace(),
+        request=Request({"type": "http", "headers": []}),
         prompt_id=7,
         current_user=SimpleNamespace(id=2, role_id=2),
         csrf_token="test-csrf-token",
@@ -941,7 +946,7 @@ async def test_real_prompt_creation_uses_exact_voice_and_rejects_ambiguous_legac
         "gransabio_config": None,
     }
     response = await prompts.create_prompt_post(
-        request=SimpleNamespace(),
+        request=Request({"type": "http", "headers": []}),
         current_user=Creator(),
         sample_voice_catalog_id=6,
         **create_args,
@@ -955,7 +960,7 @@ async def test_real_prompt_creation_uses_exact_voice_and_rejects_ambiguous_legac
 
     with pytest.raises(HTTPException) as ambiguous:
         await prompts.create_prompt_post(
-            request=SimpleNamespace(),
+            request=Request({"type": "http", "headers": []}),
             current_user=Creator(),
             sample_voice_catalog_id=None,
             **create_args,
@@ -968,7 +973,7 @@ async def test_real_prompt_creation_uses_exact_voice_and_rejects_ambiguous_legac
         await conn.commit()
     with pytest.raises(HTTPException) as unavailable:
         await prompts.create_prompt_post(
-            request=SimpleNamespace(),
+            request=Request({"type": "http", "headers": []}),
             current_user=Creator(),
             sample_voice_catalog_id=6,
             **create_args,

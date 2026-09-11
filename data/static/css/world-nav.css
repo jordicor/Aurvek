@@ -52,12 +52,12 @@
     align-items: center;
     text-decoration: none;
     flex-shrink: 0;
+    color: inherit;
 }
 
 .aurvek-world-nav-logo {
-    max-height: 28px;
-    width: auto;
-    filter: brightness(1.1);
+    font-size: 17px;
+    font-weight: 700;
     opacity: 0.9;
     transition: opacity 0.2s ease;
 }

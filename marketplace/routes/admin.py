@@ -8,6 +8,8 @@ from typing import Awaitable, Callable
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from i18n import get_translator
+from marketplace.services.admin_localization import localized_config, FLAG_KEYS, CONFIG_ERRORS
 from auth import get_current_user, unauthenticated_response
 from captcha_service import get_captcha_config
 from common import GOOGLE_CLIENT_ID, get_template_context, templates
@@ -16,7 +18,7 @@ from log_config import logger
 from models import User
 from marketplace.config import (
     MARKETPLACE_FLAG_DEFINITIONS,
-    get_marketplace_config_state,
+    MarketplaceConfigError,
     marketplace_config_has_env_override,
     marketplace_config_value_to_text,
     normalize_marketplace_config_updates,
@@ -37,6 +39,7 @@ def create_router(log_admin_action: LogAdminAction) -> APIRouter:
     @router.get("/admin/marketplace", response_class=HTMLResponse)
     async def get_admin_marketplace_page(request: Request, current_user: User = Depends(get_current_user)):
         """Admin page for marketplace kill-switch controls."""
+        translator = get_translator(request, current_user)
         if current_user is None:
             return templates.TemplateResponse(
                 "login.html",
@@ -48,24 +51,25 @@ def create_router(log_admin_action: LogAdminAction) -> APIRouter:
             )
 
         if not await current_user.is_admin:
-            raise HTTPException(status_code=403, detail="Admin access required")
+            raise HTTPException(status_code=403, detail=translator.t("marketplace_admin.config.admin_required"))
 
         await load_marketplace_config_from_db()
         context = await get_template_context(request, current_user)
-        context["marketplace_admin_config"] = get_marketplace_config_state()
+        context["marketplace_admin_config"] = localized_config(translator)
         return templates.TemplateResponse("marketplace/admin_marketplace.html", context)
 
     @router.get("/api/admin/marketplace-config")
-    async def get_admin_marketplace_config(current_user: User = Depends(get_current_user)):
+    async def get_admin_marketplace_config(request: Request, current_user: User = Depends(get_current_user)):
         """Return marketplace kill-switch state for the admin dashboard."""
+        translator = get_translator(request, current_user)
         if current_user is None:
             return unauthenticated_response()
 
         if not await current_user.is_admin:
-            return JSONResponse(content={"success": False, "message": "Admin access required"}, status_code=403)
+            return JSONResponse(content={"success": False, "message": translator.t("marketplace_admin.config.admin_required")}, status_code=403)
 
         await load_marketplace_config_from_db()
-        return JSONResponse(content={"success": True, "config": get_marketplace_config_state()})
+        return JSONResponse(content={"success": True, "config": localized_config(translator)})
 
     @router.post("/api/admin/marketplace-config")
     async def update_admin_marketplace_config(
@@ -74,16 +78,17 @@ def create_router(log_admin_action: LogAdminAction) -> APIRouter:
         current_user: User = Depends(get_current_user),
     ):
         """Persist marketplace kill-switch state from the admin dashboard."""
+        translator = get_translator(request, current_user)
         if current_user is None:
             return unauthenticated_response()
 
         if not await current_user.is_admin:
-            return JSONResponse(content={"success": False, "message": "Admin access required"}, status_code=403)
+            return JSONResponse(content={"success": False, "message": translator.t("marketplace_admin.config.admin_required")}, status_code=403)
 
         try:
             updates = normalize_marketplace_config_updates(data)
-        except ValueError as exc:
-            return JSONResponse(content={"success": False, "message": str(exc)}, status_code=400)
+        except MarketplaceConfigError as exc:
+            return JSONResponse(content={"success": False, "message": translator.t(CONFIG_ERRORS[exc.code])}, status_code=400)
 
         env_locked = [
             flag
@@ -94,12 +99,12 @@ def create_router(log_admin_action: LogAdminAction) -> APIRouter:
             return JSONResponse(
                 content={
                     "success": False,
-                    "message": "Some marketplace controls are locked by environment variables.",
+                    "message": translator.t("marketplace_admin.config.locked"),
                     "locked_flags": [
-                        {"key": flag.key, "env_var": flag.env_var, "label": flag.label}
+                        {"key": flag.key, "env_var": flag.env_var, "label": translator.t("marketplace_admin.flags." + FLAG_KEYS[flag.key] + ".label")}
                         for flag in env_locked
                     ],
-                    "config": get_marketplace_config_state(),
+                    "config": localized_config(translator),
                 },
                 status_code=409,
             )
@@ -133,8 +138,8 @@ def create_router(log_admin_action: LogAdminAction) -> APIRouter:
         return JSONResponse(
             content={
                 "success": True,
-                "message": "Marketplace controls saved.",
-                "config": get_marketplace_config_state(),
+                "message": translator.t("marketplace_admin.ui.marketplace_controls_saved"),
+                "config": localized_config(translator),
             }
         )
 

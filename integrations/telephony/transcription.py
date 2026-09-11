@@ -31,6 +31,10 @@ class FinalPhoneUtterance:
     # to the final transcript so the canonical runtime reuses the same socket
     # and input item without copying caller audio into a second bridge.
     turn_handle: Any | None = field(default=None, compare=False, repr=False)
+    # Absolute half-open range in the retained participant PCMU track.  The
+    # session derives this only from trusted provider/local media timing.
+    audio_start_byte: int | None = field(default=None, compare=False, repr=False)
+    audio_end_byte: int | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

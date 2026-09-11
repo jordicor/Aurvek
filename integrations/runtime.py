@@ -35,8 +35,10 @@ async def ensure_integration_schema() -> None:
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS TELEGRAM_PROCESSED_UPDATES (
-                update_id INTEGER PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                receiver_key TEXT NOT NULL DEFAULT 'native',
+                update_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(receiver_key, update_id)
             )
             """
         )

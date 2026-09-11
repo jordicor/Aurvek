@@ -18,27 +18,32 @@ keywords:
   - formatos soportados
   - attachment
   - adjunto
+  - text file
+  - code file
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
 
-Aurvek accepts image files and PDF documents as chat attachments. Other file types such as Word documents, spreadsheets, audio files, video files, and archives are not accepted. File uploads must also be enabled on your account by the administrator or prompt creator.
+Aurvek accepts supported images, PDFs, and plain-text or source-code files as chat attachments. Word documents, office spreadsheets, audio, video, and archives are not accepted. Uploads must also be enabled for your account and conversation.
 
 ## Notes
 
-- **Accepted file types.** Images (JPEG, PNG, WebP, GIF, etc.) and PDF documents. All other types are rejected.
-- **Image limits.** Up to 10 images per message, max 5 MB each, max 50 megapixels resolution. Profile pictures allow up to 10 MB.
-- **PDF limits.** Up to 3 PDFs per message, max 25 MB each, max 100 pages per file.
+- **Accepted file types.** Common images, PDFs, and plain-text formats including TXT, Markdown, CSV, JSON, XML, HTML, Python, JavaScript/TypeScript, CSS, SQL, YAML, configuration files, logs, shell scripts, and common source-code extensions.
+- **Image limits.** Up to 10 images per message, under 20 MB each before automatic processing, and no more than 50 megapixels. Aurvek tries to reduce eligible images to the provider's input limit and rejects them if it cannot.
+- **PDF limits.** Up to 3 PDFs per message, under 25 MB each, with a processing limit of 1,000 pages per message.
+- **Text/code limits.** Up to 3 text or code files per message, under 2 MB each.
+- **Combined limit.** Up to 16 attachments when combining the maximum allowed groups.
 - **Clipboard paste.** You can paste images directly from your clipboard. Other clipboard content types are not supported.
 - **Provider notes.** xAI (Grok) auto-converts WebP to JPEG. PDFs with GPT/xAI route through OpenRouter automatically.
 - **Permission required.** File uploads are an account-level permission. If the upload button is missing, contact your administrator.
-- **Mode restrictions.** File attachments are not supported in Multi-AI mode or GranSabio mode.
+- **Mode restrictions.** File attachments are not supported in Multi-AI or GranSabio mode.
 
 ## Related
 
 - limitations_unsupported_features
 - limitations_free_models
+- file_uploads

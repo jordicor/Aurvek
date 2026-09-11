@@ -1,0 +1,63 @@
+/* The native chat remains the renderer and transport for embedded interviews. */
+html[data-presentation="embedded"],
+html[data-presentation="embedded"] body { height: 100%; overflow: hidden; }
+[data-presentation="embedded"] #page-content { height: 100dvh; min-height: 0; }
+[data-presentation="embedded"] #window-chat { width: 100%; margin: 0; min-width: 0; flex: 1; }
+[data-presentation="embedded"] #chat-layout-wrapper { min-height: 0; }
+[data-presentation="embedded"] #sidebar,
+[data-presentation="embedded"] .skeleton-chat-sidebar,
+[data-presentation="embedded"] .btn-toggle-sidebar,
+[data-presentation="embedded"] .btn-expand-sidebar,
+[data-presentation="embedded"]:not([data-embed-controls~="model_selection"]) .model-selector-container,
+[data-presentation="embedded"]:not([data-embed-controls~="extensions"]) .extension-selector-container,
+[data-presentation="embedded"] #incognito-chat-badge,
+[data-presentation="embedded"] #incognito-chat-controls,
+[data-presentation="embedded"] #close-incognito-chat-btn,
+[data-presentation="embedded"][data-embed-controls=""]:not([data-embed-capabilities~="stt"]):not([data-embed-capabilities~="voice"]) #plus-menu-wrapper,
+[data-presentation="embedded"]:not([data-embed-controls~="attachments"]) #plus-attach-files,
+[data-presentation="embedded"]:not([data-embed-capabilities~="stt"]) #plus-record-audio,
+[data-presentation="embedded"]:not([data-embed-capabilities~="stt"]) #audio-recording-controls,
+[data-presentation="embedded"]:not([data-embed-capabilities~="voice"]) #plus-voice-call,
+[data-presentation="embedded"]:not([data-embed-capabilities~="web_search"]) #plus-web-search,
+[data-presentation="embedded"]:not([data-embed-controls~="reasoning"]) #plus-reasoning,
+[data-presentation="embedded"]:not([data-embed-controls~="multi_ai"]) #plus-multi-ai-section,
+[data-presentation="embedded"] #plus-phone-call,
+[data-presentation="embedded"] #audio-button,
+[data-presentation="embedded"] .icon-container > :not(.copy-icon):not(.fa-copy):not(.fa-check):not(.message-audio-action),
+[data-presentation="embedded"]:not([data-embed-capabilities~="tts"]) .message-audio-action[data-audio-source="tts"],
+[data-presentation="embedded"]:not([data-embed-capabilities~="voice"]) .message-audio-action[data-audio-source="original"],
+[data-presentation="embedded"] .prompt-info,
+[data-presentation="embedded"] #memory-health-banner,
+[data-presentation="embedded"] #promptInfoModal,
+[data-presentation="embedded"] #phoneCallModal,
+[data-presentation="embedded"] #folderModal,
+[data-presentation="embedded"] #moveChatModal { display: none !important; }
+[data-presentation="embedded"] #embed-capability-notice:not(:has(*)) { display: none; }
+[data-presentation="embedded"] #plus-menu-dropdown:empty { display: none; }
+[data-presentation="embedded"] #embed-capability-notice {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .65rem;
+    padding: .6rem 1rem; font-size: .8rem; border-bottom: 1px solid var(--border-color, #ded8cc);
+}
+[data-presentation="embedded"] #embed-capability-notice > :first-child { flex-basis: 100%; }
+[data-presentation="embedded"] #embed-voice-unavailable { border: 1px solid currentColor; background: transparent; color: inherit; border-radius: .3rem; padding: .2rem .6rem; opacity: .65; }
+[data-presentation="embedded"] #embed-session-status:not(:empty) { padding: .7rem 1rem; background: #fff1c9; color: #342d1b; }
+[data-presentation="embedded"] #send-button { font-size: 0; }
+[data-presentation="embedded"] #send-button::after { content: attr(data-embed-label); font-size: .95rem; }
+[data-presentation="embedded"] #send-button .send-icon { display: none; }
+[data-presentation="embedded"] .icon-container .copy-icon,
+[data-presentation="embedded"] .icon-container .fa-copy,
+[data-presentation="embedded"] .icon-container .fa-check { display: inline-block !important; padding: .3rem; }
+[data-presentation="embedded"] #message-text { font-size: max(1rem, 16px); }
+[data-presentation="embedded"] .chatbot-info { flex-shrink: 0; }
+[data-presentation="embedded"] .chat-window { min-height: 0; }
+[data-presentation="embedded"] #chat-messages-container { max-width: 100%; }
+[data-presentation="embedded"] :focus-visible { outline: 3px solid #347679; outline-offset: 3px; }
+[data-embed-presentation="compact"] #application-panel,
+[data-embed-presentation="compact"] #embed-capability-notice,
+[data-embed-presentation="compact"] .chatbot-info { display: none !important; }
+[data-presentation="embedded"] #application-action-controls { padding: .5rem .75rem; }
+[data-presentation="embedded"] #application-action-controls:empty { display: none; }
+@media (max-width: 480px) {
+    [data-presentation="embedded"] .message-input { padding: .5rem; }
+    [data-presentation="embedded"] #embed-capability-notice { font-size: .75rem; padding: .4rem .7rem; }
+}

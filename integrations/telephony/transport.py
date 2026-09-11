@@ -18,6 +18,7 @@ import orjson
 from fastapi.responses import StreamingResponse
 
 from ai_runtime.channel_turns import (
+    ChannelContext,
     ChannelDraft,
     ChannelTurnHandle,
     TurnKey,
@@ -65,6 +66,8 @@ class CanonicalPhoneTurn:
         self.key = key
         self.handle = handle
         self.response = response
+        self.handoff_result: dict[str, Any] | None = None
+        self.handoff_failure: dict[str, Any] | None = None
         self._events: asyncio.Queue[PhoneRuntimeEvent | object] = asyncio.Queue()
         self._sentinel = object()
         self._draft_sentinel = object()
@@ -155,6 +158,10 @@ class CanonicalPhoneTurn:
     async def _consume_response(self) -> None:
         try:
             async for payload in iter_sse_payloads(self.response.body_iterator):
+                if isinstance(payload.get("application_handoff"), dict):
+                    self.handoff_result = payload["application_handoff"]
+                if isinstance(payload.get("application_handoff_failed"), dict):
+                    self.handoff_failure = payload["application_handoff_failed"]
                 event = _runtime_event(payload)
                 if event is not None:
                     await self._events.put(event)
@@ -223,24 +230,63 @@ async def start_canonical_phone_turn(
     if context.turn_key is None:
         raise ValueError("phone_turn has no turn key")
 
+    return await start_canonical_voice_turn(
+        conversation_id=conversation_id,
+        current_user=current_user,
+        user_text=text,
+        channel_context=context,
+        expected_llm_id=int(expected_llm_id),
+        runtime_llm_id=resolved_runtime_llm_id,
+        reasoning_selection=reasoning_selection,
+        runtime_invoker=runtime_invoker,
+    )
+
+
+async def start_canonical_voice_turn(
+    *,
+    conversation_id: int,
+    current_user: Any,
+    user_text: str,
+    channel_context: ChannelContext,
+    request: Any = None,
+    expected_llm_id: int | None = None,
+    runtime_llm_id: int | None = None,
+    reasoning_selection: Mapping[str, Any] | str | None = None,
+    runtime_invoker: RuntimeInvoker | None = None,
+) -> CanonicalPhoneTurn:
+    """Run an authenticated live-voice transcript with playback-gated commit."""
+
+    text = str(user_text or "").strip()
+    context = channel_context
+    if not text or len(text) > MAX_PHONE_TRANSCRIPT_CHARS:
+        raise ValueError("voice transcript is empty or exceeds the limit")
+    if int(conversation_id) <= 0:
+        raise ValueError("conversation identifier must be positive")
+    if context.channel not in {"phone", "web"} or context.persistence != "deferred":
+        raise ValueError("voice requires deferred phone or web persistence")
+    if context.turn_key is None:
+        raise ValueError("voice turn has no turn key")
+    if context.channel == "web" and request is None:
+        raise ValueError("browser voice requires an authenticated request")
+
     if runtime_invoker is None:
         from ai_runtime.messages import process_save_message
 
         runtime_invoker = process_save_message
 
     response = await runtime_invoker(
-        None,
+        request,
         int(conversation_id),
         current_user,
         text_plain=text,
         files=[],
-        is_whatsapp=True,
+        is_whatsapp=context.channel == "phone",
         # Phone is an authenticated external channel, so request=None is
         # expected.  It must still pass wellbeing, AI rate-limit and activity
         # guards just like WhatsApp/Telegram.
         prevalidated=False,
-        expected_llm_id=int(expected_llm_id),
-        runtime_llm_id=resolved_runtime_llm_id,
+        expected_llm_id=expected_llm_id,
+        runtime_llm_id=runtime_llm_id,
         reasoning_selection=reasoning_selection,
         channel_context=context,
     )

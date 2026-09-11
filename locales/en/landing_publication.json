@@ -1,0 +1,12 @@
+{
+  "hallucination": "Unsupported capability claim \"{text}\" at line {line}. Context: ...{snippet}...",
+  "testimonial": "Unverified testimonial or rating at line {line}. Only conversation examples clearly labeled as demos are allowed. Context: ...{snippet}...",
+  "free_claim": "Unqualified access claim \"{text}\" at line {line}. Describe the exact access and usage costs instead. Context: ...{snippet}...",
+  "upload_disabled": "Upload invitation \"{text}\" at line {line}, but allow_file_upload=false in the landing registration settings. Context: ...{snippet}...",
+  "web_disabled": "Web search claim \"{text}\" at line {line}, but web search is disabled for this prompt. Context: ...{snippet}...",
+  "paid_price": "This paid prompt costs {amount}, but its exact price is missing from the page. The access button must state the unlock price.",
+  "paid_cta": "This paid prompt has no registration button that states the purchase, unlock or price. Visitors must know access is paid before clicking.",
+  "free_purchase": "This prompt has free access, but uses purchase wording \"{text}\" at line {line}. Context: ...{snippet}...",
+  "structure": "The page follows a generic SaaS layout: navigation, hero, feature grid, testimonials and footer. Use the assigned creative archetype instead.",
+  "unavailable": "Publication verification is unavailable. The page was saved but cannot be published yet."
+}

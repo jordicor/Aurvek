@@ -79,6 +79,36 @@ def test_recording_timestamps_cannot_overlap(tmp_path):
     recorder.finalize(create_mix=False)
 
 
+def test_assistant_track_can_discard_cleared_future_audio(tmp_path):
+    recorder = LocalCallRecorder("call-clear", enabled=True, root=tmp_path)
+    recorder.record_assistant(b"\x01" * 8_000, start_ms=1_000)
+
+    # The provider accepted one second of queued audio, but the caller only
+    # heard its first 200 ms before clear. A new reply can safely start on the
+    # live 1.3 s call clock after the discarded suffix is removed.
+    recorder.truncate_assistant(end_byte=9_600)
+    recorder.record_assistant(b"\x02" * 800, start_ms=1_300)
+    asset = recorder.finalize(create_mix=False)
+
+    assert asset.assistant_path.read_bytes() == (
+        PCMU_SILENCE_BYTE * 8_000
+        + b"\x01" * 1_600
+        + PCMU_SILENCE_BYTE * 800
+        + b"\x02" * 800
+    )
+
+
+def test_assistant_truncation_is_a_noop_beyond_current_frontier(tmp_path):
+    recorder = LocalCallRecorder("call-clear-noop", enabled=True, root=tmp_path)
+    recorder.record_assistant(b"\x01" * 160, start_ms=0)
+
+    recorder.truncate_assistant(end_byte=320)
+    recorder.record_assistant(b"\x02" * 160, start_ms=20)
+    asset = recorder.finalize(create_mix=False)
+
+    assert asset.assistant_path.read_bytes() == b"\x01" * 160 + b"\x02" * 160
+
+
 def test_finalize_preserves_raw_tracks_when_mix_fails(tmp_path):
     recorder = LocalCallRecorder("call-mix-fail", enabled=True, root=tmp_path)
     recorder.record_participant(b"\x01" * 160)

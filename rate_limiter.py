@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 import logging
 
 from middleware.security import get_client_ip
+from i18n import get_translator
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +308,7 @@ def check_rate_limits(
             )
             return {
                 "status": "error",
-                "message": "Too many attempts. Please try again later.",
+                "message": get_translator(request).t("common.rate.attempts"),
                 "retry_after_seconds": retry_after
             }
 
@@ -326,7 +327,7 @@ def check_rate_limits(
             )
             return {
                 "status": "error",
-                "message": "Too many attempts for this account. Please try again later.",
+                "message": get_translator(request).t("common.rate.account_attempts"),
                 "retry_after_seconds": retry_after
             }
 
@@ -362,7 +363,7 @@ def check_failure_limit(
         )
         return {
             "status": "error",
-            "message": "Too many failed attempts. Please try again later.",
+            "message": get_translator(request).t("common.rate.failures"),
             "retry_after_seconds": retry_after
         }
 
@@ -405,21 +406,21 @@ def check_login_failure_limits(request, identifier: str) -> Optional[dict]:
         (
             f"ip_fail:login:{ip}",
             RateLimitConfig.LOGIN_BY_IP_FAILURES,
-            "Too many failed attempts from this network. Please try again later.",
+            "common.rate.network_failures",
         ),
         (
             _login_pair_key(request, identifier),
             RateLimitConfig.LOGIN_BY_ACCOUNT_IP_FAILURES,
-            "Too many failed attempts for this account. Please try again later.",
+            "common.rate.account_failures",
         ),
     )
 
-    for key, limit, message in checks:
+    for key, limit, message_key in checks:
         allowed, _ = rate_limiter.check_only(key, limit[0], limit[1])
         if not allowed:
             return {
                 "status": "error",
-                "message": message,
+                "message": get_translator(request).t(message_key),
                 "retry_after_seconds": rate_limiter.get_retry_after(
                     key,
                     limit[1],

@@ -1,12 +1,13 @@
+{% set i18n_domains = ['creator'] %}
 {% extends 'base.html' %}
 
-{% block title %}Prompt Management - AURVEK{% endblock %}
+{% block title %}{{ t('creator.prompts.management') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Manage Prompts{% endblock %}
+{% block page_title %}{{ t('creator.prompts.manage') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
@@ -17,51 +18,51 @@
 <!-- Stats Row -->
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-file-alt"></i> <strong id="statTotal">{{ prompts|length }}</strong> Total
+        <i class="fas fa-file-alt"></i> <strong id="statTotal">{{ t('creator.stats.total_count', count=format_number(prompts|length)) }}</strong>
     </span>
     <span class="stat-badge stat-public">
-        <i class="fas fa-globe"></i> <strong id="statPublic">{{ prompts|selectattr('public')|list|length }}</strong> Public
+        <i class="fas fa-globe"></i> <strong id="statPublic">{{ t('creator.stats.public_count', count=format_number(prompts|selectattr('public')|list|length)) }}</strong>
     </span>
     <span class="stat-badge stat-private">
-        <i class="fas fa-lock"></i> <strong id="statPrivate">{{ prompts|rejectattr('public')|list|length }}</strong> Private
+        <i class="fas fa-lock"></i> <strong id="statPrivate">{{ t('creator.stats.private_count', count=format_number(prompts|rejectattr('public')|list|length)) }}</strong>
     </span>
     <span class="stat-badge" id="statFilteredContainer" style="display: none;">
-        <i class="fas fa-filter"></i> <strong id="statFiltered">0</strong> Shown
+        <i class="fas fa-filter"></i> <strong id="statFiltered">{{ t('creator.stats.shown_count', count=format_number(0)) }}</strong>
     </span>
 </div>
 
 <!-- Filters Section -->
 <div class="section-container filters-section">
     <div class="section-title">
-        <i class="fas fa-filter me-2"></i>Filters
+        <i class="fas fa-filter me-2"></i>{{ t('creator.filters.title') }}
         <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" onclick="resetFilters()">
-            <i class="fas fa-undo me-1"></i>Reset
+            <i class="fas fa-undo me-1"></i>{{ t('creator.filters.reset') }}
         </button>
     </div>
     <div class="flex-row">
         <div class="flex-column">
-            <label class="form-label">Search</label>
-            <input type="text" class="form-control" id="filterSearch" placeholder="Name or description...">
+            <label class="form-label">{{ t('creator.filters.search') }}</label>
+            <input type="text" class="form-control" id="filterSearch" placeholder="{{ t('creator.filters.search_placeholder') }}">
         </div>
         <div class="flex-column">
-            <label class="form-label">Status</label>
+            <label class="form-label">{{ t('creator.filters.status') }}</label>
             <select class="form-select" id="filterStatus">
-                <option value="">All Status</option>
-                <option value="public">Public</option>
-                <option value="private">Private</option>
+                <option value="">{{ t('creator.filters.all_statuses') }}</option>
+                <option value="public">{{ t('creator.status.public') }}</option>
+                <option value="private">{{ t('creator.status.private') }}</option>
             </select>
         </div>
         <div class="flex-column">
-            <label class="form-label">Voice</label>
+            <label class="form-label">{{ t('creator.fields.voice') }}</label>
             <select class="form-select" id="filterVoice">
-                <option value="">All Voices</option>
+                <option value="">{{ t('creator.filters.all_voices') }}</option>
             </select>
         </div>
         {% if is_admin %}
         <div class="flex-column">
-            <label class="form-label">Owner</label>
+            <label class="form-label">{{ t('creator.fields.owner') }}</label>
             <select class="form-select" id="filterOwner">
-                <option value="">All Owners</option>
+                <option value="">{{ t('creator.filters.all_owners') }}</option>
             </select>
         </div>
         {% endif %}
@@ -71,21 +72,21 @@
 <!-- Prompts Table Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-file-alt"></i> All Prompts
+        <i class="fas fa-file-alt"></i> {{ t('creator.prompts.all') }}
     </div>
     <form action="/prompts/delete-batch" method="post" id="promptsForm">
         <!-- Toolbar: Select All + Actions -->
         <div class="table-toolbar">
             <div class="toolbar-left">
-                <input type="checkbox" id="selectAll" class="form-check-input" title="Select All">
-                <label for="selectAll" class="form-check-label">Select all</label>
+                <input type="checkbox" id="selectAll" class="form-check-input" title="{{ t('creator.action.select_all') }}">
+                <label for="selectAll" class="form-check-label">{{ t('creator.action.select_all') }}</label>
             </div>
             <div class="toolbar-right">
                 <a href="/prompts/new" class="btn btn-success">
-                    <i class="fas fa-plus me-1"></i> Create Prompt
+                    <i class="fas fa-plus me-1"></i> {{ t('creator.prompts.create') }}
                 </a>
                 <button type="submit" class="btn btn-outline-danger" id="deleteBtn" disabled>
-                    <i class="fas fa-trash me-1"></i> Delete (<span id="selectedCount">0</span>)
+                    <i class="fas fa-trash me-1"></i> <span id="selectedCount">{{ t('creator.action.delete_count', count=format_number(0)) }}</span>
                 </button>
             </div>
         </div>
@@ -96,13 +97,13 @@
                 <thead>
                     <tr>
                         <th style="width: 40px;"></th>
-                        <th data-sort="name" class="sortable sort-asc">Name</th>
-                        <th data-sort="voice" class="sortable">Voice</th>
-                        <th data-sort="public" class="sortable" style="width: 100px;">Status</th>
+                        <th data-sort="name" class="sortable sort-asc">{{ t('creator.fields.name') }}</th>
+                        <th data-sort="voice" class="sortable">{{ t('creator.fields.voice') }}</th>
+                        <th data-sort="public" class="sortable" style="width: 100px;">{{ t('creator.filters.status') }}</th>
                         {% if is_admin %}
-                        <th data-sort="owner" class="sortable">Owner</th>
+                        <th data-sort="owner" class="sortable">{{ t('creator.fields.owner') }}</th>
                         {% endif %}
-                        <th class="text-end" style="width: 100px;">Actions</th>
+                        <th class="text-end" style="width: 100px;">{{ t('creator.fields.actions') }}</th>
                     </tr>
                 </thead>
                 <tbody id="promptsTableBody">
@@ -133,9 +134,9 @@
                         <td>{{ prompt.voice_name or '-' }}</td>
                         <td>
                             {% if prompt.public %}
-                            <span class="status-public"><i class="fas fa-globe me-1"></i>Public</span>
+                            <span class="status-public"><i class="fas fa-globe me-1"></i>{{ t('creator.status.public') }}</span>
                             {% else %}
-                            <span class="status-private"><i class="fas fa-lock me-1"></i>Private</span>
+                            <span class="status-private"><i class="fas fa-lock me-1"></i>{{ t('creator.status.private') }}</span>
                             {% endif %}
                         </td>
                         {% if is_admin %}
@@ -143,10 +144,10 @@
                         {% endif %}
                         <td class="text-end table-actions">
                             {% if prompt.can_edit %}
-                            <a href="/prompts/edit/{{ prompt.id }}" class="btn btn-sm btn-outline-primary" title="Edit">
+                            <a href="/prompts/edit/{{ prompt.id }}" class="btn btn-sm btn-outline-primary" title="{{ t('creator.action.edit') }}">
                                 <i class="fas fa-edit"></i>
                             </a>
-                            <button type="button" onclick="deletePrompt({{ prompt.id }})" class="btn btn-sm btn-outline-danger" title="Delete">
+                            <button type="button" onclick="deletePrompt({{ prompt.id }})" class="btn btn-sm btn-outline-danger" title="{{ t('creator.action.delete') }}">
                                 <i class="fas fa-trash"></i>
                             </button>
                             {% else %}
@@ -179,22 +180,22 @@
 
     function deletePrompt(promptId) {
         NotificationModal.confirm(
-            'Delete Prompt',
-            'Are you sure you want to delete this prompt?',
+            AurvekI18n.t('creator.prompts.delete_title'),
+            AurvekI18n.t('creator.prompts.delete_confirm'),
             () => {
                 fetch(`/prompts/delete/${promptId}`, {
                     method: 'DELETE'
                 }).then(response => {
                     if (response.ok) {
-                        NotificationModal.success('Prompt Deleted', 'Prompt deleted successfully!');
+                        NotificationModal.success(AurvekI18n.t('creator.prompts.deleted_title'), AurvekI18n.t('creator.prompts.deleted'));
                         window.location.reload();
                     } else {
-                        NotificationModal.error('Delete Failed', 'Failed to delete prompt.');
+                        NotificationModal.error(AurvekI18n.t('creator.action.delete_failed'), AurvekI18n.t('creator.prompts.delete_failed'));
                     }
                 }).catch(error => console.error('Error:', error));
             },
             null,
-            { type: 'error', confirmText: 'Delete' }
+            { type: 'error', confirmText: AurvekI18n.t('creator.action.delete') }
         );
     }
 </script>

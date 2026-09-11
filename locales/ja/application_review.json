@@ -1,0 +1,16 @@
+{
+  "title": "会話を確認",
+  "read_only": "読み取り専用です。閲覧は監査ログに記録されます。",
+  "back": "会話一覧に戻る",
+  "untitled": "無題の会話",
+  "older_messages": "以前のメッセージ",
+  "client": "利用者",
+  "assistant": "アシスタント",
+  "unavailable": "このファイルは利用できません。",
+  "audio": "保存された音声",
+  "empty_messages": "メッセージはありません。",
+  "applications": "アプリケーション",
+  "open": "履歴を開く",
+  "empty_conversations": "このアプリケーションの会話はありません。",
+  "more": "その他の会話"
+}

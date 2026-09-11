@@ -1,6 +1,7 @@
+{% set i18n_domains = ['landing_builder'] %}
 {% extends 'base.html' %}
 
-{% block title %}Edit Template{% endblock %}
+{% block title %}{{ t('landing_builder.template.edit') }}{% endblock %}
 
 {% block head_extra %}
 <!-- jQuery (needed for form submission) -->
@@ -23,22 +24,22 @@
 {% block content %}
 <div class="container mt-5">
     <div class="d-flex justify-content-center mb-4">
-        <a href="#" id="testButton" class="btn btn-secondary">TEST {{ section|upper }}</a>
+        <a href="#" id="testButton" class="btn btn-secondary">{{ t('landing_builder.action.test_named', name=section|upper) }}</a>
     </div>
-    <h1 class="mb-4">Edit {{ section|capitalize }}</h1>
+    <h1 class="mb-4">{{ t('landing_builder.action.edit_named', name=section|capitalize) }}</h1>
     <form id="editForm">
         <div class="mb-3">
-            <label for="content" class="form-label">HTML Content</label>
+            <label for="content" class="form-label">{{ t('landing_builder.template.html_content') }}</label>
             <textarea id="content" name="content" class="form-control" rows="20">{{ content }}</textarea>
         </div>
         {% if not is_pack %}
         <div class="mb-3 form-check">
             <input type="checkbox" class="form-check-input" id="useDefaultTemplate" name="useDefaultTemplate" {% if use_default %}checked{% endif %}>
-            <label class="form-check-label" for="useDefaultTemplate">Use default template for this section</label>
+            <label class="form-check-label" for="useDefaultTemplate">{{ t('landing_builder.template.use_default') }}</label>
         </div>
         {% endif %}
-        <button type="submit" class="btn btn-primary">Save</button>
-        <a href="/" class="btn btn-secondary ms-2">Back to Admin Index</a>
+        <button type="submit" class="btn btn-primary">{{ t('landing_builder.action.save') }}</button>
+        <a href="/" class="btn btn-secondary ms-2">{{ t('landing_builder.action.back_to_admin') }}</a>
     </form>
     <div id="message" class="mt-3"></div>
 </div>
@@ -63,7 +64,7 @@
             if (packPublicUrl) {
                 window.open(packPublicUrl, '_blank');
             } else {
-                NotificationModal.warning('No Public URL', 'Save and publish first.');
+                NotificationModal.warning(AurvekI18n.t('landing_builder.ui.no_public_url'), AurvekI18n.t('landing_builder.ui.save_and_publish_first'));
             }
             {% else %}
             var currentDomain = window.location.hostname;
@@ -108,14 +109,15 @@
                 data: formData,
                 success: function(response) {
                     if (response.success) {
-                        $("#message").html('<div class="alert alert-success">' + response.message + '</div>');
+                        const publicationErrors = Array.isArray(response.publication_errors) ? response.publication_errors : [];
+                        $("#message").text([response.message, ...publicationErrors].join('\n')).attr("class", response.published === false ? "alert alert-warning" : "alert alert-success").css("white-space", "pre-wrap");
                         webEditGroup.markClean();
                     } else {
-                        $("#message").html('<div class="alert alert-danger">' + response.message + '</div>');
+                        $("#message").text(response.message).attr("class", "alert alert-danger");
                     }
                 },
                 error: function(xhr, status, error) {
-                    $("#message").html('<div class="alert alert-danger">Error: ' + error + '</div>');
+                    $("#message").text(xhr.responseJSON?.message || (typeof xhr.responseJSON?.detail === 'string' ? xhr.responseJSON.detail : null) || AurvekI18n.t('landing_builder.response.error_saving_changes')).attr('class', 'alert alert-danger');
                 }
             });
         });

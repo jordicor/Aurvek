@@ -9,6 +9,8 @@ from models import User
 from chat.services.message_rendering import process_message
 from integrations.messaging_voice_notes.service import load_message_channel_provenance
 
+from chat.services.localization import chat_text, chat_translator
+
 router = APIRouter()
 
 
@@ -30,7 +32,7 @@ async def bookmark_message(
             conversation = await cursor.fetchone()
 
         if not conversation or conversation[0] != current_user.id:
-            raise HTTPException(status_code=403, detail="You do not have permission to mark this conversation")
+            raise HTTPException(status_code=403, detail=chat_text(current_user, "bookmark_access_denied"))
 
         is_bookmarked = 1 if action == "add" else 0
         await conn.execute(
@@ -56,7 +58,7 @@ async def get_bookmarked_messages(
             """
             SELECT m.id, m.conversation_id, m.user_id, u.username, m.message, m.type,
                    strftime('%Y-%m-%d %H:%M:%S', m.date) as date_utc,
-                   COALESCE(c.chat_name, 'Chat ' || m.conversation_id) as chat_name
+                   c.chat_name
             FROM MESSAGES m
             JOIN USERS u ON m.user_id = u.id
             LEFT JOIN CONVERSATIONS c ON m.conversation_id = c.id
@@ -88,7 +90,7 @@ async def get_bookmarked_messages(
                 "type": msg["type"],
                 "date": msg["date_utc"],
                 "is_bookmarked": True,
-                "chat_name": msg["chat_name"],
+                "chat_name": msg["chat_name"] or chat_translator(current_user).t("chat.chat_id", id=msg["conversation_id"]),
             }
             message_data.update(channel_provenance.get(int(msg["id"]), {}))
             messages_list.append(message_data)

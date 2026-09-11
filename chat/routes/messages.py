@@ -10,7 +10,6 @@ from auth import get_current_user, unauthenticated_response
 from admin_audit import log_admin_action
 from billing.usage_reservations import (
     serialize_user_billing_response,
-    serialize_user_billing_stream,
 )
 from common import (
     API_KEY_MODE_OWN_ONLY,
@@ -23,6 +22,9 @@ from common import (
 )
 from database import get_db_connection
 from integrations.conversations import is_whatsapp_conversation
+from integrations.applications.runtime import authorize_application_read
+from integrations.embed.models import EmbedError
+from integrations.elevenlabs.service import load_elevenlabs_message_metadata
 from integrations.telephony.channel_context import capture_non_phone_channel_turn
 from ai_runtime.messages import process_save_message
 from ai_runtime.reasoning import (
@@ -32,21 +34,24 @@ from ai_runtime.reasoning import (
     selection_from_legacy_thinking_budget,
 )
 from ai_runtime.reasoning_tags import strip_tagged_thinking_prefix
-from ai_runtime.multi_ai.service import process_multi_ai_message
+from ai_runtime.multi_ai.service import create_multi_ai_response
 from ai_runtime.provider_health import provider_from_machine, touch_provider_activity
 from log_config import logger
 from models import User
 from chat.services.attachment_uploads import parse_attachment_refs_value
 from chat.services.avatar_urls import get_signed_bot_avatar_urls
 from chat.services.file_inputs import is_text_file
+from chat.services.generated_media import preload_generated_media_for_messages
 from chat.services.message_rendering import (
     preload_attachment_records_for_messages,
     process_message,
 )
-from chat.services.message_requests import validate_message_request
+from chat.services.message_requests import unavailable_model_response, validate_message_request
 from chat.services.phone_history import load_phone_history_page
 from integrations.messaging_voice_notes.service import load_message_channel_provenance
 from chat.services.privacy import delete_message_rows, ensure_conversation_privacy_schema
+
+from chat.services.localization import chat_text, chat_error, chat_translator, localize_chat_response
 
 router = APIRouter()
 
@@ -114,8 +119,19 @@ async def get_messages(
     logger.debug("Requested messages for conversation ID: %s", conversation_id)
     await ensure_conversation_privacy_schema()
     async with get_db_connection(readonly=True) as conn:
+        # Platform administration is independent of an application's membership
+        # and enabled state. Embedded identities never inherit this privilege.
+        is_user_admin = (
+            not getattr(current_user, "embed_principal", None)
+            and await current_user.is_admin
+        )
+        application_scope = None
+        if not is_user_admin:
+            try:
+                application_scope = await authorize_application_read(conn, conversation_id, current_user.id)
+            except EmbedError as exc:
+                return JSONResponse(content={"error": chat_error(current_user, exc.code), "error_code": exc.code}, status_code=exc.status_code)
         cursor = await conn.cursor()
-        is_user_admin = await current_user.is_admin
 
         if is_user_admin:
             await cursor.execute("SELECT id, user_id FROM conversations WHERE id = ?", (conversation_id,))
@@ -138,14 +154,15 @@ async def get_messages(
             conversation = await cursor.fetchone()
 
         if not conversation:
-            return JSONResponse(content={"error": "Conversation not found or access denied"}, status_code=404)
+            return JSONResponse(content={"error": chat_text(current_user, "conversation_inaccessible")}, status_code=404)
 
         await cursor.execute(
             """
             SELECT c.id, c.role_id, c.active_extension_id,
                    p.name AS prompt_name, p.image AS bot_picture, p.description AS prompt_description,
                    p.extensions_enabled, p.extensions_free_selection,
-                   l.machine, l.model,
+                   l.machine, l.model, c.llm_id,
+                   CASE WHEN l.id IS NULL THEN 0 ELSE COALESCE(l.enabled, 1) END AS llm_enabled,
                    COALESCE(p.is_paid, 0) AS is_paid,
                    COALESCE(c.is_incognito, 0) AS is_incognito,
                    COALESCE(c.hidden_from_history, 0) AS hidden_from_history,
@@ -198,6 +215,10 @@ async def get_messages(
         if has_more:
             rows = rows[:limit]
 
+        from integrations.applications.web_audio import load_original_recordings
+        original_recordings = await load_original_recordings(conn, application_scope,
+            [int(row["message_id"]) for row in rows])
+
         extensions_data = {}
         if conv_row and conv_row["extensions_enabled"]:
             prompt_role_id = conv_row["role_id"]
@@ -241,7 +262,8 @@ async def get_messages(
         for row in rows
         if row["type"] == "bot" and (not row["message"] or not row["message"].strip())
     ]
-    if empty_bot_ids:
+    # Inspecting another user's history must preserve even incomplete turns.
+    if empty_bot_ids and not (is_user_admin and conversation["user_id"] != current_user.id):
         logger.warning(
             "Auto-repair: removing %s empty bot message(s) from conversation %s: %s",
             len(empty_bot_ids),
@@ -284,6 +306,8 @@ async def get_messages(
         "prompt_name": conv_row["prompt_name"],
         "machine": conv_row["machine"],
         "model": conv_row["model"],
+        "llm_id": conv_row["llm_id"],
+        "llm_enabled": bool(conv_row["llm_enabled"]),
         "provider_health": touch_provider_activity(provider_from_machine(conv_row["machine"], conv_row["model"])),
         **bot_avatar_urls,
         "prompt_description": conv_row["prompt_description"],
@@ -293,6 +317,8 @@ async def get_messages(
         "purge_on_close": bool(conv_row["purge_on_close"]),
         **extensions_data,
     }
+    if application_scope is not None:
+        conversation_info["application"] = {"capabilities": dict(application_scope.capabilities)}
 
     phone_history = await load_phone_history_page(
         get_db_connection,
@@ -304,6 +330,9 @@ async def get_messages(
     )
     phone_history_payload = phone_history.public_payload()
     channel_provenance = await load_message_channel_provenance(
+        [int(row["message_id"]) for row in rows if row["message_id"] is not None]
+    )
+    elevenlabs_metadata = await load_elevenlabs_message_metadata(
         [int(row["message_id"]) for row in rows if row["message_id"] is not None]
     )
     has_phone_history = bool(
@@ -354,6 +383,12 @@ async def get_messages(
         conversation_id=conversation_id,
         allow_admin=is_user_admin,
     )
+    generated_media_records = (
+        await preload_generated_media_for_messages(
+            [(row["message_id"], message) for row, message in render_rows],
+            user_id=current_user.id, conversation_id=conversation_id,
+        ) if application_scope is not None else None
+    )
 
     messages_list = []
     for row, unescaped_message in render_rows:
@@ -367,6 +402,8 @@ async def get_messages(
                 message_id=row["message_id"],
                 attachment_records=attachment_records,
                 can_admin_view=is_user_admin,
+                application=application_scope,
+                generated_media_records=generated_media_records,
             )
             msg_data = {
                 "id": row["message_id"],
@@ -387,6 +424,8 @@ async def get_messages(
             if phone_metadata is not None:
                 msg_data.update(phone_metadata)
             msg_data.update(channel_provenance.get(int(row["message_id"]), {}))
+            msg_data.update(elevenlabs_metadata.get(int(row["message_id"]), {}))
+            msg_data.update(original_recordings.get(int(row["message_id"]), {}))
             if row["citations_json"]:
                 try:
                     msg_data["citations"] = orjson.loads(row["citations_json"])
@@ -414,6 +453,10 @@ async def get_conversation_provider_health(
         return unauthenticated_response()
 
     async with get_db_connection(readonly=True) as conn:
+        try:
+            await authorize_application_read(conn, conversation_id, current_user.id)
+        except EmbedError as exc:
+            return JSONResponse(content={"error": chat_error(current_user, exc.code), "error_code": exc.code}, status_code=exc.status_code)
         is_user_admin = await current_user.is_admin
         if is_user_admin:
             cursor = await conn.execute(
@@ -438,7 +481,7 @@ async def get_conversation_provider_health(
         row = await cursor.fetchone()
 
     if not row:
-        return JSONResponse(content={"error": "Conversation not found or access denied"}, status_code=404)
+        return JSONResponse(content={"error": chat_text(current_user, "conversation_inaccessible")}, status_code=404)
 
     provider = provider_from_machine(row["machine"], row["model"])
     return JSONResponse(content={"provider_health": touch_provider_activity(provider)})
@@ -467,11 +510,23 @@ async def save_message(
     logger.info("enters in save_message (wrapper)")
     if current_user is None:
         return unauthenticated_response()
+    translator = chat_translator(current_user)
 
     async with get_db_connection(readonly=True) as conn:
+        try:
+            application = await authorize_application_read(conn, conversation_id, current_user.id)
+            if (application is not None and multi_ai_models
+                    and not application.capabilities.get("multi_ai", False)):
+                raise EmbedError("application_capability_denied", 403)
+        except EmbedError as exc:
+            return JSONResponse(
+                content={"success": False, "error_code": exc.code, "message": chat_error(current_user, exc.code)},
+                status_code=exc.status_code,
+            )
         identity_cursor = await conn.execute(
             """
-            SELECT c.locked, c.llm_id, l.machine, l.model, l.capabilities_json
+            SELECT c.locked, c.llm_id, l.machine, l.model, l.capabilities_json,
+                   COALESCE(l.enabled, 1) AS llm_enabled
             FROM CONVERSATIONS c
             JOIN LLM l ON l.id = c.llm_id
             WHERE c.id = ? AND c.user_id = ?
@@ -482,7 +537,7 @@ async def save_message(
 
     if not conversation_identity or conversation_identity[0]:
         return JSONResponse(
-            content={"success": False, "message": "Conversation is locked."},
+            content={"success": False, "error_code": "conversation_locked", "message": chat_text(current_user, "conversation_locked")},
             status_code=403,
         )
 
@@ -497,7 +552,7 @@ async def save_message(
     try:
         parsed_attachment_refs = parse_attachment_refs_value(attachment_refs)
     except ValueError as exc:
-        return JSONResponse(content={"success": False, "message": str(exc)}, status_code=400)
+        return JSONResponse(content={"success": False, "message": chat_error(current_user, "invalid_reasoning_selection" if isinstance(exc, ReasoningValidationError) else "upload_invalid")}, status_code=400)
 
     foreground_turn = await capture_non_phone_channel_turn(
         conversation_id=conversation_id,
@@ -514,7 +569,7 @@ async def save_message(
                 content={
                     "success": False,
                     "error_code": "expected_llm_id_required",
-                    "message": "Reload the conversation so Aurvek can confirm the selected AI model.",
+                    "message": chat_text(current_user, "expected_llm_id_required"),
                 },
                 status_code=428,
             )
@@ -523,11 +578,15 @@ async def save_message(
                 content={
                     "success": False,
                     "error_code": "conversation_model_changed",
-                    "message": "The AI model changed in another session. Review it and send again.",
+                    "message": chat_text(current_user, "conversation_model_changed"),
                     "llm_id": int(conversation_identity[1]),
                     "model": conversation_identity["model"],
                 },
                 status_code=409,
+            )
+        if not conversation_identity["llm_enabled"]:
+            return unavailable_model_response(
+                conversation_identity[1], conversation_identity["model"], current_user
             )
 
     requested_reasoning = None
@@ -543,7 +602,7 @@ async def save_message(
                 content={
                     "success": False,
                     "error_code": "invalid_reasoning_selection",
-                    "message": str(exc),
+                    "message": chat_error(current_user, "invalid_reasoning_selection" if isinstance(exc, ReasoningValidationError) else "upload_invalid"),
                 },
                 status_code=422,
             )
@@ -553,14 +612,14 @@ async def save_message(
         try:
             parsed_model_ids = orjson.loads(multi_ai_models)
         except orjson.JSONDecodeError:
-            return JSONResponse(content={"error": "Invalid multi_ai_models format"}, status_code=400)
+            return JSONResponse(content={"error": chat_text(current_user, "multi_ai_invalid")}, status_code=400)
         if (
             not isinstance(parsed_model_ids, list)
             or len(parsed_model_ids) < 2
             or len(parsed_model_ids) > 4
             or not all(isinstance(model_id, int) for model_id in parsed_model_ids)
         ):
-            return JSONResponse(content={"error": "Multi-AI requires 2-4 model IDs"}, status_code=400)
+            return JSONResponse(content={"error": chat_text(current_user, "multi_ai_count")}, status_code=400)
 
     if not foreground_turn.decision.phone_active and not multi_ai_models:
         try:
@@ -579,7 +638,7 @@ async def save_message(
                 content={
                     "success": False,
                     "error_code": "invalid_reasoning_selection",
-                    "message": str(exc),
+                    "message": chat_error(current_user, "invalid_reasoning_selection" if isinstance(exc, ReasoningValidationError) else "upload_invalid"),
                 },
                 status_code=422,
             )
@@ -633,7 +692,7 @@ async def save_message(
                 return JSONResponse(
                     content={
                         "error": "api_keys_required",
-                        "message": "Your account requires you to configure your own API keys to use AI services.",
+                        "message": chat_text(current_user, "api_keys_required"),
                         "action": "configure_api_keys",
                         "redirect": "/profile/api-credentials",
                     },
@@ -652,7 +711,7 @@ async def save_message(
             gs_result = await gs_row.fetchone()
         if gs_result and bool(gs_result[0]):
             return JSONResponse(
-                content={"success": False, "message": "This prompt uses GranSabio pipeline and cannot use Multi-AI comparison mode."},
+                content={"success": False, "message": chat_text(current_user, "multi_ai_gransabio")},
                 status_code=400,
             )
 
@@ -663,63 +722,62 @@ async def save_message(
                     is_whatsapp_conv = await is_whatsapp_conversation(conversation_id)
                 except Exception as exc:
                     logger.warning("[save_message] Could not verify WhatsApp status for conversation %s: %s", conversation_id, exc)
-                    return JSONResponse(content={"error": "Could not verify conversation channel"}, status_code=503)
+                    return JSONResponse(content={"error": chat_text(current_user, "channel_verification_failed")}, status_code=503)
             if is_whatsapp_conv:
-                return JSONResponse(content={"error": "Multi-AI is not available via WhatsApp"}, status_code=400)
+                return JSONResponse(content={"error": chat_text(current_user, "multi_ai_whatsapp")}, status_code=400)
 
             if file and any(f for f in file if f and f.filename):
-                return JSONResponse(content={"error": "File attachments are not supported in Multi-AI mode"}, status_code=400)
+                return JSONResponse(content={"error": chat_text(current_user, "multi_ai_attachments")}, status_code=400)
             if parsed_attachment_refs:
-                return JSONResponse(content={"error": "File attachments are not supported in Multi-AI mode"}, status_code=400)
+                return JSONResponse(content={"error": chat_text(current_user, "multi_ai_attachments")}, status_code=400)
 
             max_decompressed_size = 10 * 1024 * 1024
             max_compressed_size = 1 * 1024 * 1024
             if text_compressed:
                 compressed_bytes = await text_compressed.read()
                 if len(compressed_bytes) > max_compressed_size:
-                    return JSONResponse(content={"error": "Compressed message too large"}, status_code=400)
+                    return JSONResponse(content={"error": chat_text(current_user, "compressed_message_too_large")}, status_code=400)
                 decompressor = zlib.decompressobj()
                 decompressed = decompressor.decompress(compressed_bytes, max_length=max_decompressed_size)
                 if decompressor.unconsumed_tail:
-                    return JSONResponse(content={"error": "Decompressed message exceeds size limit"}, status_code=400)
+                    return JSONResponse(content={"error": chat_text(current_user, "message_too_large")}, status_code=400)
                 multi_user_message = decompressed.decode("utf-8")
             elif text_plain:
                 multi_user_message = text_plain
             else:
-                return JSONResponse(content={"error": "No message provided"}, status_code=400)
+                return JSONResponse(content={"error": chat_text(current_user, "message_required")}, status_code=400)
 
-            return StreamingResponse(
-                serialize_user_billing_stream(
-                    current_user.id,
-                    process_multi_ai_message(
-                        request=request,
-                        conversation_id=conversation_id,
-                        current_user=current_user,
-                        user_message=multi_user_message,
-                        model_ids=parsed_model_ids,
-                        reasoning_selection=requested_reasoning,
-                        user_api_keys=user_api_keys,
-                        channel_context=foreground_turn.context,
-                    ),
-                ),
-                media_type="text/event-stream",
+            response_awaitable = create_multi_ai_response(
+                request=request,
+                conversation_id=conversation_id,
+                current_user=current_user,
+                user_message=multi_user_message,
+                model_ids=parsed_model_ids,
+                reasoning_selection=requested_reasoning,
+                user_api_keys=user_api_keys,
+                channel_context=foreground_turn.context,
             )
+            if application is not None:
+                response = await response_awaitable
+            else:
+                response = await serialize_user_billing_response(current_user.id, response_awaitable)
+            return localize_chat_response(response, translator)
         except orjson.JSONDecodeError:
-            return JSONResponse(content={"error": "Invalid multi_ai_models format"}, status_code=400)
+            return JSONResponse(content={"error": chat_text(current_user, "multi_ai_invalid")}, status_code=400)
 
     files = None
     if file:
         valid_files = [f for f in file if f]
         if valid_files and not current_user.can_send_files:
             return JSONResponse(
-                content={"success": False, "message": "File uploads are not enabled for your account"},
+                content={"success": False, "message": chat_text(current_user, "file_uploads_disabled")},
                 status_code=403,
             )
 
         max_files_per_message = 16
         if len(valid_files) > max_files_per_message or len(valid_files) + len(parsed_attachment_refs) > max_files_per_message:
             return JSONResponse(
-                content={"success": False, "message": f"Maximum {max_files_per_message} files per message."},
+                content={"success": False, "message": chat_text(current_user, "file_count_limit", count=max_files_per_message)},
                 status_code=400,
             )
 
@@ -737,7 +795,7 @@ async def save_message(
             data = await uploaded_file.read(max_bytes + 1)
             if len(data) > max_bytes:
                 return JSONResponse(
-                    content={"success": False, "message": f"File '{uploaded_file.filename}' exceeds the {max_bytes // (1024 * 1024)}MB size limit"},
+                    content={"success": False, "message": chat_text(current_user, "file_size_limit", filename=uploaded_file.filename, size=max_bytes // (1024 * 1024))},
                     status_code=400,
                 )
             files.append({
@@ -750,9 +808,7 @@ async def save_message(
     if text_compressed:
         text_compressed_bytes = await text_compressed.read()
 
-    return await serialize_user_billing_response(
-        current_user.id,
-        process_save_message(
+    response_awaitable = process_save_message(
             request=request,
             conversation_id=conversation_id,
             current_user=current_user,
@@ -770,5 +826,10 @@ async def save_message(
             attachment_refs=parsed_attachment_refs,
             expected_llm_id=expected_llm_id,
             channel_context=foreground_turn.context,
-        ),
-    )
+        )
+    if application is not None:
+        # The canonical runtime admits app funding before taking its payer lease.
+        response = await response_awaitable
+    else:
+        response = await serialize_user_billing_response(current_user.id, response_awaitable)
+    return localize_chat_response(response, translator)

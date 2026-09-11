@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 
 # Own libraries
 from auth_constants import SESSION_COOKIE_NAME
+from i18n import get_translator
 from log_config import logger
 from rediscfg import is_user_revoked
 from common import (
@@ -91,6 +92,9 @@ async def is_user_enabled_in_db(user_id: int) -> bool:
 # Dependency to get the current user
 async def get_current_user(request: Request) -> Optional[User]:
     logger.info("enters get_current_user")
+    from integrations.embed.context import get_embed_user, is_embed_request
+    if is_embed_request(request):
+        return await get_embed_user(request)
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         logger.info("Session token not found")
@@ -140,6 +144,7 @@ async def get_current_user(request: Request) -> Optional[User]:
     live_user.used_magic_link = bool(user_info.get("used_magic_link", False))
     live_user.auth_time = int(payload.get("auth_time", payload.get("iat", 0)))
     live_user.session_expires_at = int(payload.get("exp", 0))
+    get_translator(request, live_user)
     return live_user
 
 # Function to get a user by username
@@ -150,7 +155,7 @@ async def get_user_by_username(username: str) -> Optional[User]:
         query = '''
         SELECT
             u.id, u.username, u.password, u.role_id, u.is_enabled,
-            u.google_id, u.auth_provider, u.session_version,
+            u.google_id, u.auth_provider, u.session_version, u.ui_language,
             ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
             ud.all_prompts_access, ud.public_prompts_access,
             ud.authentication_mode, ud.can_change_password,
@@ -186,6 +191,7 @@ def create_user_from_row(row):
         google_id=row['google_id'],
         auth_provider=row['auth_provider'] or 'local',
         session_version=row['session_version'],
+        ui_language=row['ui_language'],
         is_admin=None,
         is_user=None,
     )
@@ -196,7 +202,7 @@ async def get_user_by_id(user_id: int) -> Optional[User]:
         query = '''
         SELECT
             u.id, u.username, u.password, u.role_id, u.is_enabled,
-            u.google_id, u.auth_provider, u.session_version,
+            u.google_id, u.auth_provider, u.session_version, u.ui_language,
             ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
             ud.all_prompts_access, ud.public_prompts_access,
             ud.authentication_mode, ud.can_change_password,
@@ -219,7 +225,7 @@ async def get_user_from_phone_number(phone_number: str) -> Optional[User]:
         query = '''
         SELECT
             u.id, u.username, u.password, u.role_id, u.is_enabled, u.phone_number,
-            u.google_id, u.auth_provider, u.session_version,
+            u.google_id, u.auth_provider, u.session_version, u.ui_language,
             ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
             ud.all_prompts_access, ud.public_prompts_access,
             ud.authentication_mode, ud.can_change_password,
@@ -241,7 +247,7 @@ async def get_user_from_telegram_chat_id(chat_id: int) -> Optional[User]:
         query = '''
         SELECT
             u.id, u.username, u.password, u.role_id, u.is_enabled, u.phone_number,
-            u.google_id, u.auth_provider, u.session_version,
+            u.google_id, u.auth_provider, u.session_version, u.ui_language,
             ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
             ud.all_prompts_access, ud.public_prompts_access,
             ud.authentication_mode, ud.can_change_password,
@@ -258,6 +264,10 @@ async def get_user_from_telegram_chat_id(chat_id: int) -> Optional[User]:
     return create_user_from_row(row) if row else None
 
 async def get_current_user_from_websocket(websocket: WebSocket) -> Optional[User]:
+    from integrations.embed.context import is_embed_request
+    if is_embed_request(websocket):
+        # The legacy TTS socket has no verified application/project scope.
+        return None
     token = websocket.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return None
@@ -303,6 +313,7 @@ async def get_current_user_from_websocket(websocket: WebSocket) -> Optional[User
     live_user.used_magic_link = bool(user_info.get("used_magic_link", False))
     live_user.auth_time = int(payload.get("auth_time", payload.get("iat", 0)))
     live_user.session_expires_at = int(payload.get("exp", 0))
+    get_translator(websocket, live_user)
     return live_user
     
 async def get_user_id_from_conversation(conversation_id: int) -> int:
@@ -479,7 +490,7 @@ async def get_user_by_google_id(google_id: str) -> Optional[User]:
         query = '''
         SELECT
             u.id, u.username, u.password, u.role_id, u.is_enabled,
-            u.google_id, u.auth_provider, u.session_version,
+            u.google_id, u.auth_provider, u.session_version, u.ui_language,
             ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
             ud.all_prompts_access, ud.public_prompts_access,
             ud.authentication_mode, ud.can_change_password,
@@ -503,7 +514,7 @@ async def get_user_by_email(email: str) -> Optional[User]:
         query = '''
         SELECT
             u.id, u.username, u.password, u.role_id, u.is_enabled,
-            u.google_id, u.auth_provider, u.session_version,
+            u.google_id, u.auth_provider, u.session_version, u.ui_language,
             ud.current_prompt_id, ud.allow_file_upload, ud.allow_image_generation,
             ud.all_prompts_access, ud.public_prompts_access,
             ud.authentication_mode, ud.can_change_password,

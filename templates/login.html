@@ -1,6 +1,11 @@
+{% set i18n_domains = ['auth', 'account'] %}
 {% extends 'base.html' %}
 
-{% block title %}{% if prompt %}Login - {{ prompt.name }}{% else %}Login - Aurvek{% endif %}{% endblock %}
+{% macro auth_link(url, label, class_name='') -%}
+<a href="{{ url|e }}" class="{{ class_name }}">{{ label }}</a>
+{%- endmacro %}
+
+{% block title %}{% if prompt %}{{ t('auth.title.login') }} - {{ prompt.name }}{% else %}{{ t('auth.title.login') }} - Aurvek{% endif %}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -124,14 +129,14 @@
                 <form action="{{ login_url }}" method="POST" id="loginFormPrompt" class="login-form">
                     <input type="hidden" name="next" value="{{ next_url|default('', true) }}">
                     <div class="mb-3">
-                        <label for="username" class="form-label">Username</label>
+                        <label for="username" class="form-label">{{ t('auth.label.username') }}</label>
                         <input type="text" class="form-control form-control-lg" id="username" name="username" required
-                               placeholder="Your username" autocomplete="username">
+                               placeholder="{{ t('auth.placeholder.username') }}" autocomplete="username">
                     </div>
                     <div class="mb-3">
-                        <label for="password" class="form-label">Password</label>
+                        <label for="password" class="form-label">{{ t('account.password.password_label') }}</label>
                         <input type="password" class="form-control form-control-lg" id="password" name="password" required
-                               placeholder="Your password" autocomplete="current-password">
+                               placeholder="{{ t('auth.placeholder.password') }}" autocomplete="current-password">
                     </div>
                     <!-- CAPTCHA Widget -->
                     {% if captcha and captcha.enabled and captcha.provider == 'turnstile' %}
@@ -139,23 +144,23 @@
                     {% endif %}
                     <input type="hidden" name="captcha_token" id="captchaTokenPrompt" value="">
                     <div class="text-end mb-3">
-                        <a href="{{ recovery_url|default('/magic-link-recovery') }}" class="form-text text-decoration-none">Can't log in?</a>
+                        <a href="{{ recovery_url|default('/magic-link-recovery') }}" class="form-text text-decoration-none">{{ t('auth.link.cant_log_in') }}</a>
                     </div>
                     <div class="d-grid gap-2 mt-4">
-                        <button type="submit" class="btn btn-primary btn-lg login-submit-btn" {% if captcha and captcha.enabled and captcha.provider == 'turnstile' %}disabled{% endif %}>Log In</button>
+                        <button type="submit" class="btn btn-primary btn-lg login-submit-btn" {% if captcha and captcha.enabled and captcha.provider == 'turnstile' %}disabled{% endif %}>{{ t('auth.action.log_in') }}</button>
                     </div>
                 </form>
 
                 {% if google_oauth_available %}
                 <div class="divider-with-text my-4">
-                    <span>or</span>
+                    <span>{{ t('auth.divider.or') }}</span>
                 </div>
 
                 <div class="d-grid gap-2">
                     <a href="{{ google_oauth_url|default('/auth/google') }}"
                        class="btn btn-outline-secondary btn-lg d-flex align-items-center justify-content-center">
                         <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="20" height="20" class="me-2" alt="">
-                        Sign in with Google
+                        {{ t('auth.action.google_sign_in') }}
                     </a>
                 </div>
                 {% endif %}
@@ -163,7 +168,7 @@
                 <hr class="my-4">
 
                 <p class="text-center text-muted mb-0">
-                    Don't have an account? <a href="{{ register_url }}" class="text-decoration-none">Register</a>
+                    {{ t_html('auth.prompt.no_account', link=auth_link(register_url, t('auth.action.register'), 'text-decoration-none')) }}
                 </p>
             </div>
         </div>
@@ -172,7 +177,7 @@
     <!-- Login from Aurvek main site (original layout) -->
     <div class="card shadow" style="width: 22rem;">
         <div class="card-body">
-            <h2 class="card-title text-center mb-4">Log In</h2>
+            <h2 class="card-title text-center mb-4">{{ t('auth.action.log_in') }}</h2>
 
             <div id="oauthErrorMain" class="alert alert-danger d-none" role="alert"></div>
 
@@ -183,11 +188,11 @@
             <form action="{{ login_url|default('/login') }}" method="POST" id="loginFormMain" class="login-form">
                 <input type="hidden" name="next" value="{{ next_url|default('', true) }}">
                 <div class="mb-3">
-                    <label for="usernameMain" class="form-label">Username:</label>
+                    <label for="usernameMain" class="form-label">{{ t('auth.label.username') }}:</label>
                     <input type="text" class="form-control" id="usernameMain" name="username" required>
                 </div>
                 <div class="mb-3">
-                    <label for="passwordMain" class="form-label">Password:</label>
+                    <label for="passwordMain" class="form-label">{{ t('account.password.password_label') }}:</label>
                     <input type="password" class="form-control" id="passwordMain" name="password" required>
                 </div>
                 <!-- CAPTCHA Widget -->
@@ -196,23 +201,23 @@
                 {% endif %}
                 <input type="hidden" name="captcha_token" id="captchaTokenMain" value="">
                 <div class="text-end mb-3">
-                    <a href="{{ recovery_url|default('/magic-link-recovery') }}" class="form-text text-decoration-none">Can't log in?</a>
+                    <a href="{{ recovery_url|default('/magic-link-recovery') }}" class="form-text text-decoration-none">{{ t('auth.link.cant_log_in') }}</a>
                 </div>
                 <div class="d-grid gap-2">
-                    <button type="submit" class="btn btn-primary login-submit-btn" {% if captcha and captcha.enabled and captcha.provider == 'turnstile' %}disabled{% endif %}>Log In</button>
+                    <button type="submit" class="btn btn-primary login-submit-btn" {% if captcha and captcha.enabled and captcha.provider == 'turnstile' %}disabled{% endif %}>{{ t('auth.action.log_in') }}</button>
                 </div>
             </form>
 
             {% if google_oauth_available %}
             <div class="divider-with-text my-3">
-                <span>or</span>
+                <span>{{ t('auth.divider.or') }}</span>
             </div>
 
             <div class="d-grid gap-2">
                 <a href="{{ google_oauth_url|default('/auth/google') }}"
                    class="btn btn-outline-secondary d-flex align-items-center justify-content-center">
                     <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="18" height="18" class="me-2" alt="">
-                    Sign in with Google
+                        {{ t('auth.action.google_sign_in') }}
                 </a>
             </div>
             {% endif %}
@@ -220,7 +225,7 @@
             <hr class="my-3">
 
             <p class="text-center text-muted mb-0">
-                Don't have an account? <a href="{{ register_url|default('/register') }}">Register</a>
+                {{ t_html('auth.prompt.no_account', link=auth_link(register_url|default('/register'), t('auth.action.register'))) }}
             </p>
         </div>
     </div>
@@ -250,13 +255,13 @@
 
     // OAuth error messages
     const oauthErrors = {
-        'oauth_denied': 'Google sign-in was cancelled or denied.',
-        'invalid_state': 'Invalid authentication state. Please try again.',
-        'no_email': 'Google did not provide an email address.',
-        'account_disabled': 'Your account has been disabled. Contact support for assistance.',
-        'email_linked_other_google': 'This email is already linked to a different Google account.',
-        'create_failed': 'Failed to create account. Please try again.',
-        'oauth_failed': 'Authentication failed. Please try again.'
+        'oauth_denied': AurvekI18n.t('auth.error.oauth_denied'),
+        'invalid_state': AurvekI18n.t('auth.error.invalid_state'),
+        'no_email': AurvekI18n.t('auth.error.no_email'),
+        'account_disabled': AurvekI18n.t('auth.error.account_disabled'),
+        'email_linked_other_google': AurvekI18n.t('auth.error.email_linked_other_google'),
+        'create_failed': AurvekI18n.t('auth.error.create_failed'),
+        'oauth_failed': AurvekI18n.t('auth.error.oauth_failed')
     };
 
     // Check for OAuth errors on page load

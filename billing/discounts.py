@@ -7,10 +7,11 @@ from log_config import logger
 
 
 class DiscountError(ValueError):
-    def __init__(self, message: str, status_code: int = 400):
+    def __init__(self, message: str, status_code: int = 400, *, code: str = "unknown"):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.code = code
 
 
 DISCOUNT_SCOPE_MARKETPLACE = "marketplace"
@@ -53,7 +54,7 @@ def validate_wallet_grant_amount(amount: float) -> float:
 
 async def _load_active_discount(conn, code: str, *, scope: str):
     if scope not in DISCOUNT_SCOPES:
-        raise DiscountError("Invalid discount scope")
+        raise DiscountError("Invalid discount scope", code="invalid_scope")
 
     cursor = await conn.execute(
         """
@@ -67,19 +68,19 @@ async def _load_active_discount(conn, code: str, *, scope: str):
     discount = await cursor.fetchone()
 
     if not discount or not discount["active"]:
-        raise DiscountError("Invalid or inactive discount code")
+        raise DiscountError("Invalid or inactive discount code", code="invalid_code")
     if (discount["scope"] or DISCOUNT_SCOPE_MARKETPLACE) != scope:
-        raise DiscountError("Discount code is not valid for this purchase")
+        raise DiscountError("Discount code is not valid for this purchase", code="wrong_scope")
 
     validity_date = discount["validity_date"]
     if not discount["unlimited_validity"] and validity_date:
         validity = datetime.strptime(validity_date, "%Y-%m-%d").date()
         if date.today() > validity:
-            raise DiscountError("Discount code has expired")
+            raise DiscountError("Discount code has expired", code="expired")
 
     if not discount["unlimited_usage"] and discount["usage_count"] is not None:
         if discount["usage_count"] <= 0:
-            raise DiscountError("Discount code usage limit reached")
+            raise DiscountError("Discount code usage limit reached", code="usage_limit")
     return discount
 
 
@@ -107,11 +108,11 @@ async def validate_discount_code(
 
     discount_value = float(discount["discount_value"])
     if not math.isfinite(discount_value) or discount_value < 0 or discount_value > 100:
-        raise DiscountError("Invalid discount value")
+        raise DiscountError("Invalid discount value", code="invalid_value")
 
     original_amount = float(amount)
     if not math.isfinite(original_amount) or original_amount < 0:
-        raise DiscountError("Invalid original amount")
+        raise DiscountError("Invalid original amount", code="invalid_amount")
     final_amount = max(0, original_amount * (1 - discount_value / 100))
     return DiscountResult(
         discount_code,

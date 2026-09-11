@@ -18,36 +18,34 @@ keywords:
   - voice
   - alter ego
   - password
+  - time zone
+  - timezone
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-08
 ---
 
 ## Short answer
 
-Go to the Settings page to update your username, email, phone number, profile picture, bio, voice preference, and password. All profile fields are on the **Profile** tab.
+Use **Settings > Profile** to manage your personal details, phone, time zone, profile picture, voice, alter-egos, and password. Username and email are read-only on this form.
 
 ## Steps
 
-1. Click your profile menu in the top-right corner, then select **Settings** (or navigate to `/settings`).
-2. On the **Profile** tab you can edit:
-   - **Username** -- your display name across the platform.
-   - **Email Address** -- used for magic link recovery if your login link expires.
-   - **Phone Number** -- changing it requires SMS verification with a code sent to the new number.
-   - **Profile Picture** -- click the avatar to upload a new image, or click the trash icon to remove it.
-   - **About You** -- a free-text bio that helps the AI personalize responses. This information is confidential and only used during your AI interactions.
-   - **Your Voice** -- select the TTS voice that represents you in chat playback and MP3 exports. This does not change the AI's voice.
-3. If you want to interact under a different identity, switch the **Interaction Profile** from "Use my real profile" to "Use an alter-ego". You can create and manage alter-egos from this section.
-4. Under **After Login**, choose which page to land on after logging in: Home, Chat, Explore, or Dashboard.
-5. If your account has password login enabled, a **Change Password** section appears at the bottom. Enter your current password, then your new password (minimum 6 characters), confirm it, and click **Change Password**.
-6. Click **Save Changes** to apply your profile updates.
+1. Open the top-right profile menu and select **Settings**, then **Profile**.
+2. **Username** is your permanent account identifier. **Email Address** is also read-only here and has a separate verified change flow.
+3. Edit **Phone Number** if needed. A changed number must be verified with the SMS code sent to it.
+4. Choose **Time Zone** from the dropdown, or open **Search by city**, enter a city (optionally followed by a comma and country), and click **Search**. Check the location and time zone, then click **Use**. You can also use your device time zone.
+5. Manage your picture, **About You** bio, and **Your Voice**. Your Voice represents you during message playback and MP3 exports; it does not change the assistant's voice.
+6. Optionally choose or manage an **Interaction Profile** alter-ego and select your **After Login** destination.
+7. If password login is enabled, use **Change Password** with your current password and a new password of at least eight characters.
+8. Click **Save Changes**.
 
 ## Notes
 
-- The **Balance** field is read-only on this page. To add funds, go to the Usage & Billing tab or the `/payment` page.
-- If you registered via Google OAuth and do not yet have a password, you will be prompted to set one on first login.
-- Deleting your account is available via the "Delete my account" link at the bottom of the Profile tab. This action is permanent.
+- **Balance** is read-only here; use **Usage & Billing** to add funds.
+- Searching does not save anything. Choosing a city or using device detection fills the time-zone field; click **Save Changes** to keep it. Without a saved zone, the assistant may ask for your city and country when scheduling calls.
+- **Delete my account** permanently removes the account.
 
 ## Related
 
@@ -55,3 +53,4 @@ Go to the Settings page to update your username, email, phone number, profile pi
 - settings_api_keys
 - settings_billing
 - authentication_methods
+- phone_calls_usage

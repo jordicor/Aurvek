@@ -1,0 +1,18 @@
+{
+  "support": "Aurvek Support",
+  "support_contact": "For account, safety, billing, or content concerns, contact us at {email}.",
+  "welcome": "Welcome",
+  "home": "Home",
+  "chat": "Chat",
+  "settings": "Settings",
+  "classic_home": "Classic Home",
+  "related": "Related assistants",
+  "page_not_found": "Page not found",
+  "domain_not_found": "Domain not configured",
+  "unavailable": "Page temporarily unavailable",
+  "unavailable_title": "Page unavailable",
+  "retry": "Please try again later.",
+  "copied": "Copied!",
+  "expired": "Offer expired",
+  "countdown": "{days}d {hours}h {minutes}m {seconds}s"
+}

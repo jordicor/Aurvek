@@ -17,6 +17,21 @@ const css = fs.readFileSync(
     'utf8'
 );
 const template = fs.readFileSync(path.join(root, 'templates/chat/chat.html'), 'utf8');
+const widgetCatalog = JSON.parse(fs.readFileSync(
+    path.join(root, 'locales/en/chat_widgets.json'), 'utf8'
+));
+let activeCatalog = widgetCatalog;
+global.AurvekI18n = {
+    locale: 'en-US',
+    t(key, params = {}) {
+        const catalogKey = key.replace(/^chat_widgets\./, '');
+        let value = activeCatalog[catalogKey];
+        if (value && typeof value === 'object') {
+            value = Number(params.count) === 1 ? value.one : value.other;
+        }
+        return String(value).replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_match, name) => String(params[name]));
+    }
+};
 const helpers = require(modulePath);
 
 test('voice-note action is limited to retained inbound voice notes', () => {
@@ -32,9 +47,9 @@ test('voice-note action is limited to retained inbound voice notes', () => {
 test('dialog uses owner APIs, secureFetch, and explicit CSRF protection', () => {
     assert.match(source, /global\.secureFetch/);
     assert.match(source, /headers\['X-GPTSub-CSRF'\] = csrfToken\(\)/);
-    assert.match(source, /may use your Aurvek balance or provider API credits/);
-    assert.match(source, /it does not listen to the audio/);
-    assert.match(source, /External AI memory, if configured, is not rebuilt/);
+    assert.match(widgetCatalog['retranscription.cost_notice'], /may use your Aurvek balance or provider API credits/);
+    assert.match(widgetCatalog['retranscription.cost_notice'], /it does not listen to the audio/);
+    assert.match(widgetCatalog['retranscription.replace_confirm'], /External AI memory, if configured, is not rebuilt/);
     assert.match(source, /\/api\/messaging-voice-notes\/comparison-models/);
     assert.match(source, /\/api\/messaging-voice-notes\/\$\{encodeURIComponent\(messageId\)\}\/retranscribe/);
     assert.match(source, /\/api\/messaging-voice-notes\/revisions\/\$\{encodeURIComponent\(revisionId\)\}/);
@@ -103,8 +118,78 @@ test('polling and review cover active, ready, failure, and optimistic-stale stat
     assert.match(source, /state\.activeByMessage\.set\(messageId, revisionId\)/);
     assert.match(source, /latest_revision_status/);
     assert.match(source, /resumeLatestRevision/);
-    assert.match(source, /Checking saved retranscription state/);
+    assert.match(source, /chat_widgets\.retranscription\.checking_saved/);
     assert.match(source, /voiceNote\?\.audio_available/);
     assert.match(source, /state\.nodes\.start\.disabled = false/);
-    assert.match(source, /Could not check saved retranscription state\. Retrying/);
+    assert.match(source, /chat_widgets\.retranscription\.check_failed_retry/);
+});
+
+test('failure diagnostics stay private and stable verdicts use every runtime catalog', () => {
+    const diagnostic = 'Provider secret: account abc failed with token xyz';
+    for (const locale of ['de', 'en', 'es', 'fr', 'it', 'ja', 'pt']) {
+        activeCatalog = JSON.parse(fs.readFileSync(
+            path.join(root, 'locales', locale, 'chat_widgets.json'),
+            'utf8'
+        ));
+        global.AurvekI18n.locale = locale;
+
+        const failure = helpers.failedRevisionMessage({error_message: diagnostic});
+        assert.equal(failure, activeCatalog['retranscription.status_failed']);
+        assert.doesNotMatch(failure, /Provider secret|account abc|token xyz/);
+
+        for (const verdict of ['better', 'equal', 'worse', 'uncertain']) {
+            assert.equal(
+                helpers.verdictLabel(verdict),
+                activeCatalog[`retranscription.verdict_${verdict}`]
+            );
+        }
+        assert.equal(
+            helpers.verdictLabel('unexpected-provider-value'),
+            activeCatalog['retranscription.not_compared']
+        );
+    }
+    activeCatalog = widgetCatalog;
+    global.AurvekI18n.locale = 'en-US';
+
+    assert.equal(
+        helpers.failedRevisionMessage({
+            error_code: 'storage_quota_exceeded',
+            error_message: diagnostic,
+        }),
+        widgetCatalog['retranscription.storage_limit']
+    );
+    assert.match(source, /setStatus\(failedRevisionMessage\(revision\), true\)/);
+    assert.doesNotMatch(source, /setStatus\(revision\.error_message/);
+});
+
+test('Aurvek judge failures are localized without replacing generated rationale', () => {
+    const ownExplanation = 'La nueva transcripción está lista, pero falló el juez.';
+    assert.equal(
+        helpers.reviewRationale({
+            rationale_source: 'aurvek',
+            rationale_code: 'comparison_failed',
+            rationale: ownExplanation,
+        }),
+        widgetCatalog['retranscription.comparison_failed']
+    );
+    assert.equal(
+        helpers.reviewRationale({
+            rationale_source: 'aurvek',
+            rationale_code: 'comparison_incomplete',
+            rationale: ownExplanation,
+            generated_rationale: 'The new transcript preserves the names more accurately.',
+        }),
+        widgetCatalog['retranscription.comparison_incomplete'] + '\n\nThe new transcript preserves the names more accurately.'
+    );
+    assert.equal(
+        helpers.reviewRationale({rationale: 'Genuine judge explanation'}),
+        'Genuine judge explanation'
+    );
+    assert.equal(
+        helpers.reviewRationale({
+            rationale_source: 'aurvek',
+            rationale_code: 'comparison_no_rationale',
+        }),
+        widgetCatalog['retranscription.comparison_no_rationale']
+    );
 });

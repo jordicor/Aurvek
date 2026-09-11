@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta
 
 import orjson
 from fastapi import HTTPException
+from chat.services.localization import chat_text, chat_translator
 
 from common import (
     AVATAR_TOKEN_EXPIRE_HOURS,
@@ -33,6 +34,7 @@ from chat.services.conversation_channels import (
     legacy_external_platform,
 )
 from integrations.devices.service import get_conversation_binding_summaries
+from integrations.applications.listing import blocked_application_conversation_ids
 from request_security import ensure_csrf_token
 
 
@@ -90,6 +92,16 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
     requested_conversation_id = _requested_conversation_id(request)
     requested_or_zero = requested_conversation_id or 0
 
+    blocked_ids = await blocked_application_conversation_ids(
+        conn, effective_user_id, viewer_user_id=current_user.id,
+    )
+    if requested_conversation_id in blocked_ids:
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "conversation_not_found"))
+    # Values come exclusively from integer native primary keys, never request SQL.
+    blocked_sql_ids = ",".join(str(int(value)) for value in blocked_ids)
+    application_exclude = f" AND c.id NOT IN ({blocked_sql_ids})" if blocked_ids else ""
+    count_application_exclude = f" AND id NOT IN ({blocked_sql_ids})" if blocked_ids else ""
+
     await ensure_conversation_privacy_schema()
     if not admin_view and effective_user_id == current_user.id:
         await purge_stale_incognito_conversations_for_user(current_user)
@@ -129,7 +141,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
 
     async with conn.cursor() as cursor:
         await cursor.execute(
-            """
+            f"""
             SELECT
                 u.username,
                 u.profile_picture,
@@ -146,7 +158,8 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 (SELECT COUNT(*)
                  FROM conversations
                  WHERE user_id = u.id
-                   AND COALESCE(hidden_from_history, 0) = 0) AS conversation_count,
+                   AND COALESCE(hidden_from_history, 0) = 0
+                   {count_application_exclude}) AS conversation_count,
                 c.id AS conversation_id,
                 c.start_date AS start_date,
                 c.role_id,
@@ -161,6 +174,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             LEFT JOIN conversations c
               ON c.user_id = u.id
              AND COALESCE(c.hidden_from_history, 0) = 0
+             {application_exclude}
             LEFT JOIN (
                 SELECT ep.value
                 FROM user_details ud2
@@ -186,7 +200,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
 
         full_data = await cursor.fetchone()
         if not full_data:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=chat_text(current_user, "access_denied"))
 
         logger.debug("Retrieved start_date from database: %s", full_data["start_date"])
 
@@ -242,13 +256,14 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
         can_send_messages = not (requires_own_keys and not has_own_keys)
 
         await cursor.execute(
-            """
+            f"""
             SELECT cf.id, cf.name, cf.color, cf.created_at, cf.updated_at,
                    COUNT(c.id) as conversation_count
             FROM CHAT_FOLDERS cf
             LEFT JOIN CONVERSATIONS c
               ON cf.id = c.folder_id
              AND COALESCE(c.hidden_from_history, 0) = 0
+             {application_exclude}
             WHERE cf.user_id = ?
             GROUP BY cf.id, cf.name, cf.color, cf.created_at, cf.updated_at
             ORDER BY cf.created_at ASC
@@ -290,6 +305,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 LEFT JOIN prompts p ON c.role_id = p.id
                 WHERE c.id IN ({placeholders}) AND c.user_id = ?
                   AND COALESCE(c.hidden_from_history, 0) = 0
+                  {application_exclude}
                 ORDER BY c.last_activity DESC, c.id DESC
                 """,
                 [*init_ext_ids, effective_user_id],
@@ -306,6 +322,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             LEFT JOIN prompts p ON c.role_id = p.id
             WHERE c.user_id = ? AND (c.folder_id IS NULL OR c.folder_id = 0){initial_ext_exclude}
               AND COALESCE(c.hidden_from_history, 0) = 0
+              {application_exclude}
             ORDER BY c.last_activity DESC, c.id DESC
             LIMIT ?
             """,
@@ -347,7 +364,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
                 "id": row[0],
                 "user_id": row[1],
                 "start_date": row[2],
-                "chat_name": row[3] if row[3] else "New Chat",
+                "chat_name": row[3] or chat_translator(current_user).t("chat_ui.new_chat.action"),
                 "external_platform": legacy_external_platform(
                     channel_summary_with_legacy(
                         channel_summaries.get(int(row[0])), row[4]

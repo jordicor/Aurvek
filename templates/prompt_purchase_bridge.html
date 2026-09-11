@@ -1,19 +1,20 @@
+{% set i18n_domains = ['marketplace'] %}
 {% extends 'base.html' %}
 
-{% block title %}Secure checkout - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace.purchase.secure') }} - AURVEK{% endblock %}
 
 {% block content %}
 <div class="container py-5" style="max-width: 620px;">
     <div class="card shadow-sm">
         <div class="card-body p-4 text-center">
-            <h1 class="h3 mb-3">Secure checkout</h1>
+            <h1 class="h3 mb-3">{{ t('marketplace.purchase.secure') }}</h1>
             <p class="mb-1">{{ prompt_name }}</p>
-            <p class="h4 mb-4">${{ '%.2f'|format(purchase_price) }}</p>
+            <p class="h4 mb-4">{{ format_currency(purchase_price, 'USD') }}</p>
             <div id="checkoutStatus" class="alert alert-info" role="status">
-                Preparing your checkout…
+                {{ t('marketplace.purchase.processing') }}
             </div>
             <button id="checkoutRetry" type="button" class="btn btn-primary d-none">
-                Try again
+                {{ t('marketplace.common.retry') }}
             </button>
         </div>
     </div>
@@ -23,13 +24,14 @@
 {% block scripts_inline %}
 <script>
 (function () {
+    const t = window.AurvekI18n.t;
     const status = document.getElementById('checkoutStatus');
     const retry = document.getElementById('checkoutRetry');
 
     async function startCheckout() {
         retry.classList.add('d-none');
         status.className = 'alert alert-info';
-        status.textContent = 'Preparing your checkout…';
+        status.textContent = t('marketplace.purchase.processing');
         try {
             const response = await fetch('/api/prompts/{{ prompt_id }}/purchase', {
                 method: 'POST',
@@ -37,7 +39,10 @@
                 body: '{}'
             });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.detail || 'Checkout could not be created');
+            if (!response.ok) {
+                showFailure(typeof data.detail === 'string' ? data.detail : typeof data.message === 'string' ? data.message : t('marketplace.purchase.failed'));
+                return;
+            }
             if (data.checkout_url) {
                 window.location.assign(data.checkout_url);
                 return;
@@ -46,12 +51,16 @@
                 window.location.assign(data.redirect || '/chat');
                 return;
             }
-            throw new Error(data.message || 'Checkout could not be created');
+            showFailure(typeof data.message === 'string' ? data.message : t('marketplace.purchase.failed'));
         } catch (error) {
-            status.className = 'alert alert-danger';
-            status.textContent = error.message || 'Checkout could not be created';
-            retry.classList.remove('d-none');
+            showFailure(t('marketplace.purchase.failed'));
         }
+    }
+
+    function showFailure(message) {
+        status.className = 'alert alert-danger';
+        status.textContent = message;
+        retry.classList.remove('d-none');
     }
 
     retry.addEventListener('click', startCheckout);

@@ -26,7 +26,11 @@ from file_storage import (
 )
 from log_config import logger
 from models import User
+from integrations.applications.runtime import authorize_application_read
+from integrations.embed.models import EmbedError
 from save_pdfs import validate_pdf
+from i18n import Translator
+from chat.services.localization import chat_text, chat_error
 
 from chat.services.file_inputs import (
     decode_text_file,
@@ -74,6 +78,21 @@ _assert_chunk_bounds_consistent(
 )
 
 
+class AttachmentValidationError(ValueError):
+    """A validation reason independent of the language used by its caller."""
+
+    def __init__(self, code: str, **params):
+        self.code = code
+        self.params = params
+        super().__init__(Translator("en").render("chat_errors." + code, **params))
+
+
+def attachment_error_text(user, error: ValueError) -> str:
+    if isinstance(error, AttachmentValidationError):
+        return chat_text(user, error.code, **error.params)
+    return chat_text(user, "upload_invalid")
+
+
 def json_error(message: str, status_code: int = 400, **extra):
     payload = {"success": False, "message": message}
     payload.update(extra)
@@ -89,14 +108,14 @@ def parse_attachment_refs_value(value: str | list[str] | None) -> list[str]:
         try:
             refs = orjson.loads(value)
         except orjson.JSONDecodeError as exc:
-            raise ValueError("Invalid attachment_refs JSON") from exc
+            raise AttachmentValidationError("attachment_refs_invalid") from exc
     if not isinstance(refs, list):
-        raise ValueError("attachment_refs must be a JSON array")
+        raise AttachmentValidationError("attachment_refs_array")
     cleaned: list[str] = []
     seen: set[str] = set()
     for ref in refs:
         if not isinstance(ref, str) or not ref.startswith("att_") or len(ref) > 128:
-            raise ValueError("Invalid attachment reference")
+            raise AttachmentValidationError("attachment_ref_invalid")
         if ref in seen:
             continue
         seen.add(ref)
@@ -122,7 +141,7 @@ def max_upload_bytes_for_attachment(content_type: str, filename: str) -> int:
         return MAX_TEXT_FILE_SIZE_MB * 1024 * 1024
     if content_type.startswith("image/"):
         return MAX_RAW_UPLOAD_SIZE_MB * 1024 * 1024
-    raise ValueError(f"Unsupported file type: {content_type or 'unknown'}")
+    raise AttachmentValidationError("file_type_unsupported", file_type=content_type or "unknown")
 
 
 def validate_chunk_upload_metadata(
@@ -136,26 +155,26 @@ def validate_chunk_upload_metadata(
     chunk_size: int,
 ) -> tuple[str, int]:
     if not ATTACHMENT_UPLOAD_ID_RE.match(upload_id or ""):
-        raise ValueError("Invalid upload id")
+        raise AttachmentValidationError("upload_id_invalid")
     if not filename:
-        raise ValueError("Filename is required")
+        raise AttachmentValidationError("filename_required")
     if chunk_index < 0:
-        raise ValueError("Invalid chunk index")
+        raise AttachmentValidationError("chunk_index_invalid")
     if total_chunks < 1 or total_chunks > ATTACHMENT_UPLOAD_MAX_CHUNKS:
-        raise ValueError("Invalid chunk count")
+        raise AttachmentValidationError("chunk_count_invalid")
     if chunk_index >= total_chunks:
-        raise ValueError("Chunk index exceeds chunk count")
+        raise AttachmentValidationError("chunk_index_exceeds_count")
     if total_size < 0:
-        raise ValueError("Invalid file size")
+        raise AttachmentValidationError("file_size_invalid")
     if not (ATTACHMENT_UPLOAD_MIN_CHUNK_SIZE_BYTES <= chunk_size <= ATTACHMENT_UPLOAD_MAX_CHUNK_SIZE_BYTES):
-        raise ValueError("Invalid chunk size")
+        raise AttachmentValidationError("chunk_size_invalid_value")
     normalized_type = normalize_upload_content_type(content_type, filename)
     max_bytes = max_upload_bytes_for_attachment(normalized_type, filename)
     if total_size > max_bytes:
-        raise ValueError(f"File '{filename}' exceeds the {max_bytes // (1024 * 1024)}MB size limit")
+        raise AttachmentValidationError("file_size_limit", filename=filename, size=max_bytes // (1024 * 1024))
     expected_chunks = max(1, (total_size + chunk_size - 1) // chunk_size)
     if total_chunks != expected_chunks:
-        raise ValueError("Chunk metadata does not match file size")
+        raise AttachmentValidationError("chunk_metadata_invalid")
     return normalized_type, max_bytes
 
 
@@ -165,7 +184,7 @@ def attachment_upload_dir(user_id: int, conversation_id: int, upload_id: str) ->
     try:
         target.relative_to(root)
     except ValueError as exc:
-        raise ValueError("Invalid upload path") from exc
+        raise AttachmentValidationError("upload_path_invalid") from exc
     return target
 
 
@@ -200,10 +219,17 @@ async def prune_stale_attachment_upload_chunks() -> int:
 
 async def ensure_attachment_upload_allowed(conversation_id: int, current_user: User):
     if current_user is None:
-        return json_error("Not authenticated", status_code=401, redirect="/login")
+        return json_error(chat_text(current_user, "unauthenticated"), status_code=401, redirect="/login")
     if not current_user.can_send_files:
-        return json_error("File uploads are not enabled for your account", status_code=403)
+        return json_error(chat_text(current_user, "file_uploads_disabled"), status_code=403)
     async with get_db_connection(readonly=True) as conn:
+        try:
+            application = await authorize_application_read(conn, conversation_id, current_user.id)
+            if application is not None and not application.capabilities.get("attachments"):
+                raise EmbedError("application_capability_denied", 403)
+        except EmbedError as exc:
+            return json_error(chat_error(current_user, exc.code),
+                              status_code=exc.status_code, error_code=exc.code)
         try:
             cursor = await conn.execute(
                 """
@@ -249,13 +275,13 @@ async def ensure_attachment_upload_allowed(conversation_id: int, current_user: U
                 )
         row = await cursor.fetchone()
     if not row or int(row["user_id"]) != int(current_user.id):
-        return json_error("Conversation not found.", status_code=404)
+        return json_error(chat_text(current_user, "conversation_not_found"), status_code=404)
     if row["locked"]:
-        return json_error("Conversation is locked.", status_code=403)
+        return json_error(chat_text(current_user, "conversation_locked"), status_code=403)
     if not bool(row["allow_file_upload"]):
-        return json_error("File uploads are not enabled for your account", status_code=403)
+        return json_error(chat_text(current_user, "file_uploads_disabled"), status_code=403)
     if bool(row["gransabio_enabled"]):
-        return json_error("File attachments are not supported with GranSabio mode. Send text only.", status_code=400)
+        return json_error(chat_text(current_user, "gransabio_attachments"), status_code=400)
     return None
 
 
@@ -270,7 +296,7 @@ async def create_pending_attachment_from_upload(
     normalized_type = normalize_upload_content_type(content_type, filename)
     max_bytes = max_upload_bytes_for_attachment(normalized_type, filename)
     if len(data) > max_bytes:
-        raise ValueError(f"File '{filename}' exceeds the {max_bytes // (1024 * 1024)}MB size limit")
+        raise AttachmentValidationError("file_size_limit", filename=filename, size=max_bytes // (1024 * 1024))
 
     if normalized_type == "application/pdf":
         page_count = await asyncio.to_thread(
@@ -304,7 +330,7 @@ async def create_pending_attachment_from_upload(
             filename,
         )
         if len(image_data) > MAX_API_IMAGE_SIZE_MB * 1024 * 1024:
-            raise ValueError("Image is too large. Please use a smaller or lower-resolution image.")
+            raise AttachmentValidationError("image_too_large")
         return await create_pending_image_attachment(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -316,7 +342,7 @@ async def create_pending_attachment_from_upload(
             height=height,
         )
 
-    raise ValueError(f"Unsupported file type: {normalized_type or 'unknown'}")
+    raise AttachmentValidationError("file_type_unsupported", file_type=normalized_type or "unknown")
 
 
 def pending_attachment_upload_payload(pending) -> dict[str, Any]:
@@ -349,7 +375,7 @@ async def load_pending_attachment_files(
             conversation_id=conversation_id,
         )
         if not result:
-            raise ValueError("Attachment upload expired or is not available. Please attach the file again.")
+            raise AttachmentValidationError("upload_expired")
         data, attachment = result
         kind = str(attachment.get("attachment_type") or "")
         if kind == "pdf":
@@ -359,7 +385,7 @@ async def load_pending_attachment_files(
         elif kind == "image":
             content_type = attachment.get("mime_detected") or attachment.get("declared_mime") or "image/webp"
         else:
-            raise ValueError("Unsupported attachment reference")
+            raise AttachmentValidationError("attachment_ref_unsupported")
         files.append({
             "data": data,
             "content_type": str(content_type).lower(),

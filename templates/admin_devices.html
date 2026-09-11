@@ -1,27 +1,27 @@
 {% extends 'base_admin.html' %}
-{% block title %}Devices - AURVEK{% endblock %}
-{% block page_title %}Devices{% endblock %}
-{% block page_subtitle %}<p class="page-subtitle">Manage external devices connected to Aurvek.</p>{% endblock %}
+{% block title %}{{ t('admin_channels.devices') }} - AURVEK{% endblock %}
+{% block page_title %}{{ t('admin_channels.devices') }}{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">{{ t('admin_channels.devices_subtitle') }}</p>{% endblock %}
 
 {% block alerts %}
 {% if message %}
 <div class="alert alert-success alert-dismissible fade show" role="alert">
     <i class="fas fa-check-circle me-2"></i>{{ message }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_channels.close') }}"></button>
 </div>
 {% endif %}
 {% if error %}
 <div class="alert alert-danger alert-dismissible fade show" role="alert">
     <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_channels.close') }}"></button>
 </div>
 {% endif %}
 {% if token_block %}
 <div class="alert alert-warning" role="alert">
     <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
-        <strong><i class="fas fa-key me-2"></i>Device token</strong>
+        <strong><i class="fas fa-key me-2"></i>{{ t('admin_channels.device_token') }}</strong>
         <button type="button" class="btn btn-sm btn-outline-dark" onclick="copyDeviceTokenBlock()">
-            <i class="fas fa-copy me-1"></i> Copy
+            <i class="fas fa-copy me-1"></i> {{ t('admin_channels.copy') }}
         </button>
     </div>
     <textarea class="form-control font-monospace" id="deviceTokenBlock" rows="3" readonly>{{ token_block }}</textarea>
@@ -32,19 +32,19 @@
 {% block content %}
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-microchip"></i> <strong>{{ stats.total_devices }}</strong> Devices
+        <i class="fas fa-microchip"></i> <strong>{{ format_number(stats.total_devices) }}</strong> {{ t('admin_channels.devices') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-toggle-on"></i> <strong>{{ stats.enabled_devices }}</strong> Enabled
+        <i class="fas fa-toggle-on"></i> <strong>{{ format_number(stats.enabled_devices) }}</strong> {{ t('admin_channels.enabled') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-clock"></i> <strong>{{ stats.seen_recently }}</strong> Seen Recently
+        <i class="fas fa-clock"></i> <strong>{{ format_number(stats.seen_recently) }}</strong> {{ t('admin_channels.seen_recently') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-layer-group"></i> <strong>{{ stats.group_count }}</strong> Groups
+        <i class="fas fa-layer-group"></i> <strong>{{ format_number(stats.group_count) }}</strong> {{ t('admin_channels.groups') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-comment-dots"></i> <strong>{{ stats.messages_today }}</strong> Messages Today
+        <i class="fas fa-comment-dots"></i> <strong>{{ format_number(stats.messages_today) }}</strong> {{ t('admin_channels.messages_today') }}
     </span>
 </div>
 
@@ -56,13 +56,13 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-plus-circle"></i> Create Device
+        <i class="fas fa-plus-circle"></i> {{ t('admin_channels.create_device') }}
     </div>
     <form method="post" action="/admin/devices" data-form-guard>
         <input type="hidden" name="action" value="create_device">
         <div class="row g-3">
             <div class="col-md-3">
-                <label class="form-label" for="owner_user_id">Owner</label>
+                <label class="form-label" for="owner_user_id">{{ t('admin_channels.owner') }}</label>
                 <select class="form-select" id="owner_user_id" name="owner_user_id" required>
                     {% for user in users %}
                     <option value="{{ user.id }}" {% if user.id == current_user_id %}selected{% endif %}>{{ user.username }} (#{{ user.id }})</option>
@@ -70,34 +70,34 @@
                 </select>
             </div>
             <div class="col-md-3">
-                <label class="form-label" for="display_name">Name</label>
+                <label class="form-label" for="display_name">{{ t('admin_channels.name') }}</label>
                 <input class="form-control" id="display_name" name="display_name" maxlength="120" required>
             </div>
             <div class="col-md-3">
-                <label class="form-label" for="slug">Slug</label>
+                <label class="form-label" for="slug">{{ t('admin_channels.slug') }}</label>
                 <input class="form-control" id="slug" name="slug" maxlength="80" pattern="[a-z0-9]([a-z0-9-]{0,78}[a-z0-9])?" required>
             </div>
             <div class="col-md-3">
-                <label class="form-label" for="device_type">Type</label>
+                <label class="form-label" for="device_type">{{ t('admin_channels.type') }}</label>
                 <input class="form-control" id="device_type" name="device_type" value="custom" maxlength="80" pattern="[a-z0-9]([a-z0-9-]{0,78}[a-z0-9])?" required>
             </div>
             <div class="col-md-6">
-                <label class="form-label" for="conversation_id">Initial Conversation</label>
-                <input class="form-control" id="conversation_id" name="conversation_id" inputmode="numeric" list="device-conversation-options" placeholder="Leave empty to create one">
+                <label class="form-label" for="conversation_id">{{ t('admin_channels.initial_conversation') }}</label>
+                <input class="form-control" id="conversation_id" name="conversation_id" inputmode="numeric" list="device-conversation-options" placeholder="{{ t('admin_channels.create_conversation_hint') }}">
             </div>
             <div class="col-md-6">
-                <label class="form-label d-block">Capabilities</label>
+                <label class="form-label d-block">{{ t('admin_channels.capabilities') }}</label>
                 <div class="d-flex flex-wrap gap-3">
                     {% for capability in basic_capabilities %}
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="capability_{{ capability }}" name="capabilities" value="{{ capability }}">
-                        <label class="form-check-label" for="capability_{{ capability }}">{{ capability }}</label>
+                        <label class="form-check-label" for="capability_{{ capability }}">{{ t('admin_channels.capability.' ~ capability) }}</label>
                     </div>
                     {% endfor %}
                 </div>
             </div>
             <div class="col-md-6">
-                <label class="form-label d-block">Initial Groups</label>
+                <label class="form-label d-block">{{ t('admin_channels.initial_groups') }}</label>
                 <div class="d-flex flex-wrap gap-3">
                     {% for group in groups %}
                     <div class="form-check">
@@ -105,37 +105,37 @@
                         <label class="form-check-label" for="initial_group_{{ group.id }}">{{ group.name }} <span class="text-muted">({{ group.username }})</span></label>
                     </div>
                     {% else %}
-                    <span class="text-muted">No groups yet.</span>
+                    <span class="text-muted">{{ t('admin_channels.no_groups_yet') }}</span>
                     {% endfor %}
                 </div>
             </div>
             <div class="col-md-6">
-                <label class="form-label" for="notes">Notes</label>
+                <label class="form-label" for="notes">{{ t('admin_channels.notes') }}</label>
                 <textarea class="form-control" id="notes" name="notes" rows="2" maxlength="2000"></textarea>
             </div>
         </div>
         <button type="submit" class="btn btn-primary mt-3">
-            <i class="fas fa-key me-1"></i> Create Device
+            <i class="fas fa-key me-1"></i> {{ t('admin_channels.create_device') }}
         </button>
     </form>
 </div>
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-microchip"></i> Devices
+        <i class="fas fa-microchip"></i> {{ t('admin_channels.devices') }}
     </div>
     <div class="table-wrapper">
         <table class="table align-middle">
             <thead>
                 <tr>
-                    <th>Name</th>
-                    <th>Slug</th>
-                    <th>Groups</th>
-                    <th>Effective Conversation</th>
-                    <th>Capabilities</th>
-                    <th>Last Seen</th>
-                    <th>Status</th>
-                    <th style="min-width: 320px;">Actions</th>
+                    <th>{{ t('admin_channels.name') }}</th>
+                    <th>{{ t('admin_channels.slug') }}</th>
+                    <th>{{ t('admin_channels.groups') }}</th>
+                    <th>{{ t('admin_channels.effective_conversation') }}</th>
+                    <th>{{ t('admin_channels.capabilities') }}</th>
+                    <th>{{ t('admin_channels.last_seen') }}</th>
+                    <th>{{ t('admin_channels.status') }}</th>
+                    <th style="min-width: 320px;">{{ t('admin_channels.actions') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -157,39 +157,39 @@
                             <input type="hidden" name="group_id" value="{{ membership.id }}">
                             <span class="badge bg-secondary mb-1">
                                 {{ membership.name }}{% if membership.is_primary_route_group %} *{% endif %}
-                                <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-white" title="Remove">
+                                <button type="submit" class="btn btn-link btn-sm p-0 ms-1 text-white" title="{{ t('admin_channels.remove') }}">
                                     <i class="fas fa-times"></i>
                                 </button>
                             </span>
                         </form>
                         {% else %}
-                        <span class="text-muted">None</span>
+                        <span class="text-muted">{{ t('admin_channels.none') }}</span>
                         {% endfor %}
                     </td>
                     <td>
                         {% set binding = device.effective_binding %}
                         {% if binding.status == 'bound' %}
                         <code>#{{ binding.conversation_id }}</code><br>
-                        <span class="text-muted">{{ binding.conversation_name }}{% if binding.source == 'group' %} via {{ binding.group_name }}{% endif %}</span>
+                        <span class="text-muted">{{ binding.conversation_name }}{% if binding.source == 'group' %} {{ t('admin_channels.via_group', group=binding.group_name) }}{% endif %}</span>
                         {% elif binding.status == 'routing_conflict' %}
-                        <span class="badge bg-warning text-dark">Conflict</span>
+                        <span class="badge bg-warning text-dark">{{ t('admin_channels.conflict') }}</span>
                         {% else %}
-                        <span class="badge bg-secondary">Setup required</span>
+                        <span class="badge bg-secondary">{{ t('admin_channels.setup_required') }}</span>
                         {% endif %}
                     </td>
                     <td>
                         {% for capability in basic_capabilities %}
                             {% if device.capabilities.get(capability) %}
-                            <span class="badge bg-info text-dark mb-1">{{ capability }}</span>
+                            <span class="badge bg-info text-dark mb-1">{{ t('admin_channels.capability.' ~ capability) }}</span>
                             {% endif %}
                         {% endfor %}
                     </td>
-                    <td>{{ device.last_seen_at or 'Never' }}</td>
+                    <td>{{ device.last_seen_at or t('admin_channels.never') }}</td>
                     <td>
                         {% if device.enabled %}
-                        <span class="badge bg-success">Enabled</span>
+                        <span class="badge bg-success">{{ t('admin_channels.enabled') }}</span>
                         {% else %}
-                        <span class="badge bg-secondary">Disabled</span>
+                        <span class="badge bg-secondary">{{ t('admin_channels.disabled') }}</span>
                         {% endif %}
                     </td>
                     <td>
@@ -199,7 +199,7 @@
                                 <input type="hidden" name="device_id" value="{{ device.id }}">
                                 <input type="hidden" name="enabled" value="{% if device.enabled %}0{% else %}1{% endif %}">
                                 <button type="submit" class="btn btn-sm btn-outline-secondary">
-                                    {% if device.enabled %}<i class="fas fa-ban me-1"></i> Disable{% else %}<i class="fas fa-check me-1"></i> Enable{% endif %}
+                                    {% if device.enabled %}<i class="fas fa-ban me-1"></i> {{ t('admin_channels.disable') }}{% else %}<i class="fas fa-check me-1"></i> {{ t('admin_channels.enable') }}{% endif %}
                                 </button>
                             </form>
                             <form method="post" action="/admin/devices">
@@ -207,20 +207,20 @@
                                 <input type="hidden" name="device_id" value="{{ device.id }}">
                                 <input type="hidden" name="device_slug" value="{{ device.slug }}">
                                 <button type="submit" class="btn btn-sm btn-outline-warning">
-                                    <i class="fas fa-sync-alt me-1"></i> Rotate Token
+                                    <i class="fas fa-sync-alt me-1"></i> {{ t('admin_channels.rotate_token') }}
                                 </button>
                             </form>
                             <form method="post" action="/admin/devices">
                                 <input type="hidden" name="action" value="soft_delete_device">
                                 <input type="hidden" name="device_id" value="{{ device.id }}">
                                 <button type="submit" class="btn btn-sm btn-outline-danger">
-                                    <i class="fas fa-trash me-1"></i> Remove
+                                    <i class="fas fa-trash me-1"></i> {{ t('admin_channels.remove') }}
                                 </button>
                             </form>
                         </div>
 
                         <details class="mb-2">
-                            <summary class="btn btn-sm btn-outline-primary">Edit</summary>
+                            <summary class="btn btn-sm btn-outline-primary">{{ t('admin_channels.edit') }}</summary>
                             <form method="post" action="/admin/devices" class="mt-2" data-form-guard>
                                 <input type="hidden" name="action" value="update_device">
                                 <input type="hidden" name="device_id" value="{{ device.id }}">
@@ -233,25 +233,25 @@
                                     {% for capability in basic_capabilities %}
                                     <div class="form-check">
                                         <input class="form-check-input" type="checkbox" id="edit_{{ device.id }}_{{ capability }}" name="capabilities" value="{{ capability }}" {% if device.capabilities.get(capability) %}checked{% endif %}>
-                                        <label class="form-check-label" for="edit_{{ device.id }}_{{ capability }}">{{ capability }}</label>
+                                        <label class="form-check-label" for="edit_{{ device.id }}_{{ capability }}">{{ t('admin_channels.capability.' ~ capability) }}</label>
                                     </div>
                                     {% endfor %}
                                 </div>
                                 <button type="submit" class="btn btn-sm btn-primary">
-                                    <i class="fas fa-save me-1"></i> Save
+                                    <i class="fas fa-save me-1"></i> {{ t('admin_channels.save') }}
                                 </button>
                             </form>
                         </details>
 
                         <details>
-                            <summary class="btn btn-sm btn-outline-secondary">Routing</summary>
+                            <summary class="btn btn-sm btn-outline-secondary">{{ t('admin_channels.routing') }}</summary>
                             <form method="post" action="/admin/devices" class="mt-2">
                                 <input type="hidden" name="action" value="set_binding">
                                 <input type="hidden" name="target_type" value="device">
                                 <input type="hidden" name="target_id" value="{{ device.id }}">
                                 <div class="input-group input-group-sm mb-2">
-                                    <input class="form-control" name="conversation_id" inputmode="numeric" list="device-conversation-options" value="{{ device.direct_conversation_id or '' }}" placeholder="Conversation ID" required>
-                                    <button type="submit" class="btn btn-outline-primary">Bind</button>
+                                    <input class="form-control" name="conversation_id" inputmode="numeric" list="device-conversation-options" value="{{ device.direct_conversation_id or '' }}" placeholder="{{ t('admin_channels.conversation_id') }}" required>
+                                    <button type="submit" class="btn btn-outline-primary">{{ t('admin_channels.bind') }}</button>
                                 </div>
                             </form>
                             {% if device.direct_conversation_id %}
@@ -259,7 +259,7 @@
                                 <input type="hidden" name="action" value="clear_binding">
                                 <input type="hidden" name="target_type" value="device">
                                 <input type="hidden" name="target_id" value="{{ device.id }}">
-                                <button type="submit" class="btn btn-sm btn-outline-danger">Clear Device Binding</button>
+                                <button type="submit" class="btn btn-sm btn-outline-danger">{{ t('admin_channels.clear_device_binding') }}</button>
                             </form>
                             {% endif %}
                             <form method="post" action="/admin/devices" class="row g-2">
@@ -277,10 +277,10 @@
                                 </div>
                                 <div class="col-4 form-check d-flex align-items-center gap-1">
                                     <input class="form-check-input" type="checkbox" name="is_primary_route_group" id="primary_{{ device.id }}">
-                                    <label class="form-check-label" for="primary_{{ device.id }}">Primary</label>
+                                    <label class="form-check-label" for="primary_{{ device.id }}">{{ t('admin_channels.primary') }}</label>
                                 </div>
                                 <div class="col-3">
-                                    <button type="submit" class="btn btn-sm btn-outline-primary w-100">Add</button>
+                                    <button type="submit" class="btn btn-sm btn-outline-primary w-100">{{ t('admin_channels.add') }}</button>
                                 </div>
                             </form>
                         </details>
@@ -290,7 +290,7 @@
                 <tr>
                     <td colspan="8" class="text-center text-muted py-4">
                         <i class="fas fa-microchip fa-2x mb-2 d-block opacity-50"></i>
-                        No devices have been created yet.
+                        {{ t('admin_channels.no_devices_yet') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -301,12 +301,12 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-layer-group"></i> Groups
+        <i class="fas fa-layer-group"></i> {{ t('admin_channels.groups') }}
     </div>
     <form method="post" action="/admin/devices" class="row g-3 mb-4" data-form-guard>
         <input type="hidden" name="action" value="create_group">
         <div class="col-md-3">
-            <label class="form-label" for="group_owner_user_id">Owner</label>
+            <label class="form-label" for="group_owner_user_id">{{ t('admin_channels.owner') }}</label>
             <select class="form-select" id="group_owner_user_id" name="owner_user_id" required>
                 {% for user in users %}
                 <option value="{{ user.id }}" {% if user.id == current_user_id %}selected{% endif %}>{{ user.username }} (#{{ user.id }})</option>
@@ -314,24 +314,24 @@
             </select>
         </div>
         <div class="col-md-3">
-            <label class="form-label" for="group_name">Name</label>
+            <label class="form-label" for="group_name">{{ t('admin_channels.name') }}</label>
             <input class="form-control" id="group_name" name="name" maxlength="120" required>
         </div>
         <div class="col-md-3">
-            <label class="form-label" for="group_slug">Slug</label>
+            <label class="form-label" for="group_slug">{{ t('admin_channels.slug') }}</label>
             <input class="form-control" id="group_slug" name="slug" maxlength="80" pattern="[a-z0-9]([a-z0-9-]{0,78}[a-z0-9])?" required>
         </div>
         <div class="col-md-3">
-            <label class="form-label" for="group_icon_class">Icon</label>
+            <label class="form-label" for="group_icon_class">{{ t('admin_channels.icon') }}</label>
             <input class="form-control" id="group_icon_class" name="icon_class" placeholder="fas fa-layer-group">
         </div>
         <div class="col-md-9">
-            <label class="form-label" for="group_notes">Notes</label>
+            <label class="form-label" for="group_notes">{{ t('admin_channels.notes') }}</label>
             <input class="form-control" id="group_notes" name="notes" maxlength="2000">
         </div>
         <div class="col-md-3 d-flex align-items-end">
             <button type="submit" class="btn btn-primary w-100">
-                <i class="fas fa-plus me-1"></i> Create Group
+                <i class="fas fa-plus me-1"></i> {{ t('admin_channels.create_group') }}
             </button>
         </div>
     </form>
@@ -340,11 +340,11 @@
         <table class="table align-middle">
             <thead>
                 <tr>
-                    <th>Name</th>
-                    <th>Slug</th>
-                    <th>Members</th>
-                    <th>Conversation</th>
-                    <th style="min-width: 320px;">Actions</th>
+                    <th>{{ t('admin_channels.name') }}</th>
+                    <th>{{ t('admin_channels.slug') }}</th>
+                    <th>{{ t('admin_channels.members') }}</th>
+                    <th>{{ t('admin_channels.conversation') }}</th>
+                    <th style="min-width: 320px;">{{ t('admin_channels.actions') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -356,15 +356,15 @@
                     </td>
                     <td><code>{{ group.slug }}</code></td>
                     <td>
-                        <strong>{{ group.member_count }}</strong><br>
-                        <span class="text-muted">{{ group.member_names or 'No devices' }}</span>
+                        <strong>{{ format_number(group.member_count) }}</strong><br>
+                        <span class="text-muted">{{ group.member_names or t('admin_channels.no_devices') }}</span>
                     </td>
                     <td>
                         {% if group.conversation_id %}
                         <code>#{{ group.conversation_id }}</code><br>
                         <span class="text-muted">{{ group.conversation_name }}</span>
                         {% else %}
-                        <span class="text-muted">Not bound</span>
+                        <span class="text-muted">{{ t('admin_channels.not_bound') }}</span>
                         {% endif %}
                     </td>
                     <td>
@@ -373,8 +373,8 @@
                             <input type="hidden" name="target_type" value="group">
                             <input type="hidden" name="target_id" value="{{ group.id }}">
                             <div class="input-group input-group-sm">
-                                <input class="form-control" name="conversation_id" inputmode="numeric" list="device-conversation-options" value="{{ group.conversation_id or '' }}" placeholder="Conversation ID" required>
-                                <button type="submit" class="btn btn-outline-primary">Bind</button>
+                                <input class="form-control" name="conversation_id" inputmode="numeric" list="device-conversation-options" value="{{ group.conversation_id or '' }}" placeholder="{{ t('admin_channels.conversation_id') }}" required>
+                                <button type="submit" class="btn btn-outline-primary">{{ t('admin_channels.bind') }}</button>
                             </div>
                         </form>
                         {% if group.conversation_id %}
@@ -383,12 +383,12 @@
                                 <input type="hidden" name="action" value="clear_binding">
                                 <input type="hidden" name="target_type" value="group">
                                 <input type="hidden" name="target_id" value="{{ group.id }}">
-                                <button type="submit" class="btn btn-sm btn-outline-danger">Clear Binding</button>
+                                <button type="submit" class="btn btn-sm btn-outline-danger">{{ t('admin_channels.clear_binding') }}</button>
                             </form>
                         </div>
                         {% endif %}
                         <details>
-                            <summary class="btn btn-sm btn-outline-primary">Edit</summary>
+                            <summary class="btn btn-sm btn-outline-primary">{{ t('admin_channels.edit') }}</summary>
                             <form method="post" action="/admin/devices" class="mt-2" data-form-guard>
                                 <input type="hidden" name="action" value="update_group">
                                 <input type="hidden" name="group_id" value="{{ group.id }}">
@@ -397,7 +397,7 @@
                                 <input class="form-control form-control-sm mb-2" name="icon_class" value="{{ group.icon_class or '' }}" placeholder="fas fa-layer-group">
                                 <textarea class="form-control form-control-sm mb-2" name="notes" rows="2" maxlength="2000">{{ group.notes or '' }}</textarea>
                                 <button type="submit" class="btn btn-sm btn-primary">
-                                    <i class="fas fa-save me-1"></i> Save
+                                    <i class="fas fa-save me-1"></i> {{ t('admin_channels.save') }}
                                 </button>
                             </form>
                         </details>
@@ -405,7 +405,7 @@
                             <input type="hidden" name="action" value="soft_delete_group">
                             <input type="hidden" name="group_id" value="{{ group.id }}">
                             <button type="submit" class="btn btn-sm btn-outline-danger">
-                                <i class="fas fa-trash me-1"></i> Remove Group
+                                <i class="fas fa-trash me-1"></i> {{ t('admin_channels.remove_group') }}
                             </button>
                         </form>
                     </td>
@@ -414,7 +414,7 @@
                 <tr>
                     <td colspan="5" class="text-center text-muted py-4">
                         <i class="fas fa-layer-group fa-2x mb-2 d-block opacity-50"></i>
-                        No groups have been created yet.
+                        {{ t('admin_channels.no_groups_created') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -425,19 +425,19 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-clipboard-list"></i> Recent Events
+        <i class="fas fa-clipboard-list"></i> {{ t('admin_channels.recent_events') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Time</th>
-                    <th>Device</th>
-                    <th>Direction</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Conversation</th>
-                    <th>Latency</th>
+                    <th>{{ t('admin_channels.time') }}</th>
+                    <th>{{ t('admin_channels.device') }}</th>
+                    <th>{{ t('admin_channels.direction') }}</th>
+                    <th>{{ t('admin_channels.type') }}</th>
+                    <th>{{ t('admin_channels.status') }}</th>
+                    <th>{{ t('admin_channels.conversation') }}</th>
+                    <th>{{ t('admin_channels.latency') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -448,17 +448,17 @@
                         <strong>{{ event.device_name }}</strong><br>
                         <code>{{ event.device_slug }}</code>
                     </td>
-                    <td>{{ event.direction }}</td>
-                    <td>{{ event.event_type }}</td>
-                    <td>{{ event.status }}</td>
+                    <td>{{ t('admin_channels.event.' ~ event.direction) if event.direction in ['in', 'out', 'system', 'message', 'reply', 'routing', 'busy', 'rate_limit', 'wellbeing', 'setup_required', 'routing_conflict', 'wellbeing_pause_active', 'processing', 'completed', 'failed', 'rate_limited'] else event.direction }}</td>
+                    <td>{{ t('admin_channels.event.' ~ event.event_type) if event.event_type in ['in', 'out', 'system', 'message', 'reply', 'routing', 'busy', 'rate_limit', 'wellbeing', 'setup_required', 'routing_conflict', 'wellbeing_pause_active', 'processing', 'completed', 'failed', 'rate_limited'] else event.event_type }}</td>
+                    <td>{{ t('admin_channels.event.' ~ event.status) if event.status in ['in', 'out', 'system', 'message', 'reply', 'routing', 'busy', 'rate_limit', 'wellbeing', 'setup_required', 'routing_conflict', 'wellbeing_pause_active', 'processing', 'completed', 'failed', 'rate_limited'] else event.status }}</td>
                     <td>{% if event.conversation_id %}<code>#{{ event.conversation_id }}</code>{% else %}-{% endif %}</td>
-                    <td>{% if event.latency_ms is not none %}{{ event.latency_ms }} ms{% else %}-{% endif %}</td>
+                    <td>{% if event.latency_ms is not none %}{{ format_number(event.latency_ms) }} ms{% else %}-{% endif %}</td>
                 </tr>
                 {% else %}
                 <tr>
                     <td colspan="7" class="text-center text-muted py-4">
                         <i class="fas fa-clipboard-list fa-2x mb-2 d-block opacity-50"></i>
-                        No device events recorded yet.
+                        {{ t('admin_channels.no_events') }}
                     </td>
                 </tr>
                 {% endfor %}

@@ -2377,10 +2377,6 @@ body {
     margin-right: 8px;
 }
 
-.model-dropdown-loading::after {
-    content: 'Loading models...';
-}
-
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
@@ -2647,7 +2643,7 @@ body {
 }
 
 .thinking-tokens-popup::before {
-    content: 'Thinking Tokens Configuration';
+    content: attr(data-label);
     display: block;
     color: #9d9d9d;
     font-size: 0.75rem;

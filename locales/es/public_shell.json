@@ -1,0 +1,18 @@
+{
+  "support": "Soporte de Aurvek",
+  "support_contact": "Si tienes consultas sobre tu cuenta, seguridad, facturación o contenido, escríbenos a {email}.",
+  "welcome": "Bienvenido",
+  "home": "Inicio",
+  "chat": "Chat",
+  "settings": "Configuración",
+  "classic_home": "Inicio clásico",
+  "related": "Asistentes relacionados",
+  "page_not_found": "Página no encontrada",
+  "domain_not_found": "Dominio sin configurar",
+  "unavailable": "Página temporalmente no disponible",
+  "unavailable_title": "Página no disponible",
+  "retry": "Inténtalo de nuevo más tarde.",
+  "copied": "¡Copiado!",
+  "expired": "Oferta finalizada",
+  "countdown": "{days}d {hours}h {minutes}min {seconds}s"
+}

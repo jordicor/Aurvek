@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ t('public_privacy.aurvek_privacy_policy_how_we_collect_use') }}">
+    <title>{{ t('public_privacy.privacy_policy_aurvek') }}</title>
+    <meta name="robots" content="noindex">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Satoshi', system-ui, sans-serif;
+            background: #0C1220;
+            color: #E4E4E7;
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container {
+            max-width: 780px;
+            margin: 0 auto;
+            padding: 60px 24px 80px;
+        }
+        .back-link {
+            display: inline-block;
+            color: #D97706;
+            text-decoration: none;
+            font-size: 0.9rem;
+            margin-bottom: 32px;
+        }
+        .back-link:hover { text-decoration: underline; }
+        h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: clamp(1.75rem, 6vw, 2.2rem);
+            overflow-wrap: anywhere;
+            hyphens: auto;
+            font-weight: 700;
+            color: #FAFAFA;
+            margin-bottom: 8px;
+        }
+        .last-updated {
+            color: #71717A;
+            font-size: 0.85rem;
+            margin-bottom: 48px;
+        }
+        h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #FAFAFA;
+            margin: 40px 0 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #27272A;
+        }
+        h3 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #D4D4D8;
+            margin: 24px 0 8px;
+        }
+        p, li { color: #A1A1AA; margin-bottom: 12px; }
+        ul { padding-left: 24px; margin-bottom: 16px; }
+        li { margin-bottom: 6px; }
+        a { color: #D97706; }
+        strong { color: #D4D4D8; }
+        .highlight-box {
+            background: #1A2332;
+            border-left: 3px solid #D97706;
+            padding: 16px 20px;
+            border-radius: 0 8px 8px 0;
+            margin: 20px 0;
+        }
+        .highlight-box p { margin-bottom: 0; }
+        footer {
+            margin-top: 60px;
+            padding-top: 24px;
+            border-top: 1px solid #27272A;
+            color: #52525B;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">{{ t('public_privacy.back_to_aurvek') }}</a>
+        <h1>{{ t('public_privacy.privacy_policy') }}</h1>
+        <p class="last-updated">{{ t('public_privacy.last_updated_august') }}</p>
+
+        <div class="highlight-box">
+            <p>{{ t_html('public_privacy.aurvek_we_us_our_operates_the_aurvek', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</p>
+        </div>
+
+        <h2>{{ t('public_privacy.information_we_collect') }}</h2>
+
+        <h3>{{ t('public_privacy.account_information') }}</h3>
+        <ul>
+            <li>{{ t_html('public_privacy.email_address_used_for_account_creation_login', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.username_chosen_by_you_or_auto_generated', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.password_if_you_choose_password_based_authentication', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.google_account_data_if_you_sign_in', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.optional_chatgpt_connection_if_you_choose_to', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+        </ul>
+
+        <h3>{{ t('public_privacy.payment_information') }}</h3>
+        <ul>
+            <li>{{ t_html('public_privacy.payments_are_processed_by_stripe_we_do', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t('public_privacy.we_store_transaction_records_amounts_dates_references') }}</li>
+        </ul>
+
+        <h3>{{ t('public_privacy.usage_data') }}</h3>
+        <ul>
+            <li>{{ t_html('public_privacy.conversations_and_messages_you_create_within_the', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.files_you_upload_images_audio_documents_for', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.token_usage_and_costs_for_billing_purposes', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.ip_address_for_rate_limiting_abuse_prevention', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+        </ul>
+
+        <h3>{{ t('public_privacy.cookies') }}</h3>
+        <ul>
+            <li>{{ t_html('public_privacy.session_cookie_a_jwt_token_for_authentication', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.visitor_cookie_an_anonymous_analytics_identifier_for', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+        </ul>
+        <p>{{ t('public_privacy.we_do_not_use_third_party_tracking') }}</p>
+
+        <h2>{{ t('public_privacy.how_we_use_your_data') }}</h2>
+        <ul>
+            <li>{{ t('public_privacy.to_provide_maintain_and_improve_the_platform') }}</li>
+            <li>{{ t('public_privacy.to_process_payments_and_maintain_transaction_history') }}</li>
+            <li>{{ t('public_privacy.to_send_transactional_emails_login_links_payment') }}</li>
+            <li>{{ t('public_privacy.to_enforce_our_terms_prevent_abuse_and') }}</li>
+        </ul>
+
+        <h2>{{ t('public_privacy.third_party_services') }}</h2>
+        <p>{{ t('public_privacy.we_use_the_following_third_party_services') }}</p>
+        <ul>
+            <li>{{ t_html('public_privacy.ai_providers_openai_anthropic_google_xai_your', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.stripe_payment_processing_subject_to_stripe_s', tag_a="<strong>"|safe, tag_b="</strong>"|safe, tag_c="<a href=\"https://stripe.com/privacy\" target=\"_blank\" rel=\"noopener\">"|safe, tag_d="</a>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.cloudflare_cdn_ddos_protection_and_dns_subject', tag_a="<strong>"|safe, tag_b="</strong>"|safe, tag_c="<a href=\"https://www.cloudflare.com/privacypolicy/\" target=\"_blank\" rel=\"noopener\">"|safe, tag_d="</a>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.google_oauth_authentication_only_subject_to_google', tag_a="<strong>"|safe, tag_b="</strong>"|safe, tag_c="<a href=\"https://policies.google.com/privacy\" target=\"_blank\" rel=\"noopener\">"|safe, tag_d="</a>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.elevenlabs_text_to_speech_and_voice_features', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+        </ul>
+
+        <h2>{{ t('public_privacy.data_storage_and_security') }}</h2>
+        <ul>
+            <li>{{ t('public_privacy.data_is_stored_on_servers_we_control') }}</li>
+            <li>{{ t('public_privacy.passwords_are_hashed_with_bcrypt_and_a') }}</li>
+            <li>{{ t('public_privacy.api_keys_and_secrets_are_stored_in') }}</li>
+            <li>{{ t('public_privacy.connected_chatgpt_credentials_are_encrypted_at_rest') }}</li>
+            <li>{{ t('public_privacy.we_implement_rate_limiting_ip_based_abuse') }}</li>
+        </ul>
+
+        <h2>{{ t('public_privacy.data_retention') }}</h2>
+        <ul>
+            <li>{{ t('public_privacy.account_data_is_retained_as_long_as') }}</li>
+            <li>{{ t('public_privacy.conversation_data_can_be_deleted_by_you') }}</li>
+            <li>{{ t('public_privacy.you_can_disconnect_chatgpt_at_any_time') }}</li>
+            <li>{{ t('public_privacy.if_you_request_account_deletion_we_will') }}</li>
+        </ul>
+
+        <h2>{{ t('public_privacy.your_rights') }}</h2>
+        <p>{{ t('public_privacy.you_have_the_right_to') }}</p>
+        <ul>
+            <li>{{ t_html('public_privacy.access_your_personal_data', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.correct_inaccurate_data_via_your_profile_settings', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.delete_your_account_and_associated_data', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.export_your_conversation_data_pdf_mp_formats', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_privacy.object_to_processing_in_certain_circumstances', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+        </ul>
+        <p>{{ t('public_privacy.to_exercise_these_rights_contact_us_at') }}</p>
+
+        <h2>{{ t('public_privacy.children_s_privacy') }}</h2>
+        <p>{{ t('public_privacy.aurvek_is_not_directed_at_children_under') }}</p>
+
+        <h2>{{ t('public_privacy.changes_to_this_policy') }}</h2>
+        <p>{{ t('public_privacy.we_may_update_this_policy_from_time') }}</p>
+
+        <h2>{{ t('public_privacy.contact') }}</h2>
+        <p>{{ t('public_privacy.for_privacy_related_questions_or_requests') }}</p>
+        <p>{{ t_html('public_privacy.email_privacy_aurvek_com', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</p>
+
+        <footer>
+            <p>{{ t_html('public_privacy.aurvek_all_rights_reserved_terms_of_service', tag_a="<a href=\"/terms\">"|safe, tag_b="</a>"|safe) }}</p>
+        </footer>
+    </div>
+</body>
+</html>

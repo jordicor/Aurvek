@@ -110,6 +110,9 @@ def user_management_db(tmp_path, monkeypatch):
             phone_verified INTEGER DEFAULT 0,
             user_info TEXT,
             profile_picture TEXT,
+            timezone_name TEXT,
+            preferred_languages_json TEXT,
+            ui_language TEXT NOT NULL DEFAULT 'en',
             session_version INTEGER NOT NULL DEFAULT 1
         );
 
@@ -613,9 +616,9 @@ async def test_batch_delete_preserves_active_usage_conflict(monkeypatch):
             assert key == "selected_users"
             return ["assigned-customer"]
 
-    class _BatchRequest:
-        headers = {}
-        client = None
+    class _BatchRequest(Request):
+        def __init__(self):
+            super().__init__(_request('/admin/delete-users').scope)
 
         async def form(self):
             return _SelectedUsers()
@@ -732,6 +735,7 @@ async def _edit_profile(user_management_db, **overrides):
         "phone_verification_id": None,
         "sample_voice_id": None,
         "user_info": None,
+        "timezone_name": None,
         "profile_picture": None,
         "alter_ego_id": None,
         "current_user": DummyUser(20, "assigned-customer"),
@@ -792,6 +796,110 @@ async def test_generic_profile_update_still_updates_profile_content(
     finally:
         conn.close()
     assert user_info == "A short, editable profile."
+
+
+@pytest.mark.asyncio
+async def test_generic_profile_update_accepts_valid_iana_timezone(
+    user_management_db,
+):
+    response = await _edit_profile(
+        user_management_db,
+        timezone_name="  America/New_York  ",
+    )
+
+    assert response.status_code == 200
+    conn = sqlite3.connect(user_management_db)
+    try:
+        timezone_name = conn.execute(
+            "SELECT timezone_name FROM USERS WHERE id = 20"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert timezone_name == "America/New_York"
+
+
+@pytest.mark.asyncio
+async def test_generic_profile_update_rejects_invalid_timezone(
+    user_management_db,
+):
+    response = await _edit_profile(
+        user_management_db,
+        timezone_name="Miami/Definitely_Not_A_Zone",
+    )
+
+    assert response.status_code == 400
+    assert "Choose a valid time zone." in response.body.decode("utf-8")
+    conn = sqlite3.connect(user_management_db)
+    try:
+        timezone_name = conn.execute(
+            "SELECT timezone_name FROM USERS WHERE id = 20"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert timezone_name is None
+
+
+@pytest.mark.asyncio
+async def test_generic_profile_update_can_clear_timezone(user_management_db):
+    conn = sqlite3.connect(user_management_db)
+    conn.execute(
+        "UPDATE USERS SET timezone_name = 'Europe/Madrid' WHERE id = 20"
+    )
+    conn.commit()
+    conn.close()
+
+    response = await _edit_profile(user_management_db, timezone_name="")
+
+    assert response.status_code == 200
+    conn = sqlite3.connect(user_management_db)
+    try:
+        timezone_name = conn.execute(
+            "SELECT timezone_name FROM USERS WHERE id = 20"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert timezone_name is None
+
+
+@pytest.mark.asyncio
+async def test_generic_profile_update_saves_canonical_preferred_languages(
+    user_management_db,
+):
+    response = await _edit_profile(
+        user_management_db,
+        preferred_languages_json='["es-ES", "EN_us", "es"]',
+    )
+
+    assert response.status_code == 200
+    conn = sqlite3.connect(user_management_db)
+    try:
+        stored = conn.execute(
+            "SELECT preferred_languages_json FROM USERS WHERE id = 20"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == '["es","en"]'
+
+
+@pytest.mark.asyncio
+async def test_generic_profile_update_rejects_invalid_preferred_languages(
+    user_management_db,
+):
+    response = await _edit_profile(
+        user_management_db,
+        preferred_languages_json='["es", "not-a-language"]',
+    )
+
+    assert response.status_code == 400
+    assert "Choose valid conversation languages." in response.body.decode("utf-8")
+    conn = sqlite3.connect(user_management_db)
+    try:
+        stored = conn.execute(
+            "SELECT preferred_languages_json FROM USERS WHERE id = 20"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stored is None
 
 
 @pytest.mark.asyncio

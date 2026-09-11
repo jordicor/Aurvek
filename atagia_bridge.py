@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+import asyncio
+from dataclasses import dataclass, field, replace
 import logging
 import os
 import time
@@ -229,6 +230,7 @@ class AtagiaBridge:
         *,
         prompt_id: int | str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> str | None:
         """Ensure Atagia resources exist, returning the Atagia conversation id."""
         config = await self._get_config()
@@ -237,13 +239,13 @@ class AtagiaBridge:
             return None
         try:
             sidecar = await self._ensure_sidecar_bridge(config)
-            namespace = _aurvek_namespace(user_id, conversation_id, prompt_id)
+            provider_namespace = _provider_namespace(user_id, conversation_id, prompt_id, namespace)
             result = await sidecar.ensure_user_and_conversation(
-                namespace["user_id"],
-                namespace["conversation_id"],
-                user_persona_id=config.user_persona_id,
-                platform_id=config.platform_id,
-                character_id=_resolve_character_id(config, prompt_id),
+                provider_namespace["user_id"],
+                provider_namespace["conversation_id"],
+                user_persona_id=namespace.persona_id if namespace else config.user_persona_id,
+                platform_id=namespace.platform_id if namespace else config.platform_id,
+                character_id=namespace.character_id if namespace else _resolve_character_id(config, prompt_id),
                 mode=config.assistant_mode,
                 incognito=_resolve_incognito(config, incognito),
             )
@@ -272,6 +274,7 @@ class AtagiaBridge:
         confirmation_strategy: str | None = None,
         memory_privacy_mode: str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> Any | None:
         """Return Atagia context for one user turn, or None on disabled/error."""
         started_at = time.perf_counter()
@@ -281,21 +284,21 @@ class AtagiaBridge:
             return None
         try:
             sidecar = await self._ensure_sidecar_bridge(config)
-            namespace = _aurvek_namespace(user_id, conversation_id, prompt_id)
+            provider_namespace = _provider_namespace(user_id, conversation_id, prompt_id, namespace)
             result = await sidecar.get_context_for_turn(
-                namespace["user_id"],
-                namespace["conversation_id"],
+                provider_namespace["user_id"],
+                provider_namespace["conversation_id"],
                 message_text,
                 occurred_at=occurred_at,
                 attachments=attachments,
-                user_persona_id=config.user_persona_id,
-                platform_id=config.platform_id,
-                character_id=_resolve_character_id(config, prompt_id),
+                user_persona_id=namespace.persona_id if namespace else config.user_persona_id,
+                platform_id=namespace.platform_id if namespace else config.platform_id,
+                character_id=namespace.character_id if namespace else _resolve_character_id(config, prompt_id),
                 mode=config.assistant_mode,
                 operational_profile=config.operational_profile,
                 operational_signals=config.operational_signals,
                 incognito=_resolve_incognito(config, incognito),
-                message_id=_aurvek_message_id(message_id) if message_id is not None else None,
+                message_id=(namespace.provider_message_id(message_id) if namespace else _aurvek_message_id(message_id)) if message_id is not None else None,
                 source_seq=_resolve_source_seq(source_seq),
                 ingest_origin=ingest_origin,
                 confirmation_strategy=confirmation_strategy,
@@ -341,6 +344,7 @@ class AtagiaBridge:
         confirmation_strategy: str | None = None,
         memory_privacy_mode: str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> bool:
         """Persist the assistant response in Atagia, returning success."""
         started_at = time.perf_counter()
@@ -350,20 +354,20 @@ class AtagiaBridge:
             return False
         try:
             sidecar = await self._ensure_sidecar_bridge(config)
-            namespace = _aurvek_namespace(user_id, conversation_id, prompt_id)
+            provider_namespace = _provider_namespace(user_id, conversation_id, prompt_id, namespace)
             result = await sidecar.record_assistant_response(
-                namespace["user_id"],
-                namespace["conversation_id"],
+                provider_namespace["user_id"],
+                provider_namespace["conversation_id"],
                 response_text,
                 occurred_at=occurred_at,
-                user_persona_id=config.user_persona_id,
-                platform_id=config.platform_id,
-                character_id=_resolve_character_id(config, prompt_id),
+                user_persona_id=namespace.persona_id if namespace else config.user_persona_id,
+                platform_id=namespace.platform_id if namespace else config.platform_id,
+                character_id=namespace.character_id if namespace else _resolve_character_id(config, prompt_id),
                 mode=config.assistant_mode,
                 operational_profile=config.operational_profile,
                 operational_signals=config.operational_signals,
                 incognito=_resolve_incognito(config, incognito),
-                message_id=_aurvek_message_id(message_id) if message_id is not None else None,
+                message_id=(namespace.provider_message_id(message_id) if namespace else _aurvek_message_id(message_id)) if message_id is not None else None,
                 source_seq=_resolve_source_seq(source_seq),
                 ingest_origin=ingest_origin,
                 confirmation_strategy=confirmation_strategy,
@@ -411,6 +415,7 @@ class AtagiaBridge:
         confirmation_strategy: str | None = None,
         memory_privacy_mode: str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> bool:
         """Persist a historical Aurvek message in Atagia, returning success."""
         config = await self._get_config()
@@ -419,22 +424,22 @@ class AtagiaBridge:
             return False
         try:
             sidecar = await self._ensure_sidecar_bridge(config)
-            namespace = _aurvek_namespace(user_id, conversation_id, prompt_id)
+            provider_namespace = _provider_namespace(user_id, conversation_id, prompt_id, namespace)
             result = await sidecar.ingest_message(
-                namespace["user_id"],
-                namespace["conversation_id"],
+                provider_namespace["user_id"],
+                provider_namespace["conversation_id"],
                 role,
                 text,
                 occurred_at=occurred_at,
                 attachments=attachments,
-                user_persona_id=config.user_persona_id,
-                platform_id=config.platform_id,
-                character_id=_resolve_character_id(config, prompt_id),
+                user_persona_id=namespace.persona_id if namespace else config.user_persona_id,
+                platform_id=namespace.platform_id if namespace else config.platform_id,
+                character_id=namespace.character_id if namespace else _resolve_character_id(config, prompt_id),
                 mode=config.assistant_mode,
                 operational_profile=config.operational_profile,
                 operational_signals=config.operational_signals,
                 incognito=_resolve_incognito(config, incognito),
-                message_id=_aurvek_message_id(message_id) if message_id is not None else None,
+                message_id=(namespace.provider_message_id(message_id) if namespace else _aurvek_message_id(message_id)) if message_id is not None else None,
                 source_seq=_resolve_source_seq(source_seq),
                 ingest_origin=ingest_origin,
                 confirmation_strategy=confirmation_strategy,
@@ -449,6 +454,35 @@ class AtagiaBridge:
                 exc_info=True,
             )
             return False
+
+    async def get_application_context(
+        self, *, namespace: Any, conversation_id: int, message_text: str,
+    ) -> dict[str, Any] | None:
+        """Retrieve scoped memory without persisting the query as a user turn."""
+        started_at = time.perf_counter()
+        config = replace(await self._get_config(), platform_id=namespace.platform_id)
+        if not config.enabled or not message_text.strip():
+            self._last_error = None
+            return None
+        try:
+            async with asyncio.timeout(config.timeout_seconds):
+                if _resolve_transport(config) == "http":
+                    result = await _http_application_context(config, namespace=namespace,
+                        conversation_id=conversation_id, message_text=message_text)
+                else:
+                    async def read(engine):
+                        return await read_application_atagia_context(engine, config=config,
+                            namespace=namespace, conversation_id=conversation_id, message_text=message_text)
+                    result = await _with_local_engine(config, read)
+            self._last_error = None
+            record_memory_success("atagia", "get_context", latency_ms=_elapsed_ms(started_at))
+            return result
+        except Exception as exc:
+            self._last_error = _bridge_exception("application_context", exc)
+            record_memory_failure("atagia", "get_context", exception=exc,
+                                  latency_ms=_elapsed_ms(started_at))
+            logger.warning("Atagia application memory retrieval failed", exc_info=True)
+            return None
 
     async def get_memory_preferences(self, user_id: int | str) -> dict[str, Any]:
         """Return Atagia user memory preferences, fail-open to defaults."""
@@ -529,19 +563,22 @@ class AtagiaBridge:
         *,
         prompt_id: int | str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> bool:
         """Best-effort hard purge of a host conversation in Atagia."""
         config = await self._get_config()
+        if namespace is not None:
+            config = replace(config, platform_id=namespace.platform_id, user_persona_id=namespace.persona_id)
         if not config.enabled:
             self._last_error = None
             return False
         try:
-            namespace = _aurvek_namespace(user_id, conversation_id, prompt_id)
+            provider_namespace = _provider_namespace(user_id, conversation_id, prompt_id, namespace)
             await _purge_conversation_via_transport(
                 config,
-                user_id=str(namespace["user_id"]),
-                conversation_id=str(namespace["conversation_id"]),
-                character_id=_resolve_character_id(config, prompt_id),
+                user_id=str(provider_namespace["user_id"]),
+                conversation_id=str(provider_namespace["conversation_id"]),
+                character_id=namespace.character_id if namespace else _resolve_character_id(config, prompt_id),
                 incognito=_resolve_incognito(config, incognito),
             )
             self._last_error = None
@@ -555,7 +592,7 @@ class AtagiaBridge:
             )
             return False
 
-    async def erase_user(self, user_id: int | str) -> dict[str, Any]:
+    async def erase_user(self, user_id: int | str, *, namespace: Any | None = None) -> dict[str, Any]:
         """Erase all Atagia data for one Aurvek user (fail-closed).
 
         Unlike the fail-open memory operations, account erasure must be
@@ -567,7 +604,7 @@ class AtagiaBridge:
         config = await self._get_config()
         if not config.enabled:
             raise RuntimeError("Atagia bridge is disabled; cannot erase user")
-        atagia_user_id = _aurvek_user_id(user_id)
+        atagia_user_id = namespace.provider_user_id if namespace else _aurvek_user_id(user_id)
         try:
             report = await _erase_user_via_transport(config, atagia_user_id)
             self._last_error = None
@@ -976,6 +1013,69 @@ def _aurvek_namespace(
                 else None
             ),
         }
+
+
+def _provider_namespace(user_id, conversation_id, prompt_id, namespace=None):
+    if namespace is None:
+        return _aurvek_namespace(user_id, conversation_id, prompt_id)
+    return {"user_id": namespace.provider_user_id,
+            "conversation_id": namespace.provider_conversation_id(conversation_id),
+            "character_id": namespace.character_id}
+
+
+async def read_application_atagia_context(
+    engine: Any, *, config: AtagiaBridgeConfig, namespace: Any,
+    conversation_id: int, message_text: str,
+) -> dict[str, Any]:
+    """Aurvek-owned adapter over existing Atagia retrieval, usable by a host API.
+
+No query message or extraction job is created. The caller must authorize the
+namespace; this helper is not itself an authentication boundary.
+    """
+    from atagia.services.context_cache_service import ContextCacheService
+
+    user = namespace.provider_user_id
+    conversation = namespace.provider_conversation_id(conversation_id)
+    await engine.create_user(user)
+    await engine.create_conversation(user_id=user, conversation_id=conversation,
+        user_persona_id=namespace.persona_id, platform_id=config.platform_id,
+        character_id=namespace.character_id, mode=config.assistant_mode, incognito=False)
+    runtime = await engine._require_runtime()
+    connection = await runtime.open_connection()
+    try:
+        resolution = await ContextCacheService(runtime).resolve_with_connection(
+            connection, user_id=user, conversation_id=conversation,
+            message_text=message_text, assistant_mode_id=config.assistant_mode,
+            operational_profile=config.operational_profile,
+            operational_signals=config.operational_signals)
+        composed = resolution.composed_context
+        # Keep the host's recent transcript. These are only scoped retrieval
+        # blocks; including another assistant's raw recent window is unnecessary.
+        blocks = [getattr(composed, name, "") for name in
+                  ("contract_block", "workspace_block", "memory_block", "state_block")]
+        return {"system_prompt": "\n\n".join(str(v) for v in blocks if v),
+                "memories": [m.model_dump(mode="json") if hasattr(m, "model_dump") else m
+                             for m in resolution.memory_summaries],
+                "partial": True, "namespace_key": namespace.key}
+    finally:
+        await connection.close()
+
+
+async def _http_application_context(config, *, namespace, conversation_id, message_text):
+    import httpx
+
+    async with httpx.AsyncClient(base_url=(config.base_url or "").rstrip("/"),
+                                 timeout=config.timeout_seconds) as client:
+        response = await client.post("/v1/context/read-only",
+            json={"namespace": namespace.as_dict(), "conversation_id": int(conversation_id),
+                  "message": message_text, "mode": config.assistant_mode,
+                  "platform_id": config.platform_id},
+            headers=_http_headers(config, namespace.provider_user_id))
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict) or result.get("namespace_key") != namespace.key:
+            raise ValueError("Application memory response namespace mismatch")
+        return result
 
 
 def _resolve_character_id(

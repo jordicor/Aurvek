@@ -6,12 +6,14 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from common import STRIPE_SECRET_KEY, get_auth_base_url
 from database import get_db_connection
 from log_config import logger
+from i18n import Translator, get_translator
 
 
 async def create_connect_onboarding_response(request, current_user):
+    translator = get_translator(request, current_user)
     if not STRIPE_SECRET_KEY:
         return JSONResponse(
-            content={"success": False, "message": "Stripe not configured"},
+            content={"success": False, "message": translator.t('marketplace_earnings.stripe_not_configured')},
             status_code=503,
         )
 
@@ -60,11 +62,11 @@ async def create_connect_onboarding_response(request, current_user):
 
     except stripe.error.StripeError as exc:
         logger.error("Stripe Connect onboard error: %s", exc)
-        return JSONResponse(content={"success": False, "message": str(exc)}, status_code=400)
+        return JSONResponse(content={"success": False, "message": translator.t('marketplace_earnings.a_stripe_error_occurred_please_try_again')}, status_code=400)
     except Exception as exc:
         logger.error("Connect onboard error: %s", exc)
         return JSONResponse(
-            content={"success": False, "message": "Error starting onboarding"},
+            content={"success": False, "message": translator.t('marketplace_earnings.error_starting_onboarding')},
             status_code=500,
         )
 
@@ -124,7 +126,8 @@ async def handle_connect_return_response(current_user):
         return RedirectResponse(url="/my-earnings?error=unknown", status_code=302)
 
 
-async def get_connect_status_response(current_user):
+async def get_connect_status_response(current_user, *, translator=None):
+    translator = translator or Translator(getattr(current_user, 'ui_language', None) or 'en')
     try:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
@@ -184,7 +187,7 @@ async def get_connect_status_response(current_user):
     except Exception as exc:
         logger.error("Connect status error: %s", exc)
         return JSONResponse(
-            content={"success": False, "message": "Error checking status"},
+            content={"success": False, "message": translator.t('marketplace_earnings.error_checking_status')},
             status_code=500,
         )
 

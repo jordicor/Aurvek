@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
+{% set i18n_domains = ['admin_users'] %}
 
-{% block title %}Edit User{% endblock %}
+{% block title %}{{ t('admin_users.edit_user') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -41,7 +42,7 @@
 </style>
 {% endblock %}
 
-{% block page_title %}<i class="fas fa-user-edit me-2"></i>Edit User{% endblock %}
+{% block page_title %}<i class="fas fa-user-edit me-2"></i>{{ t('admin_users.edit_user') }}{% endblock %}
 
 {% block back_url %}/users-list{% endblock %}
 
@@ -55,11 +56,11 @@
         <!-- User Badge -->
         <div class="user-badge">
             <i class="fas fa-user-circle fa-lg"></i>
-            <span>Editing: <strong>{{ user_data.username }}</strong></span>
+            <span>{{ t('admin_users.flow.editing', name=user_data.username) }}</span>
             {% if is_admin %}
             <span class="badge {% if user_data.is_enabled %}bg-success{% else %}bg-secondary{% endif %}">
                 <i class="fas {% if user_data.is_enabled %}fa-user-check{% else %}fa-user-slash{% endif %} me-1"></i>
-                {% if user_data.is_enabled %}Enabled{% else %}Disabled{% endif %}
+                {% if user_data.is_enabled %}{{ t('admin_users.enabled') }}{% else %}{{ t('admin_users.disabled') }}{% endif %}
             </span>
             {% endif %}
         </div>
@@ -69,66 +70,66 @@
 
             <!-- Section 1: User Credentials -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-id-card me-2"></i>User Credentials</div>
+                <div class="section-title"><i class="fas fa-id-card me-2"></i>{{ t('admin_users.user_credentials') }}</div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="new_username" class="form-label">Username</label>
+                            <label for="new_username" class="form-label">{{ t('admin_users.username') }}</label>
                             <input type="text" class="form-control" id="new_username" name="new_username" value="{{ user_data.username }}" readonly required>
-                            <small class="form-text text-muted">The username is the permanent account identifier.</small>
+                            <small class="form-text text-muted">{{ t('admin_users.the_username_is_the_permanent_account_identifier') }}</small>
                         </div>
                         <div class="mb-3">
-                            <label for="email" class="form-label">Email Address</label>
+                            <label for="email" class="form-label">{{ t('admin_users.email_address') }}</label>
                             <input type="email" class="form-control" id="email" {% if is_admin %}name="email"{% endif %} value="{{ user_data.email or '' }}" {% if not is_admin %}readonly{% endif %}>
-                            <small class="form-text text-muted">Required for magic link recovery</small>
+                            <small class="form-text text-muted">{{ t('admin_users.required_for_magic_link_recovery') }}</small>
                         </div>
                     </div>
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="phone_number" class="form-label">Phone Number</label>
+                            <label for="phone_number" class="form-label">{{ t('admin_users.phone_number') }}</label>
                             <input type="tel" class="form-control" id="phone_number" {% if is_admin %}name="phone_number"{% endif %} value="{{ user_data.phone_number or '' }}" inputmode="tel" {% if not is_admin %}readonly{% else %}oninput="this.value = this.value.replace(/[^0-9+\-() ]/g, '')"{% endif %}>
                         </div>
                         {% if is_admin %}
                         <div class="mb-3">
-                            <label for="new_password" class="form-label">New Password</label>
+                            <label for="new_password" class="form-label">{{ t('admin_users.new_password') }}</label>
                             <div class="input-group">
-                                <input type="password" class="form-control" id="new_password" name="new_password" placeholder="Leave blank to keep current">
-                                <button class="btn btn-show-password" type="button" onclick="togglePassword()">
+                                <input type="password" class="form-control" id="new_password" name="new_password" placeholder="{{ t('admin_users.leave_blank_to_keep_current') }}">
+                                <button class="btn btn-show-password" type="button" onclick="togglePassword()" id="togglePasswordBtn" aria-label="{{ t('common.action.show_password') }}">
                                     <i class="fas fa-eye" id="toggleIcon"></i>
                                 </button>
-                                <button class="btn btn-secondary" type="button" id="copyBtn" onclick="copyPassword()" title="Copy password">
+                                <button class="btn btn-secondary" type="button" id="copyBtn" onclick="copyPassword()" title="{{ t('admin_users.copy_password') }}">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
                             <button type="button" class="btn btn-outline-secondary btn-sm mt-2" id="generatePasswordBtn">
-                                <i class="fas fa-key me-1"></i> Generate Strong Password
+                                <i class="fas fa-key me-1"></i> {{ t('admin_users.generate_strong_password') }}
                             </button>
                         </div>
                         {% else %}
-                        <small class="form-text text-muted">Email, phone and password changes are restricted to administrators.</small>
+                        <small class="form-text text-muted">{{ t('admin_users.email_phone_and_password_changes_are_restricted_to_administrators') }}</small>
                         {% endif %}
                     </div>
                 </div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="authenticationMode" class="form-label">Authentication Mode</label>
+                            <label for="authenticationMode" class="form-label">{{ t('admin_users.authentication_mode') }}</label>
                             <select class="form-select" id="authenticationMode" {% if is_admin %}name="authentication_mode"{% else %}disabled{% endif %}>
-                                <option value="magic_link_only" {{ 'selected' if user_data.authentication_mode == 'magic_link_only' else '' }}>Magic Link Only</option>
-                                <option value="magic_link_password" {{ 'selected' if user_data.authentication_mode == 'magic_link_password' else '' }}>Magic Link + Password</option>
-                                <option value="password_only" {{ 'selected' if user_data.authentication_mode == 'password_only' else '' }}>Password Only</option>
+                                <option value="magic_link_only" {{ 'selected' if user_data.authentication_mode == 'magic_link_only' else '' }}>{{ t('admin_users.magic_link_only') }}</option>
+                                <option value="magic_link_password" {{ 'selected' if user_data.authentication_mode == 'magic_link_password' else '' }}>{{ t('admin_users.magic_link_password') }}</option>
+                                <option value="password_only" {{ 'selected' if user_data.authentication_mode == 'password_only' else '' }}>{{ t('admin_users.password_only') }}</option>
                             </select>
                         </div>
                     </div>
                     <div class="flex-column">
                         {% if user_data.auth_provider %}
                         <div class="mb-3">
-                            <label class="form-label">Auth Provider</label>
+                            <label class="form-label">{{ t('admin_users.auth_provider') }}</label>
                             <div class="mt-1">
                                 {% if user_data.auth_provider in ('google', 'google_linked') %}
                                 <span class="badge bg-light text-dark border" style="font-size: 0.85rem;">
                                     <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="14" height="14" alt="" class="me-1" style="vertical-align: -1px;">
-                                    {% if user_data.auth_provider == 'google' %}Google{% else %}Google (linked){% endif %}
+                                    {% if user_data.auth_provider == 'google' %}{{ t('admin_users.google') }}{% else %}{{ t('admin_users.google_linked') }}{% endif %}
                                 </span>
                                 {% else %}
                                 <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ user_data.auth_provider }}</span>
@@ -142,11 +143,11 @@
 
             <!-- Section 2: AI Configuration -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-robot me-2"></i>AI Configuration</div>
+                <div class="section-title"><i class="fas fa-robot me-2"></i>{{ t('admin_users.ai_configuration') }}</div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="promptDropdown" class="form-label">Default Prompt</label>
+                            <label for="promptDropdown" class="form-label">{{ t('admin_users.default_prompt') }}</label>
                             <select class="form-select" id="promptDropdown" name="prompt_id" required>
                                 {% for prompt in prompts %}
                                     <option value="{{ prompt.id }}" {% if prompt.id == user_data.current_prompt_id %}selected{% endif %}>
@@ -158,7 +159,7 @@
                     </div>
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="machineDropdown" class="form-label">Default LLM Model</label>
+                            <label for="machineDropdown" class="form-label">{{ t('admin_users.default_llm_model') }}</label>
                             <select class="form-select" id="machineDropdown" name="machine" required>
                                 {% for model in llm_models %}
                                     <option value="{{ model[0] }}" data-vision="{{ model[3] }}" {% if model[0] == user_data.llm_id %}selected{% endif %}>
@@ -173,39 +174,39 @@
 
             <!-- Section 3: Account Settings -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-cog me-2"></i>Account Settings</div>
+                <div class="section-title"><i class="fas fa-cog me-2"></i>{{ t('admin_users.account_settings') }}</div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="balance" class="form-label">Balance ($0 - $500)</label>
+                            <label for="balance" class="form-label">{{ t('admin_users.balance_0_500') }}</label>
                             <div class="input-group">
-                                <span class="input-group-text input-group-text-themed">$</span>
+                                <span class="input-group-text input-group-text-themed">USD</span>
                                 <input type="text" class="form-control" id="balance" name="balance" value="{{ user_data.balance }}" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')" required>
                             </div>
                         </div>
                     </div>
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="apiKeyMode" class="form-label">API Key Mode</label>
+                            <label for="apiKeyMode" class="form-label">{{ t('admin_users.api_key_mode') }}</label>
                             <select class="form-select" id="apiKeyMode" name="api_key_mode">
                                 <option value="both_prefer_own" {% if user_data.api_key_mode == 'both_prefer_own' %}selected{% endif %}>
-                                    Both (Prefer Own Keys)
+                                    {{ t('admin_users.both_prefer_own_keys') }}
                                 </option>
                                 <option value="system_only" {% if user_data.api_key_mode == 'system_only' %}selected{% endif %}>
-                                    System Keys Only
+                                    {{ t('admin_users.system_keys_only') }}
                                 </option>
                                 <option value="own_only" {% if user_data.api_key_mode == 'own_only' %}selected{% endif %}>
-                                    Own Keys Only (BYOK)
+                                    {{ t('admin_users.own_keys_only_byok') }}
                                 </option>
                                 <option value="both_prefer_system" {% if user_data.api_key_mode == 'both_prefer_system' %}selected{% endif %}>
-                                    Both (Prefer System Keys)
+                                    {{ t('admin_users.both_prefer_system_keys') }}
                                 </option>
                             </select>
-                            <small class="form-text text-muted">Controls which API keys this user can use for AI services.</small>
+                            <small class="form-text text-muted">{{ t('admin_users.controls_which_api_keys_this_user_can_use_for_ai_services') }}</small>
                         </div>
                         {% if user_data.has_own_api_keys %}
                         <div class="alert alert-info mb-0">
-                            <i class="fas fa-key me-2"></i>This user has configured their own API keys.
+                            <i class="fas fa-key me-2"></i>{{ t('admin_users.this_user_has_configured_their_own_api_keys') }}
                         </div>
                         {% endif %}
                     </div>
@@ -215,32 +216,32 @@
             <!-- Section 4: User Role (Admin only) -->
             {% if is_admin %}
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-user-shield me-2"></i>User Role</div>
+                <div class="section-title"><i class="fas fa-user-shield me-2"></i>{{ t('admin_users.user_role') }}</div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="userRoleId" class="form-label">Role</label>
+                            <label for="userRoleId" class="form-label">{{ t('admin_users.role') }}</label>
                             <select class="form-select" id="userRoleId" name="user_role_id">
                                 {% for role in user_roles %}
                                 <option value="{{ role.id }}" {% if role.id == user_data.role_id %}selected{% endif %}>
-                                    {{ role.name|capitalize }}
+                                    {{ t('admin_users.' + {'admin': 'admin_2', 'user': 'user', 'customer': 'customer'}.get(role.name, 'flow.unknown_role')) }}
                                 </option>
                                 {% endfor %}
                             </select>
                             <small class="form-text text-muted">
-                                <strong>Admin:</strong> Full access to all features and users.<br>
-                                <strong>User:</strong> Can create and manage their own users.<br>
-                                <strong>Customer:</strong> Regular user with no admin capabilities.
+                                <strong>{{ t('admin_users.admin') }}</strong> {{ t('admin_users.full_access_to_all_features_and_users') }}<br>
+                                <strong>{{ t('admin_users.user_2') }}</strong> {{ t('admin_users.can_create_and_manage_their_own_users') }}<br>
+                                <strong>{{ t('admin_users.customer_2') }}</strong> {{ t('admin_users.regular_user_with_no_admin_capabilities') }}
                             </small>
                         </div>
                     </div>
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label class="form-label">Current Role</label>
+                            <label class="form-label">{{ t('admin_users.current_role') }}</label>
                             <div class="mt-2">
                                 <span class="badge {% if user_data.role_name == 'admin' %}bg-danger{% elif user_data.role_name == 'user' %}bg-primary{% else %}bg-secondary{% endif %} fs-6">
                                     <i class="fas {% if user_data.role_name == 'admin' %}fa-crown{% elif user_data.role_name == 'user' %}fa-user-tie{% else %}fa-user{% endif %} me-1"></i>
-                                    {{ user_data.role_name|capitalize }}
+                                    {{ t('admin_users.' + {'admin': 'admin_2', 'user': 'user', 'customer': 'customer'}.get(user_data.role_name, 'flow.unknown_role')) }}
                                 </span>
                             </div>
                         </div>
@@ -251,25 +252,25 @@
 
             <!-- Section 5: Permissions -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-shield-alt me-2"></i>Permissions</div>
+                <div class="section-title"><i class="fas fa-shield-alt me-2"></i>{{ t('admin_users.permissions') }}</div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3 form-check">
                             <input type="checkbox" class="form-check-input" id="allowFileUpload" name="allow_file_upload" {% if user_data.allow_file_upload %}checked{% endif %}>
                             <label class="form-check-label" for="allowFileUpload">
-                                <i class="fas fa-file-upload me-1 text-muted"></i> Allow file upload to the AI
+                                <i class="fas fa-file-upload me-1 text-muted"></i> {{ t('admin_users.allow_file_upload_to_the_ai') }}
                             </label>
                         </div>
                         <div class="mb-3 form-check">
                             <input type="checkbox" class="form-check-input" id="allowImageGeneration" name="allow_image_generation" {% if user_data.allow_image_generation %}checked{% endif %}>
                             <label class="form-check-label" for="allowImageGeneration">
-                                <i class="fas fa-image me-1 text-muted"></i> Allow AI to generate images
+                                <i class="fas fa-image me-1 text-muted"></i> {{ t('admin_users.allow_ai_to_generate_images') }}
                             </label>
                         </div>
                         <div class="mb-3 form-check">
                             <input type="checkbox" class="form-check-input" id="canChangePassword" {% if is_admin %}name="can_change_password"{% else %}disabled{% endif %} {% if user_data.can_change_password %}checked{% endif %}>
                             <label class="form-check-label" for="canChangePassword">
-                                <i class="fas fa-key me-1 text-muted"></i> User can change password
+                                <i class="fas fa-key me-1 text-muted"></i> {{ t('admin_users.user_can_change_password') }}
                             </label>
                         </div>
                     </div>
@@ -278,13 +279,13 @@
                         <div class="mb-3 form-check">
                             <input type="checkbox" class="form-check-input" id="publicPromptsAccess" name="public_prompts_access" {% if user_data.public_prompts_access %}checked{% endif %}>
                             <label class="form-check-label" for="publicPromptsAccess">
-                                <i class="fas fa-globe me-1 text-muted"></i> Allow access to public prompts
+                                <i class="fas fa-globe me-1 text-muted"></i> {{ t('admin_users.allow_access_to_public_prompts') }}
                             </label>
                         </div>
                         <div class="mb-3 form-check">
                             <input type="checkbox" class="form-check-input" id="allPromptsAccess" name="all_prompts_access" {% if user_data.all_prompts_access %}checked{% endif %}>
                             <label class="form-check-label" for="allPromptsAccess">
-                                <i class="fas fa-list-alt me-1 text-muted"></i> Allow access to all prompts
+                                <i class="fas fa-list-alt me-1 text-muted"></i> {{ t('admin_users.allow_access_to_all_prompts') }}
                             </label>
                         </div>
                         {% endif %}
@@ -294,23 +295,23 @@
 
             {% if is_admin %}
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-tachometer-alt me-2"></i>Rate Limits</div>
+                <div class="section-title"><i class="fas fa-tachometer-alt me-2"></i>{{ t('admin_users.rate_limits') }}</div>
                 <div id="rateLimitWarning" class="alert alert-warning" style="display: none;"></div>
-                <div id="rateLimitStatus" class="mb-3 text-muted">Loading rate limit status...</div>
+                <div id="rateLimitStatus" class="mb-3 text-muted">{{ t('admin_users.loading_rate_limit_status') }}</div>
                 <div class="mb-3">
                     <button type="button" class="btn btn-outline-warning btn-sm" onclick="resetUserRateLimits()">
-                        <i class="fas fa-undo me-1"></i> Reset User Rate Limits
+                        <i class="fas fa-undo me-1"></i> {{ t('admin_users.reset_user_rate_limits') }}
                     </button>
                 </div>
                 <div class="mb-2">
-                    <label for="rateLimitIpInput" class="form-label">Reset IP Rate Limits</label>
+                    <label for="rateLimitIpInput" class="form-label">{{ t('admin_users.reset_ip_rate_limits') }}</label>
                     <div class="input-group" style="max-width: 420px;">
-                        <input type="text" class="form-control" id="rateLimitIpInput" placeholder="Enter blocked IP or IPv6 address">
+                        <input type="text" class="form-control" id="rateLimitIpInput" placeholder="{{ t('admin_users.enter_blocked_ip_or_ipv6_address') }}">
                         <button type="button" class="btn btn-outline-danger" onclick="resetIpRateLimits()">
-                            <i class="fas fa-ban me-1"></i> Reset IP
+                            <i class="fas fa-ban me-1"></i> {{ t('admin_users.reset_ip') }}
                         </button>
                     </div>
-                    <small class="form-text text-muted">IP-based login limits are global, not tied to a single user.</small>
+                    <small class="form-text text-muted">{{ t('admin_users.ip_based_login_limits_are_global_not_tied_to_a_single_user') }}</small>
                 </div>
                 <div id="blockedIpList" class="small text-muted"></div>
             </div>
@@ -318,11 +319,11 @@
 
             <!-- Section 6: Category Access (visible when public prompts enabled) -->
             <div class="section-container" id="categoryAccessSection" style="{% if not user_data.public_prompts_access %}display: none;{% endif %}">
-                <div class="section-title"><i class="fas fa-tags me-2"></i>Category Access</div>
-                <p class="text-muted small mb-3">Select which categories of public prompts this user can access. Leave "All Categories" checked to give access to all.</p>
+                <div class="section-title"><i class="fas fa-tags me-2"></i>{{ t('admin_users.category_access') }}</div>
+                <p class="text-muted small mb-3">{{ t('admin_users.select_which_categories_of_public_prompts_this_user_can_access_leave_all') }}</p>
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="allowAllCategories" name="allow_all_categories" {% if not user_data.category_access %}checked{% endif %} onchange="toggleCategorySelection()">
-                    <label class="form-check-label" for="allowAllCategories"><strong>All Categories</strong> (no restriction)</label>
+                    <label class="form-check-label" for="allowAllCategories"><strong>{{ t('admin_users.all_categories') }}</strong> {{ t('admin_users.no_restriction') }}</label>
                 </div>
                 <div id="categoryCheckboxes" style="{% if not user_data.category_access %}display: none;{% endif %}">
                     <div class="row">
@@ -342,96 +343,96 @@
                         {% endfor %}
                     </div>
                     <div class="mt-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAllCategories()">Select All</button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="deselectAllCategories()">Deselect All</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAllCategories()">{{ t('admin_users.select_all') }}</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="deselectAllCategories()">{{ t('admin_users.deselect_all') }}</button>
                     </div>
                 </div>
             </div>
 
             <!-- Section 7: Team Billing -->
             <div class="section-container" id="billingModeSection">
-                <div class="section-title"><i class="fas fa-credit-card me-2"></i>Team Billing</div>
-                <p class="text-muted small mb-3">Choose who pays for this user's AI consumption.</p>
+                <div class="section-title"><i class="fas fa-credit-card me-2"></i>{{ t('admin_users.team_billing') }}</div>
+                <p class="text-muted small mb-3">{{ t('admin_users.choose_who_pays_for_this_user_s_ai_consumption') }}</p>
 
                 <div class="mb-3">
                     <div class="form-check">
                         <input type="radio" class="form-check-input" name="billing_mode" value="customer_pays" id="billingCustomerPays" {% if not user_data.billing_account_id %}checked{% endif %} onchange="toggleBillingOptions()">
                         <label class="form-check-label" for="billingCustomerPays">
-                            <strong>Customer pays their own balance</strong>
-                            <br><small class="text-muted">Customer must add balance to their account to use the platform.</small>
+                            <strong>{{ t('admin_users.customer_pays_their_own_balance') }}</strong>
+                            <br><small class="text-muted">{{ t('admin_users.customer_must_add_balance_to_their_account_to_use_the_platform') }}</small>
                         </label>
                     </div>
                     <div class="form-check mt-2">
                         <input type="radio" class="form-check-input" name="billing_mode" value="user_pays" id="billingUserPays" {% if user_data.billing_account_id %}checked{% endif %} onchange="toggleBillingOptions()">
                         <label class="form-check-label" for="billingUserPays">
-                            <strong>I cover this user's AI usage costs</strong>
-                            <br><small class="text-muted">All AI costs will be charged to YOUR balance.</small>
+                            <strong>{{ t('admin_users.i_cover_this_user_s_ai_usage_costs') }}</strong>
+                            <br><small class="text-muted">{{ t('admin_users.all_ai_costs_will_be_charged_to_your_balance') }}</small>
                         </label>
                     </div>
                 </div>
 
                 <div id="teamBillingOptions" style="{% if not user_data.billing_account_id %}display: none;{% endif %}" class="border rounded p-3 bg-light">
                     <div class="mb-3">
-                        <label class="form-label">Monthly Spending Limit</label>
+                        <label class="form-label">{{ t('admin_users.monthly_spending_limit') }}</label>
                         <div class="form-check">
-                            <input type="radio" class="form-check-input" name="billing_limit_type" value="unlimited" id="limitUnlimited" {% if not user_data.billing_limit %}checked{% endif %} onchange="toggleLimitInput()">
-                            <label class="form-check-label" for="limitUnlimited">No limit (unlimited)</label>
+                            <input type="radio" class="form-check-input" name="billing_limit_type" value="unlimited" id="limitUnlimited" {% if user_data.billing_limit is none %}checked{% endif %} onchange="toggleLimitInput()">
+                            <label class="form-check-label" for="limitUnlimited">{{ t('admin_users.no_limit_unlimited') }}</label>
                         </div>
                         <div class="form-check mt-1">
-                            <input type="radio" class="form-check-input" name="billing_limit_type" value="limited" id="limitSet" {% if user_data.billing_limit %}checked{% endif %} onchange="toggleLimitInput()">
-                            <label class="form-check-label" for="limitSet">Set limit:</label>
+                            <input type="radio" class="form-check-input" name="billing_limit_type" value="limited" id="limitSet" {% if user_data.billing_limit is not none %}checked{% endif %} onchange="toggleLimitInput()">
+                            <label class="form-check-label" for="limitSet">{{ t('admin_users.set_limit') }}</label>
                             <div class="input-group mt-1" style="max-width: 240px;">
-                                <span class="input-group-text">$</span>
-                                <input type="text" class="form-control" id="billingLimitInput" name="billing_limit" value="{% if user_data.billing_limit %}{{ user_data.billing_limit }}{% endif %}" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')" {% if not user_data.billing_limit %}disabled{% endif %}>
-                                <span class="input-group-text">/month</span>
+                                <span class="input-group-text">USD</span>
+                                <input type="text" class="form-control" id="billingLimitInput" name="billing_limit" value="{% if user_data.billing_limit is not none %}{{ user_data.billing_limit }}{% endif %}" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')" {% if user_data.billing_limit is none %}disabled{% endif %}>
+                                <span class="input-group-text">{{ t('admin_users.flow.per_month') }}</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">When limit is reached:</label>
+                        <label class="form-label">{{ t('admin_users.when_limit_is_reached') }}</label>
                         <div class="form-check">
                             <input type="radio" class="form-check-input" name="billing_limit_action" value="block" id="actionBlock" {% if user_data.billing_limit_action == 'block' or not user_data.billing_limit_action %}checked{% endif %} onchange="toggleAutoRefillSettings()">
                             <label class="form-check-label" for="actionBlock">
-                                <strong>Block</strong> - User cannot send more messages
+                                <strong>{{ t('admin_users.block') }}</strong> {{ t('admin_users.user_cannot_send_more_messages') }}
                             </label>
                         </div>
                         <div class="form-check">
                             <input type="radio" class="form-check-input" name="billing_limit_action" value="notify" id="actionNotify" {% if user_data.billing_limit_action == 'notify' %}checked{% endif %} onchange="toggleAutoRefillSettings()">
                             <label class="form-check-label" for="actionNotify">
-                                <strong>Notify</strong> - Send alert but allow user to continue
+                                <strong>{{ t('admin_users.notify') }}</strong> {{ t('admin_users.send_alert_but_allow_user_to_continue') }}
                             </label>
                         </div>
                         <div class="form-check">
                             <input type="radio" class="form-check-input" name="billing_limit_action" value="auto_refill" id="actionAutoRefill" {% if user_data.billing_limit_action == 'auto_refill' %}checked{% endif %} onchange="toggleAutoRefillSettings()">
                             <label class="form-check-label" for="actionAutoRefill">
-                                <strong>Auto-Refill</strong> - Automatically increase limit when reached
+                                <strong>{{ t('admin_users.auto_refill') }}</strong> {{ t('admin_users.automatically_increase_limit_when_reached') }}
                             </label>
                         </div>
                     </div>
 
                     <div id="autoRefillSettings" style="display: {% if user_data.billing_limit_action == 'auto_refill' %}block{% else %}none{% endif %};" class="mb-3 ms-4 p-3 border rounded bg-light">
                         <div class="mb-2">
-                            <label class="form-label small">Increment amount:</label>
+                            <label class="form-label small">{{ t('admin_users.increment_amount') }}</label>
                             <div class="input-group" style="max-width: 200px;">
-                                <span class="input-group-text">$</span>
+                                <span class="input-group-text">USD</span>
                                 <input type="number" class="form-control" name="billing_auto_refill_amount" value="{{ user_data.billing_auto_refill_amount or 10.0 }}" step="0.01" min="1" {% if user_data.billing_limit_action != 'auto_refill' %}disabled{% endif %}>
                             </div>
-                            <small class="text-muted">How much to increase the limit each time</small>
+                            <small class="text-muted">{{ t('admin_users.how_much_to_increase_the_limit_each_time') }}</small>
                         </div>
                         <div>
-                            <label class="form-label small">Maximum limit (optional):</label>
+                            <label class="form-label small">{{ t('admin_users.maximum_limit_optional') }}</label>
                             <div class="input-group" style="max-width: 200px;">
-                                <span class="input-group-text">$</span>
-                                <input type="number" class="form-control" name="billing_max_limit" value="{% if user_data.billing_max_limit %}{{ user_data.billing_max_limit }}{% endif %}" placeholder="No cap" step="0.01" min="0" {% if user_data.billing_limit_action != 'auto_refill' %}disabled{% endif %}>
+                                <span class="input-group-text">USD</span>
+                                <input type="number" class="form-control" name="billing_max_limit" value="{% if user_data.billing_max_limit %}{{ user_data.billing_max_limit }}{% endif %}" placeholder="{{ t('admin_users.no_cap') }}" step="0.01" min="0" {% if user_data.billing_limit_action != 'auto_refill' %}disabled{% endif %}>
                             </div>
-                            <small class="text-muted">Leave empty for unlimited auto-refills</small>
+                            <small class="text-muted">{{ t('admin_users.leave_empty_for_unlimited_auto_refills') }}</small>
                         </div>
                     </div>
 
                     <div class="alert alert-info small mb-0">
                         <i class="fas fa-info-circle me-1"></i>
-                        Spending resets on the 1st of each month. You can view team billing in the <a href="/user/team-billing">Team Billing dashboard</a>.
+                        {% macro billing_link() %}<a href="/user/team-billing">{{ t('admin_users.team_billing_dashboard') }}</a>{% endmacro %}{{ t_html('admin_users.flow.billing_hint', link=billing_link()) }}
                     </div>
                 </div>
             </div>
@@ -439,17 +440,17 @@
             <!-- Section 8: Storage Quota (Admin only) -->
             {% if is_admin %}
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-hard-drive me-2"></i>Storage Quota</div>
+                <div class="section-title"><i class="fas fa-hard-drive me-2"></i>{{ t('admin_users.storage_quota') }}</div>
                 <div class="mb-3">
-                    <label for="storageQuotaGb" class="form-label">Storage quota (GB)</label>
+                    <label for="storageQuotaGb" class="form-label">{{ t('admin_users.storage_quota_gb') }}</label>
                     <div class="input-group" style="max-width: 240px;">
                         <input type="number" class="form-control" id="storageQuotaGb" name="storage_quota_gb"
-                               min="0" step="any" placeholder="System default"
+                               min="0" step="any" placeholder="{{ t('admin_users.system_default') }}"
                                value="{% if user_data.storage_quota_bytes is not none %}{{ '%g'|format(user_data.storage_quota_bytes / 1073741824) }}{% endif %}">
                         <span class="input-group-text input-group-text-themed">GB</span>
                     </div>
                     <small class="form-text text-muted">
-                        Empty = system default (currently {% if storage_quota_default_bytes == 0 %}unlimited{% else %}{{ '%.1f'|format(storage_quota_default_bytes / 1073741824) }} GB{% endif %}). 0 = unlimited.
+                        {{ t('admin_users.flow.storage_hint', quota=t('admin_users.unlimited') if storage_quota_default_bytes == 0 else t('admin_users.flow.storage_gb', amount=format_number(storage_quota_default_bytes / 1073741824, 1, 1))) }}
                     </small>
                 </div>
             </div>
@@ -458,10 +459,10 @@
             <!-- Action Buttons -->
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary">
-                    <i class="fas fa-save me-1"></i> Update User
+                    <i class="fas fa-save me-1"></i> {{ t('admin_users.update_user') }}
                 </button>
                 <a href="/users-list" class="btn btn-outline-secondary">
-                    <i class="fas fa-list me-1"></i> All Users
+                    <i class="fas fa-list me-1"></i> {{ t('admin_users.all_users') }}
                 </a>
             </div>
         </form>
@@ -473,12 +474,15 @@
     function togglePassword() {
         const input = document.getElementById('new_password');
         const icon = document.getElementById('toggleIcon');
+        const button = document.getElementById('togglePasswordBtn');
         if (input.type === 'password') {
             input.type = 'text';
+            button.setAttribute('aria-label', AurvekI18n.t('common.action.hide_password'));
             icon.classList.remove('fa-eye');
             icon.classList.add('fa-eye-slash');
         } else {
             input.type = 'password';
+            button.setAttribute('aria-label', AurvekI18n.t('common.action.show_password'));
             icon.classList.remove('fa-eye-slash');
             icon.classList.add('fa-eye');
         }
@@ -557,7 +561,7 @@
         const originalText = submitBtn.innerHTML;
 
         submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + AurvekI18n.t('admin_users.saving') + '';
 
         try {
             const response = await secureFetch('/edit-user', {
@@ -569,19 +573,19 @@
             const result = await response.json();
             if (result.success) {
                 // Show success briefly then reload
-                submitBtn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                submitBtn.innerHTML = '<i class="fas fa-check me-1"></i> ' + AurvekI18n.t('admin_users.saved') + '';
                 submitBtn.classList.remove('btn-primary');
                 submitBtn.classList.add('btn-success');
                 FormGuard.markClean(document.getElementById('editUserForm'));
                 setTimeout(() => window.location.reload(), 1000);
             } else {
-                NotificationModal.error('Update Failed', result.error || 'Error updating user');
+                NotificationModal.error(AurvekI18n.t('admin_users.update_failed'), result.detail || result.error || AurvekI18n.t('admin_users.error_updating_user'));
                 submitBtn.disabled = false;
                 submitBtn.innerHTML = originalText;
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Error', 'An error occurred while updating the user');
+            NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.an_error_occurred_while_updating_the_user'));
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalText;
         }
@@ -676,15 +680,16 @@
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
-        return div.innerHTML;
+        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     function formatBucketLabel(bucketKey) {
-        if (bucketKey.startsWith('id:login:')) return 'Login attempts';
-        if (bucketKey.startsWith('id_fail:login:')) return 'Login failures';
-        if (bucketKey.startsWith('id:recovery:')) return 'Recovery attempts';
-        if (bucketKey.startsWith('id_fail:recovery:')) return 'Recovery failures';
-        return bucketKey;
+        if (bucketKey.startsWith('id:login:')) return AurvekI18n.t('admin_users.login_attempts');
+        if (bucketKey.startsWith('id_fail:login:')) return AurvekI18n.t('admin_users.login_failures');
+        if (bucketKey.startsWith('id:recovery:')) return AurvekI18n.t('admin_users.recovery_attempts');
+        if (bucketKey.startsWith('id_fail:recovery:')) return AurvekI18n.t('admin_users.recovery_failures');
+        if (bucketKey.startsWith('pair_fail:login:')) return AurvekI18n.t('admin_users.flow.login_pair');
+        return AurvekI18n.t('admin_users.flow.rate_bucket');
     }
 
     function renderRateLimitStatus(data) {
@@ -703,17 +708,17 @@
 
         const buckets = Object.entries(data.limits || {});
         if (!buckets.length) {
-            statusEl.innerHTML = '<div class="text-success">No active identifier rate-limit buckets for this user.</div>';
+            statusEl.innerHTML = '<div class="text-success">' + AurvekI18n.t('admin_users.no_active_identifier_rate_limit_buckets_for_this_user') + '</div>';
         } else {
             statusEl.innerHTML = buckets.map(([key, info]) => {
                 const blockedText = info.blocked
-                    ? `Blocked for ${info.retry_after_seconds || 0}s`
-                    : 'Not blocked';
+                    ? AurvekI18n.t('admin_users.flow.blocked_seconds', {count: info.retry_after_seconds || 0})
+                    : AurvekI18n.t('admin_users.not_blocked');
                 const textClass = info.blocked ? 'text-danger' : 'text-muted';
                 return `
                     <div class="border rounded p-2 mb-2">
                         <div><strong>${escapeHtml(formatBucketLabel(key))}</strong></div>
-                        <div class="${textClass}">Attempts: ${info.attempts_in_window} / ${info.limit || '-'} in ${info.window_minutes}m</div>
+                        <div class="${textClass}">${AurvekI18n.t('admin_users.flow.bucket_attempts', {attempts: AurvekI18n.formatNumber(info.attempts_in_window), limit: info.limit == null ? '-' : AurvekI18n.formatNumber(info.limit), minutes: AurvekI18n.formatNumber(info.window_minutes)})}</div>
                         <div class="${textClass}">${blockedText}</div>
                     </div>
                 `;
@@ -722,20 +727,20 @@
 
         const blockedIps = data.blocked_login_ips || [];
         if (!blockedIps.length) {
-            blockedIpEl.innerHTML = '<div>No globally blocked login IPs at the moment.</div>';
+            blockedIpEl.innerHTML = '<div>' + AurvekI18n.t('admin_users.no_globally_blocked_login_ips_at_the_moment') + '</div>';
             return;
         }
 
         blockedIpEl.innerHTML = `
-            <div class="mb-2"><strong>IPs currently blocked globally for login</strong></div>
+            <div class="mb-2"><strong>${AurvekI18n.t('admin_users.ips_currently_blocked_globally_for_login')}</strong></div>
             ${blockedIps.map(item => `
                 <div class="border rounded p-2 mb-2 d-flex justify-content-between align-items-center gap-2">
                     <div>
                         <div><code>${escapeHtml(item.ip)}</code></div>
-                        <div class="text-muted">${escapeHtml(item.bucket)} bucket, ${item.attempts} attempts</div>
+                        <div class="text-muted">${escapeHtml(AurvekI18n.t('admin_users.flow.ip_attempts', {bucket: item.bucket, attempts: AurvekI18n.formatNumber(item.attempts)}))}</div>
                     </div>
-                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="prefillRateLimitIp(${JSON.stringify(item.ip)})">
-                        Use IP
+                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="prefillRateLimitIp(this.dataset.ip)" data-ip="${escapeHtml(item.ip)}">
+                        ${AurvekI18n.t('admin_users.flow.use_ip')}
                     </button>
                 </div>
             `).join('')}
@@ -748,7 +753,7 @@
 
         const data = await response.json();
         if (!response.ok) {
-            NotificationModal.error('Rate Limits', data.detail || 'Could not load rate limit status.');
+            NotificationModal.error(AurvekI18n.t('admin_users.rate_limits'), data.detail || AurvekI18n.t('admin_users.could_not_load_rate_limit_status'));
             return;
         }
 
@@ -757,8 +762,8 @@
 
     async function resetUserRateLimits() {
         NotificationModal.confirm(
-            'Reset User Rate Limits',
-            `Clear all login and recovery rate-limit buckets for ${editedUsername}?`,
+            AurvekI18n.t('admin_users.reset_user_rate_limits'),
+            AurvekI18n.t('admin_users.flow.clear_user', {name: editedUsername}),
             async () => {
                 const response = await secureFetch('/admin/rate-limits/clear/' + encodeURIComponent(editedUsername), {
                     method: 'POST'
@@ -767,13 +772,13 @@
 
                 const data = await response.json();
                 if (!response.ok) {
-                    NotificationModal.error('Reset Failed', data.detail || 'Could not reset user rate limits.');
+                    NotificationModal.error(AurvekI18n.t('admin_users.reset_failed'), data.detail || AurvekI18n.t('admin_users.could_not_reset_user_rate_limits'));
                     return;
                 }
 
-                NotificationModal.success('Rate Limits Reset', `Cleared ${data.cleared} bucket(s) for ${editedUsername}.`);
+                NotificationModal.success(AurvekI18n.t('admin_users.rate_limits_reset'), AurvekI18n.t('admin_users.flow.cleared', {count: data.cleared, name: editedUsername}));
                 if (data.warning) {
-                    NotificationModal.warning('Multi-worker Warning', data.warning);
+                    NotificationModal.warning(AurvekI18n.t('admin_users.multi_worker_warning'), data.warning);
                 }
                 loadRateLimitStatus();
             }
@@ -791,13 +796,13 @@
         const input = document.getElementById('rateLimitIpInput');
         const ip = input ? input.value.trim() : '';
         if (!ip) {
-            NotificationModal.warning('Missing IP', 'Enter an IP address to reset.');
+            NotificationModal.warning(AurvekI18n.t('admin_users.missing_ip'), AurvekI18n.t('admin_users.enter_an_ip_address_to_reset'));
             return;
         }
 
         NotificationModal.confirm(
-            'Reset IP Rate Limits',
-            `Clear all global login rate-limit buckets for ${ip}?`,
+            AurvekI18n.t('admin_users.reset_ip_rate_limits'),
+            AurvekI18n.t('admin_users.flow.clear_ip', {ip}),
             async () => {
                 const response = await secureFetch('/admin/rate-limits/clear-ip/' + encodeURIComponent(ip), {
                     method: 'POST'
@@ -806,13 +811,13 @@
 
                 const data = await response.json();
                 if (!response.ok) {
-                    NotificationModal.error('Reset Failed', data.detail || 'Could not reset IP rate limits.');
+                    NotificationModal.error(AurvekI18n.t('admin_users.reset_failed'), data.detail || AurvekI18n.t('admin_users.could_not_reset_ip_rate_limits'));
                     return;
                 }
 
-                NotificationModal.success('IP Rate Limits Reset', `Cleared ${data.cleared} bucket(s) for ${ip}.`);
+                NotificationModal.success(AurvekI18n.t('admin_users.ip_rate_limits_reset'), AurvekI18n.t('admin_users.flow.cleared', {count: data.cleared, name: ip}));
                 if (data.warning) {
-                    NotificationModal.warning('Multi-worker Warning', data.warning);
+                    NotificationModal.warning(AurvekI18n.t('admin_users.multi_worker_warning'), data.warning);
                 }
                 loadRateLimitStatus();
             }

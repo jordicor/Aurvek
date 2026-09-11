@@ -1,9 +1,11 @@
 from ai_runtime.dependencies import *
 from ai_runtime.config import _is_gpt5_model, _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
-from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, persistence_result_payload, save_content_to_db
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
 from billing.usage_reservations import accumulate_ai_provider_call_usage
+from billing.usage_reservations import BillingReservationError
+from billing.hosted_search import prepare_hosted_search
 from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
 
 
@@ -176,6 +178,17 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
         # Needed verbatim in a later function-call continuation for reasoning models.
         data["include"] = ["reasoning.encrypted_content"]
 
+    has_hosted_search = any(isinstance(tool, dict) and tool.get("type") in {"web_search", "web_search_preview"}
+                           for tool in data.get("tools", []))
+    if has_hosted_search and str(model).startswith(("gpt-4o-mini", "gpt-4.1-mini")):
+        from integrations.applications.billing import current_application_operation
+        from integrations.embed.models import EmbedError
+        if current_application_operation(user_id) is not None:
+            # Mini search-content charging cannot be safely inferred from the
+            # aggregate usage field. Application routing selects its authorized
+            # search connector instead; never add a guessed 8k token charge.
+            raise EmbedError("application_search_connector_required", 403)
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -191,6 +204,11 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
     thinking_open = False
     response_output_items: list[dict] = []
     function_output_item: dict | None = None
+    search_usage = None
+    search_usage_complete = False
+    search_request_rejected = False
+    unresolved_search_billing = False
+    search_call_ids: set[str] = set()
 
     logger.info(f"call_gpt_responses_api -> model: {model}, tools: {len(tools) if tools else 0}")
     if perf_trace:
@@ -211,6 +229,11 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
+            if has_hosted_search:
+                search_usage = await prepare_hosted_search("openai", user_id, byok=bool(byok or user_api_key))
+                # Responses bounds built-in tool invocations for this request.
+                data["max_tool_calls"] = search_usage.max_uses
+                await search_usage.claim()
             async with session.post(api_url, headers=headers, json=data) as response:
                 if perf_trace:
                     event = perf_trace.sse("openai_headers_received", status=response.status)
@@ -360,15 +383,24 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                                     })
 
                             # --- Completion ---
-                            elif etype == "response.completed":
+                            elif etype in {"response.completed", "response.incomplete"}:
                                 resp = event_data.get("response", {})
                                 final_output = resp.get("output")
+                                search_usage_complete = False
                                 if isinstance(final_output, list):
                                     # Added events may contain partial stubs.  The completed
                                     # response is authoritative and includes encrypted state.
                                     response_output_items = final_output
+                                    if search_usage is not None:
+                                        calls = [item for item in final_output if isinstance(item, dict)
+                                                 and item.get("type") == "web_search_call"]
+                                        if (all(isinstance(item, dict) for item in final_output)
+                                                and all(isinstance(item.get("id"), str) and item["id"] for item in calls)):
+                                            search_call_ids.update(item["id"] for item in calls)
+                                            search_usage.observe_usage(len(search_call_ids))
+                                            search_usage_complete = True
                                 incomplete_reason = (resp.get("incomplete_details") or {}).get("reason")
-                                if not truncated and (resp.get("status") == "incomplete" or incomplete_reason in {"max_output_tokens", "max_tokens"}):
+                                if not truncated and (etype == "response.incomplete" or resp.get("status") == "incomplete" or incomplete_reason in {"max_output_tokens", "max_tokens"}):
                                     truncated = True
                                     _log_truncated_response(
                                         "OpenAI Responses",
@@ -427,13 +459,6 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                                 yield f"data: {orjson.dumps(_provider_error_payload('OpenAI (GPT)', error_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
                                 error_yielded = True
 
-                            elif etype == "response.incomplete":
-                                resp = event_data.get("response", {})
-                                reason = (resp.get("incomplete_details") or {}).get("reason") or "incomplete"
-                                if not truncated:
-                                    truncated = True
-                                    _log_truncated_response("OpenAI Responses", model, conversation_id, llm_id, reason, max_tokens)
-
                             # --- Refusal ---
                             elif etype == "response.refusal.delta":
                                 delta = event_data.get("delta", "")
@@ -442,6 +467,7 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                                     yield f"data: {orjson.dumps({'content': delta}).decode()}\n\n"
 
                 else:
+                    search_request_rejected = response.status in {400, 401, 403, 404, 413, 422, 429}
                     error_body = await response.text()
                     raw_log = f"[call_gpt_responses_api] Error: status {response.status}. Body: {error_body}"
                     logger.error(raw_log)
@@ -456,6 +482,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                     yield f"data: {orjson.dumps(_provider_error_payload('OpenAI (GPT)', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
                     error_yielded = True
 
+        except BillingReservationError as exc:
+            yield f"data: {orjson.dumps({'error': str(exc), 'error_code': 'hosted_search_billing_unavailable'}).decode()}\n\n"
+            error_yielded = True
         except asyncio.TimeoutError as exc:
             error_message = f"[call_gpt_responses_api] Request timed out after {timeout_seconds}s for model {model}"
             logger.error(error_message)
@@ -479,6 +508,11 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
             await record_provider_error_for_label("OpenAI (GPT)", message=human_msg, exception=exc, model=model, byok=byok)
             yield f"data: {orjson.dumps(_provider_error_payload('OpenAI (GPT)', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             error_yielded = True
+
+        finally:
+            if search_usage is not None:
+                unresolved_search_billing = not await search_usage.finish(
+                    complete=search_usage_complete, rejected=search_request_rejected)
 
     if thinking_open:
         yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
@@ -510,6 +544,10 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                 byok=byok,
             )
         )
+
+    if unresolved_search_billing:
+        yield f"data: {orjson.dumps({'error': 'Hosted search usage could not be confirmed; its reservation is retained for reconciliation.', 'error_code': 'hosted_search_usage_unconfirmed'}).decode()}\n\n"
+        return
 
     # If a tool call was detected, emit it and return without saving to DB
     if function_name and save_to_db:
@@ -563,10 +601,9 @@ async def call_gpt_responses_api(messages, model, temperature, max_tokens, promp
                 )
                 if event:
                     yield event
-            if user_message_id and bot_message_id:
-                yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
-            else:
-                yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+            persisted = persistence_result_payload(user_message_id, bot_message_id)
+            yield f"data: {orjson.dumps(persisted).decode()}\n\n"
+            if persisted.get("persistence_error"):
                 return
 
         if perf_trace:

@@ -162,6 +162,7 @@ class BindingSnapshot:
     preferred_number_id: int | None
     allow_inbound: bool
     allow_outbound: bool
+    application_channel: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -173,4 +174,5 @@ class BindingSnapshot:
             "preferred_number_id": self.preferred_number_id,
             "allow_inbound": self.allow_inbound,
             "allow_outbound": self.allow_outbound,
+            **({"application_channel": self.application_channel} if self.application_channel is not None else {}),
         }

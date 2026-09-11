@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { create } = require('../../data/static/js/common/i18n.js');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const sourcePath = path.join(repoRoot, 'data/static/js/chat/phone-call.js');
@@ -48,7 +49,7 @@ test('telephone UI uses authenticated mutation transport and renders server data
     assert.match(source, /\.textContent\s*=/);
     assert.doesNotMatch(source, /\.innerHTML\s*=/);
     assert.doesNotMatch(source, /insertAdjacentHTML|document\.write/);
-    assert.match(source, /\[400, 403, 404, 409, 422, 503\]/);
+    assert.match(source, /payload\?\.error_code/);
     assert.match(source, /response\.status >= 500/);
 });
 
@@ -63,7 +64,7 @@ test('Call me UI uses the account phone and minimal one-shot call contracts', ()
         '/hangup'
     ];
     requiredContracts.forEach(contract => assert.ok(source.includes(contract), contract));
-    assert.match(template, />Call me</);
+    assert.match(template, /t\('chat_ui\.phone\.call_me'\)/);
     assert.match(template, /id="phone-call-target"/);
     assert.match(template, /href="\/settings#profile"/);
     assert.doesNotMatch(template, /phone-contact-e164|phone-preferred-line|phone-allow-inbound|phone-allow-outbound/);
@@ -71,8 +72,8 @@ test('Call me UI uses the account phone and minimal one-shot call contracts', ()
 });
 
 test('disabled outgoing calls are distinguished from a missing phone assignment', () => {
-    assert.match(source, /Calls from Aurvek to your phone are disabled for this conversation\./);
-    assert.match(source, /Choose a conversation for phone calls before starting a call\./);
+    assert.match(source, /outbound_calls_disabled: 'disabled_for_conversation'/);
+    assert.match(source, /phone_binding_required: 'choose_before_calling'/);
     assert.doesNotMatch(source, /not linked/i);
 });
 
@@ -109,9 +110,9 @@ test('opening Call me is non-mutating while explicit assignment and call actions
 test('conversation assignment remains visible and switches between clear assign and stop actions', () => {
     assert.match(template, /id="phone-conversation-assignment-control"/);
     assert.match(template, /id="phone-conversation-assignment"/);
-    assert.match(template, />Use this conversation for phone calls</);
+    assert.match(template, /t\('chat_ui\.phone\.use_conversation'\)/);
     assert.match(source, /assignmentControl\.hidden = !\(assigned \|\| \(eligible && !flags\.locked\)\)/);
-    assert.match(source, /assignmentLabel\.textContent = assigned[\s\S]*Stop using this conversation for phone calls[\s\S]*Use this conversation for phone calls/);
+    assert.match(source, /assignmentLabel\.textContent = assigned[\s\S]*tr\('stop_using_conversation'\)[\s\S]*tr\('use_conversation'\)/);
     assert.match(source, /is-assigned/);
     assert.match(source, /is-unassigned/);
     assert.match(source, /async function toggleConversationAssignment\(\)[\s\S]*unassignConversation\(\)[\s\S]*assignConversation\(\)/);
@@ -145,9 +146,9 @@ test('call history lives with the saved phone and scheduling aligns the button w
         template.indexOf('<section class="phone-call-target-card"'),
         template.indexOf('</section>', template.indexOf('<section class="phone-call-target-card"'))
     );
-    assert.match(targetCard, /Your phone/);
-    assert.match(targetCard, /href="\/settings#calls"[\s\S]*View call history/);
-    assert.match(template, /phone-schedule-row[\s\S]*phone-schedule-at[\s\S]*phone-schedule-submit[\s\S]*<\/div>[\s\S]*Uses your current time zone/);
+    assert.match(targetCard, /t\('chat_ui\.phone\.your_phone'\)/);
+    assert.match(targetCard, /href="\/settings#calls"[\s\S]*t\('chat_ui\.phone\.view_history'\)/);
+    assert.match(template, /phone-schedule-row[\s\S]*phone-schedule-at[\s\S]*phone-schedule-submit[\s\S]*<\/div>[\s\S]*t\('chat_ui\.phone\.time_zone_help'\)/);
     assert.match(css, /\.phone-schedule-row\s*\{[\s\S]*align-items:\s*stretch/);
     assert.doesNotMatch(css, /\.phone-schedule-form\s*\{[^}]*align-items:\s*end/);
 });
@@ -168,8 +169,8 @@ test('the owner-wide future job is visible and cancelable from every conversatio
     assert.match(source, /state\.jobs = Array\.isArray\(globalPayload\.jobs\)[\s\S]{0,100}renderTarget\(\)/);
     assert.match(source, /jobConversationTitle\(scheduled\)/);
     assert.match(source, /jobConversationTitle\(pendingJob\)/);
-    assert.match(source, /Calling now from this conversation will cancel the scheduled call for/);
-    assert.match(source, /The scheduled call for \$\{displacedTitle\} was canceled\./);
+    assert.match(source, /tr\('cancel_scheduled_for'/);
+    assert.match(source, /tr\('assigned_canceled'/);
     assert.match(source, /async function cancelScheduled\(\)[\s\S]*phone-call-jobs/);
 });
 
@@ -202,20 +203,35 @@ test('incognito is unavailable while locked conversations retain only reductive 
     assert.match(source, /const invalidModalContext = flags\.incognito \|\| conversationId !== state\.conversationId/);
     assert.match(source, /callNow\.hidden = flags\.locked/);
     assert.match(source, /scheduleForm\.hidden = flags\.locked \|\| Boolean\(scheduled\)/);
-    assert.match(source, /This conversation is locked\. You can only end or remove existing phone activity\./);
-    assert.match(source, /Phone calls are unavailable in incognito conversations\./);
+    assert.match(source, /tr\('locked_existing_only'\)/);
+    assert.match(source, /tr\('incognito_unavailable'\)/);
     assert.match(source, /async function openForAssignment\(\)[\s\S]*currentConversationFlags\(\)\.locked/);
 });
 
-test('normal phone errors do not expose implementation terminology', () => {
-    assert.match(source, /Your saved phone number cannot be used for this call\. Check it in Settings\./);
-    assert.match(source, /That time cannot be scheduled\. Choose a different time and try again\./);
-    assert.doesNotMatch(source, /if \(detail\) return detail\.slice/);
+test('phone errors present actionable codes from the API without displaying diagnostics', () => {
+    const resources = {};
+    for (const language of ['en', 'ja']) {
+        resources[language] = {};
+        for (const domain of ['common', 'chat_widgets']) {
+            resources[language][domain] = JSON.parse(fs.readFileSync(path.join(repoRoot, 'locales', language, domain + '.json'), 'utf8'));
+        }
+    }
+    const i18n = create({ version: 1, language: 'ja', locales: { en: 'en-US', ja: 'ja-JP' }, resources });
+    const tr = key => i18n.t('chat_widgets.phone.' + key);
+    const body = source.slice(source.indexOf('function safeServerMessage('), source.indexOf('async function requestJson('));
+    const present = new Function('tr', 'AurvekI18n', body + '; return safeServerMessage;')(tr, i18n);
+    assert.equal(present({status: 400}, {
+        error_code: 'invalid_schedule_time', detail: 'scheduled_at does not exist in this timezone because of DST',
+    }), tr('invalid_time'));
+    assert.equal(present({status: 409}, {
+        error_code: 'scheduled_call_started', detail: 'The scheduled call was claimed concurrently',
+    }), tr('scheduled_already_started'));
+    assert.equal(present({status: 400}, {detail: 'Private provider diagnostic'}), tr('request_failed'));
 });
 
 test('conversation menus expose phone assignment and management in normal and folder rows', () => {
-    assert.match(chat, /'Use for phone calls'/);
-    assert.match(chat, /'Manage phone calls'/);
+    assert.match(chat, /AurvekI18n\.t\('chat\.use_phone'\)/);
+    assert.match(chat, /AurvekI18n\.t\('chat\.manage_phone'\)/);
     assert.match(chat, /AurvekPhoneCall\.openForAssignment\(\)/);
     assert.match(chat, /AurvekPhoneCall\.open\(\)/);
     assert.match(chat, /createPhoneCallsMenuLink\(conversation\)/);

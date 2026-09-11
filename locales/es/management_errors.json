@@ -1,0 +1,12 @@
+{
+  "curation.access": "Solo las cuentas de tipo Usuario o Administrador pueden acceder a los ajustes de curación",
+  "curation.update_access": "Solo las cuentas de tipo Usuario o Administrador pueden cambiar los ajustes de curación",
+  "curation.load_failed": "No se han podido cargar los ajustes de curación. Inténtalo de nuevo.",
+  "curation.save_failed": "No se han podido guardar los ajustes de curación. Inténtalo de nuevo.",
+  "curation.negative": "El recargo no puede ser negativo",
+  "curation.maximum": "El recargo no puede superar {amount} por millón de tokens",
+  "curation.saved": "Ajustes de curación actualizados",
+  "curation.invalid": "El valor del recargo no es válido",
+  "prompt.not_found": "No se ha encontrado el prompt",
+  "access.denied": "Acceso denegado"
+}

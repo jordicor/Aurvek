@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from integrations.telephony.audio import (
+    PCMU_SAMPLE_RATE_HZ,
     PcmuFrame,
     PcmuFrameBuffer,
     iter_pcmu_frames,
@@ -23,7 +24,10 @@ from integrations.telephony.media_streams import (
     build_mark_message,
     build_media_message,
 )
-from integrations.telephony.phone_context import PhoneChannelTurn
+from integrations.telephony.phone_context import (
+    PhoneChannelTurn,
+    PhoneMessageAudioRange,
+)
 from integrations.telephony.recording import LocalCallRecorder
 from integrations.telephony.speech import (
     PcmuChunkConsumer,
@@ -348,6 +352,7 @@ class PhoneTurnPlayback:
         else:
             clear_failed = False
         try:
+            self._stage_assistant_audio(confirmed_text, truncate=True)
             ids = await self.runtime_turn.interrupt(
                 confirmed_text,
                 played_ms=confirmed_ms,
@@ -428,22 +433,10 @@ class PhoneTurnPlayback:
             await self._capacity_changed.wait()
 
         for frame in frames:
-            if self._interrupted:
-                raise _PlaybackInterrupted
-            sent_at = float(self._monotonic())
-            await self._send(
-                build_media_message(
-                    stream_sid=self.stream_sid,
-                    audio=frame.payload,
-                )
+            await self._send_media_frame(
+                frame,
+                recording_start_ms=recording_start_ms,
             )
-            self._output_started = True
-            self.playback_clock.note_audio_sent(frame.payload, sent_at=sent_at)
-            if self._recorder is not None:
-                self._recorder.record_assistant(
-                    frame.payload,
-                    start_ms=recording_start_ms + frame.start_ms,
-                )
         if self._interrupted:
             raise _PlaybackInterrupted
         await self._send(
@@ -505,26 +498,12 @@ class PhoneTurnPlayback:
                         break
                 await self._capacity_changed.wait()
 
-            if self._interrupted:
-                raise _PlaybackInterrupted
-            sent_at = float(self._monotonic())
-            await self._send(
-                build_media_message(
-                    stream_sid=self.stream_sid,
-                    audio=frame.payload,
-                )
+            assert recording_start_ms is not None
+            await self._send_media_frame(
+                frame,
+                recording_start_ms=recording_start_ms,
             )
-            # `output_started` means Twilio accepted at least one complete
-            # frame, identically for buffered and provider-streamed playback.
-            self._output_started = True
-            self.playback_clock.note_audio_sent(frame.payload, sent_at=sent_at)
             wire_audio.extend(frame.payload)
-            if self._recorder is not None:
-                assert recording_start_ms is not None
-                self._recorder.record_assistant(
-                    frame.payload,
-                    start_ms=recording_start_ms + frame.start_ms,
-                )
 
         async def on_pcmu_chunk(chunk: bytes) -> None:
             if self._interrupted:
@@ -590,6 +569,35 @@ class PhoneTurnPlayback:
             raise PhonePlaybackError("streamed TTS differs from cached audio")
         return True, asset
 
+    async def _send_media_frame(
+        self,
+        frame: PcmuFrame,
+        *,
+        recording_start_ms: int,
+    ) -> None:
+        """Serialize provider delivery and recording with interruption clear."""
+
+        async with self._send_lock:
+            async with self._state_lock:
+                if self._interrupted:
+                    raise _PlaybackInterrupted
+            sent_at = float(self._monotonic())
+            await self._send_message(
+                build_media_message(
+                    stream_sid=self.stream_sid,
+                    audio=frame.payload,
+                )
+            )
+            # Recording stays inside the same lock as the provider send.  Once
+            # ``clear`` returns, no prior frame can append after truncation.
+            self._output_started = True
+            self.playback_clock.note_audio_sent(frame.payload, sent_at=sent_at)
+            if self._recorder is not None:
+                self._recorder.record_assistant(
+                    frame.payload,
+                    start_ms=recording_start_ms + frame.start_ms,
+                )
+
     async def _send(self, message: Mapping[str, Any]) -> None:
         async with self._send_lock:
             await self._send_message(message)
@@ -616,6 +624,7 @@ class PhoneTurnPlayback:
                 raise PhonePlaybackError(
                     "final playback mark does not cover the canonical draft"
                 )
+            self._stage_assistant_audio(confirmation.text_prefix)
             ids = await self.runtime_turn.confirm_audible(
                 confirmation.text_prefix,
                 played_ms=confirmation.played_ms,
@@ -635,6 +644,53 @@ class PhoneTurnPlayback:
             except BaseException:
                 pass
             self._done.set()
+
+    def _stage_assistant_audio(
+        self,
+        confirmed_text: str,
+        *,
+        truncate: bool = False,
+    ) -> None:
+        """Bind the durably committed text to its exact retained PCMU prefix."""
+
+        if (
+            self._recorder is None
+            or not self._recorder.enabled
+            or self._playback_call_start_ms is None
+        ):
+            return
+        start_byte = (
+            self._playback_call_start_ms * PCMU_SAMPLE_RATE_HZ // 1_000
+        )
+        if not confirmed_text:
+            if truncate:
+                self._recorder.truncate_assistant(end_byte=start_byte)
+            return
+        text = ""
+        byte_frontier = 0
+        for fragment in self.ledger.fragments:
+            text += fragment.text
+            byte_frontier = fragment.end_byte
+            if text == confirmed_text:
+                break
+            if not confirmed_text.startswith(text):
+                raise PhonePlaybackError(
+                    "confirmed phone text is not an exact audio prefix"
+                )
+        if text != confirmed_text or byte_frontier <= 0:
+            raise PhonePlaybackError(
+                "confirmed phone text has no exact retained audio prefix"
+            )
+        audio_range = PhoneMessageAudioRange(
+            start_byte=start_byte,
+            end_byte=start_byte + byte_frontier,
+        )
+        if truncate:
+            self._recorder.truncate_assistant(end_byte=audio_range.end_byte)
+        self.phone_turn.link_state.set_audio_range(
+            "assistant",
+            audio_range,
+        )
 
     def _set_result(self, result: PhonePlaybackResult) -> None:
         if self._result is None:

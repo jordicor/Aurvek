@@ -12,6 +12,8 @@ from models import User
 class DummyRequest:
     def __init__(self, ip: str):
         self.headers = {}
+        self.cookies = {}
+        self.state = SimpleNamespace()
         self.client = SimpleNamespace(host=ip)
 
 
@@ -192,7 +194,7 @@ async def test_invalid_captcha_does_not_poison_account_buckets(
     response = await auth_flows.handle_login_request(request)
 
     assert response.name == "login.html"
-    assert response.context["error"] == "Invalid CAPTCHA."
+    assert response.context["error"] == "Please complete the security verification and try again."
     account_keys = {
         key
         for key in isolated_limiter._attempts

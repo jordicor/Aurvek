@@ -1,0 +1,28 @@
+<div class="mb-3">
+    <label for="timezoneName" class="form-label">{{ t('profile.account.timezone') }}</label>
+    <details class="mb-2" id="timezoneCitySearch">
+        <summary class="text-primary">{{ t('profile.timezone.city_search_toggle') }}</summary>
+        <label for="timezoneCityInput" class="form-label mt-2">{{ t('profile.timezone.city_search_label') }}</label>
+        <div class="input-group">
+            <input type="search" class="form-control" id="timezoneCityInput" maxlength="100" autocomplete="off" placeholder="{{ t('profile.timezone.city_search_placeholder') }}" aria-describedby="timezoneCityStatus">
+            <button type="button" class="btn btn-outline-secondary" id="timezoneCitySearchButton">{{ t('profile.timezone.city_search_button') }}</button>
+        </div>
+        <small class="form-text d-block" id="timezoneCityStatus" role="status" aria-live="polite"></small>
+        <ul class="list-group mt-2" id="timezoneCityResults" hidden></ul>
+        <small class="form-text d-block text-muted"><a href="https://www.geonames.org/" target="_blank" rel="noopener noreferrer">{{ t('profile.timezone.city_search_credit') }}</a></small>
+    </details>
+    <div class="input-group">
+        <select class="form-select" id="timezoneName" name="timezone_name" aria-describedby="timezoneHelp deviceTimezoneStatus">
+            <option value="">{{ t('profile.account.timezone_placeholder') }}</option>
+            {% if user_data['timezone_name'] and user_data['timezone_name'] not in timezone_options %}
+            <option value="{{ user_data['timezone_name'] }}" selected>{{ user_data['timezone_name'] | replace('_', ' ') | replace('/', ' / ') }}</option>
+            {% endif %}
+            {% for timezone_name in timezone_options %}
+            <option value="{{ timezone_name }}"{% if timezone_name == user_data['timezone_name'] %} selected{% endif %}>{{ timezone_name | replace('_', ' ') | replace('/', ' / ') }}</option>
+            {% endfor %}
+        </select>
+        <button type="button" class="btn btn-outline-secondary" id="useDeviceTimezoneButton">{{ t('profile.account.use_device_timezone') }}</button>
+    </div>
+    <small class="form-text text-muted" id="timezoneHelp">{{ t('profile.account.timezone_help') }}</small>
+    <small class="form-text d-block" id="deviceTimezoneStatus" aria-live="polite"></small>
+</div>

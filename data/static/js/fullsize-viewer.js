@@ -61,29 +61,41 @@ const FullsizeViewer = (function() {
                 <div class="fullsize-viewer-backdrop"></div>
                 <div class="fullsize-viewer-spinner">
                     <div class="spinner-border text-light" role="status">
-                        <span class="visually-hidden">Loading...</span>
+                        <span class="visually-hidden"></span>
                     </div>
                 </div>
-                <img id="fullsizeViewerImage" class="fullsize-viewer-image" src="" alt="Fullsize Image">
-                <span class="fullsize-viewer-close">&times;</span>
-                <div class="fullsize-viewer-nav fullsize-viewer-prev" title="Previous image">
+                <img id="fullsizeViewerImage" class="fullsize-viewer-image" src="" alt="">
+                <button type="button" class="fullsize-viewer-close" aria-label="">&times;</button>
+                <div class="fullsize-viewer-nav fullsize-viewer-prev" title="">
                     <i class="fas fa-chevron-left"></i>
                 </div>
-                <div class="fullsize-viewer-nav fullsize-viewer-next" title="Next image">
+                <div class="fullsize-viewer-nav fullsize-viewer-next" title="">
                     <i class="fas fa-chevron-right"></i>
                 </div>
                 <div class="fullsize-viewer-controls">
-                    <button class="btn btn-primary fullsize-viewer-download" title="Download image">
-                        <i class="fas fa-download me-1"></i> Download
+                    <button class="btn btn-primary fullsize-viewer-download" title="">
+                        <i class="fas fa-download me-1"></i><span></span>
                     </button>
-                    <button class="btn btn-danger fullsize-viewer-delete" title="Delete image">
-                        <i class="fas fa-trash me-1"></i> Delete
+                    <button class="btn btn-danger fullsize-viewer-delete" title="">
+                        <i class="fas fa-trash me-1"></i><span></span>
                     </button>
                 </div>
             </div>
         `;
         document.body.insertAdjacentHTML('beforeend', html);
         container = document.getElementById('fullsizeViewer');
+        const t = (key) => window.AurvekI18n.t(`chat_ui.${key}`);
+        container.querySelector('.visually-hidden').textContent = t('viewer.loading');
+        container.querySelector('.fullsize-viewer-image').alt = t('viewer.fullsize_image');
+        container.querySelector('.fullsize-viewer-close').ariaLabel = t('action.close');
+        container.querySelector('.fullsize-viewer-prev').title = t('viewer.previous');
+        container.querySelector('.fullsize-viewer-next').title = t('viewer.next');
+        const downloadButton = container.querySelector('.fullsize-viewer-download');
+        downloadButton.title = t('viewer.download');
+        downloadButton.querySelector('span').textContent = t('action.download');
+        const deleteButton = container.querySelector('.fullsize-viewer-delete');
+        deleteButton.title = t('viewer.delete');
+        deleteButton.querySelector('span').textContent = t('action.delete');
     }
 
     // Bind event listeners

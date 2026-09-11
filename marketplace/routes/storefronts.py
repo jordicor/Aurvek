@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from PIL import Image as PilImage
 from PIL import UnidentifiedImageError
 
+from i18n import get_translator, Translator
 from auth import get_current_user
 from captcha_service import get_captcha_config
 from common import (
@@ -47,6 +48,7 @@ def _save_creator_avatar_variants(
     profile_dir: str,
     user_hash: str,
     suffix: str,
+    translator: Translator,
 ) -> None:
     """Decode, validate, resize, and persist a creator avatar off the event loop."""
     with PilImage.open(io.BytesIO(content)) as image:
@@ -54,10 +56,7 @@ def _save_creator_avatar_variants(
         if width * height > MAX_IMAGE_PIXELS:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Image dimensions too large. Maximum is "
-                    f"{MAX_IMAGE_PIXELS:,} pixels"
-                ),
+                detail=translator.t('marketplace_storefront.image_dimensions', pixels=translator.format_number(MAX_IMAGE_PIXELS)),
             )
 
         image.load()
@@ -77,7 +76,8 @@ def _save_creator_avatar_variants(
 @router.get("/my-storefront")
 async def my_storefront_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the creator storefront management page."""
-    require_storefronts_enabled()
+    translator = get_translator(request, current_user)
+    require_storefronts_enabled(translator)
 
     if current_user is None:
         return templates.TemplateResponse(
@@ -89,7 +89,7 @@ async def my_storefront_page(request: Request, current_user: User = Depends(get_
             },
         )
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only users can manage storefronts")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_storefront.only_users_can_manage_storefronts'))
 
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("my_storefront.html", context)
@@ -98,12 +98,13 @@ async def my_storefront_page(request: Request, current_user: User = Depends(get_
 @router.get("/api/creator-profile")
 async def get_creator_profile_api(request: Request, current_user: User = Depends(get_current_user)):
     """Get current user's creator profile data."""
-    require_storefronts_enabled()
+    translator = get_translator(request, current_user)
+    require_storefronts_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_storefront.authentication_required'))
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Only users can access creator profiles"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('marketplace_storefront.only_users_can_access_creator_profiles')}, status_code=403)
 
     profile = await get_own_creator_profile(current_user.id)
     return JSONResponse(content={"profile": profile})
@@ -112,30 +113,31 @@ async def get_creator_profile_api(request: Request, current_user: User = Depends
 @router.put("/api/creator-profile")
 async def update_creator_profile(request: Request, current_user: User = Depends(get_current_user)):
     """Update current user's creator profile."""
-    require_storefronts_enabled()
+    translator = get_translator(request, current_user)
+    require_storefronts_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_storefront.authentication_required'))
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Only users can update creator profiles"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('marketplace_storefront.only_users_can_update_creator_profiles')}, status_code=403)
 
     data = await request.json()
     display_name = data.get("display_name", "").strip()
     if not display_name or len(display_name) > 200:
-        return JSONResponse(content={"error": "Display name is required (max 200 characters)"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('marketplace_storefront.display_name_is_required_max_200_characters')}, status_code=400)
 
     bio = data.get("bio", "").strip()
     if len(bio) > 2000:
-        return JSONResponse(content={"error": "Bio must be 2000 characters or less"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('marketplace_storefront.bio_must_be_2000_characters_or_less')}, status_code=400)
 
     slug = data.get("slug", "").strip().lower()
     if slug:
         if not re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$", slug) and len(slug) > 1:
-            return JSONResponse(content={"error": "Invalid slug format. Use only lowercase letters, numbers, and hyphens."}, status_code=400)
+            return JSONResponse(content={"error": translator.t('marketplace_storefront.invalid_slug_format_use_only_lowercase_letters_numbers_and_hyphens')}, status_code=400)
         if len(slug) > 64:
-            return JSONResponse(content={"error": "Slug must be 64 characters or less"}, status_code=400)
+            return JSONResponse(content={"error": translator.t('marketplace_storefront.slug_must_be_64_characters_or_less')}, status_code=400)
         if is_forbidden_prompt_name(slug):
-            return JSONResponse(content={"error": "This slug is reserved"}, status_code=400)
+            return JSONResponse(content={"error": translator.t('marketplace_storefront.this_slug_is_reserved')}, status_code=400)
 
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
@@ -143,7 +145,7 @@ async def update_creator_profile(request: Request, current_user: User = Depends(
                 (slug, current_user.id),
             )
             if await cursor.fetchone():
-                return JSONResponse(content={"error": "This slug is already taken"}, status_code=409)
+                return JSONResponse(content={"error": translator.t('marketplace_storefront.this_slug_is_already_taken')}, status_code=409)
     else:
         slug = await generate_unique_creator_slug(display_name, exclude_user_id=current_user.id)
 
@@ -190,12 +192,13 @@ async def upload_creator_avatar(
     current_user: User = Depends(get_current_user),
 ):
     """Upload creator profile avatar. Saves 4 sizes like profile pictures."""
-    require_storefronts_enabled()
+    translator = get_translator(request, current_user)
+    require_storefronts_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_storefront.authentication_required'))
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only users can upload creator avatars")
+        raise HTTPException(status_code=403, detail=translator.t('marketplace_storefront.only_users_can_upload_creator_avatars'))
 
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(current_user.username)
     profile_dir = os.path.join(users_directory, hash_prefix1, hash_prefix2, user_hash, "profile")
@@ -203,7 +206,7 @@ async def upload_creator_avatar(
     content = await file.read()
 
     if len(content) > MAX_IMAGE_UPLOAD_SIZE:
-        raise HTTPException(status_code=400, detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024*1024)}MB")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_storefront.image_size', size=translator.format_number(MAX_IMAGE_UPLOAD_SIZE // (1024*1024))))
 
     suffix = "_creator"
     base_url = f"users/{hash_prefix1}/{hash_prefix2}/{user_hash}/profile/{user_hash}{suffix}"
@@ -215,14 +218,15 @@ async def upload_creator_avatar(
             profile_dir,
             user_hash,
             suffix,
+            translator,
         )
     except UnidentifiedImageError:
-        raise HTTPException(status_code=400, detail="Invalid image file")
+        raise HTTPException(status_code=400, detail=translator.t('marketplace_storefront.invalid_image_file'))
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("Error saving creator avatar: %s", exc)
-        raise HTTPException(status_code=500, detail="Error processing image")
+        raise HTTPException(status_code=500, detail=translator.t('marketplace_storefront.error_processing_image'))
 
     async with get_db_connection() as conn:
         await conn.execute(
@@ -235,12 +239,13 @@ async def upload_creator_avatar(
 
 
 @router.get("/api/creator-profile/check-slug")
-async def check_creator_slug(slug: str, current_user: User = Depends(get_current_user)):
+async def check_creator_slug(request: Request, slug: str, current_user: User = Depends(get_current_user)):
     """Check if a slug is available."""
-    require_storefronts_enabled()
+    translator = get_translator(request, current_user)
+    require_storefronts_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=translator.t('marketplace_storefront.authentication_required'))
 
     if is_forbidden_prompt_name(slug):
         return JSONResponse(content={"available": False, "reason": "reserved"})
@@ -258,16 +263,17 @@ async def check_creator_slug(slug: str, current_user: User = Depends(get_current
 @router.get("/store/{slug}", response_class=HTMLResponse)
 async def creator_storefront(request: Request, slug: str, current_user: User = Depends(get_current_user)):
     """Render a creator's public storefront page."""
-    require_storefronts_enabled()
+    translator = get_translator(request, current_user)
+    require_storefronts_enabled(translator)
 
     profile = await get_creator_profile_by_slug(slug)
     if not profile:
-        raise HTTPException(status_code=404, detail="Creator not found")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_storefront.creator_not_found'))
 
     viewer_id = current_user.id if current_user else None
     storefront = await get_creator_storefront_data(profile["user_id"], viewer_id)
     if not storefront:
-        raise HTTPException(status_code=404, detail="Creator not found")
+        raise HTTPException(status_code=404, detail=translator.t('marketplace_storefront.creator_not_found'))
 
     context = await get_template_context(request, current_user, branding_context={"storefront_slug": slug})
     context["storefront"] = storefront

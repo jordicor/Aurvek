@@ -851,8 +851,14 @@ class OpenAIRealtimeClient:
             message["response_id"] = response_id
         await self._send_json(message)
 
-    async def create_response(self, instructions: str | None = None) -> None:
+    async def create_response(
+        self,
+        instructions: str | None = None,
+        *,
+        tool_choice: Literal["auto", "none", "required"] | None = None,
+    ) -> None:
         message: dict[str, Any] = {"type": "response.create"}
+        response: dict[str, Any] = {}
         if instructions is not None:
             _validate_bounded_text(
                 instructions,
@@ -860,7 +866,12 @@ class OpenAIRealtimeClient:
                 maximum=OPENAI_REALTIME_MAX_INSTRUCTIONS_CHARS,
                 allow_empty=True,
             )
-            message["response"] = {"instructions": instructions}
+            response["instructions"] = instructions
+        if tool_choice is not None:
+            _validate_tool_choice(tool_choice)
+            response["tool_choice"] = tool_choice
+        if response:
+            message["response"] = response
         await self._send_json(message)
 
     async def events(self) -> AsyncIterator[OpenAIRealtimeEvent]:

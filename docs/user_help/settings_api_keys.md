@@ -14,6 +14,8 @@ keywords:
   - xAI
   - Grok
   - ElevenLabs
+  - MiniMax
+  - Kimi
   - clave API
   - llaves API
   - credenciales
@@ -21,7 +23,7 @@ keywords:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
@@ -36,10 +38,12 @@ If your account allows it, you can configure your own API keys for AI providers.
    - **Browser Persistent** -- keys stay in your browser across sessions until you delete them.
    - **Server Storage** -- keys are encrypted and stored on the server, accessible from any device.
 3. Enter your API key for one or more providers:
-   - **OpenAI** -- for GPT-4, GPT-4o, DALL-E, and TTS. Key format: `sk-...`
-   - **Anthropic** -- for Claude models. Key format: `sk-ant-...`
-   - **Google AI** -- for Gemini models. Key format: `AIza...`
-   - **xAI** -- for Grok models. Key format: `xai-...`
+   - **OpenAI** -- for supported GPT, image, and voice services.
+   - **Anthropic** -- for Claude models.
+   - **Google AI** -- for Gemini models.
+   - **xAI** -- for Grok models.
+   - **MiniMax** -- for supported MiniMax models.
+   - **Kimi** -- for supported Kimi models.
    - **ElevenLabs** -- for text-to-speech and voice cloning.
 4. Click **Test** next to any key to verify it works before saving.
 5. Click **Save All** to store all entered keys, or **Test All** to validate every key at once.

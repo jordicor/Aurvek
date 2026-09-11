@@ -13,6 +13,7 @@ from chat.services.locks import conversation_write_lock
 from chat.services.privacy import (
     delete_conversation_rows,
     ensure_conversation_privacy_schema,
+    get_conversation_privacy,
     purge_conversation_local_records,
 )
 from chat.services.stop_signals import stop_signals
@@ -43,6 +44,14 @@ async def memory_link_providers_for_conversation(conversation_id: int) -> set[st
                 (conversation_id,),
             )
             providers.update(str(row[0]) for row in await cursor.fetchall() if row[0])
+        # Destinations survive policy changes, revocation, and ambiguous writes.
+        # Current membership is not authority to forget an old erasure target.
+        if await _table_exists(conn, "APPLICATION_MEMORY_DESTINATIONS"):
+            cursor = await conn.execute(
+                "SELECT DISTINCT provider FROM APPLICATION_MEMORY_DESTINATIONS "
+                "WHERE conversation_id = ?", (conversation_id,)
+            )
+            providers.update(str(row[0]) for row in await cursor.fetchall() if row[0])
     return providers
 
 
@@ -61,16 +70,19 @@ async def purge_memory_conversation_best_effort(
     prompt_id: int | None = None,
     incognito: bool = False,
     provider: str | None = None,
+    namespace=None,
 ) -> bool:
     try:
         from ai_runtime.memory.recording import _purge_memory_conversation_best_effort
 
+        scoped = {"namespace": namespace} if namespace is not None else {}
         return await _purge_memory_conversation_best_effort(
             user_id=user_id,
             conversation_id=conversation_id,
             prompt_id=prompt_id,
             incognito=incognito,
             provider=provider,
+            **scoped,
         )
     except Exception:
         logger.warning(
@@ -89,6 +101,11 @@ async def purge_linked_memory_providers_best_effort(
     incognito: bool = False,
 ) -> set[str]:
     providers = await memory_link_providers_for_conversation(conversation_id)
+    from integrations.applications.memory import list_memory_destinations
+
+    destinations = await list_memory_destinations(
+        conversation_id=conversation_id, user_id=user_id
+    )
     if not providers:
         from memory.config import get_active_memory_provider
 
@@ -98,13 +115,19 @@ async def purge_linked_memory_providers_best_effort(
 
     purged: set[str] = set()
     for provider in sorted(providers):
-        if await purge_memory_conversation_best_effort(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            prompt_id=prompt_id,
-            incognito=incognito,
-            provider=provider,
-        ):
+        historical = [row["namespace"] for row in destinations if row["provider"] == provider]
+        results = []
+        for namespace in historical or [None]:
+            scoped = {"namespace": namespace} if namespace is not None else {}
+            results.append(await purge_memory_conversation_best_effort(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                prompt_id=prompt_id,
+                incognito=incognito,
+                provider=provider,
+                **scoped,
+            ))
+        if all(results):
             purged.add(provider)
     return purged
 
@@ -148,7 +171,7 @@ async def purge_stale_incognito_conversations_for_user(current_user: User) -> No
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 """
-                SELECT id, role_id
+                SELECT id
                 FROM CONVERSATIONS
                 WHERE user_id = ?
                   AND COALESCE(is_incognito, 0) = 1
@@ -166,21 +189,10 @@ async def purge_stale_incognito_conversations_for_user(current_user: User) -> No
 
     for row in rows:
         conversation_id = int(row["id"])
-        purged_memory_providers = await purge_linked_memory_providers_best_effort(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            prompt_id=row["role_id"],
-            incognito=True,
-        )
         try:
-            purged = await purge_conversation_local_records(
-                conversation_id=conversation_id,
-                user_id=current_user.id,
-                memory_link_providers_to_delete=purged_memory_providers,
+            await close_incognito_conversation_for_user(
+                current_user, conversation_id,
             )
-            if purged:
-                await delete_conversation_files_for_user(current_user, conversation_id)
-                await prune_unreferenced_blobs()
         except Exception:
             logger.warning(
                 "Failed to purge stale incognito conversation_id=%s",
@@ -239,9 +251,17 @@ async def delete_owned_conversation(current_user: User, conversation_id: int) ->
     }
 
 
-async def close_incognito_conversation_for_user(current_user: User, privacy: dict) -> dict:
-    conversation_id = int(privacy["id"])
+async def close_incognito_conversation_for_user(current_user: User, conversation_id: int) -> dict:
     async with conversation_write_lock(conversation_id):
+        # A close request or page-load cleanup may have been queued before save.
+        # Revalidate before touching remote memory as well as local records.
+        privacy = await get_conversation_privacy(
+            conversation_id, user_id=current_user.id,
+        )
+        if privacy is None:
+            return {"success": True, "purged": False, "already_closed": True}
+        if not privacy["is_incognito"]:
+            return {"success": True, "purged": False, "already_saved": True}
         purged_memory_providers = await purge_linked_memory_providers_best_effort(
             user_id=current_user.id,
             conversation_id=conversation_id,

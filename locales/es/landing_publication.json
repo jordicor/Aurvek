@@ -1,0 +1,12 @@
+{
+  "hallucination": "Afirmación de una función no disponible: «{text}», en la línea {line}. Contexto: ...{snippet}...",
+  "testimonial": "Testimonio o valoración sin verificar en la línea {line}. Solo se permiten ejemplos de conversación identificados claramente como demostraciones. Contexto: ...{snippet}...",
+  "free_claim": "Afirmación de acceso sin condiciones: «{text}», en la línea {line}. Describe el acceso exacto y los costes de uso. Contexto: ...{snippet}...",
+  "upload_disabled": "Invitación a subir archivos «{text}» en la línea {line}, pero la configuración de registro tiene allow_file_upload=false. Contexto: ...{snippet}...",
+  "web_disabled": "Afirmación de búsqueda web «{text}» en la línea {line}, pero esta función está desactivada para este prompt. Contexto: ...{snippet}...",
+  "paid_price": "Este prompt de pago cuesta {amount}, pero su precio exacto no aparece en la página. El botón de acceso debe indicar el precio de desbloqueo.",
+  "paid_cta": "Este prompt de pago no tiene un botón de registro que indique la compra, el desbloqueo o el precio. Los visitantes deben saber que el acceso es de pago antes de pulsarlo.",
+  "free_purchase": "Este prompt tiene acceso gratuito, pero usa un texto de compra «{text}» en la línea {line}. Contexto: ...{snippet}...",
+  "structure": "La página sigue una estructura SaaS genérica: navegación, cabecera principal, cuadrícula de funciones, testimonios y pie. Utiliza el arquetipo creativo asignado.",
+  "unavailable": "La verificación de publicación no está disponible. La página se ha guardado, pero aún no puede publicarse."
+}

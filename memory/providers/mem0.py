@@ -93,23 +93,25 @@ class Mem0Provider:
         conversation_id: int | str,
         message_text: str,
         prompt_id: int | str | None = None,
+        namespace: Any | None = None,
     ) -> Mem0SearchResult:
         if not message_text.strip():
             return Mem0SearchResult(False, "empty_message", [])
         started_at = time.perf_counter()
         config = await self._get_config()
-        namespace = await mem0_namespace(
+        provider_namespace = await mem0_namespace(
             user_id=user_id,
             conversation_id=conversation_id,
             prompt_id=prompt_id,
             platform_id=config.platform_id,
+            namespace=namespace,
         )
         payload: dict[str, Any] = {
             "query": message_text,
-            "user_id": namespace["user_id"],
+            "user_id": provider_namespace["user_id"],
         }
-        if namespace.get("agent_id"):
-            payload["agent_id"] = namespace["agent_id"]
+        if provider_namespace.get("agent_id"):
+            payload["agent_id"] = provider_namespace["agent_id"]
 
         try:
             async with self._client(config) as client:
@@ -153,6 +155,7 @@ class Mem0Provider:
         user_message_id: int | str | None = None,
         occurred_at: str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> dict[str, Any] | None:
         if incognito:
             self.last_error = None
@@ -177,6 +180,7 @@ class Mem0Provider:
                 "occurred_at": occurred_at,
             },
             incognito=incognito,
+            namespace=namespace,
         )
 
     async def add_message(
@@ -190,6 +194,7 @@ class Mem0Provider:
         message_id: int | str | None = None,
         occurred_at: str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> dict[str, Any] | None:
         if incognito or not text.strip():
             self.last_error = None
@@ -205,6 +210,7 @@ class Mem0Provider:
                 "occurred_at": occurred_at,
             },
             incognito=incognito,
+            namespace=namespace,
         )
 
     async def add_messages(
@@ -216,34 +222,36 @@ class Mem0Provider:
         prompt_id: int | str | None = None,
         metadata: dict[str, Any] | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> dict[str, Any] | None:
         if incognito or not messages:
             self.last_error = None
             return None
         started_at = time.perf_counter()
         config = await self._get_config()
-        namespace = await mem0_namespace(
+        provider_namespace = await mem0_namespace(
             user_id=user_id,
             conversation_id=conversation_id,
             prompt_id=prompt_id,
             platform_id=config.platform_id,
+            namespace=namespace,
         )
         payload: dict[str, Any] = {
             "messages": messages,
-            "user_id": namespace["user_id"],
-            "run_id": namespace["run_id"],
+            "user_id": provider_namespace["user_id"],
+            "run_id": provider_namespace["run_id"],
             "metadata": _compact_metadata(
                 {
                     **(metadata or {}),
-                    "platform_id": namespace["platform_id"],
+                    "platform_id": provider_namespace["platform_id"],
                     "aurvek_conversation_id": str(conversation_id),
                     "aurvek_prompt_id": str(prompt_id) if prompt_id is not None else None,
-                    "memory_scope": namespace["scope"],
+                    "memory_scope": provider_namespace["scope"],
                 }
             ),
         }
-        if namespace.get("agent_id"):
-            payload["agent_id"] = namespace["agent_id"]
+        if provider_namespace.get("agent_id"):
+            payload["agent_id"] = provider_namespace["agent_id"]
 
         try:
             async with self._client(config) as client:
@@ -279,18 +287,20 @@ class Mem0Provider:
         conversation_id: int | str,
         prompt_id: int | str | None = None,
         incognito: bool | None = None,
+        namespace: Any | None = None,
     ) -> bool:
         config = await self._get_config()
-        namespace = await mem0_namespace(
+        provider_namespace = await mem0_namespace(
             user_id=user_id,
             conversation_id=conversation_id,
             prompt_id=prompt_id,
             platform_id=config.platform_id,
+            namespace=namespace,
         )
         try:
             async with self._client(config) as client:
                 response = await client.delete(
-                    f"/entities/run/{quote(namespace['run_id'], safe='')}",
+                    f"/entities/run/{quote(provider_namespace['run_id'], safe='')}",
                     headers=self._headers(config),
                 )
                 if response.status_code == 404:
@@ -331,8 +341,14 @@ async def mem0_namespace(
     conversation_id: int | str,
     prompt_id: int | str | None = None,
     platform_id: str | None = None,
+    namespace: Any | None = None,
 ) -> dict[str, str | None]:
     platform = _platform_id(platform_id)
+    if namespace is not None:
+        return {"scope": namespace.space, "platform_id": platform,
+                "user_id": namespace.provider_user_id,
+                "run_id": namespace.provider_conversation_id(conversation_id),
+                "agent_id": namespace.character_id}
     scope = await get_user_memory_scope(user_id, "mem0")
     agent_id = _prompt_agent_id(prompt_id, platform) if scope == "prompt" and prompt_id is not None else None
     return {

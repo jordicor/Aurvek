@@ -7,6 +7,8 @@ from ai_runtime.channel_turns import (
     bind_channel_turn,
 )
 from ai_runtime.dependencies import *
+from integrations.applications.runtime import admit_application_turn, application_billing_turn
+from integrations.embed.models import EmbedError
 from billing.usage_reservations import (
     BillingReservationError,
     InsufficientBalanceError,
@@ -177,6 +179,7 @@ async def _run_single_ai(
     pdf_redirect_active = False
     input_tokens_collected = 0
     output_tokens_collected = 0
+    override_api_cost = None
     content_collected = ""
     provider_error = None
 
@@ -287,6 +290,7 @@ async def _run_single_ai(
                         if "token_info" in chunk_data:
                             input_tokens_collected = chunk_data.get("input_tokens", 0)
                             output_tokens_collected = chunk_data.get("output_tokens", 0)
+                            override_api_cost = chunk_data.get("override_api_cost")
                         elif "content" in chunk_data:
                             content_text = chunk_data["content"]
                             content_collected += content_text
@@ -341,6 +345,7 @@ async def _run_single_ai(
                 or estimate_message_tokens(content_collected)
             ),
             "billable_usage": usage_observed or provider_error is None,
+            "override_api_cost": override_api_cost,
         }
         if provider_error:
             provider_error.update(usage_payload)
@@ -378,7 +383,34 @@ async def _run_single_ai(
                 or estimate_message_tokens(content_collected)
             ),
             "billable_usage": usage_observed,
+            "override_api_cost": override_api_cost,
         })
+
+
+@application_billing_turn
+async def create_multi_ai_response(
+    request,
+    conversation_id: int,
+    current_user,
+    user_message: str,
+    model_ids: list,
+    reasoning_selection=None,
+    user_api_keys: dict = None,
+    channel_context: ChannelContext | None = None,
+):
+    """Use the canonical app admission and payer lease for the comparison stream."""
+    from fastapi.responses import StreamingResponse
+
+    async def stream():
+        with bind_channel_turn(channel_context or ChannelContext()):
+            async for event in process_multi_ai_message(
+                request, conversation_id, current_user, user_message, model_ids,
+                reasoning_selection=reasoning_selection, user_api_keys=user_api_keys,
+                channel_context=channel_context,
+            ):
+                yield event
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 async def process_multi_ai_message(
@@ -401,6 +433,20 @@ async def process_multi_ai_message(
     # --- 1. Validation ---
     await ensure_conversation_privacy_schema()
     async with get_db_connection(readonly=True) as conn_ro:
+        try:
+            channel_context = await admit_application_turn(
+                conn_ro, conversation_id=conversation_id, user_id=current_user.id,
+                channel_context=channel_context or ChannelContext(),
+                required_capability="multi_ai",
+            )
+        except EmbedError as exc:
+            yield f"data: {orjson.dumps({'error': exc.code, 'error_code': exc.code}).decode()}\n\n"
+            return
+        if channel_context.application is not None:
+            from integrations.applications.billing import current_application_operation
+            if current_application_operation(current_user.id) is None:
+                yield f"data: {orjson.dumps({'error': 'application_funding_required', 'error_code': 'application_funding_required'}).decode()}\n\n"
+                return
         cursor = await conn_ro.execute(
             """SELECT c.locked, c.llm_id, c.user_id, c.chat_name,
                       CASE WHEN c.role_id IS NULL THEN ud.current_prompt_id ELSE c.role_id END AS effective_prompt_id,
@@ -425,7 +471,7 @@ async def process_multi_ai_message(
         conv_row = await cursor.fetchone()
 
     if not conv_row:
-        yield f"data: {orjson.dumps({'error': 'Conversation not found'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'conversation_not_found', 'error': 'Conversation not found'}).decode()}\n\n"
         return
 
     (
@@ -447,13 +493,13 @@ async def process_multi_ai_message(
 
     # Verify user owns conversation
     if current_user.id != conv_user_id:
-        yield f"data: {orjson.dumps({'error': 'Not authorized'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'access_denied', 'error': 'Not authorized'}).decode()}\n\n"
         return
 
     # Block Multi-AI for WhatsApp conversations (server-side enforcement)
     try:
         if await is_whatsapp_conversation(conversation_id):
-            yield f"data: {orjson.dumps({'error': 'Multi-AI is not available via WhatsApp'}).decode()}\n\n"
+            yield f"data: {orjson.dumps({'error_code': 'multi_ai_whatsapp', 'error': 'Multi-AI is not available via WhatsApp'}).decode()}\n\n"
             return
     except Exception as exc:
         logger.warning(
@@ -461,12 +507,12 @@ async def process_multi_ai_message(
             conversation_id,
             exc,
         )
-        yield f"data: {orjson.dumps({'error': 'Could not verify conversation channel'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'channel_verification_failed', 'error': 'Could not verify conversation channel'}).decode()}\n\n"
         return
 
     # Verify conversation not locked
     if is_locked:
-        yield f"data: {orjson.dumps({'error': 'Conversation is locked'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'conversation_locked', 'error': 'Conversation is locked'}).decode()}\n\n"
         return
 
     # Deduplicate model_ids preserving order
@@ -479,7 +525,7 @@ async def process_multi_ai_message(
     model_ids = unique_model_ids
 
     if len(model_ids) < 2 or len(model_ids) > 4:
-        yield f"data: {orjson.dumps({'error': 'Multi-AI requires 2-4 unique model IDs'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'multi_ai_count', 'error': 'Multi-AI requires 2-4 unique model IDs'}).decode()}\n\n"
         return
 
     try:
@@ -493,17 +539,17 @@ async def process_multi_ai_message(
 
     # Reject Multi-AI if prompt has forced_llm_id
     if forced_llm_id:
-        yield f"data: {orjson.dumps({'error': 'This prompt requires a specific model and cannot use Multi-AI'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'This prompt requires a specific model and cannot use Multi-AI'}).decode()}\n\n"
         return
 
     # Reject Multi-AI if prompt forces web search (Multi-AI disables all tools)
     if force_web_search:
-        yield f"data: {orjson.dumps({'error': 'This prompt requires web search and cannot use Multi-AI'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'This prompt requires web search and cannot use Multi-AI'}).decode()}\n\n"
         return
 
     # Reject Multi-AI if prompt uses GranSabio pipeline (defense-in-depth)
     if bool(gransabio_enabled):
-        yield f"data: {orjson.dumps({'error': 'This prompt uses GranSabio pipeline and cannot use Multi-AI comparison mode.'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'multi_ai_gransabio', 'error': 'This prompt uses GranSabio pipeline and cannot use Multi-AI comparison mode.'}).decode()}\n\n"
         return
 
     # Enforce allowed_llms strictly if set on prompt
@@ -522,7 +568,7 @@ async def process_multi_ai_message(
                 else:
                     raise ValueError("allowed_llms contains non-integer values")
         except (orjson.JSONDecodeError, TypeError, ValueError):
-            yield f"data: {orjson.dumps({'error': 'Prompt model restrictions are misconfigured'}).decode()}\n\n"
+            yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'Prompt model restrictions are misconfigured'}).decode()}\n\n"
             return
 
         disallowed = [mid for mid in model_ids if mid not in allowed_set]
@@ -530,12 +576,21 @@ async def process_multi_ai_message(
             yield f"data: {orjson.dumps({'error': f'Selected models are not allowed for this prompt: {disallowed}'}).decode()}\n\n"
             return
 
-    # Verify each LLM exists
+    # Validate the selected rows again when a comparison is sent; an open
+    # browser can still hold a model that an administrator has since disabled.
     llm_infos = {}
     for mid in model_ids:
         info = await get_llm_info(mid)
         if not info:
             yield f"data: {orjson.dumps({'error': f'Model ID {mid} not found'}).decode()}\n\n"
+            return
+        if not info["enabled"]:
+            error = {
+                "error": f"{info['model']} is no longer available. Choose another model for this comparison.",
+                "error_code": "multi_ai_model_unavailable",
+                "llm_id": mid,
+            }
+            yield f"data: {orjson.dumps(error).decode()}\n\n"
             return
         llm_infos[mid] = info
 
@@ -589,6 +644,7 @@ async def process_multi_ai_message(
         "effective_prompt_id": prompt_id,
         "active_extension_id": validation_active_extension_id,
         "last_message_id": validation_last_message_id or 0,
+        "is_incognito": conversation_incognito,
     }
     multi_warmup_key = _build_warmup_cache_key_from_state(
         multi_warmup_state,
@@ -776,11 +832,11 @@ async def process_multi_ai_message(
             )
             for result in response.results:
                 if result.flagged:
-                    yield f"data: {orjson.dumps({'error': 'Message blocked by moderation'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'error_code': 'moderation_blocked', 'error': 'Message blocked by moderation'}).decode()}\n\n"
                     return
         except Exception as exc:
             logger.error("[process_multi_ai_message] Moderation error: %s", exc)
-            yield f"data: {orjson.dumps({'error': 'Moderation check failed'}).decode()}\n\n"
+            yield f"data: {orjson.dumps({'error_code': 'moderation_unavailable', 'error': 'Moderation check failed'}).decode()}\n\n"
             return
 
     memory_decision = await _resolve_memory_context(
@@ -796,6 +852,17 @@ async def process_multi_ai_message(
         context_messages_dicts,
         memory_decision,
     )
+    if channel_context.application is not None:
+        from integrations.applications.handoff import handoff_context_message
+        from integrations.applications.service import ApplicationService
+        from integrations.embed.identity import get_embed_store
+        async with get_db_connection(readonly=True) as connection:
+            handoff_note = await handoff_context_message(
+                connection, ApplicationService(get_embed_store()),
+                current_user.id, conversation_id,
+            )
+        if handoff_note is not None:
+            context_messages_dicts = [*context_messages_dicts, handoff_note]
     memory_health = get_user_memory_health_snapshot(
         memory_decision.provider,
         enabled=(
@@ -805,7 +872,7 @@ async def process_multi_ai_message(
     )
     if should_surface_memory_health(memory_health):
         yield f"data: {orjson.dumps({'type': 'memory_health', 'memory_health': memory_health}).decode()}\n\n"
-    apply_no_memory_limit = memory_decision.provider == "none"
+    apply_no_memory_limit = channel_context.application is not None or memory_decision.provider == "none"
     billing_system_prompt, billing_context_messages = (
         await prepare_trusted_history_context(
             system_prompt,
@@ -906,7 +973,7 @@ async def process_multi_ai_message(
     # Remove excluded models
     model_ids = [mid for mid in model_ids if mid not in excluded_models]
     if len(model_ids) < 2:
-        yield f"data: {orjson.dumps({'error': 'Not enough models with available API keys (minimum 2)'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'api_keys_required', 'error': 'Not enough models with available API keys (minimum 2)'}).decode()}\n\n"
         return
 
     # --- 6. Balance check ---
@@ -1024,7 +1091,7 @@ async def process_multi_ai_message(
 
     available_for_visible_output = current_balance - estimated_input_charge
     if available_for_visible_output < -1e-12:
-        yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
         return
 
     if combined_output_rate > 0:
@@ -1038,7 +1105,7 @@ async def process_multi_ai_message(
         balance_limited = False
 
     if max_tokens < 1:
-        yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
         return
     for mid in model_ids:
         selection = reasoning_by_id[mid]
@@ -1071,7 +1138,7 @@ async def process_multi_ai_message(
         current_user.id,
         billing_preflight_amount,
     ):
-        yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
         return
 
     try:
@@ -1080,11 +1147,11 @@ async def process_multi_ai_message(
             maximum_amount=billing_preflight_amount,
         )
     except InsufficientBalanceError:
-        yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
         return
     except BillingReservationError:
         logger.exception("Could not reserve Multi-AI usage")
-        yield f"data: {orjson.dumps({'error': 'AI billing is temporarily unavailable'}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'error_code': 'billing_unavailable', 'error': 'AI billing is temporarily unavailable'}).decode()}\n\n"
         return
 
     stop_signals[conversation_id] = False
@@ -1121,6 +1188,7 @@ async def process_multi_ai_message(
                     "output_cost_per_million": output_cost,
                     "prompt_id": prompt_id,
                     "byok": mid in byok_models,
+                    "override_api_cost": 0.0 if mid in byok_models else result.get("override_api_cost"),
                 },
             )
             result["component_persisted"] = True
@@ -1187,6 +1255,7 @@ async def process_multi_ai_message(
             elif item["type"] == "done":
                 results[item_llm_id]["input_tokens"] = item.get("input_tokens", 0)
                 results[item_llm_id]["output_tokens"] = item.get("output_tokens", 0)
+                results[item_llm_id]["override_api_cost"] = item.get("override_api_cost")
                 results[item_llm_id]["completed"] = True
                 results[item_llm_id]["billable_usage"] = bool(
                     item.get("billable_usage", True)
@@ -1230,6 +1299,7 @@ async def process_multi_ai_message(
                     results[item_llm_id]["content"] = item.get("error", "Unknown error")
                 results[item_llm_id]["input_tokens"] = item.get("input_tokens", 0)
                 results[item_llm_id]["output_tokens"] = item.get("output_tokens", 0)
+                results[item_llm_id]["override_api_cost"] = item.get("override_api_cost")
                 results[item_llm_id]["billable_usage"] = bool(
                     item.get("billable_usage", False)
                 )
@@ -1318,6 +1388,7 @@ async def process_multi_ai_message(
                 results[pending_llm_id]["output_tokens"] = pending_item.get(
                     "output_tokens", 0
                 )
+                results[pending_llm_id]["override_api_cost"] = pending_item.get("override_api_cost")
                 results[pending_llm_id]["completed"] = True
                 results[pending_llm_id]["billable_usage"] = bool(
                     pending_item.get("billable_usage", True)
@@ -1329,6 +1400,7 @@ async def process_multi_ai_message(
                 results[pending_llm_id]["output_tokens"] = pending_item.get(
                     "output_tokens", 0
                 )
+                results[pending_llm_id]["override_api_cost"] = pending_item.get("override_api_cost")
                 results[pending_llm_id]["billable_usage"] = bool(
                     pending_item.get("billable_usage", False)
                 )
@@ -1363,6 +1435,7 @@ async def process_multi_ai_message(
                             "input_cost_per_million": input_cost,
                             "output_cost_per_million": output_cost,
                             "byok": mid in byok_models,
+                            "override_api_cost": 0.0 if mid in byok_models else result.get("override_api_cost"),
                         }
                     )
                 await settle_ai_reservation_components(

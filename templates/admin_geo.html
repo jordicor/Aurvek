@@ -1,6 +1,7 @@
+{% set i18n_domains = ['marketplace', 'admin_geo'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Geo-Blocking - AURVEK{% endblock %}
+{% block title %}{{ t('admin_geo.title') }} - AURVEK{% endblock %}
 
 {% block styles %}
 <style>
@@ -130,40 +131,40 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Geo-Blocking{% endblock %}
+{% block page_title %}{{ t('admin_geo.title') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Cloudflare WAF geographic access control</p>
+<p class="page-subtitle">{{ t('admin_geo.subtitle') }}</p>
 {% endblock %}
 
 {% block content %}
-<!-- Section 1: Cloudflare Status -->
+<!-- Section 1 -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-signal me-2"></i>Cloudflare Status</div>
+    <div class="section-title"><i class="fas fa-signal me-2"></i>{{ t('admin_geo.status.title') }}</div>
     <div id="statusLoading" class="text-center py-3">
-        <div class="spinner-border spinner-border-sm text-primary"></div> Checking connection...
+        <div class="spinner-border spinner-border-sm text-primary"></div> {{ t('admin_geo.status.checking') }}
     </div>
     <div id="statusContent" style="display:none;">
         <div class="status-row">
             <div class="status-item">
-                <span class="text-muted">Connection:</span>
+                <span class="text-muted">{{ t('admin_geo.status.connection') }}</span>
                 <span class="status-badge" id="cfConnectionBadge">--</span>
             </div>
             <div class="status-item">
-                <span class="text-muted">Plan:</span>
+                <span class="text-muted">{{ t('admin_geo.status.plan') }}</span>
                 <span class="status-badge plan" id="cfPlanBadge">--</span>
             </div>
             <div class="status-item">
-                <span class="text-muted">WAF Rules:</span>
+                <span class="text-muted">{{ t('admin_geo.status.rules') }}</span>
                 <strong id="cfRulesUsed">--</strong> / <span id="cfRulesMax">--</span>
             </div>
             <div class="status-item">
-                <span class="text-muted">Visitor Location Headers:</span>
-                <i class="fas fa-info-circle text-muted" style="font-size: 0.8rem; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Adds CF-IPCountry header to requests reaching your server. Not required for geo-blocking (WAF rules work independently), but useful for server-side analytics, abuse detection, or logging visitor countries."></i>
+                <span class="text-muted">{{ t('admin_geo.status.headers') }}</span>
+                <i class="fas fa-info-circle text-muted" style="font-size: 0.8rem; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ t('admin_geo.status.headers_help') }}"></i>
                 <span id="cfTransformsContainer">
                     <span class="status-badge" id="cfTransformsBadge">--</span>
                     <button class="btn btn-sm btn-outline-warning ms-1" id="enableTransformsBtn" style="display:none;" onclick="enableTransforms()">
-                        Enable
+                        {{ t('admin_geo.enable') }}
                     </button>
                 </span>
             </div>
@@ -171,95 +172,95 @@
     </div>
 </div>
 
-<!-- Section 2: Global Geo-Blocking -->
+<!-- Section 2 -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-globe me-2"></i>Global Geo-Blocking</div>
+    <div class="section-title"><i class="fas fa-globe me-2"></i>{{ t('admin_geo.global.title') }}</div>
 
     <!-- Enable toggle -->
     <div class="form-check form-switch mb-3">
         <input class="form-check-input" type="checkbox" id="geoEnabled">
-        <label class="form-check-label fw-semibold" for="geoEnabled">Enable Geo-Blocking</label>
+        <label class="form-check-label fw-semibold" for="geoEnabled">{{ t('admin_geo.global.enable') }}</label>
     </div>
 
     <!-- Config area (shown when enabled) -->
     <div id="geoConfigArea" style="display:none;">
         <!-- Mode selector -->
         <div class="mb-3">
-            <label class="form-label fw-semibold">Mode</label>
+            <label class="form-label fw-semibold">{{ t('admin_geo.mode') }}</label>
             <div class="btn-group" role="group">
                 <input type="radio" class="btn-check" name="geoMode" id="modeDeny" value="deny" checked>
-                <label class="btn btn-outline-danger" for="modeDeny"><i class="fas fa-ban me-1"></i>Block Listed</label>
+                <label class="btn btn-outline-danger" for="modeDeny"><i class="fas fa-ban me-1"></i>{{ t('admin_geo.mode.deny') }}</label>
                 <input type="radio" class="btn-check" name="geoMode" id="modeAllow" value="allow">
-                <label class="btn btn-outline-success" for="modeAllow"><i class="fas fa-check me-1"></i>Allow Only Listed</label>
+                <label class="btn btn-outline-success" for="modeAllow"><i class="fas fa-check me-1"></i>{{ t('admin_geo.mode.allow') }}</label>
             </div>
-            <div class="form-text" id="modeHelp">Countries and continents selected below will be <strong>blocked</strong>.</div>
+            <div class="form-text" id="modeHelp">{{ t('admin_geo.help.deny') }}</div>
         </div>
 
         <!-- Continent Quick Selectors -->
         <div class="mb-3">
-            <label class="form-label fw-semibold">Continents</label>
+            <label class="form-label fw-semibold">{{ t('admin_geo.continents') }}</label>
             <div class="d-flex flex-wrap gap-2" id="continentCheckboxes"></div>
         </div>
 
         <!-- Country Multi-Select -->
         <div class="mb-3">
-            <label class="form-label fw-semibold">Countries</label>
-            <input type="text" class="form-control mb-2" id="countrySearch" placeholder="Search countries...">
+            <label class="form-label fw-semibold">{{ t('admin_geo.countries') }}</label>
+            <input type="text" class="form-control mb-2" id="countrySearch" placeholder="{{ t('admin_geo.search') }}">
             <div id="countryGrid" class="border rounded p-2" style="max-height: 350px; overflow-y: auto; background: var(--bg-tertiary, #202225); border-color: var(--border-color, #40444b) !important;">
                 <!-- Populated by JS -->
             </div>
-            <small class="text-muted"><span id="selectedCount">0</span> countries selected</small>
+            <small class="text-muted" id="selectedCount">{{ t("admin_geo.selected", count=0, number=format_number(0)) }}</small>
         </div>
 
         <!-- Custom 451 HTML -->
         <div class="mb-3">
-            <label class="form-label fw-semibold">Custom Block Page (optional)</label>
-            <textarea class="form-control" id="responseHtml" rows="4" placeholder="Custom HTML for blocked visitors (HTTP 451). Leave empty for default."></textarea>
-            <div class="form-text">Shown to visitors from blocked regions. Supports HTML.</div>
+            <label class="form-label fw-semibold">{{ t('admin_geo.custom.title') }}</label>
+            <textarea class="form-control" id="responseHtml" rows="4" placeholder="{{ t('admin_geo.custom.placeholder') }}"></textarea>
+            <div class="form-text">{{ t('admin_geo.custom.help') }}</div>
         </div>
 
-        <!-- Save & Sync Button -->
-        <button class="btn btn-primary" id="saveGlobalBtn" onclick="saveGlobalConfig()">
-            <i class="fas fa-save me-1"></i> Save &amp; Sync to Cloudflare
-        </button>
     </div>
+        <!-- Save also remains available when disabling geo-blocking. -->
+        <button class="btn btn-primary" id="saveGlobalBtn" onclick="saveGlobalConfig()">
+            <i class="fas fa-save me-1"></i> {{ t('admin_geo.save') }}
+        </button>
 </div>
 
-<!-- Section 3: Per-Landing Geo Policies -->
+<!-- Section 3 -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-list me-2"></i>Per-Landing Geo Policies</div>
+    <div class="section-title"><i class="fas fa-list me-2"></i>{{ t('admin_geo.landing.title') }}</div>
     <div id="landingSummaryLoading" class="text-center py-3">
-        <div class="spinner-border spinner-border-sm text-primary"></div> Loading...
+        <div class="spinner-border spinner-border-sm text-primary"></div> {{ t('admin_geo.loading') }}
     </div>
     <div id="landingSummaryContent" style="display:none;">
         <div class="table-responsive">
             <table class="table table-sm align-middle">
                 <thead>
                     <tr>
-                        <th>Landing</th>
-                        <th>Public ID</th>
-                        <th>Mode</th>
-                        <th>Countries</th>
-                        <th>Updated</th>
-                        <th>Actions</th>
+                        <th>{{ t('admin_geo.landing') }}</th>
+                        <th>{{ t('admin_geo.public_id') }}</th>
+                        <th>{{ t('admin_geo.mode') }}</th>
+                        <th>{{ t('admin_geo.countries') }}</th>
+                        <th>{{ t('admin_geo.updated') }}</th>
+                        <th>{{ t('marketplace.common.actions') }}</th>
                     </tr>
                 </thead>
                 <tbody id="landingSummaryBody"></tbody>
             </table>
         </div>
-        <p id="noLandingPolicies" style="display:none;" class="text-muted text-center py-2">No per-landing geo policies configured.</p>
+        <p id="noLandingPolicies" style="display:none;" class="text-muted text-center py-2">{{ t('admin_geo.landing.empty') }}</p>
     </div>
 </div>
 
 <!-- Section 4: Actions (Danger Zone) -->
 <div class="section-container">
-    <div class="section-title text-danger"><i class="fas fa-exclamation-triangle me-2"></i>Actions</div>
+    <div class="section-title text-danger"><i class="fas fa-exclamation-triangle me-2"></i>{{ t('marketplace.common.actions') }}</div>
     <div class="d-flex gap-2 flex-wrap">
         <button class="btn btn-outline-primary" onclick="forceSync()">
-            <i class="fas fa-sync-alt me-1"></i> Force Re-sync All Rules
+            <i class="fas fa-sync-alt me-1"></i> {{ t('admin_geo.sync') }}
         </button>
         <button class="btn btn-outline-danger" onclick="removeAllRules()">
-            <i class="fas fa-trash me-1"></i> Remove All Geo Rules from CF
+            <i class="fas fa-trash me-1"></i> {{ t('admin_geo.remove_rules') }}
         </button>
     </div>
 </div>
@@ -270,6 +271,8 @@
     // =========================================================================
     // Geo data from server context (countries grouped by continent)
     // =========================================================================
+    const geoText = (key, values) => AurvekI18n.t('admin_geo.' + key, values);
+    const geoNumber = value => AurvekI18n.formatNumber(value);
     const GEO_DATA = {{ geo_data | tojson }};
 
     // secureFetch is provided by session-utils.js (included via base_admin.html)
@@ -280,7 +283,7 @@
     function escapeHtml(str) {
         const div = document.createElement('div');
         div.textContent = str;
-        return div.innerHTML;
+        return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
 
     // =========================================================================
@@ -293,7 +296,7 @@
         const alertHtml = `
             <div id="${id}" class="alert alert-${escapeHtml(type)} alert-dismissible fade show" role="alert">
                 ${content}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="${escapeHtml(geoText('close'))}"></button>
             </div>`;
         container.insertAdjacentHTML('beforeend', alertHtml);
         setTimeout(() => {
@@ -315,7 +318,7 @@
         container.innerHTML = '';
 
         // GEO_DATA is { "continent_name": { code: "XX", countries: [{code, name}, ...] }, ... }
-        const continents = Object.keys(GEO_DATA).sort();
+        const continents = Object.keys(GEO_DATA).sort((a, b) => a.localeCompare(b, AurvekI18n.locale));
         for (const continent of continents) {
             const info = GEO_DATA[continent];
             const chipId = 'continent-' + info.code;
@@ -324,9 +327,9 @@
             chip.className = 'continent-chip';
             chip.setAttribute('for', chipId);
             chip.innerHTML = `
-                <input type="checkbox" id="${chipId}" value="${info.code}" data-continent="${continent}">
-                <span>${continent}</span>
-                <small class="text-muted">(${info.countries.length})</small>`;
+                <input type="checkbox" id="${chipId}" value="${info.code}" data-continent="${escapeHtml(continent)}">
+                <span>${escapeHtml(continent)}</span>
+                <small class="text-muted">(${geoNumber(info.countries.length)})</small>`;
             container.appendChild(chip);
 
             // Toggle all countries in this continent
@@ -353,7 +356,7 @@
         const container = document.getElementById('countryGrid');
         container.innerHTML = '';
 
-        const continents = Object.keys(GEO_DATA).sort();
+        const continents = Object.keys(GEO_DATA).sort((a, b) => a.localeCompare(b, AurvekI18n.locale));
         for (const continent of continents) {
             const info = GEO_DATA[continent];
 
@@ -369,7 +372,7 @@
             grid.className = 'country-grid';
             grid.dataset.continent = continent;
 
-            const sorted = [...info.countries].sort((a, b) => a.name.localeCompare(b.name));
+            const sorted = [...info.countries].sort((a, b) => a.name.localeCompare(b.name, AurvekI18n.locale));
             for (const country of sorted) {
                 const item = document.createElement('div');
                 item.className = 'country-item';
@@ -378,7 +381,7 @@
                 item.dataset.continent = continent;
                 item.innerHTML = `
                     <input type="checkbox" id="country-${country.code}" value="${country.code}" class="form-check-input" style="min-width:1rem;">
-                    <label for="country-${country.code}">${country.name}</label>
+                    <label for="country-${country.code}">${escapeHtml(country.name)}</label>
                     <span class="country-code">${country.code}</span>`;
                 item.querySelector('input').addEventListener('change', function() {
                     updateContinentState(continent);
@@ -446,7 +449,7 @@
     // =========================================================================
     function updateSelectedCount() {
         const checked = document.querySelectorAll('#countryGrid .country-item input:checked').length;
-        document.getElementById('selectedCount').textContent = checked;
+        document.getElementById('selectedCount').textContent = geoText('selected', {count: checked, number: geoNumber(checked)});
     }
 
     // =========================================================================
@@ -496,9 +499,9 @@
             const data = await resp.json();
 
             if (!data.success) {
-                showAlert('Failed to load status: ' + (data.message || 'Unknown error'), 'danger');
-                document.getElementById('statusLoading').innerHTML = '<span class="text-danger">Failed to load status</span>';
-                document.getElementById('landingSummaryLoading').innerHTML = '<span class="text-danger">Failed to load</span>';
+                showAlert(data.message || geoText('error.load'), 'danger');
+                document.getElementById('statusLoading').textContent = geoText('error.load');
+                document.getElementById('landingSummaryLoading').textContent = geoText('error.load');
                 return;
             }
 
@@ -510,30 +513,30 @@
             const connBadge = document.getElementById('cfConnectionBadge');
             if (status.connected) {
                 connBadge.className = 'status-badge connected';
-                connBadge.textContent = 'Connected';
+                connBadge.textContent = geoText('status.connected');
             } else {
                 connBadge.className = 'status-badge disconnected';
-                connBadge.textContent = 'Not Configured';
+                connBadge.textContent = geoText(status.configured ? 'status.connection_error' : 'status.not_configured');
             }
 
             // -- Plan badge --
             document.getElementById('cfPlanBadge').textContent = status.plan || '--';
 
             // -- WAF rules --
-            document.getElementById('cfRulesUsed').textContent = status.rules_used != null ? status.rules_used : '--';
-            document.getElementById('cfRulesMax').textContent = status.rules_max != null ? status.rules_max : '--';
+            document.getElementById('cfRulesUsed').textContent = status.rules_used != null ? geoNumber(status.rules_used) : '--';
+            document.getElementById('cfRulesMax').textContent = status.rules_max != null ? geoNumber(status.rules_max) : '--';
 
             // -- Managed Transforms --
             const transformsBadge = document.getElementById('cfTransformsBadge');
             const enableBtn = document.getElementById('enableTransformsBtn');
             if (status.transforms_enabled) {
                 transformsBadge.className = 'status-badge enabled';
-                transformsBadge.textContent = 'Enabled';
+                transformsBadge.textContent = geoText('status.enabled');
                 enableBtn.style.display = 'none';
             } else {
                 transformsBadge.className = 'status-badge disabled';
-                transformsBadge.textContent = 'Disabled';
-                enableBtn.style.display = 'inline-block';
+                transformsBadge.textContent = geoText(status.transforms_enabled === false ? 'status.disabled' : 'status.unknown');
+                enableBtn.style.display = status.connected && status.transforms_enabled === false ? 'inline-block' : 'none';
             }
 
             // Show status, hide loading
@@ -564,9 +567,9 @@
 
         } catch (err) {
             console.error('Error loading geo status:', err);
-            showAlert('Error loading geo status: ' + err.message, 'danger');
-            document.getElementById('statusLoading').innerHTML = '<span class="text-danger">Connection error</span>';
-            document.getElementById('landingSummaryLoading').innerHTML = '<span class="text-danger">Connection error</span>';
+            showAlert(geoText('error.load'), 'danger');
+            document.getElementById('statusLoading').textContent = geoText('error.load');
+            document.getElementById('landingSummaryLoading').textContent = geoText('error.load');
         }
     }
 
@@ -582,11 +585,7 @@
     // =========================================================================
     function updateModeHelp(mode) {
         const helpEl = document.getElementById('modeHelp');
-        if (mode === 'allow') {
-            helpEl.innerHTML = '<strong>Only</strong> countries and continents selected below will be <strong>allowed</strong>. All others are blocked.';
-        } else {
-            helpEl.innerHTML = 'Countries and continents selected below will be <strong>blocked</strong>.';
-        }
+        helpEl.textContent = geoText(mode === 'allow' ? 'help.allow' : 'help.deny');
     }
 
     // =========================================================================
@@ -608,12 +607,12 @@
 
         for (const p of policies) {
             const modeClass = p.mode === 'allow' ? 'allow' : 'deny';
-            const modeLabel = p.mode === 'allow' ? 'Allow' : 'Block';
+            const modeLabel = geoText(p.mode === 'allow' ? 'allow' : 'block');
             const countries = p.countries || [];
             const countriesDisplay = countries.length > 5
-                ? (countries.slice(0, 5).join(', ') + ' +' + (countries.length - 5) + ' more')
+                ? geoText('more', {countries: countries.slice(0, 5).join(', '), number: geoNumber(countries.length - 5)})
                 : countries.join(', ') || '--';
-            const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '--';
+            const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString(AurvekI18n.locale, { year: 'numeric', month: 'short', day: 'numeric' }) : '--';
 
             const tr = document.createElement('tr');
             tr.innerHTML = `
@@ -623,26 +622,17 @@
                 <td><small>${escapeHtml(countriesDisplay)}</small></td>
                 <td><small>${updated}</small></td>
                 <td>
-                    <button class="btn btn-sm btn-outline-secondary" data-action="edit" data-id="${p.id}" title="Edit">
+                    <button class="btn btn-sm btn-outline-secondary" data-action="edit" data-id="${escapeHtml(p.id)}" title="${escapeHtml(geoText('edit'))}" aria-label="${escapeHtml(geoText('edit'))}">
                         <i class="fas fa-edit"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" data-action="delete" data-publicid="${escapeHtml(p.public_id || '')}" title="Remove">
+                    <button class="btn btn-sm btn-outline-danger" data-action="delete" data-publicid="${escapeHtml(p.public_id || '')}" title="${escapeHtml(geoText('remove'))}" aria-label="${escapeHtml(geoText('remove'))}">
                         <i class="fas fa-times"></i>
                     </button>
                 </td>`;
             tbody.appendChild(tr);
         }
 
-        // Event delegation for landing action buttons
-        tbody.addEventListener('click', function(e) {
-            const btn = e.target.closest('[data-action]');
-            if (!btn) return;
-            if (btn.dataset.action === 'edit') {
-                editLandingPolicy(btn.dataset.id);
-            } else if (btn.dataset.action === 'delete') {
-                deleteLandingPolicy(btn.dataset.publicid);
-            }
-        });
+
     }
 
     // =========================================================================
@@ -653,7 +643,7 @@
         const originalHtml = btn.innerHTML;
 
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving &amp; Syncing...';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + escapeHtml(geoText('saving'));
 
         const mode = document.querySelector('input[name="geoMode"]:checked').value;
         const countries = getSelectedCountries();
@@ -674,14 +664,14 @@
                 method: 'PUT',
                 body: JSON.stringify(payload)
             });
-            if (!resp) return;
+            if (!resp) { btn.innerHTML = originalHtml; btn.disabled = false; return; }
             const result = await resp.json();
 
             if (result.success) {
-                btn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                btn.innerHTML = '<i class="fas fa-check me-1"></i> ' + escapeHtml(geoText('saved_short'));
                 btn.classList.remove('btn-primary');
                 btn.classList.add('btn-success');
-                showAlert('Global geo-blocking config saved and synced to Cloudflare.', 'success');
+                showAlert(result.message || geoText('saved'), 'success');
 
                 setTimeout(() => {
                     btn.innerHTML = originalHtml;
@@ -690,13 +680,13 @@
                     btn.disabled = false;
                 }, 2500);
             } else {
-                showAlert('Save failed: ' + (result.message || 'Unknown error'), 'danger');
+                showAlert(result.message || geoText('error.save'), 'danger');
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
             }
         } catch (err) {
             console.error('Error saving global config:', err);
-            showAlert('Error saving config: ' + err.message, 'danger');
+            showAlert(geoText('error.save'), 'danger');
             btn.innerHTML = originalHtml;
             btn.disabled = false;
         }
@@ -714,23 +704,23 @@
 
         try {
             const resp = await secureFetch('/api/admin/geo/enable-transforms', { method: 'POST' });
-            if (!resp) return;
+            if (!resp) { btn.innerHTML = originalHtml; btn.disabled = false; return; }
             const result = await resp.json();
 
             if (result.success) {
                 const badge = document.getElementById('cfTransformsBadge');
                 badge.className = 'status-badge enabled';
-                badge.textContent = 'Enabled';
+                badge.textContent = geoText('status.enabled');
                 btn.style.display = 'none';
-                showAlert('Managed Transforms enabled successfully.', 'success');
+                showAlert(result.message || geoText('transforms_enabled'), 'success');
             } else {
-                showAlert('Failed to enable transforms: ' + (result.message || 'Unknown error'), 'danger');
+                showAlert(result.message || geoText('error.transforms'), 'danger');
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
             }
         } catch (err) {
             console.error('Error enabling transforms:', err);
-            showAlert('Error: ' + err.message, 'danger');
+            showAlert(geoText('error.transforms'), 'danger');
             btn.innerHTML = originalHtml;
             btn.disabled = false;
         }
@@ -740,9 +730,9 @@
     // Force Re-sync
     // =========================================================================
     async function forceSync() {
-        if (!confirm('This will re-sync all geo-blocking rules to Cloudflare. Continue?')) return;
+        if (!confirm(geoText('confirm.sync'))) return;
 
-        showAlert('<span class="spinner-border spinner-border-sm me-1"></span> Syncing rules to Cloudflare...', 'info', true);
+        showAlert('<span class="spinner-border spinner-border-sm me-1"></span> ' + escapeHtml(geoText('syncing')), 'info', true);
 
         try {
             const resp = await secureFetch('/api/admin/geo/sync', { method: 'POST' });
@@ -750,14 +740,14 @@
             const result = await resp.json();
 
             if (result.success) {
-                showAlert('All rules re-synced to Cloudflare successfully.', 'success');
+                showAlert(result.message || geoText('synced'), 'success');
                 await loadStatus();
             } else {
-                showAlert('Sync failed: ' + (result.message || 'Unknown error'), 'danger');
+                showAlert(result.message || geoText('error.sync'), 'danger');
             }
         } catch (err) {
             console.error('Error during force sync:', err);
-            showAlert('Sync error: ' + err.message, 'danger');
+            showAlert(geoText('error.sync'), 'danger');
         }
     }
 
@@ -765,10 +755,10 @@
     // Remove All Rules
     // =========================================================================
     async function removeAllRules() {
-        if (!confirm('WARNING: This will remove ALL geo-blocking rules from Cloudflare.\n\nAll geographic restrictions will be lifted immediately.\n\nAre you sure?')) return;
-        if (!confirm('This action cannot be undone easily. Confirm again to proceed.')) return;
+        if (!confirm(geoText('confirm.remove'))) return;
+        if (!confirm(geoText('confirm.again'))) return;
 
-        showAlert('<span class="spinner-border spinner-border-sm me-1"></span> Removing all geo rules from Cloudflare...', 'warning', true);
+        showAlert('<span class="spinner-border spinner-border-sm me-1"></span> ' + escapeHtml(geoText('removing')), 'warning', true);
 
         try {
             const resp = await secureFetch('/api/admin/geo/rules', { method: 'DELETE' });
@@ -776,14 +766,14 @@
             const result = await resp.json();
 
             if (result.success) {
-                showAlert('All geo-blocking rules removed from Cloudflare.', 'success');
+                showAlert(result.message || geoText('rules_removed'), 'success');
                 await loadStatus();
             } else {
-                showAlert('Failed to remove rules: ' + (result.message || 'Unknown error'), 'danger');
+                showAlert(result.message || geoText('error.remove'), 'danger');
             }
         } catch (err) {
             console.error('Error removing rules:', err);
-            showAlert('Error: ' + err.message, 'danger');
+            showAlert(geoText('error.remove'), 'danger');
         }
     }
 
@@ -798,7 +788,7 @@
 
     async function deleteLandingPolicy(publicId) {
         if (!publicId) return;
-        if (!confirm('Remove the geo policy for landing "' + publicId + '"? The landing itself will not be affected.')) return;
+        if (!confirm(geoText('confirm.delete', {public_id: publicId}))) return;
 
         try {
             const resp = await secureFetch('/api/admin/geo/landing/' + encodeURIComponent(publicId), { method: 'DELETE' });
@@ -806,14 +796,14 @@
             const result = await resp.json();
 
             if (result.success) {
-                showAlert('Landing geo policy removed.', 'success');
+                showAlert(result.message || geoText('policy_removed'), 'success');
                 await loadStatus();
             } else {
-                showAlert('Failed: ' + (result.message || 'Unknown error'), 'danger');
+                showAlert(result.message || geoText('error.delete'), 'danger');
             }
         } catch (err) {
             console.error('Error deleting landing policy:', err);
-            showAlert('Error: ' + err.message, 'danger');
+            showAlert(geoText('error.delete'), 'danger');
         }
     }
 
@@ -821,6 +811,16 @@
     // Init
     // =========================================================================
     document.addEventListener('DOMContentLoaded', async () => {
+        // Event delegation for landing action buttons
+        document.getElementById('landingSummaryBody').addEventListener('click', function(e) {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            if (btn.dataset.action === 'edit') {
+                editLandingPolicy(btn.dataset.id);
+            } else if (btn.dataset.action === 'delete') {
+                deleteLandingPolicy(btn.dataset.publicid);
+            }
+        });
         renderContinents();
         renderCountries();
         await loadStatus();

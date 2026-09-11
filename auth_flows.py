@@ -4,7 +4,7 @@ import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import Request, status
 from fastapi.responses import RedirectResponse
@@ -19,6 +19,7 @@ from auth import (
 from captcha_service import get_captcha_config, verify_captcha
 from common import GOOGLE_CLIENT_ID, templates
 from database import get_db_connection
+from i18n import get_translator
 from marketplace.config import marketplace_discovery_enabled
 from rate_limiter import (
     RateLimitConfig as RLC,
@@ -57,6 +58,36 @@ async def get_after_login_redirect(user_id: int) -> str:
     return "/home"
 
 
+def _browser_bound_embed_next(request: Request, value: str | None) -> str | None:
+    """Only resume a transaction already bound to this native browser session."""
+    if not value or len(value) > 256:
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.fragment or parsed.path != "/embed/authorize/complete":
+        return None
+    query = parse_qs(parsed.query)
+    if set(query) != {"transaction"} or len(query["transaction"]) != 1:
+        return None
+    transaction = query["transaction"][0]
+    if transaction not in request.session.get("embed_authorizations", []):
+        return None
+    return "/embed/authorize/complete?" + urlencode({"transaction": transaction})
+
+
+def remember_embed_registration_next(request: Request) -> dict:
+    next_url = _browser_bound_embed_next(request, request.query_params.get("next"))
+    if not next_url:
+        return {}
+    request.session["embed_registration_next"] = next_url
+    return {"login_url": "/login?" + urlencode({"next": next_url}),
+            "google_oauth_url": "/auth/google?" + urlencode({"next": next_url}),
+            "embed_registration_transaction": parse_qs(urlsplit(next_url).query)["transaction"][0]}
+
+
+def consume_embed_registration_next(request: Request) -> str | None:
+    return _browser_bound_embed_next(request, request.session.pop("embed_registration_next", None))
+
+
 async def handle_login_request(
     request: Request,
     prompt_context: dict | None = None,
@@ -66,6 +97,7 @@ async def handle_login_request(
     """
     Shared login logic for both /login and /p/{public_id}/{slug}/login.
     """
+    t = get_translator(request).t
     next_url = request.query_params.get("next")
 
     template_context = {
@@ -95,6 +127,11 @@ async def handle_login_request(
         template_context["next_url"] = current_next_url or ""
         template_context["recovery_url"] = recovery_url
         template_context["google_oauth_url"] = google_oauth_url
+        # Registration keeps the same native internal return through login/OAuth.
+        template_context["register_url"] = register_url
+        if current_next_url and current_next_url.startswith("/") and not current_next_url.startswith("//"):
+            separator = "&" if "?" in register_url else "?"
+            template_context["register_url"] += separator + urlencode({"next": current_next_url})
 
     _update_auth_template_links(next_url)
 
@@ -111,7 +148,7 @@ async def handle_login_request(
                 record_failure(request, "magic_link")
                 return templates.TemplateResponse(
                     "login.html",
-                    {**template_context, "error": "Invalid request."},
+                    {**template_context, "error": t("auth.error.invalid_request")},
                 )
 
             rate_error = check_rate_limits(
@@ -164,7 +201,7 @@ async def handle_login_request(
                                         "login.html",
                                         {
                                             **template_context,
-                                            "error": "Magic link has expired.",
+                                            "error": t("auth.error.magic_expired"),
                                         },
                                     )
                                 clear_login_failures(request, user_obj.username)
@@ -178,7 +215,7 @@ async def handle_login_request(
             record_failure(request, "magic_link")
             return templates.TemplateResponse(
                 "login.html",
-                {**template_context, "error": "Invalid or expired magic link."},
+                {**template_context, "error": t("auth.error.magic_invalid_expired")},
             )
 
         username = form.get("username", "").strip().lower()
@@ -213,7 +250,7 @@ async def handle_login_request(
             record_failure(request, "login_captcha")
             return templates.TemplateResponse(
                 "login.html",
-                {**template_context, "error": captcha_error},
+                {**template_context, "error": t("auth.error.captcha")},
             )
 
         user_result = await get_user_by_username(username)
@@ -225,7 +262,7 @@ async def handle_login_request(
                 "login.html",
                 {
                     **template_context,
-                    "error": "This account has been disabled. Contact support for assistance.",
+                    "error": t("auth.error.account_disabled"),
                 },
             )
 
@@ -246,7 +283,7 @@ async def handle_login_request(
                 "login.html",
                 {
                     **template_context,
-                    "error": "Incorrect username or password. Please, try again.",
+                    "error": t("auth.error.credentials"),
                 },
             )
 
@@ -256,7 +293,7 @@ async def handle_login_request(
             "login.html",
             {
                 **template_context,
-                "error": "Incorrect username or password. Please, try again.",
+                "error": t("auth.error.credentials"),
             },
         )
 
@@ -310,7 +347,7 @@ async def handle_login_request(
         record_failure(request, "magic_link")
         return templates.TemplateResponse(
             "login.html",
-            {**template_context, "error": "Invalid magic link. Please, try again."},
+            {**template_context, "error": t("auth.error.magic_invalid")},
         )
 
     return templates.TemplateResponse("login.html", template_context)

@@ -1,5 +1,6 @@
 (function() {
     'use strict';
+    const tr = (key, params) => AurvekI18n.t(`chat_widgets.phone.${key}`, params);
 
     const POLL_INTERVAL_MS = 3000;
     const ACTIVE_CALL_STATUSES = new Set([
@@ -71,37 +72,19 @@
     }
 
     function safeServerMessage(response, payload) {
-        if (response && [400, 403, 404, 409, 422, 503].includes(response.status)) {
-            const detail = payload && typeof payload.detail === 'string'
-                ? payload.detail.trim()
-                : '';
-            if (/incognito/i.test(detail)) {
-                return 'Phone calls are unavailable in incognito conversations.';
-            }
-            if (/conversation is locked/i.test(detail)) {
-                return 'This conversation is locked.';
-            }
-            if (/claimed concurrently|unclaimed scheduled call/i.test(detail)) {
-                return 'That scheduled call has already started and can no longer be canceled.';
-            }
-            if (/calls from aurvek to your phone are disabled|outbound calls?.*disabled|allow_outbound/i.test(detail)) {
-                return 'Calls from Aurvek to your phone are disabled for this conversation.';
-            }
-            if (/no active phone binding|active phone binding not found/i.test(detail)) {
-                return 'Choose a conversation for phone calls before starting a call.';
-            }
-            if (/e\.?164|canonical|phone contact|profile phone|destination country/i.test(detail)) {
-                return 'Your saved phone number cannot be used for this call. Check it in Settings.';
-            }
-            if (/dst|fold|time\s*zone|scheduled_at|ambiguous|does not exist/i.test(detail)) {
-                return 'That time cannot be scheduled. Choose a different time and try again.';
-            }
-        }
-        if (response && response.status === 401) return 'Your session has expired.';
+        const code = String(payload?.error_code || payload?.detail?.error_code || '').toLowerCase();
+        const messages = {
+            conversation_incognito: 'incognito_unavailable', conversation_locked: 'locked',
+            scheduled_call_started: 'scheduled_already_started', outbound_calls_disabled: 'disabled_for_conversation',
+            phone_binding_required: 'choose_before_calling', invalid_phone_number: 'saved_number_invalid',
+            invalid_schedule_time: 'invalid_time'
+        };
+        if (messages[code]) return tr(messages[code]);
+        if (response && response.status === 401) return AurvekI18n.t('common.session.expired_message');
         if (response && response.status >= 500) {
-            return 'The phone service could not complete that request. Please try again later.';
+            return tr('service_failed');
         }
-        return 'The phone request could not be completed.';
+        return tr('request_failed');
     }
 
     async function requestJson(url, options) {
@@ -111,7 +94,7 @@
         const method = String(requestOptions.method || 'GET').toUpperCase();
         if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
             const csrfToken = document.querySelector('meta[name="aurvek-csrf-token"]')?.content;
-            if (!csrfToken) throw new Error('Phone request security is unavailable.');
+            if (!csrfToken) throw new Error(tr('security_unavailable'));
             headers['X-GPTSub-CSRF'] = csrfToken;
         }
         requestOptions.headers = headers;
@@ -120,7 +103,11 @@
             ? window.secureFetch
             : window.fetch.bind(window);
         const response = await fetcher(url, requestOptions);
-        if (!response) throw new Error('Your session is no longer available.');
+        if (!response) {
+            const error = new Error(AurvekI18n.t('common.session.expired_message'));
+            error.code = 'session_expired';
+            throw error;
+        }
         let payload = null;
         try {
             payload = await response.json();
@@ -162,34 +149,25 @@
 
     function showActionError(error) {
         if (error && error.name === 'AbortError') return;
-        setStatus(error instanceof Error ? error.message : 'The request failed.', 'error');
+        setStatus(error instanceof Error ? error.message : tr('request_failed'), 'error');
     }
 
     function friendlyStatus(value) {
-        const labels = {
-            created: 'Preparing',
-            dispatching: 'Preparing',
-            dispatch_unknown: 'Checking status',
-            queued: 'Preparing',
-            initiated: 'Calling',
-            ringing: 'Ringing',
-            in_progress: 'In call',
-            completed: 'Completed',
-            busy: 'Busy',
-            no_answer: 'No answer',
-            machine: 'Voicemail',
-            failed: 'Failed',
-            canceled: 'Canceled',
-            unresolved: 'Status unavailable'
+        const status = String(value || '').toLowerCase();
+        const keys = {
+            created: 'preparing', dispatching: 'preparing', dispatch_unknown: 'checking',
+            queued: 'preparing', initiated: 'calling', ringing: 'ringing', in_progress: 'in_call',
+            completed: 'completed', busy: 'busy', no_answer: 'no_answer', machine: 'voicemail',
+            failed: 'failed', canceled: 'canceled', unresolved: 'unavailable'
         };
-        return labels[String(value || '').toLowerCase()] || 'Preparing';
+        return tr(`status_${keys[status] || 'preparing'}`);
     }
 
     function formatInstant(value) {
         if (!value) return '';
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return '';
-        return new Intl.DateTimeFormat(undefined, {
+        return new Intl.DateTimeFormat(AurvekI18n.locale, {
             dateStyle: 'medium',
             timeStyle: 'short'
         }).format(date);
@@ -226,7 +204,7 @@
         const title = String(
             job?.conversation_title || job?.prompt_name || ''
         ).trim();
-        return title || 'another conversation';
+        return title || tr('another_conversation');
     }
 
     function accountBindingConversationId() {
@@ -273,14 +251,13 @@
         ) return;
 
         if (!phone.configured) {
-            target.textContent = 'Add your phone number in Settings to receive calls.';
+            target.textContent = tr('add_number');
         } else if (!eligible) {
-            target.textContent = 'Verify your phone number in Settings to receive calls.';
+            target.textContent = tr('verify_number');
         } else {
             const masked = String(phone.masked || '').trim();
             target.textContent = masked
-                ? `Aurvek will call ${masked}.`
-                : 'Aurvek will call your saved phone number.';
+                ? tr('will_call_number', {number: masked}) : tr('will_call_saved');
         }
         profileLink.hidden = eligible;
         actionSection.hidden = !eligible && !hasReductiveActions();
@@ -290,10 +267,10 @@
         const scheduledElsewhere = scheduled &&
             Number(scheduled.conversation_id) !== Number(state.conversationId);
         if (eligible && !flags.locked && scheduledElsewhere) {
-            moveNote.textContent = `Calling now from this conversation will cancel the scheduled call for ${jobConversationTitle(scheduled)}.`;
+            moveNote.textContent = tr('cancel_scheduled_for', {conversation: jobConversationTitle(scheduled)});
             moveNote.hidden = false;
         } else if (eligible && !flags.locked && assignedElsewhere && assignedElsewhere !== Number(state.conversationId)) {
-            moveNote.textContent = 'Starting or scheduling a call will make this the conversation used for phone calls.';
+            moveNote.textContent = tr('assignment_notice');
             moveNote.hidden = false;
         } else {
             moveNote.textContent = '';
@@ -307,12 +284,10 @@
             ? 'btn btn-outline-danger phone-call-assignment-action is-assigned'
             : 'btn btn-outline-primary phone-call-assignment-action is-unassigned';
         assignmentButton.setAttribute('aria-label', assigned
-            ? 'Stop using this conversation for phone calls'
-            : 'Use this conversation for phone calls');
+            ? tr('stop_using_conversation') : tr('use_conversation'));
         assignmentIcon.className = assigned ? 'fas fa-phone-slash' : 'fas fa-phone';
         assignmentLabel.textContent = assigned
-            ? 'Stop using this conversation for phone calls'
-            : 'Use this conversation for phone calls';
+            ? tr('stop_using_conversation') : tr('use_conversation');
     }
 
     function renderCallState() {
@@ -330,20 +305,18 @@
         const scheduleForm = byId('phone-schedule-form');
         const flags = currentConversationFlags();
         byId('phone-action-title').textContent = flags.locked
-            ? 'Phone activity'
-            : 'When should we call?';
+            ? tr('activity') : tr('when_call');
 
         activeCard.hidden = !call && !pendingJob;
         activeTitle.textContent = call
-            ? (String(call.status || '').toLowerCase() === 'in_progress' ? 'Call in progress' : friendlyStatus(call.status))
-            : 'Preparing call';
+            ? (String(call.status || '').toLowerCase() === 'in_progress' ? tr('call_in_progress') : friendlyStatus(call.status))
+            : tr('preparing_call');
         if (call) {
             activeSummary.textContent = String(call.status || '').toLowerCase() === 'in_progress'
-                ? 'Connected'
-                : 'Aurvek is calling your phone';
+                ? tr('connected') : tr('calling_phone');
         } else if (pendingJob) {
             const details = [
-                'Starting shortly',
+                tr('starting_shortly'),
                 formatInstant(pendingJob.scheduled_at_utc)
             ].filter(Boolean);
             if (Number(pendingJob.conversation_id) !== Number(state.conversationId)) {
@@ -358,7 +331,7 @@
 
         scheduledCard.hidden = !scheduled;
         if (scheduled) {
-            const details = [formatInstant(scheduled.scheduled_at_utc) || 'Scheduled'];
+            const details = [formatInstant(scheduled.scheduled_at_utc) || tr('status_scheduled')];
             if (Number(scheduled.conversation_id) !== Number(state.conversationId)) {
                 details.push(jobConversationTitle(scheduled));
             }
@@ -412,7 +385,7 @@
         const generation = state.generation;
         const conversationId = state.conversationId;
         const historyRequest = beginHistoryRequest();
-        if (!quiet) setStatus('Refreshing call status…', 'info');
+        if (!quiet) setStatus(tr('refreshing'), 'info');
         const [payload, globalPayload] = await Promise.all([
             requestJson(
                 `/api/conversations/${conversationId}/phone-calls?limit=100`,
@@ -495,16 +468,15 @@
         if (flags.incognito || flags.locked || state.account?.phone?.eligible !== true) {
             setStatus(
                 flags.incognito
-                    ? 'Phone calls are unavailable in incognito conversations.'
+                    ? tr('incognito_unavailable')
                     : (flags.locked
-                        ? 'This conversation is locked.'
-                        : 'Verify your phone number in Settings to receive calls.'),
+                        ? tr('locked') : tr('verify_number')),
                 'error'
             );
             return;
         }
         if (hasCurrentBinding()) {
-            setStatus('This conversation is already used for phone calls.', 'success');
+            setStatus(tr('already_used'), 'success');
             return;
         }
         const button = byId('phone-conversation-assignment');
@@ -515,14 +487,13 @@
             : '';
         state.assignmentPending = true;
         button.disabled = true;
-        setStatus('Assigning this conversation to phone calls…', 'info');
+        setStatus(tr('assigning'), 'info');
         try {
             await ensureSelfBinding();
             await refreshHistory({ quiet: true });
             setStatus(
                 displacedTitle
-                    ? `This conversation will now be used for phone calls. The scheduled call for ${displacedTitle} was canceled.`
-                    : 'This conversation will now be used for phone calls.',
+                    ? tr('assigned_canceled', {conversation: displacedTitle}) : tr('assigned'),
                 'success'
             );
         } catch (error) {
@@ -538,15 +509,14 @@
         if (flags.incognito || flags.locked) {
             setStatus(
                 flags.incognito
-                    ? 'Phone calls are unavailable in incognito conversations.'
-                    : 'This conversation is locked. You can only end or remove existing phone activity.',
+                    ? tr('incognito_unavailable') : tr('locked_existing_only'),
                 'error'
             );
             return;
         }
         const button = event.currentTarget;
         button.disabled = true;
-        setStatus('Preparing the call…', 'info');
+        setStatus(tr('preparing_call_progress'), 'info');
         try {
             await ensureSelfBinding();
             await requestJson(
@@ -554,7 +524,7 @@
                 mutationOptions({ idempotency_key: newIdempotencyKey('now') })
             );
             await refreshHistory({ quiet: true });
-            setStatus('Calling you now.', 'success');
+            setStatus(tr('calling_now'), 'success');
         } catch (error) {
             showActionError(error);
         } finally {
@@ -568,8 +538,7 @@
         if (flags.incognito || flags.locked) {
             setStatus(
                 flags.incognito
-                    ? 'Phone calls are unavailable in incognito conversations.'
-                    : 'This conversation is locked. You can only end or remove existing phone activity.',
+                    ? tr('incognito_unavailable') : tr('locked_existing_only'),
                 'error'
             );
             return;
@@ -578,7 +547,7 @@
         if (!form.reportValidity()) return;
         const submit = byId('phone-schedule-submit');
         submit.disabled = true;
-        setStatus('Scheduling your call…', 'info');
+        setStatus(tr('scheduling'), 'info');
         try {
             await ensureSelfBinding();
             await requestJson(
@@ -591,7 +560,7 @@
                 })
             );
             await refreshHistory({ quiet: true });
-            setStatus('Call scheduled.', 'success');
+            setStatus(tr('scheduled'), 'success');
         } catch (error) {
             showActionError(error);
         } finally {
@@ -602,14 +571,14 @@
     async function cancelScheduled() {
         const jobId = byId('phone-cancel-scheduled').dataset.jobId;
         if (!jobId) return;
-        setStatus('Canceling the scheduled call…', 'info');
+        setStatus(tr('canceling_scheduled'), 'info');
         try {
             await requestJson(
                 `/api/phone-call-jobs/${encodeURIComponent(jobId)}/cancel`,
                 { method: 'POST', signal: state.controller?.signal }
             );
             await refreshHistory({ quiet: true });
-            setStatus('Scheduled call canceled.', 'success');
+            setStatus(tr('scheduled_canceled'), 'success');
         } catch (error) {
             showActionError(error);
         }
@@ -618,14 +587,14 @@
     async function hangupCall() {
         const callId = byId('phone-hangup').dataset.callId;
         if (!callId) return;
-        setStatus('Ending the call…', 'info');
+        setStatus(tr('ending'), 'info');
         try {
             const result = await requestJson(
                 `/api/phone-calls/${encodeURIComponent(callId)}/hangup`,
                 { method: 'POST', signal: state.controller?.signal }
             );
             await refreshHistory({ quiet: true });
-            setStatus(result.requested === false ? 'The call is already ending.' : 'Hangup requested.', 'success');
+            setStatus(tr(result.requested === false ? 'already_ending' : 'hangup_requested'), 'success');
         } catch (error) {
             showActionError(error);
         }
@@ -637,7 +606,7 @@
         const button = byId('phone-conversation-assignment');
         state.assignmentPending = true;
         button.disabled = true;
-        setStatus('Removing this phone assignment…', 'info');
+        setStatus(tr('removing_assignment'), 'info');
         try {
             await requestJson(
                 `/api/conversations/${state.conversationId}/phone-bindings/${state.binding.id}`,
@@ -648,7 +617,7 @@
             dispatchBindingChanged(previousConversationId);
             await refreshHistory({ quiet: true });
             renderTarget();
-            setStatus('This conversation is no longer used for phone calls.', 'success');
+            setStatus(tr('unassigned'), 'success');
         } catch (error) {
             showActionError(error);
         } finally {
@@ -672,9 +641,9 @@
         if (call) {
             label.textContent = friendlyStatus(call.status);
         } else if (preparingJob()) {
-            label.textContent = 'Preparing';
+            label.textContent = tr('status_preparing');
         } else if (scheduledJob()) {
-            label.textContent = 'Scheduled';
+            label.textContent = tr('status_scheduled');
         } else {
             label.textContent = '';
         }
@@ -689,7 +658,7 @@
         button.hidden = Boolean(window.admin_view) || flags.incognito;
         button.disabled = !conversationId;
         if (label && (flags.locked || !conversationId)) {
-            label.textContent = flags.locked ? 'Locked' : 'Select a chat';
+            label.textContent = flags.locked ? tr('locked_short') : tr('select_chat');
         }
         const invalidModalContext = flags.incognito || conversationId !== state.conversationId;
         const modalElement = byId('phoneCallModal');
@@ -701,7 +670,7 @@
             renderCallState();
             if (flags.locked) {
                 setStatus(
-                    'This conversation is locked. You can only end or remove existing phone activity.',
+                    tr('locked_existing_only'),
                     'info'
                 );
             }
@@ -744,7 +713,7 @@
             });
             label.textContent = active
                 ? friendlyStatus(active.status)
-                : (preparing ? 'Preparing' : (scheduled ? 'Scheduled' : ''));
+                : (preparing ? tr('status_preparing') : (scheduled ? tr('status_scheduled') : ''));
         } catch (error) {
             if (error && error.name !== 'AbortError') label.textContent = '';
         }
@@ -766,8 +735,7 @@
         if (flags.incognito) {
             if (typeof window.NotificationModal !== 'undefined') {
                 window.NotificationModal.error(
-                    'Phone calls',
-                    'Phone calls are unavailable in incognito conversations.'
+                    tr('title'), tr('incognito_unavailable')
                 );
             }
             return;
@@ -784,14 +752,14 @@
         state.modal = bootstrap.Modal.getOrCreateInstance(byId('phoneCallModal'));
         setStatus('', 'info');
         setScheduleMinimum();
-        byId('phone-call-target').textContent = 'Checking your phone number…';
+        byId('phone-call-target').textContent = tr('checking_number');
         byId('phone-action-section').hidden = true;
         state.modal.show();
         try {
             await refreshAll();
             if (flags.locked && state.modalOpen) {
                 setStatus(
-                    'This conversation is locked. You can only end or remove existing phone activity.',
+                    tr('locked_existing_only'),
                     'info'
                 );
             }
@@ -805,13 +773,13 @@
         if (!state.modalOpen || state.account?.phone?.eligible !== true) return;
         if (currentConversationFlags().locked) {
             setStatus(
-                'This conversation is locked. You can only end or remove existing phone activity.',
+                tr('locked_existing_only'),
                 'info'
             );
             return;
         }
         if (hasCurrentBinding()) {
-            setStatus('This conversation is already used for phone calls.', 'success');
+            setStatus(tr('already_used'), 'success');
             return;
         }
         await assignConversation();

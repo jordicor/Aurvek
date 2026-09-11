@@ -1,0 +1,3 @@
+{% set payload_domains = ['navigation'] + (i18n_domains|default([])) %}
+<script type="application/json" id="aurvek-i18n">{{ i18n_payload(payload_domains)|tojson }}</script>
+<script src="{{ get_static_url('/static/js/common/i18n.js') }}"></script>

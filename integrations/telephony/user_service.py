@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from database import get_db_connection
@@ -27,10 +28,32 @@ from integrations.telephony.snapshot import (
 CountryResolver = Callable[[str], tuple[str, str]]
 SnapshotBuilder = Callable[..., Awaitable[ConversationPhoneSnapshot]]
 ConfigLoader = Callable[..., Awaitable[TelephonyConfig]]
+TransactionGuard = Callable[[Any], Awaitable[None]]
+
+
+_LOCAL_SCHEDULE_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?$"
+)
 
 
 class PhoneUserServiceError(RuntimeError):
     """Base error for an owner-facing phone operation."""
+
+
+class PhoneUserActionError(PhoneUserServiceError):
+    """A phone error with a stable code understood by the owner UI."""
+
+    def __init__(self, message: str, *, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class PhoneUserInputError(ValueError):
+    """Invalid phone input with a stable code understood by the owner UI."""
+
+    def __init__(self, message: str, *, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class PhoneUserUnavailableError(PhoneUserServiceError):
@@ -65,17 +88,26 @@ def resolve_e164_country(value: str) -> tuple[str, str]:
     try:
         parsed = phonenumbers.parse(raw, None)
     except phonenumbers.NumberParseException as exc:
-        raise ValueError("Phone number must use valid E.164 format") from exc
+        raise PhoneUserInputError(
+            "Phone number must use valid E.164 format",
+            error_code="invalid_phone_number",
+        ) from exc
     canonical = phonenumbers.format_number(
         parsed, phonenumbers.PhoneNumberFormat.E164
     )
     if raw != canonical or not phonenumbers.is_possible_number(
         parsed
     ) or not phonenumbers.is_valid_number(parsed):
-        raise ValueError("Phone number must use valid E.164 format")
+        raise PhoneUserInputError(
+            "Phone number must use valid E.164 format",
+            error_code="invalid_phone_number",
+        )
     country = phonenumbers.region_code_for_number(parsed)
     if not country or len(country) != 2:
-        raise ValueError("Phone number has no supported numbering region")
+        raise PhoneUserInputError(
+            "Phone number has no supported numbering region",
+            error_code="invalid_phone_number",
+        )
     return canonical, str(country).upper()
 
 
@@ -91,15 +123,32 @@ def parse_local_schedule(
     try:
         zone = ZoneInfo(zone_name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError("timezone_name must be a valid IANA timezone") from exc
+        raise PhoneUserInputError(
+            "timezone_name must be a valid IANA timezone",
+            error_code="invalid_schedule_time",
+        ) from exc
+    local_text = str(scheduled_at or "").strip()
+    if _LOCAL_SCHEDULE_RE.fullmatch(local_text) is None:
+        raise PhoneUserInputError(
+            "scheduled_at must be an ISO local date and time",
+            error_code="invalid_schedule_time",
+        )
     try:
-        parsed = datetime.fromisoformat(str(scheduled_at or "").strip())
+        parsed = datetime.fromisoformat(local_text)
     except ValueError as exc:
-        raise ValueError("scheduled_at must be an ISO local date and time") from exc
+        raise PhoneUserInputError(
+            "scheduled_at must be an ISO local date and time",
+            error_code="invalid_schedule_time",
+        ) from exc
     if parsed.tzinfo is not None or parsed.utcoffset() is not None:
-        raise ValueError("scheduled_at must be local time without an offset")
+        raise PhoneUserInputError(
+            "scheduled_at must be local time without an offset",
+            error_code="invalid_schedule_time",
+        )
     if fold not in {None, 0, 1}:
-        raise ValueError("fold must be 0 or 1")
+        raise PhoneUserInputError(
+            "fold must be 0 or 1", error_code="invalid_schedule_time"
+        )
 
     candidates: dict[datetime, datetime] = {}
     for candidate_fold in (0, 1):
@@ -109,13 +158,22 @@ def parse_local_schedule(
         if round_trip.replace(tzinfo=None) == parsed:
             candidates[instant] = aware
     if not candidates:
-        raise ValueError("scheduled_at does not exist in this timezone because of DST")
+        raise PhoneUserInputError(
+            "scheduled_at does not exist in this timezone because of DST",
+            error_code="invalid_schedule_time",
+        )
     if len(candidates) > 1:
         if fold is None:
-            raise ValueError("scheduled_at is ambiguous because of DST; fold is required")
+            raise PhoneUserInputError(
+                "scheduled_at is ambiguous because of DST; fold is required",
+                error_code="invalid_schedule_time",
+            )
         selected = parsed.replace(tzinfo=zone, fold=fold)
         if selected.astimezone(UTC) not in candidates:
-            raise ValueError("fold does not identify a valid scheduled instant")
+            raise PhoneUserInputError(
+                "fold does not identify a valid scheduled instant",
+                error_code="invalid_schedule_time",
+            )
         return selected
     return next(iter(candidates.values()))
 
@@ -156,14 +214,19 @@ class UserPhoneService:
             conversation_id=conversation_id,
         )
         if binding is None:
-            raise PhoneUserServiceError("Conversation has no active phone binding")
+            raise PhoneUserActionError(
+                "Conversation has no active phone binding",
+                error_code="phone_binding_required",
+            )
         await self.repository.require_profile_phone(
             owner_user_id=owner_user_id,
             expected_e164=str(binding["e164"]),
+            conversation_id=conversation_id,
         )
         if not bool(binding["allow_outbound"]):
-            raise PhoneUserServiceError(
-                "Calls from Aurvek to your phone are disabled for this conversation"
+            raise PhoneUserActionError(
+                "Calls from Aurvek to your phone are disabled for this conversation",
+                error_code="outbound_calls_disabled",
             )
         canonical, country = self._country_resolver(str(binding["e164"]))
         if canonical != str(binding["e164"]):
@@ -174,6 +237,10 @@ class UserPhoneService:
             )
 
         async with self._connection_factory(readonly=True) as conn:
+            from integrations.applications.profile import conversation_profile
+            profile = await conversation_profile(conn, conversation_id)
+            if profile is not None:
+                binding = {**dict(binding), 'timezone_name': profile.timezone_name or 'UTC'}
             try:
                 snapshot = await self._snapshot_builder(
                     int(conversation_id),
@@ -318,6 +385,106 @@ class UserPhoneService:
             amd_override=None,
         )
 
+    async def create_ai_scheduled_call_job(
+        self,
+        *,
+        owner_user_id: int,
+        conversation_id: int,
+        scheduled_at: str,
+        timezone_name: str,
+        fold: int | None,
+        idempotency_key: str,
+        expected_prompt_id: int,
+        expected_initiation_mode: Literal["on_request", "proactive"],
+        transaction_guard: TransactionGuard | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Create one assistant-origin future job behind current-turn fences."""
+
+        zone = str(timezone_name or "").strip()
+        instant = parse_local_schedule(scheduled_at, zone, fold=fold)
+        if expected_initiation_mode not in {"on_request", "proactive"}:
+            raise ValueError("Expected phone-call initiation mode is invalid")
+        captured_prompt_id = int(expected_prompt_id)
+        if captured_prompt_id <= 0:
+            raise ValueError("Expected prompt id must be positive")
+        prepared = await self.prepare_outbound_call(
+            owner_user_id=owner_user_id,
+            conversation_id=conversation_id,
+        )
+        if (
+            int(prepared.config_snapshot.get("prompt_id") or 0)
+            != captured_prompt_id
+            or str(
+                prepared.config_snapshot.get("ai_initiation_mode") or ""
+            ).strip()
+            != expected_initiation_mode
+        ):
+            raise PhoneUserServiceError(
+                "Prompt phone-call policy changed before scheduling"
+            )
+
+        async def authorize_in_transaction(conn: Any) -> None:
+            if transaction_guard is not None:
+                await transaction_guard(conn)
+            cursor = await conn.execute(
+                """
+                SELECT COALESCE(c.role_id, ud.current_prompt_id) AS prompt_id,
+                       COALESCE(ps.ai_initiation_mode,'on_request') AS mode
+                FROM CONVERSATIONS c
+                LEFT JOIN USER_DETAILS ud ON ud.user_id=c.user_id
+                LEFT JOIN PROMPT_PHONE_SETTINGS ps
+                  ON ps.prompt_id=COALESCE(c.role_id, ud.current_prompt_id)
+                WHERE c.id=? AND c.user_id=?
+                """,
+                (int(conversation_id), int(owner_user_id)),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise PhoneUserServiceError(
+                    "Conversation is unavailable for phone-call scheduling"
+                )
+            values = dict(row)
+            if (
+                int(values.get("prompt_id") or 0) != captured_prompt_id
+                or str(values.get("mode") or "").strip()
+                != expected_initiation_mode
+            ):
+                raise PhoneUserServiceError(
+                    "Prompt phone-call policy changed before scheduling"
+                )
+
+        job, created = await self.outbound_service.schedule_call(
+            owner_user_id=int(owner_user_id),
+            conversation_id=int(conversation_id),
+            binding_id=int(prepared.binding["id"]),
+            scheduled_at=instant,
+            timezone_name=zone,
+            origin="assistant",
+            idempotency_key=str(idempotency_key),
+            config_snapshot=prepared.config_snapshot,
+            origin_message_id=None,
+            recording_override=None,
+            amd_override=None,
+            transaction_guard=authorize_in_transaction,
+        )
+        if not created:
+            expected_utc = instant.astimezone(UTC).isoformat(
+                timespec="seconds"
+            ).replace("+00:00", "Z")
+            expected_zone = ZoneInfo(zone).key
+            if str(job.get("status") or "") != "scheduled":
+                raise PhoneUserServiceError(
+                    "The matching phone-call request is no longer scheduled"
+                )
+            if (
+                str(job.get("scheduled_at_utc") or "") != expected_utc
+                or str(job.get("timezone_name") or "") != expected_zone
+            ):
+                raise PhoneUserServiceError(
+                    "The matching phone-call request has different scheduling details"
+                )
+        return job, created
+
     async def prepare_ai_initiated_call(
         self,
         *,
@@ -339,6 +506,8 @@ class UserPhoneService:
 __all__ = [
     "PhoneCountryBlockedError",
     "PhoneNumberValidationUnavailable",
+    "PhoneUserActionError",
+    "PhoneUserInputError",
     "PhoneUserServiceError",
     "PhoneUserUnavailableError",
     "PreparedPhoneCall",

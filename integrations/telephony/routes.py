@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import base64
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -88,6 +88,7 @@ PRIVATE_INBOUND_UNAVAILABLE_AUDIO_PATH = (
 )
 PRIVATE_CALL_AUDIO_PATH = "/webhooks/twilio/voice/call-audio/{token}"
 MEDIA_STREAM_PATH = "/ws/twilio/media-stream"
+ACCOUNT_MEDIA_STREAM_PATH = MEDIA_STREAM_PATH + "/{dispatch_token}"
 
 
 ReadinessCheck = Callable[[], Awaitable[bool]]
@@ -108,7 +109,8 @@ def _system_openai_api_key() -> str | None:
 
 
 def _runtime_kind_from_call(call: Mapping[str, Any]) -> str:
-    raw_snapshot = call.get("config_snapshot_json")
+    from integrations.telephony.call_context import active_call
+    raw_snapshot = active_call(call).get("config_snapshot_json")
     snapshot = orjson.loads(raw_snapshot)
     if not isinstance(snapshot, Mapping):
         raise ValueError("Phone call snapshot is invalid")
@@ -134,6 +136,22 @@ class TelephonyProviderRuntime:
     purge_repository: PhoneDataPurgeRepository | None = None
     billing_service: PhoneBillingService | None = None
     connect_billing_gate: PhoneConnectBillingGate | None = None
+    integration_id: str | None = None
+
+    def for_account(self, account):
+        if account is None:
+            return self
+        return replace(self, account_sid=account.account_sid, auth_token=account.auth_token,
+            integration_id=account.integration_id,
+            voice_client=AsyncTwilioVoiceClient(account.account_sid, account.auth_token))
+
+    async def for_call(self, call, *, allow_inactive=True):
+        from integrations.telephony.account_routing import account_for_call, twilio_snapshot
+        if twilio_snapshot(call) is None:
+            return self
+        async with self.repository.connection_factory(readonly=True) as connection:
+            account = await account_for_call(call, allow_inactive=allow_inactive, connection=connection)
+        return self.for_account(account)
 
     def signature_verifier(self) -> TwilioSignatureVerifier | None:
         if not self.auth_token:
@@ -143,6 +161,19 @@ class TelephonyProviderRuntime:
     async def hangup(self, call_sid: str) -> bool:
         if self.voice_client is None:
             raise RuntimeError("Twilio Voice client is unavailable")
+        if self.integration_id is not None:
+            from integrations.telephony.integrations import resolve_account
+            # A live WebSocket can outlast credential rotation/disconnection.
+            # Resolve again for closure while keeping the original account SID.
+            async with self.repository.connection_factory(readonly=True) as connection:
+                account = await resolve_account(self.integration_id, allow_inactive=True, connection=connection)
+            if account.account_sid != self.account_sid:
+                raise RuntimeError('Twilio account provenance changed')
+            client = AsyncTwilioVoiceClient(account.account_sid, account.auth_token)
+            try:
+                return await client.end_call_once(call_sid)
+            finally:
+                await client.close()
         return await self.voice_client.end_call_once(call_sid)
 
     async def hangup_durable(
@@ -260,8 +291,8 @@ class TelephonyProviderRuntime:
                 stream_attempt=int(call.get("reconnect_count", 0)),
             )
             runtime_kind = runtime_kind_from_snapshot(context.call_snapshot)
-            stt_provider = "openai" if runtime_kind == "openai_realtime" else "elevenlabs"
-            if runtime_kind == "openai_realtime":
+            stt_provider = {"openai_realtime": "openai", "openai_live": "openai_live"}.get(runtime_kind, "elevenlabs")
+            if runtime_kind in {"openai_realtime", "openai_live"}:
                 if not callable(self.openai_api_key_provider):
                     return False
                 if (
@@ -280,7 +311,7 @@ class TelephonyProviderRuntime:
                 and not await self.billing_service.rate_available(
                     call=call,
                     provider=stt_provider,
-                    component_type="stt",
+                    component_type="transport" if runtime_kind == "openai_live" else "stt",
                 )
             ):
                 return False
@@ -291,6 +322,14 @@ class TelephonyProviderRuntime:
     def build_session(self, context: PhoneMediaSessionContext) -> PhoneMediaSession:
         if self.session_factory is not None:
             return self.session_factory(context)
+        if runtime_kind_from_snapshot(context.call_snapshot) == "openai_live":
+            from integrations.telephony.live_session import OpenAILivePhoneSession
+            return OpenAILivePhoneSession(
+                context, openai_api_key_provider=self.openai_api_key_provider,
+                repository=self.repository, current_user_loader=get_user_by_id,
+                hangup_call=self.hangup, notice_loader=self.notice_loader,
+                greeting_loader=self.greeting_loader, billing_service=self.billing_service,
+            )
         if runtime_kind_from_snapshot(context.call_snapshot) == "openai_realtime":
             if self.openai_api_key_provider is None:
                 raise PhoneMediaSessionError(
@@ -415,7 +454,7 @@ def create_telephony_provider_router(
         purge_repository = _NoopDeletedCallbackRepository()
     router = APIRouter()
 
-    async def runtime_ready() -> bool:
+    async def runtime_ready(active=active) -> bool:
         if (
             not active.account_sid
             or active.signature_verifier() is None
@@ -438,8 +477,8 @@ def create_telephony_provider_router(
         except Exception:
             return False
 
-    async def require_ready() -> None:
-        if not await runtime_ready():
+    async def require_ready(active=active) -> None:
+        if not await runtime_ready(active):
             raise HTTPException(status_code=503, detail="Telephony is not ready")
 
     def callback_billing_service() -> PhoneBillingService:
@@ -450,7 +489,7 @@ def create_telephony_provider_router(
         return active.billing_service
 
     async def balance_exhausted_response(
-        call: Mapping[str, Any], *, stream_attempt: int
+        call: Mapping[str, Any], *, stream_attempt: int, active=active
     ) -> Response:
         try:
             claim = await active.repository.record_hangup_requested(
@@ -484,8 +523,8 @@ def create_telephony_provider_router(
                 stream_attempt=int(stream_attempt),
                 secret=active.auth_token,
             )
-            audio_url = canonical_twilio_url(
-                PRIVATE_CALL_AUDIO_PATH.format(token=audio_token)
+            audio_url = account_audio_url(
+                PRIVATE_CALL_AUDIO_PATH.format(token=audio_token), active
             )
         except Exception:
             logger.exception("Telephone balance notice could not be prepared")
@@ -498,6 +537,7 @@ def create_telephony_provider_router(
         *,
         stream_attempt: int,
         include_pstn: bool,
+        active=active,
     ) -> Response:
         gate = active.connect_billing_gate
         if gate is None:
@@ -518,12 +558,12 @@ def create_telephony_provider_router(
                 stream_attempt=int(stream_attempt),
                 call_elapsed_seconds=0.0,
                 include_pstn=bool(include_pstn),
-                include_stt=True,
+                include_stt=_runtime_kind_from_call(call) != "openai_live",
                 stt_provider=stt_provider,
             )
         except PhoneBillingExhausted:
             return await balance_exhausted_response(
-                call, stream_attempt=stream_attempt
+                call, stream_attempt=stream_attempt, active=active
             )
         except PhoneBillingError:
             raise HTTPException(
@@ -532,7 +572,7 @@ def create_telephony_provider_router(
         return response
 
     async def billed_reconnect_response(
-        call: Mapping[str, Any], completed_attempt: int
+        call: Mapping[str, Any], completed_attempt: int, *, active=active
     ) -> Response:
         next_attempt = int(completed_attempt) + 1
         response = _reconnect_twiml_response(call, completed_attempt)
@@ -541,18 +581,64 @@ def create_telephony_provider_router(
             response,
             stream_attempt=next_attempt,
             include_pstn=False,
+            active=active,
         )
+
+    async def request_runtime(request, params):
+        from integrations.telephony.account_routing import deleted_call_source
+        from integrations.telephony.integrations import lookup_receiver_account
+        from integrations.embed.models import EmbedError
+        token = request.path_params.get('token')
+        sid = str(params.get('CallSid') or '')
+        try:
+            call = (await active.repository.get_call_by_dispatch_token(token) if token else
+                    await active.repository.get_call_by_provider_sid(sid) if sid else None)
+            if call is None:
+                async with active.repository.connection_factory(readonly=True) as connection:
+                    call = await deleted_call_source(connection, token=token, call_sid=sid or None)
+            if call is not None:
+                return await active.for_call(call)
+            if not token:
+                async with active.repository.connection_factory(readonly=True) as connection:
+                    account = await lookup_receiver_account(str(params.get('To') or ''),
+                        str(params.get('AccountSid') or ''),
+                        allow_inactive=request.url.path != VOICE_INBOUND_PATH, connection=connection)
+                return active.for_account(account)
+            return active
+        except (EmbedError, ValueError):
+            raise HTTPException(status_code=403, detail='Telephone account mismatch') from None
+
+    async def audio_runtime(request):
+        from integrations.telephony.integrations import resolve_account
+        integration_id = request.query_params.get('integration_id')
+        if not integration_id:
+            return active
+        try:
+            async with active.repository.connection_factory(readonly=True) as connection:
+                account = await resolve_account(integration_id, allow_inactive=True, connection=connection)
+            return active.for_account(account)
+        except Exception:
+            raise HTTPException(status_code=404, detail='Phone audio is unavailable') from None
+
+    def account_audio_url(path, selected):
+        from urllib.parse import urlencode
+        url = canonical_twilio_url(path)
+        if selected.integration_id:
+            url += '?' + urlencode({'integration_id': selected.integration_id})
+        return url
 
     async def signed_form(
         request: Request, *, runtime_required: bool = True
-    ) -> tuple[Any, dict[str, Any]]:
-        if runtime_required:
-            await require_ready()
-        elif not active.account_sid or active.signature_verifier() is None:
-            raise HTTPException(status_code=503, detail="Telephony is not ready")
+    ) -> tuple[TelephonyProviderRuntime, dict[str, Any]]:
         form = await request.form()
+        params = {str(key): form[key] for key in form}
+        selected = await request_runtime(request, params)
+        if runtime_required:
+            await require_ready(selected)
+        elif not selected.account_sid or selected.signature_verifier() is None:
+            raise HTTPException(status_code=503, detail="Telephony is not ready")
         signature = request.headers.get("X-Twilio-Signature", "")
-        verifier = active.signature_verifier()
+        verifier = selected.signature_verifier()
         assert verifier is not None
         try:
             valid = verifier.validate_http(
@@ -564,23 +650,34 @@ def create_telephony_provider_router(
         except (TwilioCanonicalURLConfigurationError, ValueError):
             logger.exception("Twilio canonical HTTP URL is not configured safely")
             raise HTTPException(status_code=503, detail="Telephony URL is not ready") from None
-        if not valid:
+        if not valid or str(params.get('AccountSid') or '') != selected.account_sid:
             raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-        return form, {str(key): form[key] for key in form}
+        return selected, params
 
     @router.post(VOICE_INBOUND_PATH)
     async def inbound_voice(request: Request) -> Response:
-        _, params = await signed_form(request)
+        active, params = await signed_form(request)
         call_sid = str(params.get("CallSid") or "")
         caller = str(params.get("From") or "")
         called = str(params.get("To") or "")
         if await purge_repository.is_deleted_provider_call(call_sid):
             return _hangup_twiml()
         try:
+            from integrations.applications.phone import resolve_phone_entry, entry_twiml
+            from integrations.embed.models import EmbedError
+            try:
+                entry, phone_language = await resolve_phone_entry(active.repository.connection_factory, params,
+                    account_sid=active.account_sid, context_challenge=request.query_params.get('application_context'))
+            except (EmbedError, ValueError):
+                return _hangup_twiml()
+            if entry.status in {'proof_required', 'context_required'}:
+                return Response(entry_twiml(entry, canonical_twilio_url(VOICE_INBOUND_PATH), language=phone_language), media_type='application/xml')
             call, _ = await active.repository.create_inbound_call(
                 provider_call_sid=call_sid,
                 caller_e164=caller,
                 called_e164=called,
+                **({'account_sid': active.account_sid, 'application_admission': entry.admission}
+                   if entry.status == 'admitted' else {}),
             )
         except TelephonyInboundUnavailableError:
             if active.inbound_unavailable_notice_loader is None:
@@ -590,10 +687,10 @@ def create_telephony_provider_router(
                 audio_token = _build_private_audio_token(
                     asset.cache_id, secret=active.auth_token
                 )
-                audio_url = canonical_twilio_url(
+                audio_url = account_audio_url(
                     PRIVATE_INBOUND_UNAVAILABLE_AUDIO_PATH.format(
                         token=audio_token
-                    )
+                    ), active
                 )
             except Exception:
                 return _hangup_twiml(status_code=503)
@@ -605,8 +702,8 @@ def create_telephony_provider_router(
                 audio_token = _build_private_audio_token(
                     asset.cache_id, secret=active.auth_token
                 )
-                audio_url = canonical_twilio_url(
-                    PRIVATE_UNKNOWN_AUDIO_PATH.format(token=audio_token)
+                audio_url = account_audio_url(
+                    PRIVATE_UNKNOWN_AUDIO_PATH.format(token=audio_token), active
                 )
             except Exception:
                 return _hangup_twiml(status_code=503)
@@ -631,11 +728,12 @@ def create_telephony_provider_router(
             response,
             stream_attempt=attempt,
             include_pstn=True,
+            active=active,
         )
 
     @router.post(VOICE_TWIML_PATH)
     async def outbound_twiml(token: str, request: Request) -> Response:
-        _, params = await signed_form(request)
+        active, params = await signed_form(request)
         try:
             call = await active.repository.reconcile_outbound_twiml(
                 dispatch_token=token,
@@ -643,6 +741,19 @@ def create_telephony_provider_router(
             )
         except (TelephonyNotFoundError, TelephonyConflictError, ValueError):
             return _hangup_twiml()
+        from integrations.applications.phone import prove_outbound_answer, entry_twiml
+        from integrations.applications.channel_models import ChannelResolution
+        from integrations.embed.models import EmbedError
+        try:
+            verified = await prove_outbound_answer(active.repository.connection_factory,
+                call['id'], params, account_sid=active.account_sid) if orjson.loads(call.get('config_snapshot_json') or '{}').get('_application') else True
+        except EmbedError:
+            return _hangup_twiml()
+        if not verified:
+            action_url = canonical_twilio_url(VOICE_TWIML_PATH.format(token=token))
+            language = orjson.loads(call['config_snapshot_json']).get('_application', {}).get('phone_language', 'en')
+            return Response(content=entry_twiml(ChannelResolution('proof_required'), action_url,
+                language=language), media_type='application/xml')
         if not await active.call_ready(call):
             try:
                 await active.hangup_durable(
@@ -661,12 +772,13 @@ def create_telephony_provider_router(
             response,
             stream_attempt=attempt,
             include_pstn=False,
+            active=active,
         )
 
     @router.get(PRIVATE_UNKNOWN_AUDIO_PATH)
     async def private_unknown_audio(token: str, request: Request) -> Response:
-        del request
-        await require_ready()
+        active = await audio_runtime(request)
+        await require_ready(active)
         cache_id = _parse_private_audio_token(token, secret=active.auth_token)
         assert active.unknown_notice_loader is not None
         asset = await active.unknown_notice_loader()
@@ -690,8 +802,8 @@ def create_telephony_provider_router(
     async def private_inbound_unavailable_audio(
         token: str, request: Request
     ) -> Response:
-        del request
-        await require_ready()
+        active = await audio_runtime(request)
+        await require_ready(active)
         cache_id = _parse_private_audio_token(token, secret=active.auth_token)
         if active.inbound_unavailable_notice_loader is None:
             raise HTTPException(status_code=503, detail="Telephony is not ready")
@@ -714,7 +826,7 @@ def create_telephony_provider_router(
 
     @router.get(PRIVATE_CALL_AUDIO_PATH)
     async def private_call_audio(token: str, request: Request) -> Response:
-        del request
+        active = await audio_runtime(request)
         if not active.auth_token or active.call_notice_asset_loader is None:
             raise HTTPException(status_code=503, detail="Telephony is not ready")
         scope = _parse_private_call_audio_token(token, secret=active.auth_token)
@@ -798,7 +910,7 @@ def create_telephony_provider_router(
 
     @router.post(VOICE_STATUS_PATH)
     async def voice_status(token: str, request: Request) -> Response:
-        _, params = await signed_form(request, runtime_required=False)
+        active, params = await signed_form(request, runtime_required=False)
         try:
             event = normalize_call_status_callback(params)
             if await purge_repository.is_deleted_callback(token, event.call_sid):
@@ -837,7 +949,7 @@ def create_telephony_provider_router(
         Unknown or deleted calls intentionally receive the same empty success.
         """
 
-        _, params = await signed_form(request, runtime_required=False)
+        active, params = await signed_form(request, runtime_required=False)
         try:
             event = normalize_call_status_callback(params)
             if await purge_repository.is_deleted_provider_call(event.call_sid):
@@ -870,7 +982,7 @@ def create_telephony_provider_router(
 
     @router.post(VOICE_STREAM_STATUS_PATH)
     async def stream_status(token: str, request: Request) -> Response:
-        _, params = await signed_form(request, runtime_required=False)
+        active, params = await signed_form(request, runtime_required=False)
         try:
             event = normalize_stream_status_callback(params)
             if await purge_repository.is_deleted_callback(token, event.call_sid):
@@ -883,7 +995,7 @@ def create_telephony_provider_router(
 
     @router.post(VOICE_RECORDING_PATH)
     async def recording_status(token: str, request: Request) -> Response:
-        _, params = await signed_form(request, runtime_required=False)
+        active, params = await signed_form(request, runtime_required=False)
         try:
             event = normalize_recording_status_callback(params)
             call, _ = await active.repository.record_recording_status(
@@ -911,7 +1023,7 @@ def create_telephony_provider_router(
 
     @router.post(VOICE_AMD_PATH)
     async def amd_status(token: str, request: Request) -> Response:
-        _, params = await signed_form(request, runtime_required=False)
+        active, params = await signed_form(request, runtime_required=False)
         answered_by = str(params.get("AnsweredBy") or "").strip().lower()
         sanitized = sanitize_twilio_callback(params)
         dedupe = callback_dedupe_key("amd", sanitized)
@@ -968,7 +1080,7 @@ def create_telephony_provider_router(
     async def connect_action(
         token: str, stream_attempt: int, request: Request
     ) -> Response:
-        _, params = await signed_form(request, runtime_required=False)
+        active, params = await signed_form(request, runtime_required=False)
         if not 0 <= stream_attempt <= MAX_RECONNECT_ATTEMPTS:
             return _hangup_twiml()
         call = await active.repository.get_call_by_dispatch_token(token)
@@ -983,7 +1095,7 @@ def create_telephony_provider_router(
             # executes one TwiML document at a time, so every delivery of that
             # action must replay the exact durable continuation originally
             # chosen for it -- never instructions for a later stream.
-            return await billed_reconnect_response(call, stream_attempt)
+            return await billed_reconnect_response(call, stream_attempt, active=active)
         outcome = await active.repository.get_stream_attempt_result(
             call_id=str(call["id"]),
             stream_attempt=stream_attempt,
@@ -1029,13 +1141,13 @@ def create_telephony_provider_router(
                     stream_attempt=stream_attempt,
                     secret=active.auth_token,
                 )
-                audio_url = canonical_twilio_url(
-                    PRIVATE_CALL_AUDIO_PATH.format(token=audio_token)
+                audio_url = account_audio_url(
+                    PRIVATE_CALL_AUDIO_PATH.format(token=audio_token), active
                 )
             except Exception:
                 return _hangup_twiml(status_code=503)
             return _notice_hangup_twiml(audio_url)
-        await require_ready()
+        await require_ready(active)
         if outcome is None:
             return _hangup_twiml(status_code=503)
         reconnect = await active.repository.prepare_reconnect(
@@ -1056,16 +1168,26 @@ def create_telephony_provider_router(
                 or int(latest.get("reconnect_count", -1)) < stream_attempt + 1
             ):
                 return _hangup_twiml()
-            return await billed_reconnect_response(latest, stream_attempt)
-        return await billed_reconnect_response(reconnect, stream_attempt)
+            return await billed_reconnect_response(latest, stream_attempt, active=active)
+        return await billed_reconnect_response(reconnect, stream_attempt, active=active)
 
     @router.websocket(MEDIA_STREAM_PATH)
-    async def media_stream(websocket: WebSocket) -> None:
+    @router.websocket(ACCOUNT_MEDIA_STREAM_PATH)
+    async def media_stream(websocket: WebSocket, dispatch_token: str | None = None) -> None:
+        from integrations.telephony.account_routing import twilio_snapshot
+        from integrations.embed.models import EmbedError
+        selected = active
         try:
-            if not await runtime_ready():
+            if dispatch_token:
+                selected_call = await active.repository.get_call_by_dispatch_token(dispatch_token)
+                if selected_call is None:
+                    await websocket.close(code=1008)
+                    return
+                selected = await active.for_call(selected_call)
+            if not await runtime_ready(selected):
                 await websocket.close(code=1013)
                 return
-            verifier = active.signature_verifier()
+            verifier = selected.signature_verifier()
             assert verifier is not None
             valid = verifier.validate_websocket(
                 path=websocket.url.path,
@@ -1075,7 +1197,7 @@ def create_telephony_provider_router(
             if not valid:
                 await websocket.close(code=1008)
                 return
-        except (TwilioCanonicalURLConfigurationError, ValueError):
+        except (TwilioCanonicalURLConfigurationError, ValueError, EmbedError):
             await websocket.close(code=1013)
             return
 
@@ -1091,18 +1213,20 @@ def create_telephony_provider_router(
                 call is None
                 or call.get("provider_call_sid") != peek["call_sid"]
                 or int(call.get("reconnect_count", -1)) != peek["stream_attempt"]
+                or (dispatch_token is not None and dispatch_token != peek['correlation_token'])
+                or (twilio_snapshot(call) is not None and dispatch_token is None)
             ):
                 await websocket.close(code=1008)
                 return
-            if not await active.call_ready(call):
+            if not await selected.call_ready(call):
                 await websocket.close(code=1013)
                 return
             context = PhoneMediaSessionContext.from_call(
                 call,
-                account_sid=active.account_sid,
+                account_sid=selected.account_sid,
                 stream_attempt=peek["stream_attempt"],
             )
-            session = active.build_session(context)
+            session = selected.build_session(context)
             result = await session.run(
                 websocket,
                 initial_messages=(connected_raw, start_raw),
@@ -1142,8 +1266,11 @@ def _media_twiml_response(call: Mapping[str, Any]) -> Response:
     attempt = int(call.get("reconnect_count", 0))
     if not 0 <= attempt <= MAX_RECONNECT_ATTEMPTS:
         return _hangup_twiml(status_code=409)
+    from integrations.telephony.account_routing import twilio_snapshot
+    stream_path = (ACCOUNT_MEDIA_STREAM_PATH.format(dispatch_token=token)
+                   if twilio_snapshot(call) is not None else MEDIA_STREAM_PATH)
     xml = build_media_stream_twiml(
-        stream_url=canonical_twilio_url(MEDIA_STREAM_PATH, websocket=True),
+        stream_url=canonical_twilio_url(stream_path, websocket=True),
         connect_action_url=canonical_twilio_url(
             VOICE_CONNECT_ACTION_PATH.format(
                 token=token, stream_attempt=attempt

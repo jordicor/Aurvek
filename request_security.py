@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from i18n import get_translator
 
 CSRF_HEADER = "X-GPTSub-CSRF"
 CSRF_SESSION_KEY = "gptsub_csrf_token"
@@ -21,6 +22,12 @@ PRIMARY_APP_DOMAIN = os.getenv("PRIMARY_APP_DOMAIN", "").strip()
 
 def ensure_csrf_token(request: Request) -> str:
     """Return the session's opaque CSRF token, creating it when necessary."""
+    from integrations.embed.context import get_embed_principal, is_embed_request
+    if is_embed_request(request):
+        principal = get_embed_principal(request)
+        if principal is None or len(principal.csrf_token) < 32:
+            raise ValueError("An authenticated embed session is required")
+        return principal.csrf_token
     token = request.session.get(CSRF_SESSION_KEY)
     if not isinstance(token, str) or len(token) < 32:
         token = secrets.token_urlsafe(32)
@@ -44,7 +51,12 @@ def validate_mutation_request(
     across TLS-terminating proxies; otherwise the comparison uses the sanitized ASGI
     scheme and HTTP ``Host`` authority.
     """
-    expected = request.session.get(CSRF_SESSION_KEY)
+    from integrations.embed.context import get_embed_principal, is_embed_request
+    if is_embed_request(request):
+        principal = get_embed_principal(request)
+        expected = principal.csrf_token if principal is not None else None
+    else:
+        expected = request.session.get(CSRF_SESSION_KEY)
     supplied = request.headers.get(CSRF_HEADER)
     if supplied is None:
         supplied = supplied_token
@@ -53,15 +65,15 @@ def validate_mutation_request(
         or not isinstance(supplied, str)
         or not secrets.compare_digest(expected, supplied)
     ):
-        return _forbidden("Invalid or missing CSRF token.")
+        return _forbidden(get_translator(request).t("common.security.csrf_invalid"))
 
     fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if fetch_site in {"cross-site", "none"}:
-        return _forbidden("Cross-site request rejected.")
+        return _forbidden(get_translator(request).t("common.security.cross_site"))
 
     source = request.headers.get("origin") or request.headers.get("referer")
     if not source or not _same_origin(request, source):
-        return _forbidden("Request origin does not match Aurvek.")
+        return _forbidden(get_translator(request).t("common.security.origin_mismatch"))
     return None
 
 
@@ -83,6 +95,21 @@ def _same_origin(request: Request, source: str) -> bool:
     source_origin = _normalize_origin(parsed)
     if source_origin is None:
         return False
+
+    # Only server-classified registered hosts may override the native origin.
+    # Never derive trust from the incoming Host or forwarded headers alone.
+    state = request.scope.get("state", {})
+    embed_origin = state.get("embed_origin") if state.get("embed_host") else None
+    if state.get("embed_host") and not isinstance(embed_origin, str):
+        return False
+    if embed_origin:
+        try:
+            configured_origin = _normalize_origin(urlsplit(embed_origin))
+            host_origin = _normalize_origin(urlsplit(f"https://{request.headers.get('host', '')}"))
+        except (ValueError, TypeError):
+            return False
+        return (configured_origin is not None and source_origin == configured_origin
+                and host_origin == configured_origin)
 
     if PRIMARY_APP_DOMAIN:
         configured_origin = _configured_primary_origin(PRIMARY_APP_DOMAIN)

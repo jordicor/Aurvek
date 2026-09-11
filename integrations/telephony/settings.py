@@ -11,6 +11,7 @@ import json
 from typing import Any, Mapping
 
 from database import get_db_connection
+from user_languages import load_user_preferred_languages
 from .config import TelephonyConfig, load_telephony_config
 
 
@@ -24,6 +25,7 @@ class TelephonySettingsError(ValueError):
 @dataclass(frozen=True, slots=True)
 class EffectivePhoneSettings:
     stt_locale: str
+    secondary_languages: tuple[str, ...]
     endpointing_ms: int
     barge_in_confirmation_ms: int
     interruptible: bool
@@ -48,6 +50,7 @@ class EffectivePhoneSettings:
 
     def as_dict(self) -> dict[str, Any]:
         result = asdict(self)
+        result["secondary_languages"] = list(self.secondary_languages)
         result["warning_milestones_seconds"] = list(
             self.warning_milestones_seconds
         )
@@ -119,12 +122,16 @@ def _parse_milestones(value: Any, *, max_duration_seconds: int) -> tuple[int, ..
 def resolve_phone_settings(
     global_config: TelephonyConfig,
     prompt_values: Mapping[str, Any] | None,
+    *,
+    preferred_languages: tuple[str, ...] = (),
 ) -> EffectivePhoneSettings:
-    """Merge one prompt row over administrative limits.
+    """Merge one prompt row and ordered user languages over global defaults.
 
     No prompt row means full inheritance.  An existing prompt row with both
     silence columns NULL explicitly disables silence handling; positive values
-    override only when they remain within the administrative maxima.
+    override only when they remain within the administrative maxima.  A fixed
+    prompt STT locale wins; otherwise profile languages replace global auto
+    detection when present.
     """
     values = dict(prompt_values) if prompt_values is not None else None
 
@@ -212,13 +219,28 @@ def resolve_phone_settings(
                     "silence_hangup_seconds cannot exceed the administrative maximum"
                 )
 
-    stt_locale = str(
+    configured_stt_locale = str(
         values.get("stt_locale", "auto") if values is not None else "auto"
     ).strip()
-    if not stt_locale:
+    if not configured_stt_locale:
         raise TelephonySettingsError("stt_locale cannot be empty")
-    if stt_locale.lower() == "auto":
+    if configured_stt_locale.lower() != "auto":
+        # An explicit prompt language is authoritative.  In particular, do not
+        # widen it with profile languages: prompt authors use this setting when
+        # the experience itself is intentionally monolingual.
+        stt_locale = configured_stt_locale
+        secondary_languages: tuple[str, ...] = ()
+    elif preferred_languages:
+        # The ordered profile list has exactly one source of truth: its first
+        # member is the primary language and later members are allowed as
+        # secondary Scribe languages.
+        stt_locale = preferred_languages[0]
+        secondary_languages = tuple(preferred_languages[1:])
+    else:
+        # Preserve the pre-profile global auto/multi behavior for users who
+        # have not made a language choice.
         stt_locale = global_config.stt_language
+        secondary_languages = ()
 
     ai_initiation_mode = _choice(
         values.get("ai_initiation_mode", "on_request")
@@ -244,6 +266,7 @@ def resolve_phone_settings(
 
     return EffectivePhoneSettings(
         stt_locale=stt_locale,
+        secondary_languages=secondary_languages,
         endpointing_ms=endpointing_ms,
         barge_in_confirmation_ms=barge_in_confirmation_ms,
         interruptible=interruptible,
@@ -296,21 +319,39 @@ async def _load_prompt_values(conn: Any, prompt_id: int) -> dict[str, Any] | Non
 async def resolve_effective_phone_settings(
     prompt_id: int,
     *,
+    user_id: int | None = None,
+    conversation_id: int | None = None,
     global_config: TelephonyConfig | None = None,
     conn: Any | None = None,
 ) -> EffectivePhoneSettings:
     if conn is not None:
         config = global_config or await load_telephony_config(conn=conn)
+        from integrations.applications.profile import conversation_profile
+        app_profile = await conversation_profile(conn, conversation_id) if conversation_id else None
+        preferred_languages = tuple(app_profile.preferred_languages) if app_profile is not None else (
+            await load_user_preferred_languages(conn, int(user_id))
+            if user_id is not None
+            else ()
+        )
         return resolve_phone_settings(
             config,
             await _load_prompt_values(conn, prompt_id),
+            preferred_languages=preferred_languages,
         )
 
     async with get_db_connection(readonly=True) as db_conn:
         config = global_config or await load_telephony_config(conn=db_conn)
+        from integrations.applications.profile import conversation_profile
+        app_profile = await conversation_profile(db_conn, conversation_id) if conversation_id else None
+        preferred_languages = tuple(app_profile.preferred_languages) if app_profile is not None else (
+            await load_user_preferred_languages(db_conn, int(user_id))
+            if user_id is not None
+            else ()
+        )
         return resolve_phone_settings(
             config,
             await _load_prompt_values(db_conn, prompt_id),
+            preferred_languages=preferred_languages,
         )
 
 

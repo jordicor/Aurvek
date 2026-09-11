@@ -19,11 +19,14 @@ from integrations.messaging_voice_notes.service import (
 )
 from log_config import logger
 from models import User
+from integrations.applications.web import require_application_access
 from prompts import can_user_access_prompt
 from storage_quota import StorageQuotaExceededError, ensure_known_growth_fits
 
 from chat.schemas import BranchConversationRequest
 from chat.services.privacy import delete_message_rows, ensure_conversation_privacy_schema
+
+from chat.services.localization import chat_text, chat_error
 
 router = APIRouter()
 
@@ -52,13 +55,14 @@ async def rollback_conversation(
     message_id = data.get("message_id")
 
     async with get_db_connection() as conn:
+        await require_application_access(conn, conversation_id, current_user.id, capability="conversation_controls")
         cursor = await conn.execute(
             "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
             (conversation_id, current_user.id),
         )
         conversation = await cursor.fetchone()
         if not conversation:
-            return JSONResponse(content={"success": False, "error": "Conversation not found or access denied"}, status_code=404)
+            return JSONResponse(content={"success": False, "error": chat_text(current_user, "conversation_inaccessible")}, status_code=404)
 
         cursor = await conn.execute(
             "SELECT id FROM messages WHERE conversation_id = ? AND id > ?",
@@ -100,6 +104,9 @@ async def branch_conversation(
         return RedirectResponse(url="/login")
 
     async with get_db_connection() as conn:
+        application = await require_application_access(conn, conversation_id, current_user.id)
+        if application is not None:
+            raise HTTPException(status_code=403, detail="application_branch_unavailable")
         cursor = await conn.cursor()
         await ensure_conversation_privacy_schema(conn)
 
@@ -113,17 +120,17 @@ async def branch_conversation(
         )
         source_conv = await cursor.fetchone()
         if not source_conv:
-            raise HTTPException(status_code=404, detail="Conversation not found")
+            raise HTTPException(status_code=404, detail=chat_text(current_user, "conversation_not_found"))
 
         source_role_id = source_conv["role_id"]
         source_llm_id = source_conv["llm_id"]
         source_extension_id = source_conv["active_extension_id"]
         source_chat_name = source_conv["chat_name"]
         if bool(source_conv["is_incognito"]):
-            raise HTTPException(status_code=400, detail="Incognito conversations cannot be branched")
+            raise HTTPException(status_code=400, detail=chat_text(current_user, "incognito_branch_unavailable"))
 
         if source_role_id and not await can_user_access_prompt(current_user, source_role_id, cursor):
-            raise HTTPException(status_code=403, detail="Access denied to this prompt")
+            raise HTTPException(status_code=403, detail=chat_text(current_user, "prompt_access_denied"))
 
         # A branch inherits the parent's llm_id. Do not resurrect a GPTSub (ChatGPT
         # subscription) model for a user without an active link. The authoritative
@@ -142,7 +149,7 @@ async def branch_conversation(
             ):
                 raise HTTPException(
                     status_code=403,
-                    detail="This conversation uses a ChatGPT subscription model. Connect your ChatGPT subscription to branch it.",
+                    detail=chat_text(current_user, "subscription_branch_required"),
                 )
 
         await cursor.execute(
@@ -150,7 +157,7 @@ async def branch_conversation(
             (request.message_id, conversation_id),
         )
         if not await cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Message not found in this conversation")
+            raise HTTPException(status_code=400, detail=chat_text(current_user, "branch_message_not_found"))
 
         await cursor.execute(
             "SELECT COUNT(*) FROM MESSAGES WHERE conversation_id = ? AND id <= ?",
@@ -165,7 +172,7 @@ async def branch_conversation(
                 (folder_id, current_user.id),
             )
             if not await cursor.fetchone():
-                raise HTTPException(status_code=400, detail="Invalid folder_id")
+                raise HTTPException(status_code=400, detail=chat_text(current_user, "folder_invalid"))
 
         # Branching physically copies the source media tree. Its incremental
         # size is known, so enforce a hard byte limit before any branch writes.
@@ -188,7 +195,7 @@ async def branch_conversation(
                 conn, current_user.id, branch_size_bytes
             )
         except StorageQuotaExceededError as quota_exc:
-            raise HTTPException(status_code=413, detail=quota_exc.message)
+            raise HTTPException(status_code=413, detail=chat_text(current_user, "storage_quota_exceeded"))
 
         branch_name = f"{source_chat_name} (branch)" if source_chat_name else None
 
@@ -221,7 +228,7 @@ async def branch_conversation(
             )
         except StorageQuotaExceededError as quota_exc:
             await conn.rollback()
-            raise HTTPException(status_code=413, detail=quota_exc.message)
+            raise HTTPException(status_code=413, detail=chat_text(current_user, "storage_quota_exceeded"))
 
         await ensure_file_storage_schema(conn)
         await cursor.execute(
@@ -325,7 +332,7 @@ async def branch_conversation(
             await conn.rollback()
             if os.path.exists(dst_dir):
                 shutil.rmtree(dst_dir, ignore_errors=True)
-            raise HTTPException(status_code=500, detail="Failed to branch conversation")
+            raise HTTPException(status_code=500, detail=chat_text(current_user, "branch_failed"))
 
         try:
             await cursor.execute(

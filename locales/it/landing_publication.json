@@ -1,0 +1,12 @@
+{
+  "hallucination": "Funzionalità non disponibile dichiarata da «{text}» alla riga {line}. Contesto: ...{snippet}...",
+  "testimonial": "Testimonianza o valutazione non verificata alla riga {line}. Sono consentiti solo esempi di conversazione chiaramente indicati come dimostrazioni. Contesto: ...{snippet}...",
+  "free_claim": "Promessa di accesso senza condizioni «{text}» alla riga {line}. Descrivi le condizioni esatte di accesso e i costi di utilizzo. Contesto: ...{snippet}...",
+  "upload_disabled": "Invito a caricare file «{text}» alla riga {line}, ma le impostazioni di registrazione indicano allow_file_upload=false. Contesto: ...{snippet}...",
+  "web_disabled": "Ricerca web dichiarata da «{text}» alla riga {line}, ma questa funzione è disattivata per il prompt. Contesto: ...{snippet}...",
+  "paid_price": "Questo prompt a pagamento costa {amount}, ma il prezzo esatto non compare nella pagina. Il pulsante di accesso deve indicare il prezzo di sblocco.",
+  "paid_cta": "Questo prompt a pagamento non ha un pulsante di registrazione che indichi acquisto, sblocco o prezzo. I visitatori devono sapere che l’accesso è a pagamento prima di fare clic.",
+  "free_purchase": "Questo prompt ha accesso gratuito, ma usa la formula di acquisto «{text}» alla riga {line}. Contesto: ...{snippet}...",
+  "structure": "La pagina segue una struttura SaaS generica: navigazione, sezione principale, griglia delle funzionalità, testimonianze e piè di pagina. Usa l’archetipo creativo assegnato.",
+  "unavailable": "La verifica per la pubblicazione non è disponibile. La pagina è stata salvata, ma non può ancora essere pubblicata."
+}

@@ -1,0 +1,32 @@
+# Location context. Install as:
+# /etc/nginx/snippets/aurvek-identity-private-proxy.conf
+# Production currently expands native proxy directives inline, so create the
+# snippets directory if absent; do not assume existing shared snippets exist.
+
+access_log /var/log/nginx/aurvek-identity-access.log aurvek_identity_private;
+# nginx cannot apply a custom format to error_log. Upstream errors can include
+# request URI and Referer, so use sanitized app logs and status/timing above.
+error_log /dev/null crit;
+
+limit_req zone=general burst=20 nodelay;
+proxy_pass http://127.0.0.1:{{FASTAPI_PORT}};
+proxy_http_version 1.1;
+proxy_set_header Host {{IDENTITY_HOST}};
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $aurvek_external_scheme;
+proxy_set_header X-Original-Host {{IDENTITY_HOST}};
+proxy_connect_timeout 60s;
+proxy_send_timeout 60s;
+proxy_read_timeout 60s;
+proxy_buffering off;
+proxy_request_buffering off;
+proxy_cache off;
+
+proxy_hide_header Referrer-Policy;
+proxy_hide_header Cache-Control;
+add_header X-Frame-Options SAMEORIGIN always;
+add_header X-Content-Type-Options nosniff always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy no-referrer always;
+add_header Cache-Control no-store always;

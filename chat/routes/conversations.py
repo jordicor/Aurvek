@@ -20,7 +20,6 @@ from integrations.telephony.repository import TelephonyConflictError
 from chat.services.locks import conversation_write_lock
 from chat.services.privacy import (
     ensure_conversation_privacy_schema,
-    get_conversation_privacy,
     mark_conversation_incognito,
 )
 from chat.services.stop_signals import stop_signals
@@ -31,6 +30,8 @@ from chat.services.conversation_channels import (
     legacy_external_platform,
 )
 from integrations.devices.service import get_conversation_binding_summaries
+
+from chat.services.localization import chat_text, chat_error, chat_translator
 
 router = APIRouter()
 
@@ -52,9 +53,9 @@ async def is_admin(user_id):
             return False
 
 
-def _conversation_not_found() -> HTTPException:
+def _conversation_not_found(current_user=None) -> HTTPException:
     """Use one response for missing and inaccessible conversation metadata."""
-    return HTTPException(status_code=404, detail="Conversation not found")
+    return HTTPException(status_code=404, detail=chat_text(current_user, "conversation_not_found"))
 
 
 @router.get("/api/conversations")
@@ -68,19 +69,22 @@ async def get_conversations(
     folder_id: Optional[int] = None,
 ):
     if (before_activity is None) != (before_id is None):
-        return JSONResponse(content={"error": "before_activity and before_id must both be provided or both omitted"}, status_code=400)
+        return JSONResponse(content={"error": chat_text(current_user, "pagination_invalid")}, status_code=400)
 
     if current_user is None:
         return unauthenticated_response()
 
     if user_id is None:
-        return JSONResponse(content={"error": "user_id is required"}, status_code=400)
+        return JSONResponse(content={"error": chat_text(current_user, "user_required")}, status_code=400)
 
     if current_user.id != user_id and not await is_admin(current_user.id):
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": chat_text(current_user, "access_denied")}, status_code=403)
 
     await ensure_conversation_privacy_schema()
     async with get_db_connection(readonly=True) as conn:
+        from integrations.applications.listing import blocked_application_conversation_ids
+        blocked_ids = await blocked_application_conversation_ids(conn, user_id, viewer_user_id=current_user.id)
+        application_filter = (" AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
         async with conn.cursor() as cursor:
             folder_condition = ""
             folder_params = []
@@ -118,11 +122,11 @@ async def get_conversations(
                         FROM conversations c
                         JOIN llm l ON c.llm_id = l.id
                         LEFT JOIN prompts p ON c.role_id = p.id
-                        WHERE c.id IN ({placeholders}) AND c.user_id = ?
+                        WHERE c.id IN ({placeholders}) AND c.user_id = ?{application_filter}
                           AND COALESCE(c.hidden_from_history, 0) = 0
                         ORDER BY c.last_activity DESC, c.id DESC
                     """
-                    ext_params = list(external_ids) + [user_id]
+                    ext_params = list(external_ids) + [user_id] + blocked_ids
                     await cursor.execute(ext_query, ext_params)
                     external_conversations = list(await cursor.fetchall())
 
@@ -140,10 +144,10 @@ async def get_conversations(
                 FROM conversations c
                 JOIN llm l ON c.llm_id = l.id
                 LEFT JOIN prompts p ON c.role_id = p.id
-                WHERE c.user_id = ?{folder_condition}{external_exclude}
+                WHERE c.user_id = ?{folder_condition}{external_exclude}{application_filter}
                   AND COALESCE(c.hidden_from_history, 0) = 0
             """
-            params = [user_id] + folder_params + external_exclude_params
+            params = [user_id] + folder_params + external_exclude_params + blocked_ids
 
             if before_activity is not None:
                 query += " AND (c.last_activity < ? OR (c.last_activity = ? AND c.id < ?))"
@@ -173,7 +177,7 @@ async def get_conversations(
                     "id": conv[0],
                     "user_id": conv[1],
                     "start_date": conv[2],
-                    "chat_name": conv[3] if conv[3] else "New Chat",
+                    "chat_name": conv[3] or chat_translator(current_user).t("chat_ui.new_chat.action"),
                     "external_platform": legacy_external_platform(
                         channel_summary_with_legacy(
                             channel_summaries.get(int(conv[0])), conv[4]
@@ -238,7 +242,7 @@ async def start_new_conversation(
                 (request.folder_id, current_user.id),
             )
             if not await cursor.fetchone():
-                raise HTTPException(status_code=400, detail="Invalid folder_id or folder does not belong to user")
+                raise HTTPException(status_code=400, detail=chat_text(current_user, "folder_invalid"))
 
         try:
             conversation_id = await create_conversation_core(
@@ -251,9 +255,9 @@ async def start_new_conversation(
                 strict_prompt_access=True,
             )
         except PermissionError:
-            raise HTTPException(status_code=403, detail="Access denied to this prompt")
+            raise HTTPException(status_code=403, detail=chat_text(current_user, "prompt_access_denied"))
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=chat_error(current_user, getattr(exc, "code", None)))
 
         if request.incognito:
             await mark_conversation_incognito(
@@ -280,7 +284,7 @@ async def start_new_conversation(
         )
         conversation_row = await cursor.fetchone()
         if not conversation_row:
-            raise HTTPException(status_code=500, detail="Failed to load new conversation")
+            raise HTTPException(status_code=500, detail=chat_text(current_user, "conversation_create_failed"))
 
         conversation_last_activity = conversation_row[0]
         llm_id = conversation_row[1]
@@ -334,7 +338,7 @@ async def start_new_conversation(
 
         response_data = {
             "id": conversation_id,
-            "name": "New Chat",
+            "name": chat_translator(current_user).t("chat_ui.new_chat.action"),
             "machine": machine,
             "prompt_name": prompt_name,
             "locked": False,
@@ -368,13 +372,15 @@ async def update_conversation_extension(
     current_user: User = Depends(get_current_user),
 ):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     data = await request.json()
     extension_id = data.get("extension_id")
 
     async with conversation_write_lock(conversation_id):
         async with get_db_connection() as conn:
+            from integrations.applications.web import require_application_access
+            await require_application_access(conn, conversation_id, current_user.id, capability="extensions")
             cursor = await conn.cursor()
             await cursor.execute(
                 """
@@ -388,12 +394,14 @@ async def update_conversation_extension(
             )
             conv = await cursor.fetchone()
             if not conv:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+                raise HTTPException(status_code=404, detail=chat_text(current_user, "conversation_not_found"))
             if not conv["extensions_enabled"]:
-                raise HTTPException(status_code=400, detail="Extensions are not enabled for this prompt")
+                raise HTTPException(status_code=400, detail=chat_text(current_user, "extensions_disabled"))
 
             prompt_id = conv["role_id"]
             if extension_id is None:
+                if not conv["extensions_free_selection"]:
+                    raise HTTPException(status_code=400, detail=chat_text(current_user, "extension_sequential"))
                 await cursor.execute(
                     "UPDATE CONVERSATIONS SET active_extension_id = NULL WHERE id = ?",
                     (conversation_id,),
@@ -407,7 +415,7 @@ async def update_conversation_extension(
             )
             target_ext = await cursor.fetchone()
             if not target_ext:
-                raise HTTPException(status_code=404, detail="Extension not found for this prompt")
+                raise HTTPException(status_code=404, detail=chat_text(current_user, "extension_not_found"))
 
             if not conv["extensions_free_selection"] and conv["active_extension_id"] is not None:
                 await cursor.execute(
@@ -419,7 +427,7 @@ async def update_conversation_extension(
                     current_order = current_ext["display_order"]
                     target_order = target_ext["display_order"]
                     if abs(target_order - current_order) > 1:
-                        raise HTTPException(status_code=400, detail="Sequential mode: can only move one level at a time")
+                        raise HTTPException(status_code=400, detail=chat_text(current_user, "extension_sequential"))
 
             await cursor.execute(
                 "UPDATE CONVERSATIONS SET active_extension_id = ? WHERE id = ?",
@@ -440,34 +448,52 @@ async def update_conversation_extension(
 
 @router.post("/api/conversations/{conversation_id}/stop")
 async def stop_message(conversation_id: int, current_user: User = Depends(get_current_user)):
+    from integrations.applications.activity import get_active_operation
+    active = get_active_operation(conversation_id)
+    return await stop_current_generation(
+        conversation_id, current_user,
+        is_current=(lambda: get_active_operation(conversation_id) is active)
+        if active is not None else None,
+    )
+
+
+async def stop_current_generation(conversation_id, current_user, *, is_current=None):
+    """Reuse native cancellation, fencing asynchronous stop by caller identity."""
     if not current_user:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     async with get_db_connection() as conn:
         async with conn.execute("SELECT user_id FROM conversations WHERE id = ?", (conversation_id,)) as cursor:
             conversation = await cursor.fetchone()
 
     if not conversation or conversation[0] != current_user.id:
-        raise HTTPException(status_code=403, detail="You do not have permission to stop this conversation")
+        raise HTTPException(status_code=403, detail=chat_text(current_user, "stop_access_denied"))
 
+    if is_current is not None and not is_current():
+        return {"success": True, "message": chat_text(current_user, "generation_completed")}
+    from integrations.applications.activity import mark_application_stop
+    mark_application_stop(conversation_id, current_user.id)
     stop_signals[conversation_id] = True
 
     try:
         from rediscfg import redis_client as _redis
-        await _redis.set(f"gransabio:stop:{conversation_id}", "1", ex=300)
+        # Scoped callers signal only the exact native/remote generation. A
+        # delayed conversation-wide Redis write could otherwise stop its successor.
+        if is_current is None:
+            await _redis.set(f"gransabio:stop:{conversation_id}", "1", ex=300)
         session_id = await _redis.get(f"gransabio:session:{conversation_id}")
-        if session_id:
+        if session_id and (is_current is None or is_current()):
             import httpx
             from gransabio_config import get_gransabio_config
             cfg = await get_gransabio_config()
             gs_url = cfg.get("gransabio_url", "")
-            if gs_url:
+            if gs_url and (is_current is None or is_current()):
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     await client.post(f"{gs_url}/stop/{session_id}")
     except Exception:
         pass
 
-    return {"success": True, "message": "Stop signal sent."}
+    return {"success": True, "message": chat_text(current_user, "stop_sent")}
 
 
 @router.delete("/api/conversations/{conversation_id}")
@@ -478,10 +504,73 @@ async def delete_conversation(conversation_id: int, current_user: User = Depends
     try:
         result = await delete_owned_conversation(current_user, conversation_id)
     except TelephonyConflictError as exc:
-        return JSONResponse(content={"error": str(exc)}, status_code=409)
+        return JSONResponse(content={"error": chat_text(current_user, "phone_call_active") if isinstance(exc, TelephonyConflictError) else chat_error(current_user, getattr(exc, "code", None))}, status_code=409)
     if not result.get("success"):
-        return JSONResponse(content={"error": result["error"]}, status_code=result["status_code"])
+        return JSONResponse(content={"error": chat_error(current_user, result.get("error_code"))}, status_code=result["status_code"])
     return JSONResponse(content={"success": True}, status_code=200)
+
+
+@router.post("/api/conversations/{conversation_id}/incognito/save")
+async def save_incognito_conversation(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+) -> JSONResponse:
+    if current_user is None:
+        return unauthenticated_response()
+
+    await ensure_conversation_privacy_schema()
+    async with conversation_write_lock(conversation_id):
+        async with get_db_connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            cursor = await conn.execute(
+                """
+                SELECT c.id, c.user_id, c.start_date,
+                       c.chat_name,
+                       c.last_activity, c.folder_id, c.llm_id, c.role_id AS prompt_id,
+                       c.locked, l.model AS llm_model, l.machine,
+                       p.name AS prompt_name, p.forced_llm_id, p.hide_llm_name,
+                       p.allowed_llms, COALESCE(p.is_paid, 0) AS is_paid,
+                       COALESCE(p.disable_web_search, 0) AS web_search_disabled,
+                       COALESCE(p.force_web_search, 0) AS web_search_forced,
+                       COALESCE(c.is_incognito, 0) AS is_incognito
+                FROM CONVERSATIONS c
+                LEFT JOIN LLM l ON l.id = c.llm_id
+                LEFT JOIN PROMPTS p ON p.id = c.role_id
+                WHERE c.id = ? AND c.user_id = ?
+                """,
+                (conversation_id, current_user.id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise _conversation_not_found(current_user)
+
+            from integrations.applications.web import require_application_access
+            await require_application_access(
+                conn, conversation_id, current_user.id,
+                capability="conversation_controls",
+            )
+            conversation = dict(row)
+            conversation["chat_name"] = conversation["chat_name"] or chat_translator(current_user).t("chat_ui.new_chat.action")
+            already_saved = not bool(conversation["is_incognito"])
+            if not already_saved:
+                await mark_conversation_incognito(
+                    conn, conversation_id=conversation_id,
+                    user_id=current_user.id, incognito=False,
+                )
+            await conn.commit()
+
+    conversation.update(
+        is_incognito=False, hidden_from_history=False, purge_on_close=False,
+        web_search_allowed=not bool(conversation.pop("web_search_disabled")),
+        allowed_llms=orjson.loads(conversation["allowed_llms"])
+        if conversation["allowed_llms"] else None,
+    )
+    for field in ("locked", "hide_llm_name", "is_paid", "web_search_forced"):
+        conversation[field] = bool(conversation[field])
+    return JSONResponse(content={
+        "success": True, "already_saved": already_saved,
+        "conversation": conversation,
+    })
 
 
 @router.post("/api/conversations/{conversation_id}/incognito/close")
@@ -492,19 +581,12 @@ async def close_incognito_conversation(
     if current_user is None:
         return unauthenticated_response()
 
-    privacy = await get_conversation_privacy(conversation_id, user_id=current_user.id)
-    if privacy is None:
-        return JSONResponse(content={"success": True, "already_closed": True})
-    if not bool(privacy.get("is_incognito")):
-        return JSONResponse(
-            content={"success": False, "error": "Conversation is not incognito"},
-            status_code=400,
-        )
-
     try:
-        result = await close_incognito_conversation_for_user(current_user, privacy)
+        result = await close_incognito_conversation_for_user(
+            current_user, conversation_id,
+        )
     except (ValueError, TelephonyConflictError) as exc:
-        return JSONResponse(content={"success": False, "error": str(exc)}, status_code=400)
+        return JSONResponse(content={"success": False, "error": chat_text(current_user, "phone_call_active") if isinstance(exc, TelephonyConflictError) else chat_error(current_user, getattr(exc, "code", None))}, status_code=400)
     return JSONResponse(content=result)
 
 
@@ -515,14 +597,16 @@ async def rename_conversation(
     current_user: User = Depends(get_current_user),
 ):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     new_name = new_name[:256]
     async with get_db_connection() as conn:
+        from integrations.applications.web import require_application_access
+        await require_application_access(conn, conversation_id, current_user.id, capability="conversation_controls")
         async with conn.execute("SELECT user_id FROM conversations WHERE id = ?", (conversation_id,)) as cursor:
             result = await cursor.fetchone()
             if not result or result[0] != current_user.id:
-                raise HTTPException(status_code=403, detail="Not authorized to rename this conversation")
+                raise HTTPException(status_code=403, detail=chat_text(current_user, "rename_access_denied"))
 
         await conn.execute(
             "UPDATE conversations SET chat_name = ? WHERE id = ?",
@@ -537,10 +621,12 @@ async def rename_conversation(
 async def get_last_message_id(conversation_id: int, current_user: User = Depends(get_current_user)):
     logger.info("enters get_last_message_id")
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     admin_access = await is_admin(current_user.id)
     async with get_db_connection(readonly=True) as conn:
+        from integrations.applications.web import require_application_access
+        await require_application_access(conn, conversation_id, current_user.id)
         cursor = await conn.execute(
             """
             SELECT (
@@ -558,7 +644,7 @@ async def get_last_message_id(conversation_id: int, current_user: User = Depends
         result = await cursor.fetchone()
 
     if not result:
-        raise _conversation_not_found()
+        raise _conversation_not_found(current_user)
     return {"message_id": result[0]}
 
 
@@ -569,6 +655,8 @@ async def conversation_status(conversation_id: int, current_user: User = Depends
 
     admin_access = await is_admin(current_user.id)
     async with get_db_connection(readonly=True) as conn:
+        from integrations.applications.web import require_application_access
+        await require_application_access(conn, conversation_id, current_user.id)
         cursor = await conn.cursor()
         await cursor.execute(
             """
@@ -580,7 +668,7 @@ async def conversation_status(conversation_id: int, current_user: User = Depends
         conversation = await cursor.fetchone()
 
     if not conversation:
-        raise _conversation_not_found()
+        raise _conversation_not_found(current_user)
     return JSONResponse(content={"isActive": True}, status_code=200)
 
 
@@ -591,6 +679,8 @@ async def get_web_search_status(conversation_id: int, current_user: User = Depen
 
     perplexity_available = bool(os.getenv("PERPLEXITY_API_KEY"))
     async with get_db_connection(readonly=True) as conn:
+        from integrations.applications.web import require_application_access
+        await require_application_access(conn, conversation_id, current_user.id)
         cursor = await conn.execute(
             """
             SELECT
@@ -653,11 +743,11 @@ async def set_web_search_mode(request: Request, current_user: User = Depends(get
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse(content={"error": "Invalid request body"}, status_code=400)
+        return JSONResponse(content={"error": chat_text(current_user, "invalid_json")}, status_code=400)
 
     mode = data.get("mode")
     if mode not in ("native", "perplexity"):
-        return JSONResponse(content={"error": "Invalid mode. Must be 'native' or 'perplexity'"}, status_code=400)
+        return JSONResponse(content={"error": chat_text(current_user, "invalid_search_mode")}, status_code=400)
 
     async with get_db_connection() as conn:
         await conn.execute(
@@ -710,10 +800,14 @@ async def update_web_search_settings(request: Request, current_user: User = Depe
     if current_user is None:
         return unauthenticated_response()
 
+    from i18n import get_translator
+    t = get_translator(request, current_user).t
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse(content={"error": "Invalid request body"}, status_code=400)
+        return JSONResponse(content={"error": t("profile.web_search.invalid_request")}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse(content={"error": t("profile.web_search.invalid_request")}, status_code=400)
 
     updates = []
     params = []
@@ -721,7 +815,7 @@ async def update_web_search_settings(request: Request, current_user: User = Depe
     mode = data.get("web_search_mode")
     if mode is not None:
         if mode not in ("native", "perplexity"):
-            return JSONResponse(content={"error": "Invalid mode. Must be 'native' or 'perplexity'"}, status_code=400)
+            return JSONResponse(content={"error": t("profile.web_search.invalid_mode")}, status_code=400)
         updates.append("web_search_mode = ?")
         params.append(mode)
 
@@ -736,7 +830,7 @@ async def update_web_search_settings(request: Request, current_user: User = Depe
         params.append(1 if inline_citations else 0)
 
     if not updates:
-        return JSONResponse(content={"error": "No valid fields to update"}, status_code=400)
+        return JSONResponse(content={"error": t("profile.web_search.no_fields")}, status_code=400)
 
     params.append(current_user.id)
     async with get_db_connection() as conn:

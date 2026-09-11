@@ -2603,10 +2603,6 @@ body::after {
     animation: treeLight 1.5s ease-in-out infinite;
 }
 
-.model-dropdown-loading::after {
-    content: 'Loading models...';
-}
-
 @keyframes treeLight {
     0%, 100% { filter: brightness(1); }
     50% { filter: brightness(1.5) hue-rotate(60deg); }

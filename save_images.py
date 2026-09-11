@@ -31,6 +31,7 @@ from common import (
 from common import Cost, generate_user_hash, has_sufficient_balance, cost_tts, cache_directory, users_directory, elevenlabs_key, openai_key, tts_engine, get_balance, deduct_balance, load_service_costs, SECRET_KEY, ALGORITHM, MEDIA_TOKEN_EXPIRE_HOURS
 from database import get_db_connection
 from storage_quota import record_generated_file
+from chat.services.generated_media import private_generated_media_urls
 
 # Load environment variables
 load_dotenv()
@@ -165,6 +166,10 @@ async def save_image_locally(
         async with get_db_connection() as conn:
             await record_generated_file(conn, conversation_id, 'image', base_url_256, size_256)
             await record_generated_file(conn, conversation_id, 'image', base_url_fullsize, size_fullsize)
+            private_urls = await private_generated_media_urls(
+                conn, user_id=current_user.id, conversation_id=conversation_id,
+                paths=[base_url_256, base_url_fullsize],
+            )
             await conn.commit()
     except Exception:
         for orphan_path in (file_path_256, file_path_fullsize):
@@ -173,6 +178,9 @@ async def save_image_locally(
             except OSError:
                 pass
         raise
+
+    if private_urls is not None:
+        return private_urls[0], private_urls[0], private_urls[1], private_urls[1]
 
     # URL generation (lightweight, stays on event loop)
     if CLOUDFLARE_FOR_IMAGES:

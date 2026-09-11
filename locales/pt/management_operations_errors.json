@@ -1,0 +1,12 @@
+{
+  "admin_required": "É necessário acesso de administrador",
+  "invalid_llm": "Seleção de LLM inválida",
+  "unsupported_key": "Tipo de chave não suportado",
+  "task_not_found": "Tarefa não encontrada na fila de falhadas.",
+  "invalid_ip": "Introduza um endereço IP válido.",
+  "conversation_ids_required": "Selecione pelo menos uma conversa.",
+  "conversation_deleted": "Conversa eliminada com sucesso.",
+  "conversation_folder_failed": "Conversa eliminada da base de dados, mas não foi possível eliminar a pasta.",
+  "conversations_folder_failed": "Algumas conversas foram eliminadas da base de dados, mas não foi possível eliminar as pastas.",
+  "conversations_deleted": "Conversas eliminadas com sucesso."
+}

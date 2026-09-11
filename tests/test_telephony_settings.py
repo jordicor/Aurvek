@@ -25,6 +25,7 @@ def test_absent_prompt_settings_inherit_global_defaults():
     effective = resolve_phone_settings(global_config, None)
 
     assert effective.stt_locale == "multi"
+    assert effective.secondary_languages == ()
     assert effective.endpointing_ms == 700
     assert effective.barge_in_confirmation_ms == 350
     assert effective.interruptible is True
@@ -71,6 +72,29 @@ def test_prompt_duration_silence_and_milestones_resolve_below_global():
     assert effective.endpointing_ms == 1_400
     assert effective.interrupt_sensitivity == "low"
     assert effective.barge_in_confirmation_ms == 612
+
+
+def test_auto_prompt_uses_ordered_profile_languages_before_global_default():
+    effective = resolve_phone_settings(
+        TelephonyConfig(stt_language="multi"),
+        {"stt_locale": "auto"},
+        preferred_languages=("es", "en", "pt"),
+    )
+
+    assert effective.stt_locale == "es"
+    assert effective.secondary_languages == ("en", "pt")
+    assert effective.as_dict()["secondary_languages"] == ["en", "pt"]
+
+
+def test_fixed_prompt_language_ignores_profile_languages():
+    effective = resolve_phone_settings(
+        TelephonyConfig(stt_language="multi"),
+        {"stt_locale": "es-ES"},
+        preferred_languages=("en", "pt"),
+    )
+
+    assert effective.stt_locale == "es-ES"
+    assert effective.secondary_languages == ()
 
 
 def test_prompt_turn_taking_settings_validate_and_support_slow_speech():
@@ -206,7 +230,7 @@ def test_mapping_booleans_and_enums_are_validated_robustly():
 
 
 @pytest.mark.asyncio
-async def test_effective_settings_load_real_prompt_phone_row(tmp_path):
+async def test_effective_settings_load_real_prompt_phone_row(tmp_path, monkeypatch):
     path = tmp_path / "phone-settings.db"
     with sqlite3.connect(path) as conn:
         conn.executescript(
@@ -237,9 +261,20 @@ async def test_effective_settings_load_real_prompt_phone_row(tmp_path):
 
     conn = await aiosqlite.connect(path)
     conn.row_factory = aiosqlite.Row
+    loaded_users = []
+
+    async def load_languages(_conn, user_id):
+        loaded_users.append(user_id)
+        return ("es", "en")
+
+    monkeypatch.setattr(
+        "integrations.telephony.settings.load_user_preferred_languages",
+        load_languages,
+    )
     try:
         effective = await resolve_effective_phone_settings(
             7,
+            user_id=42,
             global_config=TelephonyConfig(max_call_seconds=600),
             conn=conn,
         )
@@ -252,3 +287,6 @@ async def test_effective_settings_load_real_prompt_phone_row(tmp_path):
     assert effective.barge_in_confirmation_ms == 612
     assert effective.warning_milestones_seconds == (180, 60)
     assert effective.amd_default is True
+    assert effective.stt_locale == "es"
+    assert effective.secondary_languages == ("en",)
+    assert loaded_users == [42]

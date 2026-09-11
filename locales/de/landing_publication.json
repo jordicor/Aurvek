@@ -1,0 +1,12 @@
+{
+  "hallucination": "Nicht unterstützte Funktion durch „{text}“ in Zeile {line} angekündigt. Kontext: ...{snippet}...",
+  "testimonial": "Unbestätigter Erfahrungsbericht oder Bewertung in Zeile {line}. Nur Gesprächsbeispiele, die eindeutig als Demonstration gekennzeichnet sind, sind erlaubt. Kontext: ...{snippet}...",
+  "free_claim": "Uneingeschränktes Zugangsversprechen „{text}“ in Zeile {line}. Beschreiben Sie stattdessen die genauen Zugangsbedingungen und Nutzungskosten. Kontext: ...{snippet}...",
+  "upload_disabled": "Aufforderung zum Hochladen „{text}“ in Zeile {line}, aber in den Registrierungseinstellungen gilt allow_file_upload=false. Kontext: ...{snippet}...",
+  "web_disabled": "Websuche durch „{text}“ in Zeile {line} angekündigt, obwohl sie für diesen Prompt deaktiviert ist. Kontext: ...{snippet}...",
+  "paid_price": "Dieser kostenpflichtige Prompt kostet {amount}, aber der genaue Preis fehlt auf der Seite. Die Zugriffsschaltfläche muss den Preis für die Freischaltung nennen.",
+  "paid_cta": "Dieser kostenpflichtige Prompt hat keine Registrierungsschaltfläche, die Kauf, Freischaltung oder Preis nennt. Besucher müssen vor dem Klicken wissen, dass der Zugang kostenpflichtig ist.",
+  "free_purchase": "Dieser Prompt ist kostenlos zugänglich, verwendet aber die Kaufaufforderung „{text}“ in Zeile {line}. Kontext: ...{snippet}...",
+  "structure": "Die Seite folgt einem allgemeinen SaaS-Aufbau: Navigation, Hauptbereich, Funktionsübersicht, Erfahrungsberichte und Fußzeile. Verwenden Sie stattdessen die zugewiesene kreative Vorlage.",
+  "unavailable": "Die Veröffentlichungsprüfung ist nicht verfügbar. Die Seite wurde gespeichert, kann aber noch nicht veröffentlicht werden."
+}

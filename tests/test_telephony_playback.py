@@ -7,11 +7,13 @@ from ai_runtime.channel_turns import ChannelDraft, TurnKey
 from integrations.telephony.audio import PcmuCacheAsset
 from integrations.telephony.clock import EndCallDirective, utc_now
 from integrations.telephony.foreground import ForegroundCommitGuard
+from integrations.telephony.message_audio import PhoneMessageAudioRange
 from integrations.telephony.phone_context import create_phone_channel_turn
 from integrations.telephony.playback import (
     PhonePlaybackError,
     PhoneTurnPlayback,
 )
+from integrations.telephony.recording import LocalCallRecorder
 from integrations.telephony.speech import PhoneSpeechAsset
 from integrations.telephony.transport import PhoneRuntimeEvent
 
@@ -97,13 +99,67 @@ def _renderer(audio=b"\x7f" * 800):
 
 
 @pytest.mark.asyncio
-async def test_final_mark_confirms_exact_canonical_draft():
+@pytest.mark.parametrize(('prefix', 'expected'), [
+    ('', 'Ahora te paso con B.'),
+    ('De acuerdo, te paso. ', 'De acuerdo, te paso. \n\nAhora te paso con B.'),
+    ('Ahora te paso con B. ', 'Ahora te paso con B. '),
+])
+async def test_transfer_tool_stream_matches_spoken_draft(monkeypatch, prefix, expected):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import orjson
+    from ai_runtime.tooling import execution
+    from integrations.applications import billing, tool_handoff, tools as application_tools
+    from integrations.telephony.transport import iter_sse_payloads
+
+    context = SimpleNamespace(user_id=1, conversation_id=7)
+    monkeypatch.setattr(billing, 'current_application_operation', lambda *_: context)
+    monkeypatch.setattr(billing, 'revalidate_application_operation', AsyncMock())
+    monkeypatch.setattr(application_tools, 'authorize_application_tool', AsyncMock(return_value=context))
+    monkeypatch.setattr(tool_handoff, 'request_tool_handoff', AsyncMock(return_value=SimpleNamespace()))
+    save = AsyncMock(return_value=(11, 12))
+    monkeypatch.setattr(execution, 'save_content_to_db', save)
+    reply = 'Ahora te paso con B.'
+
+    async def stream():
+        if prefix:
+            yield 'data: ' + orjson.dumps({'content': prefix}).decode() + '\n\n'
+        async for chunk in execution.handle_function_call(
+            'transfer_to_assistant', {'assistant_id': 'b', 'reply_message': reply},
+            [], 'test-model', 0.3, 1024, prefix, 7, SimpleNamespace(id=1), None,
+            10, 4, 14, None, 1, 'Claude', 'Prompt', billing_reservation_id='source-hold'):
+            yield chunk
+        yield 'data: {"application_handoff":{"conversation_id":8,"completed":true}}\n\n'
+
+    payloads = [event async for event in iter_sse_payloads(stream())]
+    assert payloads[-1] == {'application_handoff': {'conversation_id': 8, 'completed': True}}
+    content_parts = [event['content'] for event in payloads if 'content' in event]
+    runtime = FakeRuntimeTurn(content_parts=content_parts, draft=save.call_args.args[0])
+    runtime.release_draft.set()
+
+    async def send(message):
+        if message['event'] == 'mark':
+            await playback.acknowledge_mark(message['mark']['name'])
+
+    playback = PhoneTurnPlayback(stream_sid='MZ' + '1' * 32,
+        phone_turn=_phone_turn(), runtime_turn=runtime,
+        render_speech=_renderer(), send_message=send,
+        monotonic=MutableMonotonic(), call_started_monotonic=99.0)
+    result = await asyncio.wait_for(playback.run(), timeout=2)
+    assert result.confirmed_text == expected
+    assert result.message_ids == (11, 12)
+    assert not result.interrupted
+
+
+@pytest.mark.asyncio
+async def test_final_mark_confirms_exact_canonical_draft(tmp_path):
     runtime = FakeRuntimeTurn(
         content_parts=["Hello ", "there."],
         draft="Hello there.",
     )
     phone_turn = _phone_turn()
     sent = []
+    monotonic = MutableMonotonic()
 
     async def send(message):
         sent.append(dict(message))
@@ -114,6 +170,13 @@ async def test_final_mark_confirms_exact_canonical_draft():
         runtime_turn=runtime,
         render_speech=_renderer(),
         send_message=send,
+        recorder=LocalCallRecorder(
+            "playback-complete",
+            enabled=True,
+            root=tmp_path / "recordings",
+        ),
+        monotonic=monotonic,
+        call_started_monotonic=99.0,
     )
     assert playback.output_started is False
     task = asyncio.create_task(playback.run())
@@ -131,6 +194,10 @@ async def test_final_mark_confirms_exact_canonical_draft():
     assert result.played_ms == 100
     assert result.interrupted is False
     assert len([item for item in sent if item["event"] == "media"]) == 5
+    assert phone_turn.link_state.assistant_audio_range == PhoneMessageAudioRange(
+        start_byte=8_000,
+        end_byte=8_800,
+    )
 
 
 @pytest.mark.asyncio
@@ -181,6 +248,139 @@ async def test_barge_in_clears_audio_and_cancels_voluntary_hangup():
     drained = await playback.acknowledge_mark(mark)
     assert drained.drained_after_clear is True
     assert drained.text_prefix == result.confirmed_text
+
+
+@pytest.mark.asyncio
+async def test_barge_in_retains_only_complete_tts_fragment_audio(tmp_path):
+    runtime = FakeRuntimeTurn(
+        content_parts=["First fragment. ", "Second fragment. "],
+        draft="First fragment. Second fragment. ",
+    )
+    phone_turn = _phone_turn()
+    sent = []
+    monotonic = MutableMonotonic()
+
+    async def send(message):
+        sent.append(dict(message))
+
+    playback = PhoneTurnPlayback(
+        stream_sid="MZ" + "b" * 32,
+        phone_turn=phone_turn,
+        runtime_turn=runtime,
+        render_speech=_renderer(),
+        send_message=send,
+        recorder=LocalCallRecorder(
+            "playback-interrupted",
+            enabled=True,
+            root=tmp_path / "recordings",
+        ),
+        monotonic=monotonic,
+        call_started_monotonic=99.0,
+    )
+    task = asyncio.create_task(playback.run())
+    await _wait_for_message(sent, "mark")
+    async def wait_for_two_marks():
+        while len([item for item in sent if item["event"] == "mark"]) < 2:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_for_two_marks(), timeout=2)
+
+    # The transport playhead is inside the second 100 ms TTS fragment. Only
+    # the first complete fragment has an exact text/audio correspondence.
+    monotonic.value = 100.231
+    result = await playback.barge_in()
+
+    assert await task == result
+    assert result.confirmed_text == "First fragment. "
+    assert 100 < result.played_ms < 200
+    assert runtime.interruptions == [
+        ("First fragment. ", result.played_ms, "barge_in")
+    ]
+    assert phone_turn.link_state.assistant_audio_range == PhoneMessageAudioRange(
+        start_byte=8_000,
+        end_byte=8_800,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reply_after_barge_in_reuses_recorder_without_future_overlap(
+    tmp_path,
+) -> None:
+    sent = []
+    monotonic = MutableMonotonic()
+    recorder = LocalCallRecorder(
+        "playback-sequential",
+        enabled=True,
+        root=tmp_path / "recordings",
+    )
+
+    async def send(message):
+        sent.append(dict(message))
+
+    first_runtime = FakeRuntimeTurn(
+        content_parts=["First fragment. ", "Second fragment. "],
+        draft="First fragment. Second fragment. ",
+    )
+    first = PhoneTurnPlayback(
+        stream_sid="MZ" + "c" * 32,
+        phone_turn=_phone_turn(),
+        runtime_turn=first_runtime,
+        render_speech=_renderer(audio=b"\x7f" * 8_000),
+        send_message=send,
+        recorder=recorder,
+        monotonic=monotonic,
+        call_started_monotonic=99.0,
+    )
+    first_task = asyncio.create_task(first.run())
+
+    async def wait_for_two_marks():
+        while len([item for item in sent if item["event"] == "mark"]) < 2:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_for_two_marks(), timeout=2)
+    monotonic.value = 101.2
+    interrupted = await first.barge_in()
+    assert await first_task == interrupted
+    assert interrupted.confirmed_text == "First fragment. "
+
+    assistant_path = (
+        tmp_path
+        / "recordings"
+        / "pl"
+        / "playback-sequential"
+        / "assistant.mulaw"
+    )
+    assert assistant_path.stat().st_size == 16_000
+
+    # Both seconds were sent to Twilio before clear, but only the first was
+    # audible. The next response starts at 2.25 s on the call clock. Without
+    # truncation it would overlap the discarded second and fail the call.
+    sent.clear()
+    monotonic.value = 101.25
+    second_runtime = FakeRuntimeTurn(
+        content_parts=["Next answer. "],
+        draft="Next answer. ",
+    )
+    second = PhoneTurnPlayback(
+        stream_sid="MZ" + "c" * 32,
+        phone_turn=_phone_turn(),
+        runtime_turn=second_runtime,
+        render_speech=_renderer(),
+        send_message=send,
+        recorder=recorder,
+        monotonic=monotonic,
+        call_started_monotonic=99.0,
+    )
+    second_runtime.release_draft.set()
+    second_task = asyncio.create_task(second.run())
+    await _wait_for_message(sent, "mark")
+    mark = next(item["mark"]["name"] for item in sent if item["event"] == "mark")
+    await second.acknowledge_mark(mark)
+    completed = await second_task
+
+    assert completed.interrupted is False
+    assert second_runtime.confirmations == [("Next answer. ", 100)]
+    assert recorder.finalize(create_mix=False).assistant_path.stat().st_size == 18_800
 
 
 @pytest.mark.asyncio

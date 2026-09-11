@@ -1,0 +1,16 @@
+{% set i18n_domains = ['application_twilio', 'application_funding'] %}
+{% extends 'base_admin.html' %}
+{% block title %}{{ t('application_twilio.applications') }} - Aurvek{% endblock %}
+{% block page_title %}{{ t('application_twilio.applications') }}{% endblock %}
+{% block content %}
+{% for application in applications %}
+<div class="card mb-3"><div class="card-body d-flex justify-content-between align-items-center">
+  <h2 class="h5 mb-0">{{ application.display_name }}</h2>
+  <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-primary" href="/applications/manage/{{ application.app_id }}/review">{{ t('application_twilio.review_conversations') }}</a>
+    <a class="btn btn-outline-primary" href="/applications/manage/{{ application.app_id }}/funding">{{ t('application_funding.title') }}</a>
+    <a class="btn btn-outline-primary" href="/applications/manage/{{ application.app_id }}/twilio">{{ t('application_twilio.manage_phone') }}</a>
+  </div>
+</div></div>
+{% else %}<p>{{ t('application_twilio.no_applications') }}</p>{% endfor %}
+{% endblock %}

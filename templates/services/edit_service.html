@@ -1,42 +1,43 @@
+{% set i18n_domains = ['admin_services'] %}
 {% extends 'base.html' %}
 
-{% block title %}Edit Service - AURVEK{% endblock %}
+{% block title %}{{ t('admin_services.title.edit') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Edit Service - ID: {{ service_id }}{% endblock %}
+{% block page_title %}{{ t('admin_services.title.edit') }} — {{ t('admin_services.label.id') }}: {{ service_id }}{% endblock %}
 
 {% block back_url %}/admin/services{% endblock %}
 
-{% block back_title %}Back to Services{% endblock %}
+{% block back_title %}{{ t('admin_services.action.back') }}{% endblock %}
 
 {% block content %}
 <div class="section-container">
     <form action="/admin/services/update/{{ service_id }}" method="post" data-form-guard>
         <div class="mb-3">
-            <label for="name" class="form-label">Service Name</label>
+            <label for="name" class="form-label">{{ t('admin_services.field.name') }}</label>
             <input type="text" class="form-control" id="name" name="name" value="{{ service_name }}" required>
         </div>
         <div class="mb-3">
-            <label for="unit" class="form-label">Unit</label>
+            <label for="unit" class="form-label">{{ t('admin_services.field.unit') }}</label>
             <input type="text" class="form-control" id="unit" name="unit" value="{{ service_unit }}" required>
         </div>
         <div class="mb-3">
-            <label for="cost_per_unit" class="form-label">Cost per Unit</label>
+            <label for="cost_per_unit" class="form-label">{{ t('admin_services.field.cost_per_unit') }}</label>
             <input type="number" step="any" class="form-control" id="cost_per_unit" name="cost_per_unit" value="{{ service_cost_per_unit }}" required>
         </div>
         <div class="mb-3">
-            <label for="type" class="form-label">Type</label>
+            <label for="type" class="form-label">{{ t('admin_services.field.type') }}</label>
             <select class="form-control" id="type" name="type" required>
                 <option value="" {% if service_type is none %}selected{% endif %}></option>
                 {% for service_type_option in service_types %}
-                    <option value="{{ service_type_option }}" {% if service_type_option == service_type %}selected{% endif %}>{{ service_type_option }}</option>
+                    <option value="{{ service_type_option }}" {% if service_type_option == service_type %}selected{% endif %}>{{ t('admin_services.type.' ~ service_type_option|lower) if service_type_option in ['TTS', 'STT', 'Phone', 'Images', 'Video', 'Music'] else service_type_option }}</option>
                 {% endfor %}
             </select>
         </div>
-        <button type="submit" class="btn btn-primary">Update Service</button>
+        <button type="submit" class="btn btn-primary">{{ t('admin_services.action.update') }}</button>
     </form>
 </div>
 {% endblock %}

@@ -1777,10 +1777,6 @@ textarea {
     animation: pulse 1.5s infinite;
 }
 
-.drag-placeholder::before {
-    content: 'Drop here';
-}
-
 /* Context menu */
 .context-menu {
     background: linear-gradient(135deg, #FFFFFF 0%, var(--bg-tertiary) 100%);

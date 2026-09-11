@@ -1,6 +1,11 @@
+{% set i18n_domains = ['auth', 'account'] %}
 {% extends 'base.html' %}
 
-{% block title %}{% if prompt %}Register - {{ prompt.name }}{% else %}Create Account - Aurvek{% endif %}{% endblock %}
+{% macro auth_link(url, label, class_name='') -%}
+<a href="{{ url|e }}" class="{{ class_name }}">{{ label }}</a>
+{%- endmacro %}
+
+{% block title %}{% if prompt %}{{ t('auth.action.register') }} - {{ prompt.name }}{% else %}{{ t('auth.title.create_account') }} - Aurvek{% endif %}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -142,14 +147,17 @@
                     <path d="M24 12L28 20L36 22L30 28L31 36L24 32L17 36L18 28L12 22L20 20L24 12Z" fill="#6366f1"/>
                 </svg>
             </div>
-            <h2 class="aurvek-title">Create Your Account</h2>
-            <p class="text-white-50">Start creating AI-powered experiences</p>
+            <h2 class="aurvek-title">{{ t('auth.title.create_your_account') }}</h2>
+            <p class="text-white-50">{{ t('auth.message.start_creating') }}</p>
         </div>
         {% endif %}
 
         <div class="card shadow-lg">
             <div class="card-body p-4">
                 <form id="registerForm">
+                    {% if embed_registration_transaction is defined %}
+                    <input type="hidden" name="embed_registration_transaction" value="{{ embed_registration_transaction }}">
+                    {% endif %}
                     {% if prompt %}
                     <input type="hidden" name="prompt_id" value="{{ prompt.id }}">
                     <input type="hidden" name="prompt_public_id" value="{{ prompt.public_id }}">
@@ -157,26 +165,26 @@
 
                     <div id="formFields">
                         <div class="mb-3">
-                            <label for="email" class="form-label">Email</label>
+                            <label for="email" class="form-label">{{ t('auth.label.email') }}</label>
                             <input type="email" class="form-control form-control-lg" id="email" name="email" required
                                    placeholder="you@example.com" autocomplete="email">
                         </div>
 
                         <div class="mb-3">
-                            <label for="username" class="form-label">Username <span class="text-muted fw-normal">(optional)</span></label>
+                            <label for="username" class="form-label">{{ t('auth.label.username') }} <span class="text-muted fw-normal">({{ t('auth.label.optional') }})</span></label>
                             <input type="text" class="form-control form-control-lg" id="username" name="username"
-                                   placeholder="{% if prompt %}Your name or nickname{% else %}Your brand or nickname{% endif %}"
+                                   placeholder="{{ t('auth.placeholder.username_prompt') if prompt else t('auth.placeholder.username_brand') }}"
                                    minlength="3" maxlength="20" pattern="[a-zA-Z0-9_-]+"
                                    autocomplete="username">
-                            <div class="form-text">{% if prompt %}This name will appear in your chats{% else %}This will be your account name{% endif %}</div>
+                            <div class="form-text">{{ t('auth.message.username_chats') if prompt else t('auth.message.username_account') }}</div>
                         </div>
 
                         <div class="mb-3">
-                            <label for="password" class="form-label">Password</label>
+                            <label for="password" class="form-label">{{ t('account.password.password_label') }}</label>
                             <div class="password-wrapper">
                                 <input type="password" class="form-control form-control-lg" id="password" name="password" required
-                                       minlength="8" placeholder="At least 8 characters" autocomplete="new-password">
-                                <button type="button" class="password-toggle" onclick="togglePassword('password', this)" aria-label="Show password">
+                                       minlength="8" placeholder="{{ t('account.password.requirement.min_length', count=8) }}" autocomplete="new-password">
+                                <button type="button" class="password-toggle" onclick="togglePassword('password', this)" aria-label="{{ t('common.action.show_password') }}">
                                     <svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                                         <circle cx="12" cy="12" r="3"></circle>
@@ -187,15 +195,15 @@
                                     </svg>
                                 </button>
                             </div>
-                            <div class="form-text">Minimum 8 characters</div>
+                            <div class="form-text">{{ t('account.password.requirement.min_length', count=8) }}</div>
                         </div>
 
                         <div class="mb-3">
-                            <label for="password_confirm" class="form-label">Confirm Password</label>
+                            <label for="password_confirm" class="form-label">{{ t('account.password.confirm_label') }}</label>
                             <div class="password-wrapper">
                                 <input type="password" class="form-control form-control-lg" id="password_confirm" name="password_confirm" required
-                                       minlength="8" placeholder="Confirm your password" autocomplete="new-password">
-                                <button type="button" class="password-toggle" onclick="togglePassword('password_confirm', this)" aria-label="Show password">
+                                       minlength="8" placeholder="{{ t('auth.placeholder.confirm_password') }}" autocomplete="new-password">
+                                <button type="button" class="password-toggle" onclick="togglePassword('password_confirm', this)" aria-label="{{ t('common.action.show_password') }}">
                                     <svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                                         <circle cx="12" cy="12" r="3"></circle>
@@ -220,9 +228,9 @@
                     <div class="d-grid gap-2 mt-4">
                         <button type="submit" class="btn btn-primary btn-lg" id="submitBtn" {% if captcha and captcha.enabled and captcha.provider == 'turnstile' %}disabled{% endif %}>
                             {% if prompt %}
-                            Register & Get Access
+                            {{ t('auth.action.register_access') }}
                             {% else %}
-                            Create Account
+                            {{ t('auth.action.create_account') }}
                             {% endif %}
                         </button>
                     </div>
@@ -231,14 +239,14 @@
                 {% if google_oauth_available %}
                 <div id="googleSignIn" class="mt-4">
                     <div class="divider-with-text">
-                        <span>or</span>
+                        <span>{{ t('auth.divider.or') }}</span>
                     </div>
 
                     <div class="d-grid gap-2 mt-3">
-                        <a href="/auth/google{% if prompt %}?prompt_id={{ prompt.id }}{% endif %}"
+                        <a href="{% if google_oauth_url is defined %}{{ google_oauth_url }}{% else %}/auth/google{% if prompt %}?prompt_id={{ prompt.id }}{% endif %}{% endif %}"
                            class="btn btn-outline-secondary btn-lg d-flex align-items-center justify-content-center">
                             <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="20" height="20" class="me-2" alt="">
-                            Sign in with Google
+                            {{ t('auth.action.google_sign_in') }}
                         </a>
                     </div>
                 </div>
@@ -248,7 +256,7 @@
                     <hr class="my-4">
 
                     <p class="text-center text-muted mb-0">
-                        Already have an account? <a href="{{ login_url|default('/login') }}" class="text-decoration-none">Log in</a>
+                        {{ t_html('auth.prompt.already_have_account', link=auth_link(login_url|default('/login'), t('auth.action.log_in'), 'text-decoration-none')) }}
                     </p>
                 </div>
             </div>
@@ -256,7 +264,7 @@
 
         {% if not prompt %}
         <p class="text-center text-white-50 mt-3 small">
-            By creating an account, you agree to our Terms of Service and Privacy Policy.
+            {{ t('auth.message.terms_notice') }}
         </p>
         {% endif %}
     </div>
@@ -293,10 +301,12 @@
             input.type = 'text';
             eyeIcon.classList.add('d-none');
             eyeOffIcon.classList.remove('d-none');
+            button.setAttribute('aria-label', AurvekI18n.t('common.action.hide_password'));
         } else {
             input.type = 'password';
             eyeIcon.classList.remove('d-none');
             eyeOffIcon.classList.add('d-none');
+            button.setAttribute('aria-label', AurvekI18n.t('common.action.show_password'));
         }
     }
 
@@ -317,13 +327,13 @@
         const passwordConfirm = document.getElementById('password_confirm').value;
 
         if (password !== passwordConfirm) {
-            errorMsg.textContent = 'Passwords do not match';
+            errorMsg.textContent = AurvekI18n.t('account.password.no_match');
             errorMsg.classList.remove('d-none');
             return;
         }
 
         if (password.length < 8) {
-            errorMsg.textContent = 'Password must be at least 8 characters';
+            errorMsg.textContent = AurvekI18n.t('account.password.error.min_length', {count: 8});
             errorMsg.classList.remove('d-none');
             return;
         }
@@ -332,17 +342,17 @@
         const username = document.getElementById('username').value.trim();
         if (username) {
             if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
-                errorMsg.textContent = 'Username can only contain letters, numbers, hyphens and underscores';
+                errorMsg.textContent = AurvekI18n.t('auth.error.username_allowed');
                 errorMsg.classList.remove('d-none');
                 return;
             }
             if (username.length < 3) {
-                errorMsg.textContent = 'Username must be at least 3 characters';
+                errorMsg.textContent = AurvekI18n.t('auth.error.username_min_length', {count: 3});
                 errorMsg.classList.remove('d-none');
                 return;
             }
             if (username.length > 20) {
-                errorMsg.textContent = 'Username cannot exceed 20 characters';
+                errorMsg.textContent = AurvekI18n.t('auth.error.username_max_length', {count: 20});
                 errorMsg.classList.remove('d-none');
                 return;
             }
@@ -356,7 +366,7 @@
                 const turnstileInput = document.querySelector('[name="cf-turnstile-response"]');
                 finalCaptchaToken = turnstileInput ? turnstileInput.value : captchaToken;
                 if (!finalCaptchaToken) {
-                    errorMsg.textContent = 'Please complete the CAPTCHA verification';
+                    errorMsg.textContent = AurvekI18n.t('auth.error.captcha');
                     errorMsg.classList.remove('d-none');
                     return;
                 }
@@ -366,7 +376,7 @@
                     finalCaptchaToken = await grecaptcha.execute(captchaConfig.siteKey, {action: 'register'});
                 } catch (err) {
                     console.error('reCAPTCHA error:', err);
-                    errorMsg.textContent = 'CAPTCHA verification failed. Please refresh and try again.';
+                    errorMsg.textContent = AurvekI18n.t('auth.error.captcha_failed');
                     errorMsg.classList.remove('d-none');
                     return;
                 }
@@ -376,7 +386,10 @@
         // Disable button
         submitBtn.disabled = true;
         const originalBtnText = submitBtn.innerHTML;
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating account...';
+        const spinner = document.createElement('span');
+        spinner.className = 'spinner-border spinner-border-sm me-2';
+        spinner.setAttribute('aria-hidden', 'true');
+        submitBtn.replaceChildren(spinner, document.createTextNode(AurvekI18n.t('auth.progress.creating_account')));
 
         try {
             const formData = new FormData(form);
@@ -393,10 +406,13 @@
             const data = await response.json();
 
             if (data.status === 'success') {
-                successMsg.innerHTML = '<strong>Check your email!</strong><br>' + data.message;
+                successMsg.replaceChildren();
+                const successTitle = document.createElement('strong');
+                successTitle.textContent = AurvekI18n.t('auth.success.check_email');
+                successMsg.append(successTitle, document.createElement('br'), document.createTextNode(data.message));
                 successMsg.classList.remove('d-none');
                 form.reset();
-                submitBtn.innerHTML = 'Email Sent!';
+                submitBtn.textContent = AurvekI18n.t('auth.success.email_sent');
                 submitBtn.classList.remove('btn-primary');
                 submitBtn.classList.add('btn-success');
                 // Hide form fields and login link
@@ -406,7 +422,7 @@
                 const captchaWidget = document.querySelector('.cf-turnstile');
                 if (captchaWidget) captchaWidget.style.display = 'none';
             } else {
-                errorMsg.textContent = data.message || 'Registration failed. Please try again.';
+                errorMsg.textContent = data.message || AurvekI18n.t('auth.error.registration_failed');
                 errorMsg.classList.remove('d-none');
                 submitBtn.disabled = false;
                 submitBtn.innerHTML = originalBtnText;
@@ -417,7 +433,7 @@
             }
         } catch (error) {
             console.error('Registration error:', error);
-            errorMsg.textContent = 'An error occurred. Please try again.';
+            errorMsg.textContent = AurvekI18n.t('auth.error.unexpected');
             errorMsg.classList.remove('d-none');
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalBtnText;

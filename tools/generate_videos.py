@@ -215,7 +215,14 @@ async def save_video_locally(video_data, filename, user, conversation_id, source
         # artifact never exists.
         async with get_db_connection() as conn:
             await record_generated_file(conn, conversation_id, 'video', file_path, len(video_data))
+            from chat.services.generated_media import private_generated_media_urls
+            private_urls = await private_generated_media_urls(
+                conn, user_id=user.id, conversation_id=conversation_id, paths=[file_path],
+            )
             await conn.commit()
+
+        if private_urls is not None:
+            return private_urls[0], private_urls[0], file_path
 
         # Generate video path (same structure as images)
         video_path = f"users/{hash_prefix1}/{hash_prefix2}/{user_hash}/files/{conversation_id_prefix1}/{conversation_id_prefix2}/video/{source}/{base_filename}.{format}"
@@ -367,8 +374,12 @@ async def generate_video_task(channel_name: str, prompt: str, conversation_id: i
         # Generate token for immediate display (same as process_message does for DB loads)
         from datetime import datetime, timezone, timedelta
         expiration = datetime.now(timezone.utc) + timedelta(hours=MEDIA_TOKEN_EXPIRE_HOURS)
-        token = generate_img_token(video_link_base, expiration, user)
-        video_url_with_token = f"{video_link_base}?token={token}"
+        from chat.services.generated_media import parse_generated_media_url
+        if parse_generated_media_url(video_link_base):
+            video_url_with_token = video_link_base
+        else:
+            token = generate_img_token(video_link_base, expiration, user)
+            video_url_with_token = f"{video_link_base}?token={token}"
 
         # Use the same JSON structure for both display and save
         video_content = orjson.dumps([

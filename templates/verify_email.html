@@ -1,6 +1,7 @@
+{% set i18n_domains = ['auth'] %}
 {% extends 'base.html' %}
 
-{% block title %}{% if success %}Account Verified{% else %}Verification Failed{% endif %} - Aurvek{% endblock %}
+{% block title %}{% if success %}{{ t('auth.title.account_verified') }}{% else %}{{ t('auth.title.verification_failed') }}{% endif %} - Aurvek{% endblock %}
 
 {% block styles %}
 <style>
@@ -76,12 +77,12 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                     </svg>
                 </div>
-                <h2 class="mb-3">Account Verified!</h2>
+                <h2 class="mb-3">{{ t('auth.heading.account_verified') }}</h2>
                 <p class="text-muted mb-4">
-                    {{ message if message else "Your email has been verified successfully. You can now log in to your account." }}
+                    {{ message if message else t('auth.message.email_verified') }}
                 </p>
                 <a href="/login" class="btn btn-primary btn-lg">
-                    Go to Login
+                    {{ t('auth.action.go_to_login') }}
                 </a>
                 {% else %}
                 <!-- Error State -->
@@ -90,16 +91,16 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
                 </div>
-                <h2 class="mb-3">Verification Failed</h2>
+                <h2 class="mb-3">{{ t('auth.title.verification_failed') }}</h2>
                 <p class="text-muted mb-4">
-                    {{ error if error else "We couldn't verify your email. The link may have expired or is invalid." }}
+                    {{ error if error else t('auth.error.email_verification_failed') }}
                 </p>
                 <div class="d-grid gap-2">
                     <a href="/register" class="btn btn-primary btn-lg">
-                        Register Again
+                        {{ t('auth.action.register_again') }}
                     </a>
                     <a href="/login" class="btn btn-outline-secondary">
-                        Back to Login
+                        {{ t('auth.action.back_to_login') }}
                     </a>
                 </div>
                 {% endif %}
@@ -107,7 +108,7 @@
         </div>
 
         <p class="text-center text-white-50 mt-4 small">
-            Need help? Contact support.
+            {{ t('auth.message.contact_support') }}
         </p>
     </div>
 </div>

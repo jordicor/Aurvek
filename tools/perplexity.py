@@ -13,6 +13,7 @@ from billing.usage_reservations import (
     estimate_customer_charge_from_api_cost,
     estimate_structured_billing_tokens,
     estimate_structured_usage_tokens,
+    mark_ai_reservation_provider_started,
     refund_fixed_usage,
     reserve_ai_usage,
     settle_ai_reservation_components,
@@ -63,6 +64,15 @@ class PerplexityResult:
     input_tokens: int
     output_tokens: int
     api_cost: float
+
+
+class PerplexityProviderError(RuntimeError):
+    """An HTTP failure can still report already incurred provider usage."""
+
+    def __init__(self, status: int, *, usage: PerplexityResult | None = None):
+        super().__init__(f"Perplexity API error {status}")
+        self.usage = usage
+        self.rejected = status in {400, 401, 403, 404, 413, 422, 429} and usage is None
 
 
 def _request_fee() -> float:
@@ -150,10 +160,10 @@ def _parse_perplexity_response(data: dict, payload: dict) -> PerplexityResult:
     reported_output = _non_negative_number(usage.get("completion_tokens"))
     input_tokens = (
         int(reported_input)
-        if reported_input and reported_input > 0
+        if reported_input is not None
         else estimate_structured_usage_tokens(payload["messages"])
     )
-    if reported_output and reported_output > 0:
+    if reported_output is not None:
         output_tokens = int(reported_output)
     elif has_content:
         output_tokens = min(
@@ -175,7 +185,7 @@ def _parse_perplexity_response(data: dict, payload: dict) -> PerplexityResult:
     )
     request_cost = (
         reported_request_cost
-        if reported_request_cost is not None and reported_request_cost > 0
+        if reported_request_cost is not None
         else _request_fee()
     )
     reported_total_cost = _non_negative_number(cost_details.get("total_cost"))
@@ -210,7 +220,15 @@ async def _get_perplexity_result(query: str) -> PerplexityResult:
         async with session.post(url, json=payload, headers=headers) as response:
             if response.status != 200:
                 error_text = await response.text()
-                raise RuntimeError(f"Perplexity API error {response.status}: {error_text}")
+                partial = None
+                try:
+                    error_data = orjson.loads(error_text)
+                    reported = error_data.get("usage") if isinstance(error_data, dict) else None
+                    if isinstance(reported, dict) and _has_reported_perplexity_usage(reported):
+                        partial = _parse_perplexity_response({"usage": reported}, payload)
+                except (orjson.JSONDecodeError, TypeError, ValueError):
+                    pass
+                raise PerplexityProviderError(response.status, usage=partial)
 
             data = await response.json()
             return _parse_perplexity_response(data, payload)
@@ -245,10 +263,10 @@ async def get_billed_perplexity_result(
         user_id=int(user_id),
         maximum_amount=maximum_customer_charge,
     )
-    provider_completed = False
-    try:
-        result = await _get_perplexity_result(query)
-        provider_completed = True
+    provider_started = False
+    provider_rejected = False
+
+    async def record_usage(result):
         component = {
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
@@ -265,6 +283,25 @@ async def get_billed_perplexity_result(
             output_tokens=result.output_tokens,
             component=component,
         )
+        return component
+
+    try:
+        from integrations.applications.billing import (
+            current_application_operation, revalidate_application_operation,
+        )
+        operation = current_application_operation(user_id)
+        if operation is not None:
+            await revalidate_application_operation(operation)
+        if not await mark_ai_reservation_provider_started(
+                reservation_id=reservation_id, user_id=int(user_id)):
+            raise BillingReservationError("Perplexity billing reservation is not active")
+        # Marking the hold can wait for SQLite. Check again immediately before
+        # transport; a revoked admission has not performed provider work yet.
+        if operation is not None:
+            await revalidate_application_operation(operation)
+        provider_started = True
+        result = await _get_perplexity_result(query)
+        component = await record_usage(result)
         settled = await settle_ai_reservation_components(
             reservation_id=reservation_id,
             user_id=int(user_id),
@@ -278,10 +315,15 @@ async def get_billed_perplexity_result(
         if not result.content.strip():
             raise RuntimeError("Perplexity returned empty or malformed response")
         return result.content
+    except PerplexityProviderError as exc:
+        provider_rejected = exc.rejected
+        if exc.usage is not None:
+            await record_usage(exc.usage)
+        raise
     finally:
-        # Once Perplexity returned valid usage, keep an unsettled hold active:
-        # its persisted component will be captured by stale reconciliation.
-        if reservation_id and not provider_completed:
+        # An ambiguous started request is not proof of unused credit. Native
+        # reconciliation can settle reported partial usage or retain unknowns.
+        if reservation_id and (not provider_started or provider_rejected):
             try:
                 await refund_fixed_usage(reservation_id)
             except BillingReservationError:

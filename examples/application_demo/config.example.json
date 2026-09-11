@@ -1,0 +1,43 @@
+{
+  "app": {
+    "app_id": "practice-demo", "display_name": "Practice demo",
+    "issuer": "https://aurvek.example",
+    "embed_origins": ["https://chat.practice.example"],
+    "parent_origins": ["https://practice.example"],
+    "redirect_uris": ["https://practice.example/auth/aurvek/callback"],
+    "prompt_id": 10, "enabled": true, "remote_backend_access": true,
+    "capabilities": {"text": true, "attachments": true, "tools": true, "stt": true,
+      "tts": true, "voice": true, "model_selection": true, "reasoning": true,
+      "export_pdf": true, "export_mp3": true}
+  },
+  "entry_assistant_id": "default",
+  "assistants": [
+    {"assistant_id": "default", "display_name": "Recepcionista", "prompt_id": 10,
+      "capabilities": {"text": true, "attachments": true, "tools": true, "stt": true,
+        "tts": true, "voice": true, "model_selection": true, "reasoning": true,
+        "export_pdf": true, "export_mp3": true},
+      "tools": ["app_http_demo_lookup", "transfer_to_assistant", "set_entry_assistant"],
+      "memory": {"read_private": true, "read_shared": false, "write_space": "private"}},
+    {"assistant_id": "guide", "display_name": "Guía", "prompt_id": 11,
+      "capabilities": {"text": true, "attachments": true, "tools": true, "stt": true,
+        "tts": true, "voice": true, "model_selection": true, "reasoning": true,
+        "export_pdf": true, "export_mp3": true},
+      "tools": ["app_http_demo_lookup", "transfer_to_assistant", "set_entry_assistant"],
+      "memory": {"read_private": true, "read_shared": false, "write_space": "private"}}
+  ],
+  "account_policy": {
+    "allow_provision": true, "allow_link": true, "allow_membership_management": true,
+    "admit_new_accounts": true, "llm_id": 1, "assistant_ids": ["default", "guide"],
+    "capabilities": {"text": true, "attachments": true, "tools": true, "stt": true,
+      "tts": true, "voice": true, "model_selection": true, "reasoning": true,
+      "export_pdf": true, "export_mp3": true}
+  },
+  "funding": {"mode": "sponsored", "payer_user_id": 1, "monthly_limit": 5},
+  "http_tools": [{
+    "name": "app_http_demo_lookup", "description": "Consulta un ejercicio de práctica en el servicio de demostración.",
+    "url": "http://127.0.0.1:18880/lookup", "method": "POST", "effect": "read",
+    "assistant_ids": ["default", "guide"], "enabled": true, "allow_private_network": true,
+    "arguments_schema": {"type": "object", "properties": {"topic": {"type": "string", "maxLength": 100}},
+      "required": ["topic"], "additionalProperties": false}
+  }]
+}

@@ -1,3 +1,4 @@
+from integrations.applications.messaging import check_current_messaging, start_current_messaging_tts
 import html
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
@@ -533,6 +534,7 @@ async def _elevenlabs_http_generator(
                 if next_text:
                     payload["next_text"] = next_text
 
+                await start_current_messaging_tts()
                 async with session.post(url, headers=headers, json=payload) as response:
                     if response.status != 200:
                         error_message = await response.text()
@@ -586,6 +588,7 @@ async def elevenlabs_ws_generator(
 
     async with aiohttp.ClientSession() as session:
         try:
+            await check_current_messaging("tts")
             ws = await asyncio.wait_for(
                 session.ws_connect(
                     url,
@@ -637,6 +640,7 @@ async def elevenlabs_ws_generator(
                 })
 
                 # Send full text + EOS
+                await start_current_messaging_tts()
                 await ws.send_json({"text": full_text + " "})
                 await ws.send_json({"text": ""})
 
@@ -733,6 +737,7 @@ async def openai_generator(voice_id: str, chunks: list):
                     "response_format": "mp3"
                 }
 
+                await start_current_messaging_tts()
                 async with session.post(url, headers=headers, json=payload) as response:
                     if response.status != 200:
                         error_message = await response.text()
@@ -839,6 +844,8 @@ async def handle_tts_request(
     tts_profile_override: TTSProfile | None = None,
     billing_adapter: TTSBillingAdapter | None = None,
 ):
+    from chat.services.localization import chat_translator
+    ui_translator = chat_translator(current_user)
     _cancelled = False
     billing_token: Any | None = None
     billing_provider_started = False
@@ -904,7 +911,10 @@ async def handle_tts_request(
             if is_whatsapp:
                 return None, str(e)
             if websocket:
-                await manager.send_json(websocket, {'action': 'error', 'message': str(e)})
+                await manager.send_json(websocket, {
+                    'action': 'error', 'error_code': 'provider_unavailable',
+                    'message': ui_translator.t('chat_errors.provider_unavailable'),
+                })
             return None, None
 
         logger.debug("Before hash_digest, voice_id=%s provider=%s", voice.voice_code, voice.provider)

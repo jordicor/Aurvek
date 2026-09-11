@@ -1100,6 +1100,7 @@ async def clone_active_attachment_for_branch(
     user_id: int,
     require_kind: str | None = None,
     legacy_block_index: int | None = None,
+    source_user_id: int | None = None,
 ) -> str | None:
     """Clone one active attachment reference onto a branch message.
 
@@ -1107,6 +1108,7 @@ async def clone_active_attachment_for_branch(
     attachment id, and both the source and target message scopes are verified
     before the reference is inserted.
     """
+    source_user_id = user_id if source_user_id is None else source_user_id
     target_cursor = await conn.execute(
         """
         SELECT 1
@@ -1120,15 +1122,26 @@ async def clone_active_attachment_for_branch(
             "Branch target message does not belong to this user and conversation"
         )
 
+    source_cursor = await conn.execute(
+        "SELECT 1 FROM MESSAGES WHERE id = ? AND user_id = ?",
+        (old_message_id, source_user_id),
+    )
+    if await source_cursor.fetchone() is None:
+        raise ValueError("Branch source message does not belong to this user")
+
     source = await resolve_attachment_for_user(
         conn,
         public_id=source_public_id,
-        user_id=user_id,
+        user_id=source_user_id,
         message_id=old_message_id,
         require_kind=require_kind,
     )
     if not source:
         return None
+    if source_user_id != user_id:
+        path = await _attachment_storage_path(conn, source, variant=None)
+        if not path.is_file():
+            return None
 
     new_ref = _new_public_id()
     await _insert_attachment(
@@ -1142,7 +1155,7 @@ async def clone_active_attachment_for_branch(
         original_filename=str(source["original_filename"]),
         display_name=source.get("display_name"),
         declared_mime=source.get("declared_mime"),
-        legacy_url=source.get("legacy_url"),
+        legacy_url=source.get("legacy_url") if source_user_id == user_id else None,
         legacy_block_index=legacy_block_index,
         status="active",
     )
@@ -1157,6 +1170,7 @@ async def clone_attachments_for_branch(
     new_conversation_id: int,
     user_id: int,
     message_json: str,
+    source_user_id: int | None = None,
 ) -> str:
     payload = _parse_message_json(message_json)
     if not isinstance(payload, list):
@@ -1167,30 +1181,21 @@ async def clone_attachments_for_branch(
         ref = _block_attachment_ref(block)
         if not ref:
             continue
-        source = await resolve_attachment_for_user(
+        new_ref = await clone_active_attachment_for_branch(
             conn,
-            public_id=ref,
+            source_public_id=ref,
+            old_message_id=old_message_id,
+            new_message_id=new_message_id,
+            new_conversation_id=new_conversation_id,
             user_id=user_id,
-            message_id=old_message_id,
-        )
-        if not source:
-            continue
-        new_ref = _new_public_id()
-        await _insert_attachment(
-            conn,
-            public_id=new_ref,
-            blob_id=int(source["blob_id"]),
-            user_id=user_id,
-            conversation_id=new_conversation_id,
-            message_id=new_message_id,
-            attachment_type=str(source["attachment_type"]),
-            original_filename=str(source["original_filename"]),
-            display_name=source.get("display_name"),
-            declared_mime=source.get("declared_mime"),
-            legacy_url=source.get("legacy_url"),
+            source_user_id=source_user_id,
             legacy_block_index=index,
-            status="active",
         )
+        if not new_ref:
+            if source_user_id is not None and source_user_id != user_id:
+                payload[index] = {"type": "text", "text": "[attachment unavailable]"}
+                changed = True
+            continue
         _set_block_attachment_ref(block, new_ref)
         changed = True
 

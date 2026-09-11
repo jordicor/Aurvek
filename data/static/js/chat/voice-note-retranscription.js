@@ -64,13 +64,16 @@
             const identity = [machine, model].filter(Boolean).join(' · ');
             const name = displayName && identity && displayName !== model
                 ? `${displayName} · ${identity}`
-                : (displayName || identity || `Model ${id}`);
+                : (displayName || identity || AurvekI18n.t('chat_widgets.retranscription.model_name', {id}));
             const inputCost = Number(row?.input_token_cost);
             const outputCost = Number(row?.output_token_cost);
             const hasPricing = Number.isFinite(inputCost) && inputCost >= 0 &&
                 Number.isFinite(outputCost) && outputCost >= 0;
             const pricing = hasPricing
-                ? ` · $${inputCost.toLocaleString(undefined, {maximumFractionDigits: 6})}/M input · $${outputCost.toLocaleString(undefined, {maximumFractionDigits: 6})}/M output`
+                ? AurvekI18n.t('chat_widgets.retranscription.model_pricing', {
+                    input: inputCost.toLocaleString(AurvekI18n.locale, {maximumFractionDigits: 6}),
+                    output: outputCost.toLocaleString(AurvekI18n.locale, {maximumFractionDigits: 6})
+                })
                 : '';
             const label = `${name}${pricing}`;
             return [{id, label}];
@@ -78,21 +81,17 @@
     }
 
     function errorMessage(payload, status) {
-        const detail = payload?.detail;
-        if (typeof detail === 'string' && detail.trim()) return detail.trim();
-        if (detail && typeof detail.message === 'string' && detail.message.trim()) {
-            return detail.message.trim();
+        const code = String(payload?.error_code || payload?.detail?.error_code || '').toLowerCase();
+        if (code === 'storage_quota_exceeded') {
+            return AurvekI18n.t('chat_widgets.retranscription.storage_limit');
         }
-        if (typeof payload?.message === 'string' && payload.message.trim()) {
-            return payload.message.trim();
-        }
-        if (status === 409) return 'A retranscription is already in progress.';
-        return `Request failed (${status}).`;
+        if (status === 409) return AurvekI18n.t('chat_widgets.retranscription.already_active');
+        return AurvekI18n.t('chat_widgets.error.request_failed');
     }
 
     async function requestJson(url, options = {}) {
         if (typeof global.secureFetch !== 'function') {
-            throw new Error('Secure requests are unavailable. Reload the page and try again.');
+            throw new Error(AurvekI18n.t('chat_widgets.error.security_unavailable'));
         }
         const headers = {...(options.headers || {})};
         const method = String(options.method || 'GET').toUpperCase();
@@ -100,7 +99,11 @@
             headers['X-GPTSub-CSRF'] = csrfToken();
         }
         const response = await global.secureFetch(url, {...options, headers});
-        if (!response) throw new Error('The session is no longer available.');
+        if (!response) {
+            const error = new Error(AurvekI18n.t('common.session.expired_message'));
+            error.code = 'session_expired';
+            throw error;
+        }
         let payload = {};
         try {
             payload = await response.json();
@@ -162,7 +165,7 @@
         const transcript = createElement('pre', className);
         transcript.tabIndex = 0;
         transcript.setAttribute('role', 'region');
-        transcript.setAttribute('aria-label', `${label} text`);
+        transcript.setAttribute('aria-label', AurvekI18n.t('chat_widgets.retranscription.transcript_label', {label}));
         details.append(summary, transcript);
         return {details, transcript};
     }
@@ -180,23 +183,23 @@
 
         const shell = createElement('div', 'voice-note-retranscription-shell');
         const header = createElement('header', 'voice-note-retranscription-header');
-        const title = createElement('h2', null, 'Retranscribe voice note');
+        const title = createElement('h2', null, AurvekI18n.t('chat_widgets.retranscription.title'));
         title.id = 'voice-note-retranscription-title';
         const close = createElement('button', 'voice-note-retranscription-close', '×');
         close.type = 'button';
-        close.setAttribute('aria-label', 'Close retranscription dialog');
+        close.setAttribute('aria-label', AurvekI18n.t('chat_widgets.retranscription.close'));
         header.append(title, close);
 
         const description = createElement(
             'p',
             'voice-note-retranscription-description',
-            'Create a new transcript from the saved original audio. Nothing changes until you accept the candidate.'
+            AurvekI18n.t('chat_widgets.retranscription.description')
         );
         description.id = 'voice-note-retranscription-description';
         const costNotice = createElement(
             'p',
             'voice-note-retranscription-cost-notice',
-            'Retranscription and the optional AI judge may use your Aurvek balance or provider API credits, depending on your account settings. Long recordings can incur substantial charges. The judge compares text only; it does not listen to the audio.'
+            AurvekI18n.t('chat_widgets.retranscription.cost_notice')
         );
         costNotice.id = 'voice-note-retranscription-cost-notice';
 
@@ -204,25 +207,25 @@
         const stt = createElement('select');
         stt.name = 'stt_engine';
         stt.append(
-            new Option('Use configured transcription engine', 'configured'),
+            new Option(AurvekI18n.t('chat_widgets.retranscription.engine_configured'), 'configured'),
             new Option('Deepgram', 'deepgram'),
             new Option('ElevenLabs', 'elevenlabs')
         );
-        appendField(form, 'Transcription engine', stt);
+        appendField(form, AurvekI18n.t('chat_widgets.retranscription.engine_label'), stt);
 
         const model = createElement('select');
         model.name = 'comparison_llm_id';
         model.disabled = true;
-        model.appendChild(new Option('No automatic comparison', ''));
-        const modelField = appendField(form, 'AI quality judge (optional)', model);
+        model.appendChild(new Option(AurvekI18n.t('chat_widgets.retranscription.no_comparison'), ''));
+        const modelField = appendField(form, AurvekI18n.t('chat_widgets.retranscription.judge_label'), model);
         const modelHelp = createElement(
             'small',
             'voice-note-retranscription-model-help',
-            'Loading available comparison models…'
+            AurvekI18n.t('chat_widgets.retranscription.models_loading')
         );
         modelField.appendChild(modelHelp);
 
-        const start = createElement('button', 'voice-note-retranscription-primary', 'Start retranscription');
+        const start = createElement('button', 'voice-note-retranscription-primary', AurvekI18n.t('chat_widgets.retranscription.start'));
         start.type = 'submit';
         form.appendChild(start);
 
@@ -235,17 +238,17 @@
         const verdict = createElement('h3', 'voice-note-retranscription-verdict');
         const rationale = createElement('p', 'voice-note-retranscription-rationale');
         const oldTranscript = createTranscriptDetails(
-            'Previous transcription',
+            AurvekI18n.t('chat_widgets.retranscription.previous'),
             'voice-note-transcript-old'
         );
         const newTranscript = createTranscriptDetails(
-            'New transcription',
+            AurvekI18n.t('chat_widgets.retranscription.new'),
             'voice-note-transcript-new'
         );
         const decisions = createElement('div', 'voice-note-retranscription-decisions');
-        const reject = createElement('button', 'voice-note-retranscription-secondary', 'Keep previous');
+        const reject = createElement('button', 'voice-note-retranscription-secondary', AurvekI18n.t('chat_widgets.retranscription.keep_previous'));
         reject.type = 'button';
-        const accept = createElement('button', 'voice-note-retranscription-primary', 'Use new transcript');
+        const accept = createElement('button', 'voice-note-retranscription-primary', AurvekI18n.t('chat_widgets.retranscription.use_new'));
         accept.type = 'button';
         decisions.append(reject, accept);
         review.append(
@@ -310,18 +313,18 @@
         nodes.newTranscript.textContent = '';
         setDecisionBusy(false);
         setReviewVisible(false);
-        setStatus('Checking saved retranscription state…');
+        setStatus(AurvekI18n.t('chat_widgets.retranscription.checking_saved'));
         state.currentRevisionId = null;
     }
 
     function renderComparisonModels(models) {
-        const noComparison = new Option('No automatic comparison', '');
+        const noComparison = new Option(AurvekI18n.t('chat_widgets.retranscription.no_comparison'), '');
         const options = models.map(item => new Option(item.label, String(item.id)));
         state.nodes.model.replaceChildren(noComparison, ...options);
         state.nodes.model.disabled = false;
         state.nodes.modelHelp.textContent = models.length
-            ? 'Prices shown in the menu are per million tokens; the final total depends on transcript length.'
-            : 'No comparison models are currently available. You can continue without a judge.';
+            ? AurvekI18n.t('chat_widgets.retranscription.model_prices')
+            : AurvekI18n.t('chat_widgets.retranscription.no_models');
     }
 
     async function loadComparisonModels() {
@@ -339,29 +342,62 @@
 
     function statusLabel(status) {
         return {
-            queued: 'Waiting to transcribe…',
-            transcribing: 'Transcribing the original audio…',
-            comparing: 'The AI judge is comparing both transcripts…',
-            ready: 'Candidate ready for review.',
-            accepted: 'The new transcript is now used in this conversation.',
-            rejected: 'The previous transcript was kept.',
-            failed: 'Retranscription failed.',
-            stale: 'The transcript changed while this candidate was being prepared.',
-        }[status] || `Status: ${status || 'unknown'}`;
+            queued: AurvekI18n.t('chat_widgets.retranscription.status_queued'),
+            transcribing: AurvekI18n.t('chat_widgets.retranscription.status_transcribing'),
+            comparing: AurvekI18n.t('chat_widgets.retranscription.status_comparing'),
+            ready: AurvekI18n.t('chat_widgets.retranscription.status_ready'),
+            accepted: AurvekI18n.t('chat_widgets.retranscription.status_accepted'),
+            rejected: AurvekI18n.t('chat_widgets.retranscription.status_rejected'),
+            failed: AurvekI18n.t('chat_widgets.retranscription.status_failed'),
+            stale: AurvekI18n.t('chat_widgets.retranscription.status_stale'),
+        }[status] || AurvekI18n.t('chat_widgets.retranscription.status_unknown');
+    }
+
+    function failedRevisionMessage(revision) {
+        const code = String(revision?.error_code || '').toLowerCase();
+        if (code === 'storage_quota_exceeded') {
+            return AurvekI18n.t('chat_widgets.retranscription.storage_limit');
+        }
+        return statusLabel('failed');
+    }
+
+    function verdictLabel(verdict) {
+        const normalized = String(verdict || '').toLowerCase();
+        const key = {
+            better: 'verdict_better',
+            equal: 'verdict_equal',
+            worse: 'verdict_worse',
+            uncertain: 'verdict_uncertain',
+        }[normalized];
+        return key
+            ? AurvekI18n.t(`chat_widgets.retranscription.${key}`)
+            : AurvekI18n.t('chat_widgets.retranscription.not_compared');
+    }
+
+    function reviewRationale(revision) {
+        if (revision?.rationale_source !== 'aurvek') {
+            return revision?.rationale || AurvekI18n.t('chat_widgets.retranscription.no_comparison_requested');
+        }
+        const key = {
+            comparison_incomplete: 'comparison_incomplete',
+            comparison_no_rationale: 'comparison_no_rationale',
+        }[revision.rationale_code] || 'comparison_failed';
+        const message = AurvekI18n.t(`chat_widgets.retranscription.${key}`);
+        return revision.generated_rationale ? `${message}\n\n${revision.generated_rationale}` : message;
     }
 
     function showReview(revision) {
         state.currentRevisionId = Number(revision.id) || state.currentRevisionId;
-        const verdict = String(revision.verdict || 'not compared');
+        const verdict = verdictLabel(revision.verdict);
         const hasConfidence = revision.confidence !== null &&
             revision.confidence !== undefined &&
             revision.confidence !== '';
         const confidence = hasConfidence ? Number(revision.confidence) : Number.NaN;
         const confidenceLabel = Number.isFinite(confidence)
-            ? ` · ${Math.round(Math.max(0, Math.min(confidence, 1)) * 100)}% confidence`
+            ? AurvekI18n.t('chat_widgets.retranscription.confidence', {percent: Math.round(Math.max(0, Math.min(confidence, 1)) * 100)})
             : '';
-        state.nodes.verdict.textContent = `Verdict: ${verdict}${confidenceLabel}`;
-        state.nodes.rationale.textContent = revision.rationale || 'No automatic comparison was requested.';
+        state.nodes.verdict.textContent = AurvekI18n.t('chat_widgets.retranscription.verdict', {verdict, confidence: confidenceLabel});
+        state.nodes.rationale.textContent = reviewRationale(revision);
         state.nodes.oldTranscript.textContent = revision.old_transcript || '';
         state.nodes.newTranscript.textContent = revision.new_transcript || '';
         setReviewVisible(true);
@@ -400,7 +436,7 @@
             } else if (status === 'failed') {
                 setReviewVisible(false);
                 state.nodes.start.disabled = false;
-                setStatus(revision.error_message || statusLabel(status), true);
+                setStatus(failedRevisionMessage(revision), true);
             } else if (status === 'accepted') {
                 if (typeof global.refreshActiveConversation === 'function') {
                     await global.refreshActiveConversation();
@@ -429,7 +465,7 @@
         const generation = state.generation;
         const nodes = state.nodes;
         nodes.start.disabled = true;
-        setStatus('Starting retranscription…');
+        setStatus(AurvekI18n.t('chat_widgets.retranscription.starting'));
         const modelId = Number(nodes.model.value);
         const body = {
             stt_engine: nodes.stt.value,
@@ -446,12 +482,12 @@
                 }
             );
             const revisionId = revisionIdFrom(payload);
-            if (!revisionId) throw new Error('The server did not return a revision identifier.');
+            if (!revisionId) throw new Error(AurvekI18n.t('chat_widgets.retranscription.missing_revision'));
             state.activeByMessage.set(messageId, revisionId);
             if (generation !== state.generation || state.currentMessageId !== messageId) return;
             state.currentRevisionId = revisionId;
             nodes.config.hidden = true;
-            setStatus('Retranscription queued…');
+            setStatus(AurvekI18n.t('chat_widgets.retranscription.queued'));
             await pollRevision(revisionId, generation);
         } catch (error) {
             const activeRevisionId = error.status === 409
@@ -462,7 +498,7 @@
                 if (generation !== state.generation || state.currentMessageId !== messageId) return;
                 state.currentRevisionId = activeRevisionId;
                 nodes.config.hidden = true;
-                setStatus('Continuing the retranscription already in progress…');
+                setStatus(AurvekI18n.t('chat_widgets.retranscription.continuing'));
                 await pollRevision(activeRevisionId, generation);
                 return;
             }
@@ -481,14 +517,13 @@
             decision === 'accept' &&
             typeof global.confirm === 'function' &&
             !global.confirm(
-                'Replace the saved conversation text with the new transcript? ' +
-                'External AI memory, if configured, is not rebuilt by this action.'
+                AurvekI18n.t('chat_widgets.retranscription.replace_confirm')
             )
         ) {
             return;
         }
         setDecisionBusy(true);
-        setStatus(decision === 'accept' ? 'Applying the new transcript…' : 'Keeping the previous transcript…');
+        setStatus(AurvekI18n.t(decision === 'accept' ? 'chat_widgets.retranscription.applying' : 'chat_widgets.retranscription.keeping'));
         try {
             await requestJson(
                 `/api/messaging-voice-notes/revisions/${encodeURIComponent(revisionId)}/decision`,
@@ -531,14 +566,14 @@
                 : payload;
             if (voiceNote?.audio_available === false || Number(voiceNote?.audio_available) === 0) {
                 state.nodes.start.disabled = true;
-                setStatus('The saved original audio is no longer available.', true);
+                setStatus(AurvekI18n.t('chat_widgets.retranscription.audio_unavailable'), true);
                 return;
             }
             const revisionId = Number(voiceNote?.latest_revision_id);
             const status = String(voiceNote?.latest_revision_status || '').toLowerCase();
             if (!Number.isInteger(revisionId) || revisionId <= 0) {
                 state.nodes.start.disabled = false;
-                setStatus('Choose how to create the candidate transcript.');
+                setStatus(AurvekI18n.t('chat_widgets.retranscription.choose_candidate'));
                 state.nodes.stt.focus();
                 return;
             }
@@ -550,20 +585,20 @@
                 state.nodes.config.hidden = true;
                 setStatus(
                     status === 'ready'
-                        ? 'Loading the candidate awaiting your decision…'
-                        : 'Continuing the retranscription already in progress…'
+                        ? AurvekI18n.t('chat_widgets.retranscription.loading_candidate')
+                        : AurvekI18n.t('chat_widgets.retranscription.continuing')
                 );
                 await pollRevision(revisionId, generation);
                 return;
             }
             state.nodes.start.disabled = false;
-            setStatus('Choose how to create another candidate transcript.');
+            setStatus(AurvekI18n.t('chat_widgets.retranscription.choose_another'));
             state.nodes.stt.focus();
         } catch (error) {
             if (generation !== state.generation || state.currentMessageId !== messageId) return;
             state.nodes.start.disabled = true;
             if (!error.status || error.status >= 500) {
-                setStatus('Could not check saved retranscription state. Retrying…', true);
+                setStatus(AurvekI18n.t('chat_widgets.retranscription.check_failed_retry'), true);
                 state.pollTimer = global.setTimeout(
                     () => resumeLatestRevision(messageId, generation),
                     POLL_INTERVAL_MS
@@ -591,14 +626,14 @@
         loadComparisonModels().catch(() => {
             state.nodes.model.disabled = true;
             state.nodes.modelHelp.textContent =
-                'Comparison models are unavailable. Retranscription can continue without a judge.';
+                AurvekI18n.t('chat_widgets.retranscription.models_unavailable');
         });
 
         const activeRevisionId = state.activeByMessage.get(parsedMessageId);
         if (activeRevisionId) {
             state.currentRevisionId = activeRevisionId;
             state.nodes.config.hidden = true;
-            setStatus('Checking the retranscription already in progress…');
+            setStatus(AurvekI18n.t('chat_widgets.retranscription.checking_active'));
             pollRevision(activeRevisionId, state.generation);
         } else {
             resumeLatestRevision(parsedMessageId, state.generation);
@@ -607,6 +642,12 @@
 
     global.AurvekVoiceNoteRetranscription = {open};
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = {normalizeComparisonModels, revisionIdFrom};
+        module.exports = {
+            failedRevisionMessage,
+            normalizeComparisonModels,
+            reviewRationale,
+            revisionIdFrom,
+            verdictLabel,
+        };
     }
 })(typeof window !== 'undefined' ? window : globalThis);

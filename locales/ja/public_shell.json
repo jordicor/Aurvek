@@ -1,0 +1,18 @@
+{
+  "support": "Aurvek サポート",
+  "support_contact": "アカウント、安全性、請求、コンテンツに関するお問い合わせは、{email}までご連絡ください。",
+  "welcome": "ようこそ",
+  "home": "ホーム",
+  "chat": "チャット",
+  "settings": "設定",
+  "classic_home": "従来のホーム",
+  "related": "関連するアシスタント",
+  "page_not_found": "ページが見つかりません",
+  "domain_not_found": "ドメインが設定されていません",
+  "unavailable": "このページは一時的に利用できません",
+  "unavailable_title": "ページを利用できません",
+  "retry": "しばらくしてからもう一度お試しください。",
+  "copied": "コピーしました！",
+  "expired": "オファーは終了しました",
+  "countdown": "{days}日 {hours}時間 {minutes}分 {seconds}秒"
+}

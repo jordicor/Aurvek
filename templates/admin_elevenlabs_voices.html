@@ -1,6 +1,7 @@
+{% set i18n_domains = ['admin_voice_integrations'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}ElevenLabs Voices - AURVEK{% endblock %}
+{% block title %}{{ t('admin_voice_integrations.ui.elevenlabs_voices_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -67,24 +68,24 @@
 </style>
 {% endblock %}
 
-{% block page_title %}ElevenLabs Voices{% endblock %}
+{% block page_title %}{{ t('admin_voice_integrations.ui.elevenlabs_voices') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Sync voices from your ElevenLabs account</p>
+<p class="page-subtitle">{{ t('admin_voice_integrations.ui.sync_voices_from_your_elevenlabs_account') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <button class="btn-primary-gold" id="syncBtn" onclick="fetchElevenLabsVoices()">
     <span class="sync-spinner spinner-border spinner-border-sm me-1"></span>
-    <span class="sync-text"><i class="fas fa-sync-alt me-1"></i> Sync with ElevenLabs</span>
+    <span class="sync-text"><i class="fas fa-sync-alt me-1"></i> {{ t('admin_voice_integrations.ui.sync_with_elevenlabs') }}</span>
 </button>
 {% endblock %}
 
 {% block tabs %}
 <div class="internal-tabs">
-    <a href="/admin/voices" class="internal-tab">All Voices</a>
+    <a href="/admin/voices" class="internal-tab">{{ t('admin_voice_integrations.ui.all_voices') }}</a>
     <a href="/admin/elevenlabs-voices" class="internal-tab active">
-        <i class="fas fa-sync me-1"></i> ElevenLabs Sync
+        <i class="fas fa-sync me-1"></i> {{ t('admin_voice_integrations.ui.elevenlabs_sync') }}
     </a>
 </div>
 {% endblock %}
@@ -93,13 +94,13 @@
 {% if message %}
 <div class="alert alert-success alert-dismissible fade show" role="alert">
     {{ message }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_voice_integrations.ui.close') }}"></button>
 </div>
 {% endif %}
 {% if error %}
 <div class="alert alert-danger alert-dismissible fade show" role="alert">
     {{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_voice_integrations.ui.close') }}"></button>
 </div>
 {% endif %}
 {% endblock %}
@@ -108,57 +109,57 @@
 <!-- Stats -->
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-check-circle"></i> <strong id="enabledCount">{{ enabled_count }}</strong> Enabled
+        <i class="fas fa-check-circle"></i> <strong id="enabledCount">{{ format_number(enabled_count) }}</strong> {{ t('admin_voice_integrations.ui.enabled_2') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-cloud"></i> <strong id="availableCount">0</strong> Available
+        <i class="fas fa-cloud"></i> <strong id="availableCount">0</strong> {{ t('admin_voice_integrations.ui.available') }}
     </span>
     <span class="stat-badge" id="statsFiltered" style="display: none;">
-        <i class="fas fa-filter"></i> <strong id="filteredCount">0</strong> Shown
+        <i class="fas fa-filter"></i> <strong id="filteredCount">0</strong> {{ t('admin_voice_integrations.ui.shown') }}
     </span>
 </div>
 
 <!-- Filters Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-filter"></i> Filters
+        <i class="fas fa-filter"></i> {{ t('admin_voice_integrations.ui.filters') }}
     </div>
     <div class="flex-row">
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Category</label>
+                <label class="form-label">{{ t('admin_voice_integrations.ui.category') }}</label>
                 <select class="form-select" id="categoryFilter" onchange="applyFilters()">
-                    <option value="">All Categories</option>
-                    <option value="premade">Premade</option>
-                    <option value="cloned">Cloned</option>
-                    <option value="generated">Generated</option>
-                    <option value="professional">Professional</option>
+                    <option value="">{{ t('admin_voice_integrations.ui.all_categories') }}</option>
+                    <option value="premade">{{ t('admin_voice_integrations.ui.premade') }}</option>
+                    <option value="cloned">{{ t('admin_voice_integrations.ui.cloned') }}</option>
+                    <option value="generated">{{ t('admin_voice_integrations.ui.generated') }}</option>
+                    <option value="professional">{{ t('admin_voice_integrations.ui.professional') }}</option>
                 </select>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Search</label>
-                <input type="text" class="form-control" id="searchFilter" placeholder="Search by voice name..." oninput="applyFilters()">
+                <label class="form-label">{{ t('admin_voice_integrations.ui.search') }}</label>
+                <input type="text" class="form-control" id="searchFilter" placeholder="{{ t('admin_voice_integrations.ui.search_by_voice_name') }}" oninput="applyFilters()">
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Gender</label>
+                <label class="form-label">{{ t('admin_voice_integrations.ui.gender') }}</label>
                 <select class="form-select" id="genderFilter" onchange="applyFilters()">
-                    <option value="">All</option>
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
+                    <option value="">{{ t('admin_voice_integrations.ui.all') }}</option>
+                    <option value="male">{{ t('admin_voice_integrations.ui.male') }}</option>
+                    <option value="female">{{ t('admin_voice_integrations.ui.female') }}</option>
                 </select>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Status</label>
+                <label class="form-label">{{ t('admin_voice_integrations.ui.status') }}</label>
                 <select class="form-select" id="statusFilter" onchange="applyFilters()">
-                    <option value="">All</option>
-                    <option value="enabled">Enabled Only</option>
-                    <option value="disabled">Not Enabled</option>
+                    <option value="">{{ t('admin_voice_integrations.ui.all') }}</option>
+                    <option value="enabled">{{ t('admin_voice_integrations.ui.enabled_only') }}</option>
+                    <option value="disabled">{{ t('admin_voice_integrations.ui.not_enabled') }}</option>
                 </select>
             </div>
         </div>
@@ -169,36 +170,36 @@
 <div class="select-all-container d-flex justify-content-between align-items-center">
     <div>
         <input type="checkbox" class="form-check-input me-2" id="selectAllVisible" onchange="toggleSelectAllVisible()">
-        <label class="form-check-label" for="selectAllVisible">Select all visible</label>
+        <label class="form-check-label" for="selectAllVisible">{{ t('admin_voice_integrations.ui.select_all_visible') }}</label>
     </div>
     <button class="btn btn-success" id="saveBtn" onclick="saveSelection()" disabled>
-        <i class="fas fa-save me-1"></i> Save Selection
+        <i class="fas fa-save me-1"></i> {{ t('admin_voice_integrations.ui.save_selection') }}
     </button>
 </div>
 
 <!-- Voices Table Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-list"></i> ElevenLabs Voices
+        <i class="fas fa-list"></i> {{ t('admin_voice_integrations.ui.elevenlabs_voices') }}
     </div>
     <div class="table-wrapper">
         <table class="table" id="voicesTable">
             <thead>
                 <tr>
                     <th style="width: 40px;"></th>
-                    <th>Name</th>
-                    <th>Category</th>
-                    <th>Labels</th>
-                    <th>Description</th>
-                    <th style="width: 80px;">Preview</th>
-                    <th>Status</th>
+                    <th>{{ t('admin_voice_integrations.ui.name') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.category') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.labels') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.description') }}</th>
+                    <th style="width: 80px;">{{ t('admin_voice_integrations.ui.preview') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.status') }}</th>
                 </tr>
             </thead>
             <tbody id="voicesTableBody">
                 <tr>
                     <td colspan="7" class="text-center py-5 text-muted">
                         <i class="fas fa-cloud-download-alt fa-3x mb-3 d-block"></i>
-                        Click "Sync with ElevenLabs" to load available voices
+                        {{ t('admin_voice_integrations.ui.click_sync_with_elevenlabs_to_load_available_voices') }}
                     </td>
                 </tr>
             </tbody>
@@ -212,6 +213,14 @@
 
 {% block scripts_inline %}
 <script>
+const voiceAdminT = (key, params) => AurvekI18n.t(key, params);
+    function escapeVoiceHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
+    }
+    function voiceCategory(category) {
+        const categories = {premade:'premade', cloned:'cloned', generated:'generated', professional:'professional', default:'default', unknown:'unknown'};
+        return categories[category] ? voiceAdminT('admin_voice_integrations.ui.' + categories[category]) : category;
+    }
     // Initialize
     document.addEventListener('DOMContentLoaded', function() {
         updateSaveButtonState();
@@ -233,8 +242,11 @@
             const response = await fetch('/api/elevenlabs/voices');
             const data = await response.json();
 
-            if (data.error) {
-                throw new Error(data.error);
+            if (data.error === 'unauthenticated') {
+                throw new Error(AurvekI18n.t('common.session.expired_message'));
+            }
+            if (!response.ok || data.error) {
+                throw new Error(data.error || voiceAdminT('admin_voice_integrations.error.fetch'));
             }
 
             allVoices = data.voices || [];
@@ -243,7 +255,7 @@
 
         } catch (error) {
             console.error('Error fetching voices:', error);
-            NotificationModal.error('Fetch Error', 'Error fetching voices: ' + error.message);
+            NotificationModal.error(voiceAdminT('admin_voice_integrations.ui.fetch_error'), voiceAdminT('admin_voice_integrations.error.fetch_detail', {detail: error.message}));
         } finally {
             btn.classList.remove('syncing');
             btn.disabled = false;
@@ -259,10 +271,11 @@
             tbody.innerHTML = `
                 <tr>
                     <td colspan="7" class="text-center py-4 text-muted">
-                        No voices match your filters
+                        ${voiceAdminT('admin_voice_integrations.ui.no_matching_voices')}
                     </td>
                 </tr>
             `;
+            updateSelectAllState();
             return;
         }
 
@@ -272,45 +285,45 @@
 
             let statusBadge, rowClass;
             if (isSelected && wasInDb) {
-                statusBadge = '<span class="badge bg-success">Enabled</span>';
+                statusBadge = `<span class="badge bg-success">${voiceAdminT('admin_voice_integrations.ui.enabled_2')}</span>`;
                 rowClass = 'voice-row in-db';
             } else if (isSelected && !wasInDb) {
-                statusBadge = '<span class="badge bg-warning text-dark">Pending</span>';
+                statusBadge = `<span class="badge bg-warning text-dark">${voiceAdminT('admin_voice_integrations.ui.pending')}</span>`;
                 rowClass = 'voice-row pending';
             } else if (!isSelected && wasInDb) {
-                statusBadge = '<span class="badge bg-danger">To Remove</span>';
+                statusBadge = `<span class="badge bg-danger">${voiceAdminT('admin_voice_integrations.ui.to_remove')}</span>`;
                 rowClass = 'voice-row to-remove';
             } else {
-                statusBadge = '<span class="badge bg-secondary">-</span>';
+                statusBadge = `<span class="badge bg-secondary">-</span>`;
                 rowClass = 'voice-row';
             }
 
-            const categoryClass = `category-${voice.category}`;
-            const categoryBadge = `<span class="badge category-badge ${categoryClass}">${voice.category}</span>`;
+            const categoryClass = `category-${['premade','cloned','generated','professional','default'].includes(voice.category) ? voice.category : 'default'}`;
+            const categoryBadge = `<span class="badge category-badge ${categoryClass}">${escapeVoiceHtml(voiceCategory(voice.category))}</span>`;
 
             const labelsHtml = voice.labels.length > 0
-                ? voice.labels.map(l => `<span class="label-badge">${l}</span>`).join('')
+                ? voice.labels.map(l => `<span class="label-badge">${escapeVoiceHtml(l)}</span>`).join('')
                 : '<span class="text-muted">-</span>';
 
             const previewBtn = voice.preview_url
-                ? `<button class="btn btn-outline-primary preview-btn" data-voice-id="${voice.voice_id}" data-preview-url="${voice.preview_url}" onclick="togglePreview(this)" title="Preview voice" data-bs-toggle="tooltip">
+                ? `<button class="btn btn-outline-primary preview-btn" data-voice-id="${escapeVoiceHtml(voice.voice_id)}" data-preview-url="${escapeVoiceHtml(voice.preview_url)}" onclick="togglePreview(this)" title="${voiceAdminT('admin_voice_integrations.ui.preview_voice')}" data-bs-toggle="tooltip">
                      <i class="fas fa-play"></i>
                    </button>`
                 : '<span class="text-muted">-</span>';
 
             const description = voice.description
-                ? `<span title="${voice.description.replace(/"/g, '&quot;')}">${voice.description.substring(0, 50)}${voice.description.length > 50 ? '...' : ''}</span>`
+                ? `<span title="${escapeVoiceHtml(voice.description)}">${escapeVoiceHtml(voice.description.substring(0, 50))}${voice.description.length > 50 ? '...' : ''}</span>`
                 : '<span class="text-muted">-</span>';
 
             return `
-                <tr class="${rowClass}" data-voice-id="${voice.voice_id}">
+                <tr class="${rowClass}" data-voice-id="${escapeVoiceHtml(voice.voice_id)}">
                     <td>
                         <input type="checkbox" class="form-check-input voice-checkbox"
-                               data-voice-id="${voice.voice_id}"
+                               data-voice-id="${escapeVoiceHtml(voice.voice_id)}"
                                ${isSelected ? 'checked' : ''}
-                               onchange="toggleVoice('${voice.voice_id}')">
+                               onchange="toggleVoice(this.dataset.voiceId)">
                     </td>
-                    <td><strong>${voice.name}</strong><br><small class="text-muted">${voice.voice_id}</small></td>
+                    <td><strong>${escapeVoiceHtml(voice.name)}</strong><br><small class="text-muted">${escapeVoiceHtml(voice.voice_id)}</small></td>
                     <td>${categoryBadge}</td>
                     <td>${labelsHtml}</td>
                     <td class="description-cell">${description}</td>
@@ -354,14 +367,14 @@
 
     // Update stats
     function updateStats() {
-        document.getElementById('enabledCount').textContent = enabledVoices.size;
-        document.getElementById('availableCount').textContent = allVoices.length;
+        document.getElementById('enabledCount').textContent = AurvekI18n.formatNumber(enabledVoices.size);
+        document.getElementById('availableCount').textContent = AurvekI18n.formatNumber(allVoices.length);
 
         const filtered = getFilteredVoices();
         const statsFiltered = document.getElementById('statsFiltered');
         if (filtered.length !== allVoices.length && allVoices.length > 0) {
             statsFiltered.style.display = 'inline-flex';
-            document.getElementById('filteredCount').textContent = filtered.length;
+            document.getElementById('filteredCount').textContent = AurvekI18n.formatNumber(filtered.length);
         } else {
             statsFiltered.style.display = 'none';
         }
@@ -392,15 +405,15 @@
         let statusBadge;
         if (isSelected && wasInDb) {
             row.classList.add('in-db');
-            statusBadge = '<span class="badge bg-success">Enabled</span>';
+            statusBadge = `<span class="badge bg-success">${voiceAdminT('admin_voice_integrations.ui.enabled_2')}</span>`;
         } else if (isSelected && !wasInDb) {
             row.classList.add('pending');
-            statusBadge = '<span class="badge bg-warning text-dark">Pending</span>';
+            statusBadge = `<span class="badge bg-warning text-dark">${voiceAdminT('admin_voice_integrations.ui.pending')}</span>`;
         } else if (!isSelected && wasInDb) {
             row.classList.add('to-remove');
-            statusBadge = '<span class="badge bg-danger">To Remove</span>';
+            statusBadge = `<span class="badge bg-danger">${voiceAdminT('admin_voice_integrations.ui.to_remove')}</span>`;
         } else {
-            statusBadge = '<span class="badge bg-secondary">-</span>';
+            statusBadge = `<span class="badge bg-secondary">-</span>`;
         }
 
         row.querySelector('td:last-child').innerHTML = statusBadge;
@@ -477,7 +490,7 @@
             currentlyPlaying = voiceId;
         }).catch(err => {
             console.error('Error playing audio:', err);
-            NotificationModal.error('Playback Error', 'Could not play audio preview');
+            NotificationModal.error(voiceAdminT('admin_voice_integrations.ui.playback_error'), voiceAdminT('admin_voice_integrations.ui.could_not_play_audio_preview'));
         });
 
         audio.onended = () => {
@@ -491,7 +504,7 @@
     async function saveSelection() {
         const btn = document.getElementById('saveBtn');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span> ${voiceAdminT('admin_voice_integrations.ui.saving')}`;
         btn.disabled = true;
 
         try {
@@ -516,13 +529,16 @@
 
             const data = await response.json();
 
-            if (data.error) {
-                throw new Error(data.error);
+            if (data.error === 'unauthenticated') {
+                throw new Error(AurvekI18n.t('common.session.expired_message'));
+            }
+            if (!response.ok || data.error) {
+                throw new Error(data.error || voiceAdminT('admin_voice_integrations.error.sync'));
             }
 
             originalEnabled = new Set(enabledVoices);
 
-            btn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+            btn.innerHTML = `<i class="fas fa-check me-1"></i> ${voiceAdminT('admin_voice_integrations.ui.saved')}`;
             btn.classList.remove('btn-success');
             btn.classList.add('btn-outline-success');
 
@@ -537,7 +553,7 @@
 
         } catch (error) {
             console.error('Error saving:', error);
-            NotificationModal.error('Save Error', 'Error saving selection: ' + error.message);
+            NotificationModal.error(voiceAdminT('admin_voice_integrations.ui.save_error'), voiceAdminT('admin_voice_integrations.error.save_detail', {detail: error.message}));
             btn.innerHTML = originalText;
             btn.disabled = false;
         }

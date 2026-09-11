@@ -1,11 +1,12 @@
+{% set i18n_domains = ['ai_config'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Atagia Memory - AURVEK{% endblock %}
+{% block title %}{{ t('ai_config.atagia_title') }} - AURVEK{% endblock %}
 
-{% block page_title %}Atagia Memory{% endblock %}
+{% block page_title %}{{ t('ai_config.atagia_title') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Configure the system memory sidecar used for chat context</p>
+<p class="page-subtitle">{{ t('ai_config.atagia_subtitle') }}</p>
 {% endblock %}
 
 {% block styles %}
@@ -309,73 +310,73 @@
 {% block content %}
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-database"></i> Memory Source
+        <i class="fas fa-database"></i> {{ t('ai_config.memory_source') }}
     </div>
     <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="atagia_enabled"
                {% if config.enabled %}checked{% endif %}>
         <label class="form-check-label" for="atagia_enabled">
-            <strong>Enable Atagia</strong> -- Use Atagia as primary chat memory with Aurvek history fallback
+            <strong>{{ t('ai_config.enable_atagia') }}</strong> {{ t('ai_config.atagia_enable_help') }}
         </label>
     </div>
 </div>
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-plug"></i> Connection
+        <i class="fas fa-plug"></i> {{ t('ai_config.connection') }}
     </div>
     <div class="row">
         <div class="col-md-4 mb-3">
-            <label class="form-label" for="atagia_transport">Transport</label>
+            <label class="form-label" for="atagia_transport">{{ t('ai_config.transport') }}</label>
             <select class="form-select" id="atagia_transport">
-                <option value="auto" {% if config.transport == 'auto' %}selected{% endif %}>Auto</option>
-                <option value="local" {% if config.transport == 'local' %}selected{% endif %}>Local SQLite</option>
-                <option value="http" {% if config.transport == 'http' %}selected{% endif %}>HTTP Service</option>
+                <option value="auto" {% if config.transport == 'auto' %}selected{% endif %}>{{ t('ai_config.auto') }}</option>
+                <option value="local" {% if config.transport == 'local' %}selected{% endif %}>{{ t('ai_config.local_sqlite') }}</option>
+                <option value="http" {% if config.transport == 'http' %}selected{% endif %}>{{ t('ai_config.http_service') }}</option>
             </select>
         </div>
         <div class="col-md-4 mb-3">
-            <label class="form-label" for="atagia_mode">Mode / Retrieval Profile</label>
+            <label class="form-label" for="atagia_mode">{{ t('ai_config.retrieval_profile') }}</label>
             <input class="form-control" type="text" id="atagia_mode"
                    value="{{ config.mode or 'personal_assistant' }}">
         </div>
         <div class="col-md-4 mb-3">
-            <label class="form-label" for="atagia_timeout_seconds">Timeout Seconds</label>
+            <label class="form-label" for="atagia_timeout_seconds">{{ t('ai_config.timeout') }}</label>
             <input class="form-control" type="number" id="atagia_timeout_seconds" min="1" step="0.5"
                    value="{{ config.timeout_seconds or '30.0' }}">
         </div>
     </div>
 
     <div class="mb-3">
-        <label class="form-label" for="atagia_platform_id">Platform ID</label>
+        <label class="form-label" for="atagia_platform_id">{{ t('ai_config.platform') }}</label>
         <input class="form-control" type="text" id="atagia_platform_id"
                value="{{ config.platform_id or 'aurvek' }}">
-        <p class="field-note">Used by Atagia to isolate Aurvek memory from other host apps. Default: aurvek.</p>
+        <p class="field-note">{{ t('ai_config.platform_help') }}</p>
     </div>
 
     <div class="row">
         <div class="col-md-4 mb-3">
-            <label class="form-label" for="atagia_character_id">Global Character ID</label>
+            <label class="form-label" for="atagia_character_id">{{ t('ai_config.character') }}</label>
             <input class="form-control" type="text" id="atagia_character_id"
-                   value="{{ config.character_id or '' }}" placeholder="Derived from prompt when blank">
-            <p class="field-note">Blank lets Aurvek use prompt:{id} per prompt/persona.</p>
+                   value="{{ config.character_id or '' }}" placeholder="{{ t('ai_config.derived_prompt') }}">
+            <p class="field-note">{{ t('ai_config.character_help') }}</p>
         </div>
         <div class="col-md-4 mb-3">
-            <label class="form-label" for="atagia_user_persona_id">User Persona ID</label>
+            <label class="form-label" for="atagia_user_persona_id">{{ t('ai_config.persona') }}</label>
             <input class="form-control" type="text" id="atagia_user_persona_id"
-                   value="{{ config.user_persona_id or '' }}" placeholder="Optional">
+                   value="{{ config.user_persona_id or '' }}" placeholder="{{ t('ai_config.optional') }}">
         </div>
         <div class="col-md-4 mb-3">
-            <label class="form-label" for="atagia_operational_profile">Operational Profile</label>
+            <label class="form-label" for="atagia_operational_profile">{{ t('ai_config.operational') }}</label>
             <input class="form-control" type="text" id="atagia_operational_profile"
-                   value="{{ config.operational_profile or '' }}" placeholder="Optional">
+                   value="{{ config.operational_profile or '' }}" placeholder="{{ t('ai_config.optional') }}">
         </div>
     </div>
 
     <div class="mb-3">
-        <label class="form-label" for="atagia_db_path">Local DB Path</label>
+        <label class="form-label" for="atagia_db_path">{{ t('ai_config.db_path') }}</label>
         <input class="form-control" type="text" id="atagia_db_path"
                value="{{ config.db_path or 'db/atagia.db' }}">
-        <p class="field-note">Used when transport is local or auto without an HTTP URL.</p>
+        <p class="field-note">{{ t('ai_config.db_help') }}</p>
     </div>
 
     <div class="credential-autofill-sink" aria-hidden="true">
@@ -384,112 +385,112 @@
     </div>
 
     <div class="mb-3">
-        <label class="form-label" for="atagia_base_url">HTTP Base URL</label>
+        <label class="form-label" for="atagia_base_url">{{ t('ai_config.base_url') }}</label>
         <input class="form-control" type="url" id="atagia_base_url" name="atagia_base_url_config"
                value="{{ config.base_url or '' }}" placeholder="http://127.0.0.1:8100"
                autocomplete="off" autocapitalize="none" spellcheck="false"
                data-config-value="{{ config.base_url or '' }}">
-        <p class="field-note">HTTP mode accepts IP literal hosts only for SSRF protection.</p>
+        <p class="field-note">{{ t('ai_config.http_help') }}</p>
     </div>
 
     <div class="mb-3">
         <div class="secret-field-header">
-            <label class="form-label" for="atagia_service_api_key">Service API Key</label>
+            <label class="form-label" for="atagia_service_api_key">{{ t('ai_config.service_key') }}</label>
             <button type="button" class="btn btn-outline-danger btn-sm" id="clearServiceApiKeyBtn" onclick="markSecretForClear('service')">
-                <i class="fas fa-eraser me-1"></i> Clear saved key
+                <i class="fas fa-eraser me-1"></i> {{ t('ai_config.clear_key') }}
             </button>
         </div>
         <input class="form-control" type="password" id="atagia_service_api_key" name="atagia_service_api_key_config"
                autocomplete="new-password" autocapitalize="none" spellcheck="false"
                data-lpignore="true" data-1p-ignore="true" data-form-type="other"
-               placeholder="{% if config.has_service_api_key %}Current key: {{ config.service_api_key_masked }}{% else %}Required for HTTP transport{% endif %}">
-        <p class="field-note" id="serviceApiKeyNote">Leave blank to keep the current saved key.</p>
+               placeholder="{% if config.has_service_api_key %}{{ t('ai_config.current_key', value=config.service_api_key_masked) }}{% else %}{{ t('ai_config.http_required') }}{% endif %}">
+        <p class="field-note" id="serviceApiKeyNote">{{ t('ai_config.keep_key') }}</p>
     </div>
 
     <div class="mb-3">
         <div class="secret-field-header">
-            <label class="form-label" for="atagia_admin_api_key">Admin API Key</label>
+            <label class="form-label" for="atagia_admin_api_key">{{ t('ai_config.admin_key') }}</label>
             <button type="button" class="btn btn-outline-danger btn-sm" id="clearAdminApiKeyBtn" onclick="markSecretForClear('admin')">
-                <i class="fas fa-eraser me-1"></i> Clear saved key
+                <i class="fas fa-eraser me-1"></i> {{ t('ai_config.clear_key') }}
             </button>
         </div>
         <input class="form-control" type="password" id="atagia_admin_api_key" name="atagia_admin_api_key_config"
                autocomplete="new-password" autocapitalize="none" spellcheck="false"
                data-lpignore="true" data-1p-ignore="true" data-form-type="other"
-               placeholder="{% if config.has_admin_api_key %}Current key: {{ config.admin_api_key_masked }}{% else %}Required for HTTP processing controls{% endif %}">
-        <p class="field-note" id="adminApiKeyNote">Used only for Atagia admin operations like pausing, draining, and resuming background processing. Leave blank to keep the current saved key.</p>
+               placeholder="{% if config.has_admin_api_key %}{{ t('ai_config.current_key', value=config.admin_api_key_masked) }}{% else %}{{ t('ai_config.admin_required') }}{% endif %}">
+        <p class="field-note" id="adminApiKeyNote">{{ t('ai_config.admin_key_help') }}</p>
     </div>
 
     <div class="d-flex gap-2">
         <button type="button" class="btn btn-outline-secondary" id="testConnectionBtn" onclick="testConnection()">
             <span id="testSpinner" class="spinner-border spinner-border-sm me-1" style="display: none;"></span>
-            <i class="fas fa-satellite-dish me-1" id="testIcon"></i> Test Connection
+            <i class="fas fa-satellite-dish me-1" id="testIcon"></i> {{ t('ai_config.test_connection') }}
         </button>
         <button type="button" class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()">
             <span id="saveSpinner" class="spinner-border spinner-border-sm me-1" style="display: none;"></span>
-            <i class="fas fa-save me-1" id="saveIcon"></i> Save
+            <i class="fas fa-save me-1" id="saveIcon"></i> {{ t('ai_config.save') }}
         </button>
         <button type="button" class="btn btn-outline-warning" id="restoreDefaultsBtn" onclick="restoreDefaults()">
             <span id="restoreSpinner" class="spinner-border spinner-border-sm me-1" style="display: none;"></span>
-            <i class="fas fa-rotate-left me-1" id="restoreIcon"></i> Restore Defaults
+            <i class="fas fa-rotate-left me-1" id="restoreIcon"></i> {{ t('ai_config.restore_defaults') }}
         </button>
     </div>
 
     <div class="connection-status" id="connectionStatus">
         <i class="fas fa-circle-check me-2" id="connStatusIcon" style="color: var(--success);"></i>
-        <span id="connStatusText">Connected</span>
+        <span id="connStatusText">{{ t('ai_config.connected') }}</span>
     </div>
 </div>
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-wave-square"></i> Atagia Runtime
+        <i class="fas fa-wave-square"></i> {{ t('ai_config.runtime') }}
     </div>
 
     <div class="memory-toolbar">
         <div class="memory-toolbar-meta">
             <span class="memory-status-pill" id="runtimeStatusPill">
-                <i class="fas fa-circle-notch fa-spin"></i> Loading
+                <i class="fas fa-circle-notch fa-spin"></i> {{ t('ai_config.loading') }}
             </span>
             <span class="memory-status-pill" id="queueStatePill">
                 <i class="fas fa-layer-group"></i> -
             </span>
         </div>
         <button type="button" class="btn btn-outline-secondary" id="refreshDiagnosticsBtn" onclick="loadDiagnostics()">
-            <i class="fas fa-arrows-rotate me-1"></i> Refresh
+            <i class="fas fa-arrows-rotate me-1"></i> {{ t('ai_config.refresh') }}
         </button>
     </div>
 
     <div class="memory-grid">
         <div class="memory-metric">
-            <div class="memory-metric-label">Atagia Messages</div>
+            <div class="memory-metric-label">{{ t('ai_config.messages') }}</div>
             <div class="memory-metric-value" id="atagiaMessages">-</div>
-            <div class="memory-metric-note">Source turns stored by Atagia</div>
+            <div class="memory-metric-note">{{ t('ai_config.messages_help') }}</div>
         </div>
         <div class="memory-metric">
-            <div class="memory-metric-label">Memories</div>
+            <div class="memory-metric-label">{{ t('ai_config.memories') }}</div>
             <div class="memory-metric-value" id="atagiaMemories">-</div>
-            <div class="memory-metric-note">Durable memory objects</div>
+            <div class="memory-metric-note">{{ t('ai_config.memories_help') }}</div>
         </div>
         <div class="memory-metric">
-            <div class="memory-metric-label">Pending Jobs</div>
+            <div class="memory-metric-label">{{ t('ai_config.pending_jobs') }}</div>
             <div class="memory-metric-value" id="atagiaPendingJobs">-</div>
-            <div class="memory-metric-note">Queued extraction/projection work</div>
+            <div class="memory-metric-note">{{ t('ai_config.pending_help') }}</div>
         </div>
         <div class="memory-metric">
-            <div class="memory-metric-label">Running Jobs</div>
+            <div class="memory-metric-label">{{ t('ai_config.running_jobs') }}</div>
             <div class="memory-metric-value" id="atagiaRunningJobs">-</div>
-            <div class="memory-metric-note">Currently claimed by workers</div>
+            <div class="memory-metric-note">{{ t('ai_config.running_help') }}</div>
         </div>
         <div class="memory-metric">
-            <div class="memory-metric-label">Review</div>
+            <div class="memory-metric-label">{{ t('ai_config.review') }}</div>
             <div class="memory-metric-value" id="atagiaReviewMemories">-</div>
-            <div class="memory-metric-note">Pending confirmation or review</div>
+            <div class="memory-metric-note">{{ t('ai_config.review_help') }}</div>
         </div>
         <div class="memory-metric">
-            <div class="memory-metric-label">Summaries</div>
+            <div class="memory-metric-label">{{ t('ai_config.summaries') }}</div>
             <div class="memory-metric-value" id="atagiaSummaries">-</div>
-            <div class="memory-metric-note">Compiled context summaries</div>
+            <div class="memory-metric-note">{{ t('ai_config.summaries_help') }}</div>
         </div>
     </div>
 
@@ -497,30 +498,30 @@
 
     <div class="memory-panel-grid" id="diagnosticsPanels">
         <div class="memory-breakdown">
-            <div class="memory-breakdown-title">Memory Status</div>
+            <div class="memory-breakdown-title">{{ t('ai_config.memory_status') }}</div>
             <div id="memoryStatusBreakdown"></div>
         </div>
         <div class="memory-breakdown">
-            <div class="memory-breakdown-title">Job Queues By Type</div>
+            <div class="memory-breakdown-title">{{ t('ai_config.job_types') }}</div>
             <div id="jobTypeBreakdown"></div>
         </div>
     </div>
 
     <div class="memory-breakdown mt-3" id="activeJobsPanel">
-        <div class="memory-breakdown-title">Active Or Blocked Work</div>
+        <div class="memory-breakdown-title">{{ t('ai_config.active_work') }}</div>
         <div class="table-responsive">
             <table class="memory-work-table">
                 <thead>
                     <tr>
-                        <th>Job</th>
-                        <th>Status</th>
-                        <th>Source</th>
-                        <th>Queued</th>
+                        <th>{{ t('ai_config.job') }}</th>
+                        <th>{{ t('ai_config.status') }}</th>
+                        <th>{{ t('ai_config.source') }}</th>
+                        <th>{{ t('ai_config.queued') }}</th>
                     </tr>
                 </thead>
                 <tbody id="activeJobsBody">
                     <tr>
-                        <td colspan="4" class="memory-empty">Loading...</td>
+                        <td colspan="4" class="memory-empty">{{ t('ai_config.loading_dots') }}</td>
                     </tr>
                 </tbody>
             </table>
@@ -530,23 +531,23 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-clipboard-check"></i> Memory Review
+        <i class="fas fa-clipboard-check"></i> {{ t('ai_config.memory_review') }}
     </div>
     <p class="field-note">
-        Read-only Atagia review queue. These rows are memory candidates or user confirmations after ingestion, not failed history-sync messages. Approval/rejection needs Atagia's review API before Aurvek can safely mutate them.
+        {{ t('ai_config.review_queue_help') }}
     </p>
 
     <div class="memory-toolbar">
         <div class="memory-toolbar-meta">
             <span class="memory-status-pill" id="memoryReviewRequiredPill">
-                <i class="fas fa-circle-notch fa-spin"></i> Loading
+                <i class="fas fa-circle-notch fa-spin"></i> {{ t('ai_config.loading') }}
             </span>
             <span class="memory-status-pill" id="memoryUserConfirmPill">
                 <i class="fas fa-user-check"></i> -
             </span>
         </div>
         <button type="button" class="btn btn-outline-secondary" onclick="loadDiagnostics()">
-            <i class="fas fa-arrows-rotate me-1"></i> Refresh
+            <i class="fas fa-arrows-rotate me-1"></i> {{ t('ai_config.refresh') }}
         </button>
     </div>
 
@@ -554,11 +555,11 @@
 
     <div class="memory-panel-grid" id="memoryReviewPanels">
         <div class="memory-breakdown">
-            <div class="memory-breakdown-title">Admin Review Required</div>
+            <div class="memory-breakdown-title">{{ t('ai_config.admin_review') }}</div>
             <div id="memoryReviewItems" class="memory-review-list"></div>
         </div>
         <div class="memory-breakdown">
-            <div class="memory-breakdown-title">User Confirmation Pending</div>
+            <div class="memory-breakdown-title">{{ t('ai_config.user_confirmation') }}</div>
             <div id="memoryConfirmationItems" class="memory-review-list"></div>
         </div>
     </div>
@@ -566,31 +567,31 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-pause-circle"></i> Processing Control
+        <i class="fas fa-pause-circle"></i> {{ t('ai_config.processing_control') }}
     </div>
 
     <div class="memory-toolbar">
         <div class="memory-toolbar-meta">
             <span class="memory-status-pill" id="workerControlModePill">
-                <i class="fas fa-circle-notch fa-spin"></i> Loading
+                <i class="fas fa-circle-notch fa-spin"></i> {{ t('ai_config.loading') }}
             </span>
             <span class="memory-status-pill" id="workerControlJobsPill">
                 <i class="fas fa-layer-group"></i> -
             </span>
         </div>
         <button type="button" class="btn btn-outline-secondary" id="refreshWorkerControlBtn" onclick="loadWorkerControl()">
-            <i class="fas fa-arrows-rotate me-1"></i> Refresh
+            <i class="fas fa-arrows-rotate me-1"></i> {{ t('ai_config.refresh') }}
         </button>
     </div>
 
     <div class="worker-control-inputs">
         <div>
-            <label class="form-label" for="workerControlReason">Reason</label>
+            <label class="form-label" for="workerControlReason">{{ t('ai_config.reason') }}</label>
             <input class="form-control" type="text" id="workerControlReason"
-                   maxlength="500" placeholder="Optional note for Atagia admin state">
+                   maxlength="500" placeholder="{{ t('ai_config.reason_hint') }}">
         </div>
         <div>
-            <label class="form-label" for="workerControlTimeout">Drain Timeout</label>
+            <label class="form-label" for="workerControlTimeout">{{ t('ai_config.drain_timeout') }}</label>
             <input class="form-control" type="number" id="workerControlTimeout"
                    min="1" max="300" step="1" value="30">
         </div>
@@ -598,9 +599,9 @@
 
     <div class="worker-control-layout">
         <div class="worker-control-summary">
-            <div class="worker-control-summary-title">Current State</div>
+            <div class="worker-control-summary-title">{{ t('ai_config.current_state') }}</div>
             <div id="workerControlDetails">
-                <div class="memory-empty">Loading...</div>
+                <div class="memory-empty">{{ t('ai_config.loading_dots') }}</div>
             </div>
             <div class="memory-error-box" id="workerControlError" style="display: none;"></div>
         </div>
@@ -608,49 +609,49 @@
         <div class="worker-control-actions">
             <div class="worker-control-action" data-worker-mode="pause_new_jobs">
                 <div class="worker-control-action-title">
-                    <i class="fas fa-inbox"></i> Pause New Jobs
+                    <i class="fas fa-inbox"></i> {{ t('ai_config.pause_jobs') }}
                 </div>
                 <div class="worker-control-action-copy">
-                    Atagia keeps accepting Aurvek messages but does not enqueue new extraction work.
+                    {{ t('ai_config.pause_help') }}
                 </div>
                 <button type="button" class="btn btn-outline-warning" data-worker-action="pause_new_jobs" onclick="setWorkerControl('pause_new_jobs')">
-                    Pause new jobs
+                    {{ t('ai_config.pause_jobs') }}
                 </button>
             </div>
 
             <div class="worker-control-action" data-worker-mode="drain_and_pause">
                 <div class="worker-control-action-title">
-                    <i class="fas fa-hourglass-half"></i> Drain And Pause
+                    <i class="fas fa-hourglass-half"></i> {{ t('ai_config.drain_pause') }}
                 </div>
                 <div class="worker-control-action-copy">
-                    Blocks new jobs, waits for queued work to finish, then leaves processing paused.
+                    {{ t('ai_config.drain_help') }}
                 </div>
                 <button type="button" class="btn btn-warning" data-worker-action="drain_and_pause" onclick="setWorkerControl('drain_and_pause')">
-                    Drain and pause
+                    {{ t('ai_config.drain_pause') }}
                 </button>
             </div>
 
             <div class="worker-control-action" data-worker-mode="hard_pause">
                 <div class="worker-control-action-title">
-                    <i class="fas fa-hand"></i> Hard Pause
+                    <i class="fas fa-hand"></i> {{ t('ai_config.hard_pause') }}
                 </div>
                 <div class="worker-control-action-copy">
-                    Stops workers from claiming further Atagia jobs while in-flight work can finish.
+                    {{ t('ai_config.hard_help') }}
                 </div>
                 <button type="button" class="btn btn-outline-danger" data-worker-action="hard_pause" onclick="setWorkerControl('hard_pause')">
-                    Hard pause
+                    {{ t('ai_config.hard_pause') }}
                 </button>
             </div>
 
             <div class="worker-control-action" data-worker-mode="active">
                 <div class="worker-control-action-title">
-                    <i class="fas fa-play"></i> Resume Processing
+                    <i class="fas fa-play"></i> {{ t('ai_config.resume_processing') }}
                 </div>
                 <div class="worker-control-action-copy">
-                    Restores normal Atagia background processing for memory extraction and updates.
+                    {{ t('ai_config.resume_help') }}
                 </div>
                 <button type="button" class="btn btn-success" data-worker-action="resume_processing" onclick="setWorkerControl('resume_processing')">
-                    Resume
+                    {{ t('ai_config.resume') }}
                 </button>
             </div>
         </div>
@@ -659,37 +660,37 @@
 
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-rotate"></i> History Sync
+        <i class="fas fa-rotate"></i> {{ t('ai_config.history_sync') }}
     </div>
     <div class="row">
         <div class="col-md-3 mb-3">
-            <label class="form-label">Linked Messages</label>
+            <label class="form-label">{{ t('ai_config.linked_messages') }}</label>
             <div class="form-control-plaintext" id="syncLinked">-</div>
         </div>
         <div class="col-md-3 mb-3">
-            <label class="form-label">Pending Messages</label>
+            <label class="form-label">{{ t('ai_config.pending_messages') }}</label>
             <div class="form-control-plaintext" id="syncPending">-</div>
         </div>
         <div class="col-md-3 mb-3">
-            <label class="form-label">Last Run</label>
+            <label class="form-label">{{ t('ai_config.last_run') }}</label>
             <div class="form-control-plaintext" id="syncLastRun">-</div>
         </div>
         <div class="col-md-3 mb-3">
-            <label class="form-label">Status</label>
+            <label class="form-label">{{ t('ai_config.status') }}</label>
             <div class="form-control-plaintext" id="syncRunStatus">-</div>
         </div>
     </div>
     <div class="d-flex gap-2">
         <button type="button" class="btn btn-outline-secondary" id="refreshSyncBtn" onclick="loadDiagnostics()">
-            <i class="fas fa-arrows-rotate me-1"></i> Refresh
+            <i class="fas fa-arrows-rotate me-1"></i> {{ t('ai_config.refresh') }}
         </button>
         <button type="button" class="btn btn-warning" id="syncHistoryBtn" onclick="startHistorySync()">
             <span id="syncSpinner" class="spinner-border spinner-border-sm me-1" style="display: none;"></span>
-            <i class="fas fa-database me-1" id="syncIcon"></i> Sync / Retry Pending
+            <i class="fas fa-database me-1" id="syncIcon"></i> {{ t('ai_config.sync_retry') }}
         </button>
     </div>
     <p class="field-note mt-2">
-        Manual backfill only. Enabling Atagia does not start a sync automatically. <strong>Failed or pending messages are retried by running sync again.</strong>
+        {{ t('ai_config.manual_sync') }} <strong>{{ t('ai_config.retry_help') }}</strong>
     </p>
     <div class="connection-status" id="syncErrors">
         <i class="fas fa-triangle-exclamation me-2" style="color: var(--warning);"></i>
@@ -700,6 +701,8 @@
 
 {% block scripts %}
 <script>
+    const aiText = (key, params) => AurvekI18n.t(`ai_config.${key}`, params);
+
     var atagiaSecretState = {
         service: {
             clear: false,
@@ -791,27 +794,27 @@
         var els = secretElements(kind);
         var isService = kind === 'service';
         if (state.clear) {
-            els.input.placeholder = 'Will be cleared on save';
-            els.note.textContent = 'This saved key will be cleared when you save.';
+            els.input.placeholder = aiText('clear_on_save');
+            els.note.textContent = aiText('clear_notice');
             els.button.disabled = false;
-            els.button.innerHTML = '<i class="fas fa-undo me-1"></i> Undo clear';
+            els.button.innerHTML = ("<i class=\"fas fa-undo me-1\"></i> " + escapeHtml(aiText('undo_clear')));
             return;
         }
 
         els.button.disabled = !state.hasKey;
-        els.button.innerHTML = '<i class="fas fa-eraser me-1"></i> Clear saved key';
+        els.button.innerHTML = ("<i class=\"fas fa-eraser me-1\"></i> " + escapeHtml(aiText('clear_key')));
         if (state.hasKey) {
-            els.input.placeholder = 'Current key: ' + (state.masked || '****');
+            els.input.placeholder = aiText('current_key', {value: state.masked || '****'});
             els.note.textContent = isService
-                ? 'Leave blank to keep the current saved key.'
-                : 'Used only for Atagia admin operations like pausing, draining, and resuming background processing. Leave blank to keep the current saved key.';
+                ? aiText('keep_key')
+                : aiText('admin_key_help');
         } else {
             els.input.placeholder = isService
-                ? 'Required for HTTP transport'
-                : 'Required for HTTP processing controls';
+                ? aiText('http_required')
+                : aiText('admin_required');
             els.note.textContent = isService
-                ? 'No saved service key. Enter a key only when using HTTP transport.'
-                : 'No saved admin key. Enter a key only when using HTTP processing controls.';
+                ? aiText('no_service_key')
+                : aiText('no_admin_key');
         }
     }
 
@@ -854,8 +857,7 @@
         try {
             return JSON.parse(text);
         } catch (err) {
-            var snippet = text.replace(/\s+/g, ' ').trim().slice(0, 180);
-            throw new Error('Server returned a non-JSON response (' + response.status + '). ' + (snippet || response.statusText));
+            throw new Error(aiText('request_failed'));
         }
     }
 
@@ -870,6 +872,7 @@
         icon.style.display = 'none';
         statusDiv.classList.remove('visible');
 
+        var failureMessage = aiText('connection_failed');
         try {
             var response = await fetch('/admin/atagia/test-connection', {
                 method: 'POST',
@@ -878,11 +881,12 @@
             });
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Connection failed');
+                failureMessage = data.message || aiText('connection_failed');
+                throw new Error(failureMessage);
             }
-            showConnection(true, data.message || 'Connected');
+            showConnection(true, data.message || aiText('connected'));
         } catch (err) {
-            showConnection(false, err.message);
+            showConnection(false, failureMessage);
         } finally {
             btn.disabled = false;
             spinner.style.display = 'none';
@@ -900,6 +904,7 @@
         spinner.style.display = 'inline-block';
         icon.style.display = 'none';
 
+        var failureMessage = aiText('save_failed');
         try {
             var response = await fetch('/admin/atagia', {
                 method: 'POST',
@@ -908,18 +913,19 @@
             });
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Save failed');
+                failureMessage = data.message || aiText('save_failed');
+                throw new Error(failureMessage);
             }
             applyConfig(data.config);
-            btn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
-            showAlert('success', data.message || 'Configuration saved.');
+            btn.innerHTML = ("<i class=\"fas fa-check me-1\"></i> " + escapeHtml(aiText('saved')));
+            showAlert('success', data.message || aiText('config_saved'));
             await loadDiagnostics();
             setTimeout(function() {
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
             }, 1800);
         } catch (err) {
-            showAlert('danger', 'Failed to save configuration: ' + err.message);
+            showAlert('danger', aiText('save_detail', {error: failureMessage}));
             btn.innerHTML = originalHtml;
             btn.disabled = false;
         } finally {
@@ -929,7 +935,7 @@
     }
 
     async function restoreDefaults() {
-        if (!confirm('Restore Atagia settings to environment/default values? Saved Atagia overrides will be removed.')) {
+        if (!confirm(aiText('restore_atagia_confirm'))) {
             return;
         }
 
@@ -943,6 +949,7 @@
         spinner.style.display = 'inline-block';
         icon.style.display = 'none';
 
+        var failureMessage = aiText('defaults_failed');
         try {
             var response = await fetch('/admin/atagia/defaults', {
                 method: 'POST',
@@ -951,13 +958,14 @@
             });
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Restore defaults failed');
+                failureMessage = data.message || aiText('defaults_failed');
+                throw new Error(failureMessage);
             }
             applyConfig(data.config);
-            showAlert('success', data.message || 'Atagia defaults restored.');
+            showAlert('success', data.message || aiText('defaults_restored'));
             await loadDiagnostics();
         } catch (err) {
-            showAlert('danger', 'Failed to restore defaults: ' + err.message);
+            showAlert('danger', aiText('defaults_failed'));
         } finally {
             btn.disabled = false;
             document.getElementById('testConnectionBtn').disabled = false;
@@ -982,29 +990,31 @@
         var iconClass = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle';
         container.innerHTML =
             '<div class="alert ' + alertClass + ' alert-dismissible fade show" role="alert">' +
-            '<i class="fas ' + iconClass + ' me-2"></i>' + message +
-            '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>' +
+            '<i class="fas ' + iconClass + ' me-2"></i>' + escapeHtml(message) +
+            ("<button type=\"button\" class=\"btn-close\" data-bs-dismiss=\"alert\" aria-label=\"" + escapeHtml(aiText('close')) + "\"></button>") +
             '</div>';
     }
 
     async function loadDiagnostics() {
+        var failureMessage = aiText('diagnostics_failed');
         try {
             var response = await fetch('/admin/atagia/diagnostics');
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Could not load Atagia diagnostics');
+                failureMessage = data.message || aiText('diagnostics_failed');
+                throw new Error(failureMessage);
             }
             renderSyncStatus(data.status.sync || {});
             renderAtagiaDiagnostics(data.status.atagia || {});
             await loadWorkerControl();
         } catch (err) {
-            showAlert('danger', 'Failed to load Atagia diagnostics: ' + err.message);
+            showAlert('danger', aiText('diagnostics_failed'));
             renderAtagiaDiagnostics({
                 available: false,
-                reason: err.message
+                reason: failureMessage
             });
-            renderMemoryReview(null, err.message);
-            renderWorkerControl(null, { message: err.message });
+            renderMemoryReview(null, failureMessage);
+            renderWorkerControl(null, { message: failureMessage });
         }
     }
 
@@ -1017,6 +1027,7 @@
         spinner.style.display = 'inline-block';
         icon.style.display = 'none';
 
+        var failureMessage = aiText('sync_failed');
         try {
             var response = await fetch('/admin/atagia/sync', {
                 method: 'POST',
@@ -1025,12 +1036,13 @@
             });
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Sync could not start');
+                failureMessage = data.message || aiText('sync_failed');
+                throw new Error(failureMessage);
             }
-            showAlert('success', data.message || 'History sync started.');
+            showAlert('success', data.message || aiText('sync_started'));
             await loadDiagnostics();
         } catch (err) {
-            showAlert('danger', 'Failed to start sync: ' + err.message);
+            showAlert('danger', aiText('sync_failed'));
         } finally {
             btn.disabled = false;
             spinner.style.display = 'none';
@@ -1039,20 +1051,22 @@
     }
 
     async function loadWorkerControl() {
+        var failureMessage = aiText('control_failed');
         try {
             var response = await fetch('/admin/atagia/worker-control');
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Could not load processing control');
+                failureMessage = data.message || aiText('control_failed');
+                throw new Error(failureMessage);
             }
             renderWorkerControl(data.available ? data.state : null, data.error);
         } catch (err) {
-            renderWorkerControl(null, { message: err.message });
+            renderWorkerControl(null, { message: failureMessage });
         }
     }
 
     async function setWorkerControl(action) {
-        if (action === 'hard_pause' && !confirm('Hard pause stops Atagia workers from claiming new jobs. Continue?')) {
+        if (action === 'hard_pause' && !confirm(aiText('hard_confirm'))) {
             return;
         }
 
@@ -1060,6 +1074,7 @@
         var reason = document.getElementById('workerControlReason').value.trim();
         var timeout = document.getElementById('workerControlTimeout').value.trim();
 
+        var failureMessage = aiText('control_update_failed');
         try {
             var response = await fetch('/admin/atagia/worker-control', {
                 method: 'POST',
@@ -1072,13 +1087,14 @@
             });
             var data = await readJsonResponse(response);
             if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Processing control update failed');
+                failureMessage = data.message || aiText('control_update_failed');
+                throw new Error(failureMessage);
             }
             renderWorkerControl(data.state, null);
-            showAlert('success', data.message || 'Atagia processing control updated.');
+            showAlert('success', data.message || aiText('control_updated'));
             await loadDiagnostics();
         } catch (err) {
-            showAlert('danger', 'Failed to update processing control: ' + err.message);
+            showAlert('danger', aiText('control_update_failed'));
             await loadWorkerControl();
         } finally {
             setWorkerButtonsDisabled(false);
@@ -1098,7 +1114,7 @@
         var jobsAllowed = Boolean(state && state.new_source_jobs_allowed);
         var workersAllowed = Boolean(state && state.worker_claims_allowed);
         var periodicAllowed = Boolean(state && state.periodic_work_allowed);
-        var jobLabel = state ? (jobsAllowed ? 'Jobs allowed' : 'New jobs blocked') : 'Unavailable';
+        var jobLabel = state ? (jobsAllowed ? aiText('jobs_allowed') : aiText('jobs_blocked')) : aiText('unavailable');
 
         setStatusPill('workerControlModePill', mode, workerModeLabel(mode), workerModeIcon(mode));
         setStatusPill(
@@ -1111,20 +1127,20 @@
         var detailRows = [];
         if (state) {
             detailRows = [
-                { key: 'Mode', value: workerModeLabel(mode) },
-                { key: 'New source jobs', value: jobsAllowed ? 'Allowed' : 'Blocked' },
-                { key: 'Worker claims', value: workersAllowed ? 'Allowed' : 'Blocked' },
-                { key: 'Periodic work', value: periodicAllowed ? 'Allowed' : 'Blocked' },
-                { key: 'Drain completed', value: state.drain_completed === null || state.drain_completed === undefined ? '-' : (state.drain_completed ? 'Yes' : 'No') },
-                { key: 'Updated', value: formatDate(state.updated_at) },
-                { key: 'Updated by', value: state.updated_by || '-' },
-                { key: 'Reason', value: state.reason || '-' }
+                { key: aiText('mode'), value: workerModeLabel(mode) },
+                { key: aiText('new_source_jobs'), value: jobsAllowed ? aiText('allowed') : aiText('blocked') },
+                { key: aiText('worker_claims'), value: workersAllowed ? aiText('allowed') : aiText('blocked') },
+                { key: aiText('periodic_work'), value: periodicAllowed ? aiText('allowed') : aiText('blocked') },
+                { key: aiText('drain_completed'), value: state.drain_completed === null || state.drain_completed === undefined ? '-' : (state.drain_completed ? aiText('yes') : aiText('no')) },
+                { key: aiText('updated'), value: formatDate(state.updated_at) },
+                { key: aiText('updated_by'), value: state.updated_by || '-' },
+                { key: aiText('reason'), value: state.reason || '-' }
             ];
         }
 
         var target = document.getElementById('workerControlDetails');
         if (!state) {
-            target.innerHTML = '<div class="memory-empty">Atagia processing control is not available.</div>';
+            target.innerHTML = ("<div class=\"memory-empty\">" + escapeHtml(aiText('control_unavailable')) + "</div>");
         } else {
             target.innerHTML = detailRows.map(function(row) {
                 return '<div class="memory-row">' +
@@ -1150,11 +1166,11 @@
     }
 
     function workerModeLabel(mode) {
-        if (mode === 'active') return 'Active';
-        if (mode === 'pause_new_jobs') return 'Pause new jobs';
-        if (mode === 'drain_and_pause') return 'Drain and pause';
-        if (mode === 'hard_pause') return 'Hard pause';
-        if (mode === 'unavailable') return 'Unavailable';
+        if (mode === 'active') return aiText('active');
+        if (mode === 'pause_new_jobs') return aiText('pause_jobs');
+        if (mode === 'drain_and_pause') return aiText('drain_pause');
+        if (mode === 'hard_pause') return aiText('hard_pause');
+        if (mode === 'unavailable') return aiText('unavailable');
         return statusLabel(mode);
     }
 
@@ -1179,7 +1195,7 @@
         var queueState = available ? (processing.queue_state || 'idle') : '-';
 
         setStatusPill('runtimeStatusPill', status, statusLabel(status), runtimeStatusIcon(status));
-        setStatusPill('queueStatePill', queueState, 'Queue: ' + queueState, 'fa-layer-group');
+        setStatusPill('queueStatePill', queueState, aiText('queue_label', {status: statusLabel(queueState)}), 'fa-layer-group');
         setMetric('atagiaMessages', counts.messages);
         setMetric('atagiaMemories', counts.memory_objects);
         setMetric('atagiaPendingJobs', processing.pending_jobs);
@@ -1196,14 +1212,14 @@
         var panels = document.getElementById('diagnosticsPanels');
         var activePanel = document.getElementById('activeJobsPanel');
         if (!available) {
-            unavailable.textContent = diagnostics.reason || 'Atagia diagnostics are not available.';
+            unavailable.textContent = diagnostics.reason || aiText('diagnostics_unavailable');
             unavailable.style.display = 'block';
             panels.style.display = 'none';
             activePanel.style.display = 'none';
             renderBreakdown('memoryStatusBreakdown', []);
             renderJobTypes([]);
             renderActiveJobs([]);
-            renderMemoryReview(null, diagnostics.reason || 'Atagia diagnostics are not available.');
+            renderMemoryReview(null, diagnostics.reason || aiText('diagnostics_unavailable'));
             return;
         }
 
@@ -1225,13 +1241,13 @@
         setStatusPill(
             'memoryReviewRequiredPill',
             items.length ? 'queued' : (unavailableReason ? 'unavailable' : 'idle'),
-            'Admin review: ' + formatNumber(items.length),
+            aiText('admin_review_count', {count: formatNumber(items.length)}),
             items.length ? 'fa-clipboard-check' : (unavailableReason ? 'fa-circle-xmark' : 'fa-circle-check')
         );
         setStatusPill(
             'memoryUserConfirmPill',
             confirmations.length ? 'queued' : (unavailableReason ? 'unavailable' : 'idle'),
-            'User confirmations: ' + formatNumber(confirmations.length),
+            aiText('user_confirmation_count', {count: formatNumber(confirmations.length)}),
             confirmations.length ? 'fa-user-check' : (unavailableReason ? 'fa-circle-xmark' : 'fa-circle-check')
         );
 
@@ -1239,15 +1255,15 @@
             unavailable.textContent = unavailableReason;
             unavailable.style.display = 'block';
             panels.style.display = 'none';
-            renderReviewRows('memoryReviewItems', [], 'No admin review rows.');
-            renderReviewRows('memoryConfirmationItems', [], 'No user confirmation rows.');
+            renderReviewRows('memoryReviewItems', [], aiText('no_admin_review'));
+            renderReviewRows('memoryConfirmationItems', [], aiText('no_confirmation'));
             return;
         }
 
         unavailable.style.display = 'none';
         panels.style.display = 'grid';
-        renderReviewRows('memoryReviewItems', items, 'No admin review rows.');
-        renderReviewRows('memoryConfirmationItems', confirmations, 'No user confirmation rows.');
+        renderReviewRows('memoryReviewItems', items, aiText('no_admin_review'));
+        renderReviewRows('memoryConfirmationItems', confirmations, aiText('no_confirmation'));
     }
 
     function renderReviewRows(targetId, rows, emptyText) {
@@ -1270,17 +1286,17 @@
     }
 
     function reviewTitle(row) {
-        return row.id || row.memory_id || row.job_id || row.confirmation_id || 'Review item';
+        return row.id || row.memory_id || row.job_id || row.confirmation_id || aiText('review_item');
     }
 
     function reviewDetail(row) {
         var parts = [];
         ['user_id', 'conversation_id', 'character_id', 'memory_type', 'created_at', 'updated_at', 'expires_at'].forEach(function(key) {
-            if (row[key]) parts.push(key.replace(/_/g, ' ') + ': ' + stringifyReviewValue(row[key]));
+            if (row[key]) parts.push(aiText(key === 'updated_at' ? 'updated' : key) + ': ' + (key.endsWith('_at') ? formatDate(row[key]) : stringifyReviewValue(row[key])));
         });
         var sourceMessages = row.source_messages || row.source_message_ids || [];
         if (sourceMessages.length) {
-            parts.push('source messages: ' + sourceMessages.join(', '));
+            parts.push(aiText('source_messages', {ids: sourceMessages.join(', ')}));
         }
         var content = firstReviewContent(row);
         if (content) parts.push(content);
@@ -1338,14 +1354,36 @@
     }
 
     function statusLabel(status) {
-        if (!status) return '-';
-        return String(status).replace(/_/g, ' ');
+        if (!status || status === '-') return '-';
+        const labels = {
+            extract_memory_candidates: 'extract_memory_candidates',
+            project_contract: 'project_contract',
+            revise_beliefs: 'revise_beliefs',
+            compact_summaries: 'compact_summaries',
+            sync_graph: 'sync_graph',
+            run_evaluation: 'run_evaluation',
+            skipped: 'skipped',
+            cancelled: 'cancelled',
+            deleted: 'deleted',
+            declined: 'declined',
+            idle: 'idle', running: 'running', queued: 'queued', retrying: 'retrying',
+            failed: 'failed', dead_lettered: 'dead_lettered', succeeded: 'succeeded',
+            completed: 'completed', completed_with_errors: 'completed_with_errors',
+            degraded: 'degraded', normal: 'normal', busy: 'busy', backlogged: 'backlogged',
+            active: 'active', disabled: 'disabled', unavailable: 'unavailable',
+            pending_user_confirmation: 'user_confirmation', review_required: 'admin_review',
+            pending: 'pending', confirmed: 'confirmed', rejected: 'rejected',
+            archived: 'archived', expired: 'expired', superseded: 'superseded',
+            pause_new_jobs: 'pause_jobs', drain_and_pause: 'drain_pause', hard_pause: 'hard_pause'
+        };
+        return Object.prototype.hasOwnProperty.call(labels, status)
+            ? aiText(labels[status]) : aiText('unknown_value', {value: String(status)});
     }
 
     function renderBreakdown(targetId, rows) {
         var target = document.getElementById(targetId);
         if (!rows || !rows.length) {
-            target.innerHTML = '<div class="memory-empty">No rows yet.</div>';
+            target.innerHTML = ("<div class=\"memory-empty\">" + escapeHtml(aiText('no_rows')) + "</div>");
             return;
         }
         target.innerHTML = rows.map(function(row) {
@@ -1359,7 +1397,7 @@
     function renderJobTypes(rows) {
         var target = document.getElementById('jobTypeBreakdown');
         if (!rows || !rows.length) {
-            target.innerHTML = '<div class="memory-empty">No jobs tracked yet.</div>';
+            target.innerHTML = ("<div class=\"memory-empty\">" + escapeHtml(aiText('no_jobs')) + "</div>");
             return;
         }
         target.innerHTML = rows.map(function(row) {
@@ -1372,7 +1410,7 @@
             });
             return '<div class="memory-row">' +
                 '<span class="memory-row-label">' + escapeHtml(statusLabel(row.job_type)) +
-                    '<div class="memory-metric-note">' + escapeHtml(parts.join(' | ') || 'No status counts') + '</div>' +
+                    '<div class="memory-metric-note">' + escapeHtml(parts.join(' | ') || aiText('no_counts')) + '</div>' +
                 '</span>' +
                 '<span class="memory-row-value">' + formatNumber(row.total) + '</span>' +
                 '</div>';
@@ -1382,7 +1420,7 @@
     function renderActiveJobs(rows) {
         var body = document.getElementById('activeJobsBody');
         if (!rows || !rows.length) {
-            body.innerHTML = '<tr><td colspan="4" class="memory-empty">No active or blocked work.</td></tr>';
+            body.innerHTML = ("<tr><td colspan=\"4\" class=\"memory-empty\">" + escapeHtml(aiText('no_active_work')) + "</td></tr>");
             return;
         }
         body.innerHTML = rows.map(function(row) {
@@ -1402,7 +1440,7 @@
         document.getElementById('syncLinked').textContent = formatNumber(status.linked_messages);
         document.getElementById('syncPending').textContent = formatNumber(status.pending_messages);
         document.getElementById('syncLastRun').textContent = formatDate(latest.started_at);
-        document.getElementById('syncRunStatus').textContent = latest.status || '-';
+        document.getElementById('syncRunStatus').textContent = statusLabel(latest.status);
 
         var errors = latest.recent_errors || [];
         var errorsBox = document.getElementById('syncErrors');
@@ -1418,14 +1456,14 @@
         if (value === null || value === undefined || value === '') return '-';
         var number = Number(value);
         if (Number.isNaN(number)) return '-';
-        return number.toLocaleString();
+        return AurvekI18n.formatNumber(number);
     }
 
     function formatDate(value) {
         if (!value) return '-';
         var date = new Date(value);
         if (Number.isNaN(date.getTime())) return value;
-        return date.toLocaleString();
+        return date.toLocaleString(AurvekI18n.locale);
     }
 
     function escapeHtml(value) {

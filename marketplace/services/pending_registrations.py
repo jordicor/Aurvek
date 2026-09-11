@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from database import get_db_connection
+from i18n import normalize_language
 from log_config import logger
 
 
@@ -14,8 +15,12 @@ async def create_pending_registration(
     prompt_id: Optional[int],
     expires_at: datetime,
     pack_id: Optional[int] = None,
+    ui_language: Optional[str] = None,
 ) -> bool:
-    """Create a pending registration entry."""
+    """Capture the native interface language once, including cross-browser verification."""
+    language = "en" if ui_language is None else normalize_language(ui_language)
+    if language is None:
+        raise ValueError("Unsupported interface language")
     try:
         async with get_db_connection() as conn:
             await conn.execute(
@@ -26,10 +31,10 @@ async def create_pending_registration(
             await conn.execute(
                 """
                 INSERT INTO PENDING_REGISTRATIONS
-                (email, username, password_hash, token, target_role, prompt_id, pack_id, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (email, username, password_hash, token, target_role, prompt_id, pack_id, expires_at, ui_language)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (email, username, password_hash, token, target_role, prompt_id, pack_id, expires_at),
+                (email, username, password_hash, token, target_role, prompt_id, pack_id, expires_at, language),
             )
             await conn.commit()
             return True
@@ -44,7 +49,7 @@ async def get_pending_registration(token: str) -> Optional[dict]:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
                 """
-                SELECT id, email, username, password_hash, target_role, prompt_id, expires_at, pack_id
+                SELECT id, email, username, password_hash, target_role, prompt_id, expires_at, pack_id, ui_language
                 FROM PENDING_REGISTRATIONS
                 WHERE token = ?
                 """,
@@ -64,6 +69,7 @@ async def get_pending_registration(token: str) -> Optional[dict]:
             "prompt_id": result[5],
             "expires_at": datetime.fromisoformat(result[6]) if isinstance(result[6], str) else result[6],
             "pack_id": result[7],
+            "ui_language": normalize_language(result[8]) or "en",
         }
     except Exception as e:
         logger.error(f"Error getting pending registration: {e}")
@@ -105,12 +111,12 @@ async def get_user_by_email_record(email: str) -> Optional[dict]:
     try:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
-                "SELECT id, username FROM USERS WHERE email = ?",
+                "SELECT id, username, ui_language FROM USERS WHERE email = ?",
                 (email,),
             )
             result = await cursor.fetchone()
             if result:
-                return {"id": result[0], "username": result[1]}
+                return {"id": result[0], "username": result[1], "ui_language": result[2]}
             return None
     except Exception as e:
         logger.error(f"Error checking user by email: {e}")

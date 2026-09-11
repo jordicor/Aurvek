@@ -124,6 +124,32 @@ def test_fixed_locale_is_safely_normalized_to_iso_base(locale, expected):
     assert query["language_code"] == [expected]
 
 
+def test_secondary_languages_are_normalized_deduplicated_and_repeated_in_query():
+    options = ElevenLabsRealtimeOptions(
+        language="es-ES",
+        secondary_languages=("EN_us", "ca-ES", "en", "es"),
+    )
+    query = parse_qs(urlsplit(options.websocket_url()).query)
+
+    assert options.secondary_languages == ("en", "ca")
+    assert query["language_code"] == ["es"]
+    assert query["secondary_languages"] == ["en", "ca"]
+
+
+@pytest.mark.parametrize(
+    "secondary_languages",
+    ["en", ("auto",), ("multi",), ("english",), ("es ES",)],
+)
+def test_invalid_secondary_languages_fail_before_opening_a_socket(
+    secondary_languages,
+):
+    with pytest.raises(ValueError, match="language"):
+        ElevenLabsRealtimeOptions(
+            language="es",
+            secondary_languages=secondary_languages,
+        )
+
+
 @pytest.mark.parametrize(
     "language", ["", "english", "es ES", "multi&audio_format=pcm_16000"]
 )

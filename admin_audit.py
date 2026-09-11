@@ -13,9 +13,11 @@ async def log_admin_action(
     target_resource_type: str = None,
     target_resource_id: int = None,
     details: str = None,
+    *,
+    connection=None,
 ):
-    """Log admin actions for audit trail without failing the main operation."""
-    try:
+    """Standalone logs are best-effort; borrowed transactions require the audit."""
+    async def insert(conn):
         ip_address = None
         user_agent = None
 
@@ -23,25 +25,30 @@ async def log_admin_action(
             ip_address = get_client_ip(request)
             user_agent = request.headers.get("User-Agent", "")[:500]
 
+        await conn.execute(
+            """
+            INSERT INTO ADMIN_AUDIT_LOG
+            (admin_id, action_type, target_user_id, target_resource_type,
+             target_resource_id, details, ip_address, user_agent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                admin_id,
+                action_type,
+                target_user_id,
+                target_resource_type,
+                target_resource_id,
+                details,
+                ip_address,
+                user_agent,
+            ),
+        )
+    if connection is not None:
+        await insert(connection)
+        return
+    try:
         async with get_db_connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO ADMIN_AUDIT_LOG
-                (admin_id, action_type, target_user_id, target_resource_type,
-                 target_resource_id, details, ip_address, user_agent)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    admin_id,
-                    action_type,
-                    target_user_id,
-                    target_resource_type,
-                    target_resource_id,
-                    details,
-                    ip_address,
-                    user_agent,
-                ),
-            )
+            await insert(conn)
             await conn.commit()
 
         logger.debug(

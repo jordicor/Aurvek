@@ -10,6 +10,7 @@
  * Usage:
  *   <form data-form-guard>           // auto-discovery (server-rendered only)
  *   FormGuard.watch(form, opts)      // snapshot mode
+ *   FormGuard.markFieldsClean(form, names) // accept hydrated fields only
  *   FormGuard.watchWithListeners(el) // listener mode
  *   FormGuard.createGroup(name)      // guard group for complex pages
  *   FormGuard.navigate(url, opts)    // safe programmatic navigation
@@ -33,7 +34,7 @@
 
     // -- Serialization (snapshot mode) --
 
-    function serializeForm(form, excludeNames) {
+    function serializeForm(form, excludeNames, fieldNamesByKey) {
         var data = {};
         var excluded = new Set(excludeNames || []);
         var elements = form.querySelectorAll('input, textarea, select');
@@ -42,6 +43,7 @@
             var el = elements[i];
             if (excluded.has(el.name)) continue;
             if (!el.name || el.disabled) continue;
+            var key = el.name;
 
             if (el.type === 'checkbox') {
                 var siblings = form.querySelectorAll(
@@ -67,11 +69,13 @@
                 if (el.name in data) {
                     var n = 2;
                     while ((el.name + '__' + n) in data) n++;
-                    data[el.name + '__' + n] = el.value;
+                    key = el.name + '__' + n;
+                    data[key] = el.value;
                 } else {
                     data[el.name] = el.value;
                 }
             }
+            if (fieldNamesByKey) fieldNamesByKey[key] = el.name;
         }
         return JSON.stringify(data, Object.keys(data).sort());
     }
@@ -139,11 +143,11 @@
         if (_guardModalOpen) return;
         _guardModalOpen = true;
         NotificationModal.confirm(
-            'Unsaved Changes',
-            'You have unsaved changes that will be lost if you leave this page.',
+            AurvekI18n.t('common.form.unsaved_title'),
+            AurvekI18n.t('common.form.leave_warning'),
             function() { onDiscard(); },
             function() { _guardModalOpen = false; },
-            { confirmText: 'Discard Changes', cancelText: 'Stay on Page', type: 'warning' }
+            { confirmText: AurvekI18n.t('common.form.discard'), cancelText: AurvekI18n.t('common.form.stay'), type: 'warning' }
         );
     }
 
@@ -256,11 +260,13 @@
             var form = resolveEl(formOrSelector);
             if (!form) return null;
             var exclude = (opts && opts.exclude) || [];
+            var snapshotFields = {};
             var entry = {
                 _fgElement: form,
                 _fgMode: 'snapshot',
                 _fgExclude: exclude,
-                _fgSnapshot: serializeForm(form, exclude),
+                _fgSnapshot: serializeForm(form, exclude, snapshotFields),
+                _fgSnapshotFields: snapshotFields,
                 _fgDirty: false,
                 _fgDirtyManual: false,
                 _fgSubmitting: false,
@@ -332,10 +338,40 @@
                     entry._fgSubmitting = false;
                     entry._fgSubmitGeneration = (entry._fgSubmitGeneration || 0) + 1;
                     if (entry._fgMode === 'snapshot') {
-                        entry._fgSnapshot = serializeForm(entry._fgElement, entry._fgExclude);
+                        entry._fgSnapshotFields = {};
+                        entry._fgSnapshot = serializeForm(
+                            entry._fgElement, entry._fgExclude, entry._fgSnapshotFields
+                        );
                     }
                     return;
                 }
+            }
+        },
+
+        // Accept async hydration without clearing edits elsewhere in the form.
+        markFieldsClean: function(elOrSelector, fieldNames) {
+            var el = resolveEl(elOrSelector);
+            if (!el) return;
+            var names = new Set(fieldNames || []);
+            for (var i = 0; i < _ungrouped.length; i++) {
+                var entry = _ungrouped[i];
+                if (entry._fgElement !== el || entry._fgMode !== 'snapshot') continue;
+                var baseline = JSON.parse(entry._fgSnapshot);
+                var currentFields = {};
+                var current = JSON.parse(serializeForm(el, entry._fgExclude, currentFields));
+                Object.keys(entry._fgSnapshotFields).forEach(function(key) {
+                    if (names.has(entry._fgSnapshotFields[key])) {
+                        delete baseline[key];
+                        delete entry._fgSnapshotFields[key];
+                    }
+                });
+                Object.keys(currentFields).forEach(function(key) {
+                    if (names.has(currentFields[key])) {
+                        baseline[key] = current[key];
+                        entry._fgSnapshotFields[key] = currentFields[key];
+                    }
+                });
+                entry._fgSnapshot = JSON.stringify(baseline, Object.keys(baseline).sort());
             }
         },
 
@@ -408,11 +444,11 @@
                 return;
             }
             NotificationModal.confirm(
-                'Unsaved Changes',
-                'Other sections on this page have unsaved changes that will be lost if the page reloads.',
+                AurvekI18n.t('common.form.unsaved_title'),
+                AurvekI18n.t('common.form.reload_warning'),
                 function() { FormGuard.navigate(location.href, { bypass: true }); },
                 null,
-                { confirmText: 'Discard Changes', cancelText: 'Stay on Page', type: 'warning' }
+                { confirmText: AurvekI18n.t('common.form.discard'), cancelText: AurvekI18n.t('common.form.stay'), type: 'warning' }
             );
         },
 
@@ -449,11 +485,11 @@
         _guardModalOpen = true;
 
         NotificationModal.confirm(
-            'Unsaved Changes',
-            'You have unsaved changes that will be lost if you leave this page.',
+            AurvekI18n.t('common.form.unsaved_title'),
+            AurvekI18n.t('common.form.leave_warning'),
             function() { FormGuard.navigate(link.href, { bypass: true }); },
             function() { _guardModalOpen = false; },
-            { confirmText: 'Discard Changes', cancelText: 'Stay on Page', type: 'warning' }
+            { confirmText: AurvekI18n.t('common.form.discard'), cancelText: AurvekI18n.t('common.form.stay'), type: 'warning' }
         );
     });
 

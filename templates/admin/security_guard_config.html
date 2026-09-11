@@ -1,6 +1,7 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_operations'] %}
 
-{% block title %}Security Guard LLM Configuration - AURVEK{% endblock %}
+{% block title %}{{ t('admin_operations.security_guard_llm_configuration_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -53,10 +54,10 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Security Guard LLM{% endblock %}
+{% block page_title %}{{ t('admin_operations.security_guard_llm') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Configure AI-based security checks for the Landing Page Wizard</p>
+<p class="page-subtitle">{{ t('admin_operations.configure_ai_based_security_checks_for_the_landing_page_wizard') }}</p>
 {% endblock %}
 
 {% block alerts %}
@@ -64,7 +65,7 @@
     {% if request.query_params.get('saved') %}
     <div class="alert alert-success alert-dismissible fade show" role="alert">
         <i class="fas fa-check-circle me-2"></i>
-        Configuration saved successfully!
+        {{ t('admin_operations.configuration_saved_successfully') }}
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
     {% endif %}
@@ -80,16 +81,15 @@
                 <i class="fas fa-shield-alt security-icon"></i>
             </div>
             <div class="col">
-                <h5 class="mb-2">What is Security Guard LLM?</h5>
+                <h5 class="mb-2">{{ t('admin_operations.what_is_security_guard_llm') }}</h5>
                 <p class="text-muted mb-0">
-                    Security Guard uses an AI model to analyze user requests before executing the Landing Page Wizard.
-                    It detects and blocks potential security threats like:
+                    {{ t('admin_operations.security_guard_uses_an_ai_model_to_analyze_user_requests_before_executin') }}
                 </p>
                 <ul class="mt-2 mb-0 text-muted">
-                    <li><strong>Prompt injection</strong> - Attempts to override instructions</li>
-                    <li><strong>System info extraction</strong> - Requests for server paths, environment variables</li>
-                    <li><strong>Malicious code</strong> - Scripts that could harm the system</li>
-                    <li><strong>Jailbreak attempts</strong> - Attempts to bypass safety measures</li>
+                    <li><strong>{{ t('admin_operations.prompt_injection') }}</strong> {{ t('admin_operations.attempts_to_override_instructions') }}</li>
+                    <li><strong>{{ t('admin_operations.system_info_extraction') }}</strong> {{ t('admin_operations.requests_for_server_paths_environment_variables') }}</li>
+                    <li><strong>{{ t('admin_operations.malicious_code') }}</strong> {{ t('admin_operations.scripts_that_could_harm_the_system') }}</li>
+                    <li><strong>{{ t('admin_operations.jailbreak_attempts') }}</strong> {{ t('admin_operations.attempts_to_bypass_safety_measures') }}</li>
                 </ul>
             </div>
         </div>
@@ -98,7 +98,7 @@
     <!-- Configuration Form -->
     <div class="section-container">
         <div class="section-title">
-            <i class="fas fa-cog me-2"></i>Configuration
+            <i class="fas fa-cog me-2"></i>{{ t('admin_operations.configuration') }}
         </div>
         <form method="POST" action="/admin/security-guard" data-form-guard>
             <!-- Disabled option -->
@@ -106,14 +106,14 @@
                 <label class="d-flex align-items-center w-100 mb-0" style="cursor: pointer;">
                     <input type="radio" name="llm_id" value="" {{ 'checked' if not current_llm_id else '' }}>
                     <div class="flex-grow-1">
-                        <strong>Disabled</strong>
-                        <span class="text-muted ms-2">- No security checks (not recommended for production)</span>
+                        <strong>{{ t('admin_operations.disabled') }}</strong>
+                        <span class="text-muted ms-2">{{ t('admin_operations.no_security_checks_not_recommended_for_production') }}</span>
                     </div>
                 </label>
             </div>
 
             <hr class="my-3">
-            <p class="text-muted mb-3"><strong>Select an LLM for security checks:</strong></p>
+            <p class="text-muted mb-3"><strong>{{ t('admin_operations.select_an_llm_for_security_checks') }}</strong></p>
 
             <!-- Group LLMs by provider -->
             {% set providers = {} %}
@@ -151,15 +151,14 @@
             <!-- Cost info -->
             <div class="info-box mb-4">
                 <i class="fas fa-info-circle me-2"></i>
-                <strong>Cost:</strong> Each security check uses approximately 500-1000 input tokens and 50-100 output tokens.
-                With most models, this costs less than $0.01 per check.
+                <strong>{{ t('admin_operations.cost') }}</strong> {{ t('admin_operations.each_security_check_uses_approximately_500_1000_input_tokens_and_50_100') }}
                 <br>
-                <strong>Recommendation:</strong> Use a fast, cost-effective model like <em>Claude Haiku</em> or <em>GPT-4o-mini</em>.
+                <strong>{{ t('admin_operations.recommendation') }}</strong> {{ t('admin_operations.security.model_recommendation', first='Claude Haiku', second='GPT-4o-mini') }}
             </div>
 
             <div class="d-grid gap-2">
                 <button type="submit" class="btn btn-primary btn-lg">
-                    <i class="fas fa-save me-2"></i>Save Configuration
+                    <i class="fas fa-save me-2"></i>{{ t('admin_operations.save_configuration') }}
                 </button>
             </div>
         </form>
@@ -168,17 +167,17 @@
     <!-- Current Status -->
     <div class="section-container mt-4">
         <div class="section-title">
-            <i class="fas fa-info-circle me-2"></i>Current Status
+            <i class="fas fa-info-circle me-2"></i>{{ t('admin_operations.current_status') }}
         </div>
         {% if current_llm_id %}
         <div class="d-flex align-items-center">
-            <span class="badge bg-success me-2">ENABLED</span>
-            <span>Security Guard is active using LLM ID {{ current_llm_id }}</span>
+            <span class="badge bg-success me-2">{{ t('admin_operations.enabled') }}</span>
+            <span>{{ t('admin_operations.security.guard_active', id=current_llm_id) }}</span>
         </div>
         {% else %}
         <div class="d-flex align-items-center">
-            <span class="badge bg-warning text-dark me-2">DISABLED</span>
-            <span>Security Guard is not configured. AI Wizard requests are not being checked.</span>
+            <span class="badge bg-warning text-dark me-2">{{ t('admin_operations.disabled_2') }}</span>
+            <span>{{ t('admin_operations.security_guard_is_not_configured_ai_wizard_requests_are_not_being_checke') }}</span>
         </div>
         {% endif %}
     </div>

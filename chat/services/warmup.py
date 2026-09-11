@@ -37,6 +37,7 @@ class WarmupCacheKey:
     last_message_id: int
     mode: str
     multi_ai_model_ids: tuple[int, ...] = ()
+    is_incognito: bool = False
 
 
 _warmup_cache: TTLCache = TTLCache(maxsize=_CACHE_SIZE, ttl=_TTL_SECONDS)

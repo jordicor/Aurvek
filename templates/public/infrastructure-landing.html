@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ t('public_infrastructure.aurvek_infrastructure_enterprise_grade_architecture_with_multi') }}">
+    <meta name="keywords" content="{{ t('public_infrastructure.ai_infrastructure_enterprise_security_cloudflare_tunnel_fastapi') }}">
+
+    <title>{{ t('public_infrastructure.aurvek_infrastructure_enterprise_architecture_open_source_spirit') }}</title>
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="{{ t('public_infrastructure.aurvek_infrastructure_built_for_scale') }}">
+    <meta property="og:description" content="{{ t('public_infrastructure.multi_layer_security_global_edge_distribution_and') }}">
+    <meta property="og:type" content="website">
+
+    <!-- Fonts - AURVEK Design System -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
+
+    <!-- Phosphor Icons -->
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/duotone/style.css">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/public-landing.css') }}">
+
+    <style>
+        /* Infrastructure-specific styles - NETWORK CORE palette */
+        :root {
+            --infra-bg-dark: #0D1117;
+            --infra-bg-secondary: #161B22;
+            --infra-bg-tertiary: #21262D;
+            --infra-border: #30363D;
+            --infra-text-primary: #F0F6FC;
+            --infra-text-secondary: #8B949E;
+            --infra-success: #3FB950;
+            --infra-accent: var(--aurvek-amber-600);
+        }
+
+        .hero--infra {
+            background: linear-gradient(180deg, var(--infra-bg-dark) 0%, var(--infra-bg-secondary) 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero--infra::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                radial-gradient(ellipse at 20% 30%, rgba(217, 119, 6, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 70%, rgba(63, 185, 80, 0.05) 0%, transparent 40%);
+            pointer-events: none;
+        }
+
+        /* Grid pattern overlay */
+        .hero--infra::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image:
+                linear-gradient(rgba(48, 54, 61, 0.3) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(48, 54, 61, 0.3) 1px, transparent 1px);
+            background-size: 60px 60px;
+            opacity: 0.4;
+            pointer-events: none;
+        }
+
+        .section--infra-dark {
+            background: var(--infra-bg-dark);
+            color: var(--infra-text-primary);
+        }
+
+        .section--infra-dark h2,
+        .section--infra-dark h3 {
+            color: var(--infra-text-primary);
+        }
+
+        .section--infra-dark .section__subtitle {
+            color: var(--infra-text-secondary);
+        }
+
+        .section--infra-secondary {
+            background: var(--infra-bg-secondary);
+            color: var(--infra-text-primary);
+        }
+
+        .section--infra-secondary h2,
+        .section--infra-secondary h3 {
+            color: var(--infra-text-primary);
+        }
+
+        /* Stats bar in hero */
+        .hero-stats {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2xl);
+            margin-top: var(--space-2xl);
+            padding-top: var(--space-xl);
+            border-top: 1px solid var(--infra-border);
+            flex-wrap: wrap;
+        }
+
+        .hero-stat {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-xs);
+        }
+
+        .hero-stat__value {
+            font-family: var(--font-display);
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--aurvek-amber-400);
+        }
+
+        .hero-stat__label {
+            font-size: 0.875rem;
+            color: var(--infra-text-secondary);
+        }
+
+        /* Security Layers Diagram */
+        .security-diagram {
+            max-width: 900px;
+            margin: 0 auto var(--space-3xl);
+        }
+
+        .security-layer {
+            display: flex;
+            align-items: center;
+            gap: var(--space-lg);
+            padding: var(--space-xl);
+            background: var(--infra-bg-tertiary);
+            border: 1px solid var(--infra-border);
+            border-radius: var(--radius-lg);
+            margin-bottom: var(--space-md);
+            position: relative;
+            transition: all var(--transition-base);
+        }
+
+        .security-layer:hover {
+            border-color: var(--aurvek-amber-600);
+            transform: translateX(4px);
+        }
+
+        .security-layer::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: var(--aurvek-amber-600);
+            border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+            opacity: 0;
+            transition: opacity var(--transition-base);
+        }
+
+        .security-layer:hover::before {
+            opacity: 1;
+        }
+
+        .security-layer__icon {
+            width: 56px;
+            height: 56px;
+            flex-shrink: 0;
+            background: rgba(217, 119, 6, 0.1);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+
+        .security-layer__icon i {
+            --ph-duotone-base: rgba(217, 119, 6, 0.4);
+            --ph-duotone-accent: var(--aurvek-amber-500);
+        }
+
+        .security-layer__content {
+            flex: 1;
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 480px) {
+            .security-layer { flex-wrap: wrap; }
+            .security-layer__content { flex-basis: 160px; }
+        }
+
+        .security-layer__title {
+            font-family: var(--font-display);
+            font-weight: 600;
+            font-size: 1.125rem;
+            color: var(--infra-text-primary);
+            margin-bottom: var(--space-xs);
+        }
+
+        .security-layer__desc {
+            color: var(--infra-text-secondary);
+            font-size: 0.9375rem;
+            margin: 0;
+        }
+
+        .security-layer__badge {
+            padding: var(--space-xs) var(--space-md);
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--infra-success);
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-radius: var(--radius-full);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Connector lines between layers */
+        .layer-connector {
+            display: flex;
+            justify-content: center;
+            padding: var(--space-sm) 0;
+        }
+
+        .layer-connector svg {
+            width: 24px;
+            height: 24px;
+            color: var(--infra-border);
+        }
+
+        /* Security features grid */
+        .security-features {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-xl);
+        }
+
+        @media (max-width: 900px) {
+            .security-features {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .security-feature {
+            padding: var(--space-xl);
+            background: var(--infra-bg-tertiary);
+            border: 1px solid var(--infra-border);
+            border-radius: var(--radius-xl);
+        }
+
+        .security-feature__icon {
+            width: 48px;
+            height: 48px;
+            background: rgba(217, 119, 6, 0.1);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            margin-bottom: var(--space-lg);
+        }
+
+        .security-feature__icon i {
+            --ph-duotone-base: rgba(217, 119, 6, 0.4);
+            --ph-duotone-accent: var(--aurvek-amber-500);
+        }
+
+        .security-feature__title {
+            font-weight: 600;
+            margin-bottom: var(--space-sm);
+            color: var(--infra-text-primary);
+        }
+
+        .security-feature__text {
+            color: var(--infra-text-secondary);
+            font-size: 0.9375rem;
+            margin: 0;
+        }
+
+        /* Architecture Diagram SVG */
+        .architecture-diagram {
+            background: var(--infra-bg-tertiary);
+            border: 1px solid var(--infra-border);
+            border-radius: var(--radius-xl);
+            padding: var(--space-2xl);
+            margin: var(--space-2xl) 0;
+        }
+
+        .architecture-diagram svg {
+            width: 100%;
+            height: auto;
+            max-height: 500px;
+        }
+
+        /* Origin invisibility section */
+        .tunnel-visual {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: var(--space-2xl);
+            align-items: center;
+        }
+
+        @media (max-width: 900px) {
+            .tunnel-visual {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .tunnel-benefits {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-lg);
+        }
+
+        .tunnel-benefit {
+            display: flex;
+            align-items: flex-start;
+            gap: var(--space-md);
+        }
+
+        .tunnel-benefit__icon {
+            width: 40px;
+            height: 40px;
+            flex-shrink: 0;
+            background: rgba(63, 185, 80, 0.15);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--infra-success);
+            font-size: 1.125rem;
+        }
+
+        .tunnel-benefit__text {
+            color: var(--infra-text-primary);
+            font-weight: 500;
+        }
+
+        .tunnel-benefit__desc {
+            color: var(--infra-text-secondary);
+            font-size: 0.875rem;
+            margin-top: var(--space-xs);
+        }
+
+        /* Performance grid */
+        .performance-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-xl);
+        }
+
+        @media (max-width: 900px) {
+            .performance-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .performance-card {
+            padding: var(--space-2xl);
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-lg);
+            text-align: center;
+        }
+
+        .performance-card__icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto var(--space-lg);
+            background: rgba(217, 119, 6, 0.1);
+            border-radius: var(--radius-xl);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.75rem;
+        }
+
+        .performance-card__icon i {
+            --ph-duotone-base: rgba(217, 119, 6, 0.4);
+            --ph-duotone-accent: var(--aurvek-amber-600);
+        }
+
+        .performance-card__title {
+            font-family: var(--font-display);
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: var(--space-sm);
+        }
+
+        .performance-card__text {
+            color: var(--aurvek-gray-500);
+            font-size: 0.9375rem;
+            margin: 0;
+        }
+
+        /* Tech stack badges */
+        .tech-stack {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: var(--space-lg);
+            margin-bottom: var(--space-3xl);
+        }
+
+        .tech-badge {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: var(--space-sm);
+            padding: var(--space-xl) var(--space-2xl);
+            background: var(--infra-bg-tertiary);
+            border: 1px solid var(--infra-border);
+            border-radius: var(--radius-xl);
+            transition: all var(--transition-base);
+            min-width: 140px;
+        }
+
+        .tech-badge:hover {
+            border-color: var(--aurvek-amber-600);
+            transform: translateY(-2px);
+        }
+
+        .tech-badge__name {
+            font-family: var(--font-display);
+            font-weight: 600;
+            font-size: 1.125rem;
+            color: var(--infra-text-primary);
+        }
+
+        .tech-badge__desc {
+            font-size: 0.75rem;
+            color: var(--infra-text-secondary);
+            text-align: center;
+        }
+
+        /* Terminal mockup */
+        .terminal {
+            background: var(--infra-bg-dark);
+            border: 1px solid var(--infra-border);
+            border-radius: var(--radius-xl);
+            overflow: hidden;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        .terminal__header {
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            padding: var(--space-md) var(--space-lg);
+            background: var(--infra-bg-secondary);
+            border-bottom: 1px solid var(--infra-border);
+        }
+
+        .terminal__dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .terminal__dot--red { background: #FF5F56; }
+        .terminal__dot--yellow { background: #FFBD2E; }
+        .terminal__dot--green { background: #27CA40; }
+
+        .terminal__title {
+            flex: 1;
+            text-align: center;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--infra-text-secondary);
+        }
+
+        .terminal__body {
+            padding: var(--space-xl);
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+            line-height: 1.8;
+        }
+
+        .terminal__line {
+            display: flex;
+            gap: var(--space-sm);
+        }
+
+        .terminal__prompt {
+            color: var(--infra-success);
+        }
+
+        .terminal__command {
+            color: var(--infra-text-primary);
+        }
+
+        .terminal__comment {
+            color: var(--infra-text-secondary);
+            font-style: italic;
+        }
+
+        /* Open source section */
+        .opensource-cta {
+            text-align: center;
+            padding: var(--space-3xl);
+            background: linear-gradient(135deg, var(--infra-bg-secondary) 0%, var(--infra-bg-dark) 100%);
+            border: 1px solid var(--infra-border);
+            border-radius: var(--radius-2xl);
+        }
+
+        .opensource-cta__icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto var(--space-xl);
+            background: rgba(217, 119, 6, 0.1);
+            border-radius: var(--radius-xl);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+        }
+
+        .opensource-cta__icon i {
+            --ph-duotone-base: rgba(217, 119, 6, 0.4);
+            --ph-duotone-accent: var(--aurvek-amber-500);
+        }
+
+        .opensource-cta__title {
+            font-family: var(--font-display);
+            font-size: var(--title-subsection);
+            margin-bottom: var(--space-md);
+        }
+
+        .opensource-cta__text {
+            color: var(--infra-text-secondary);
+            max-width: 600px;
+            margin: 0 auto var(--space-xl);
+        }
+
+        .opensource-cta__license {
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+            color: var(--infra-text-secondary);
+            margin-top: var(--space-lg);
+        }
+
+        /* Phosphor icon overrides for this page */
+        .security-layer__icon i,
+        .security-feature__icon i,
+        .tunnel-benefit__icon i {
+            font-size: inherit;
+        }
+
+        /* Animated pulse for diagram connections */
+        @keyframes pulse-line {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        .pulse-animate {
+            animation: pulse-line 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav nav--dark" style="background: rgba(13, 17, 23, 0.95); border-bottom-color: var(--infra-border);">
+        <div class="container">
+            <div class="nav__inner">
+                <a href="{{ primary_root }}" class="nav__logo" style="color: var(--infra-text-primary);">
+                    <span class="nav__logo-icon">S</span>
+                    Aurvek
+                </a>
+
+                <ul class="nav__links">
+                    <li><a href="#security" class="nav__link" style="color: var(--infra-text-secondary);">{{ t('public_infrastructure.security') }}</a></li>
+                    <li><a href="#architecture" class="nav__link" style="color: var(--infra-text-secondary);">{{ t('public_infrastructure.architecture') }}</a></li>
+                    <li><a href="#performance" class="nav__link" style="color: var(--infra-text-secondary);">{{ t('public_infrastructure.performance') }}</a></li>
+                    <li><a href="#stack" class="nav__link" style="color: var(--infra-text-secondary);">{{ t('public_infrastructure.stack') }}</a></li>
+                </ul>
+
+                <div class="nav__actions">
+                    <a href="https://github.com/jordicor/Aurvek" class="btn btn--secondary btn--small" style="border-color: var(--infra-border); color: var(--infra-text-primary);">{{ t_html('public_infrastructure.github', tag_a="<i class=\"ph-duotone ph-github-logo\">"|safe, tag_b="</i>"|safe) }}</a>
+                    <a href="{{ primary_root }}" class="btn btn--primary btn--small">{{ t('public_infrastructure.platform') }}</a>
+                </div>
+
+                <button class="nav__toggle" aria-label="{{ t('public_infrastructure.toggle_menu') }}">
+                    <span style="background: var(--infra-text-primary);"></span>
+                    <span style="background: var(--infra-text-primary);"></span>
+                    <span style="background: var(--infra-text-primary);"></span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero hero--infra hero--dark">
+        <div class="container">
+            <div class="hero__content" data-animate>
+                <div class="hero__badge" style="background: rgba(217, 119, 6, 0.15); border-color: rgba(217, 119, 6, 0.3); color: #FBBF24;">{{ t('public_infrastructure.infrastructure') }}</div>
+
+                <h1 class="hero__title">{{ t_html('public_infrastructure.enterprise_architecture_open_source_spirit', tag_a="<br>"|safe, tag_b="<span style=\"-webkit-text-fill-color: var(--aurvek-amber-400);\">"|safe, tag_c="</span>"|safe) }}</h1>
+
+                <p class="hero__subtitle" style="color: var(--infra-text-secondary);">{{ t('public_infrastructure.multi_layer_security_global_edge_distribution_and_2') }}</p>
+
+                <div class="hero__actions">
+                    <a href="#architecture" class="btn btn--primary btn--large">{{ t('public_infrastructure.explore_architecture') }}</a>
+                    <a href="https://github.com/jordicor/Aurvek" class="btn btn--secondary btn--large" style="border-color: var(--infra-border); color: var(--infra-text-primary);">{{ t_html('public_infrastructure.view_on_github', tag_a="<i class=\"ph-duotone ph-github-logo\">"|safe, tag_b="</i>"|safe) }}</a>
+                </div>
+
+                <div class="hero-stats">
+                    <div class="hero-stat">
+                        <span class="hero-stat__value">{{ t('public_infrastructure.layers') }}</span>
+                        <span class="hero-stat__label">{{ t('public_infrastructure.security_stack') }}</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat__value">{{ t('public_infrastructure.ms') }}</span>
+                        <span class="hero-stat__label">{{ t('public_infrastructure.static_asset_delivery') }}</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat__value">{{ t('public_infrastructure.zero') }}</span>
+                        <span class="hero-stat__label">{{ t('public_infrastructure.origin_exposure') }}</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat__value">300+</span>
+                        <span class="hero-stat__label">{{ t('public_infrastructure.edge_locations') }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Security Section -->
+    <section id="security" class="section section--infra-dark">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_infrastructure.security_isn_t_a_feature_it_s') }}</h2>
+                <p class="section__subtitle">{{ t('public_infrastructure.four_independent_layers_of_protection_each_unaware') }}</p>
+            </div>
+
+            <!-- Security Layers Diagram -->
+            <div class="security-diagram" data-animate>
+                <div class="security-layer">
+                    <div class="security-layer__icon"><i class="ph-duotone ph-cloud"></i></div>
+                    <div class="security-layer__content">
+                        <h3 class="security-layer__title">{{ t('public_infrastructure.cloudflare_edge') }}</h3>
+                        <p class="security-layer__desc">{{ t('public_infrastructure.ddos_mitigation_web_application_firewall_bot_management') }}</p>
+                    </div>
+                    <span class="security-layer__badge">{{ t('public_infrastructure.layer') }}</span>
+                </div>
+
+                <div class="layer-connector">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12l7 7 7-7"/>
+                    </svg>
+                </div>
+
+                <div class="security-layer">
+                    <div class="security-layer__icon"><i class="ph-duotone ph-wall"></i></div>
+                    <div class="security-layer__content">
+                        <h3 class="security-layer__title">{{ t('public_infrastructure.nginx_gateway') }}</h3>
+                        <p class="security-layer__desc">{{ t('public_infrastructure.rate_limiting_r_s_general_r_s') }}</p>
+                    </div>
+                    <span class="security-layer__badge">{{ t('public_infrastructure.layer_2') }}</span>
+                </div>
+
+                <div class="layer-connector">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12l7 7 7-7"/>
+                    </svg>
+                </div>
+
+                <div class="security-layer">
+                    <div class="security-layer__icon"><i class="ph-duotone ph-shield-checkered"></i></div>
+                    <div class="security-layer__content">
+                        <h3 class="security-layer__title">{{ t('public_infrastructure.application_middleware') }}</h3>
+                        <p class="security-layer__desc">{{ t('public_infrastructure.malicious_pattern_detection_with_instant_blocking_accumulation') }}</p>
+                    </div>
+                    <span class="security-layer__badge">{{ t('public_infrastructure.layer_3') }}</span>
+                </div>
+
+                <div class="layer-connector">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12l7 7 7-7"/>
+                    </svg>
+                </div>
+
+                <div class="security-layer">
+                    <div class="security-layer__icon"><i class="ph-duotone ph-fingerprint"></i></div>
+                    <div class="security-layer__content">
+                        <h3 class="security-layer__title">{{ t('public_infrastructure.business_logic') }}</h3>
+                        <p class="security-layer__desc">{{ t('public_infrastructure.jwt_authentication_role_based_access_control_permission') }}</p>
+                    </div>
+                    <span class="security-layer__badge">{{ t('public_infrastructure.layer_4') }}</span>
+                </div>
+            </div>
+
+            <!-- Security Features Grid -->
+            <div class="security-features" data-animate>
+                <div class="security-feature">
+                    <div class="security-feature__icon"><i class="ph-duotone ph-prohibit"></i></div>
+                    <h3 class="security-feature__title">{{ t('public_infrastructure.instant_pattern_blocking') }}</h3>
+                    <p class="security-feature__text">{{ t('public_infrastructure.wordpress_probes_php_shells_cloud_metadata_attacks') }}</p>
+                </div>
+
+                <div class="security-feature">
+                    <div class="security-feature__icon"><i class="ph-duotone ph-chart-line-up"></i></div>
+                    <h3 class="security-feature__title">{{ t('public_infrastructure.behavioral_detection') }}</h3>
+                    <p class="security-feature__text">{{ t('public_infrastructure.suspicious_s_in_minutes_triggers_automatic_blocking') }}</p>
+                </div>
+
+                <div class="security-feature">
+                    <div class="security-feature__icon"><i class="ph-duotone ph-eye"></i></div>
+                    <h3 class="security-feature__title">{{ t('public_infrastructure.real_ip_resolution') }}</h3>
+                    <p class="security-feature__text">{{ t('public_infrastructure.we_see_through_proxy_chains_cf_connecting') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Origin Invisibility Section -->
+    <section id="architecture" class="section section--infra-secondary">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_infrastructure.our_servers_don_t_exist_on_the') }}</h2>
+                <p class="section__subtitle" style="color: var(--infra-text-secondary);">{{ t('public_infrastructure.zero_inbound_ports_no_exposed_ip_addresses') }}</p>
+            </div>
+
+            <div class="tunnel-visual" data-animate>
+                <div class="tunnel-benefits">
+                    <div class="tunnel-benefit">
+                        <div class="tunnel-benefit__icon"><i class="ph-duotone ph-eye-slash"></i></div>
+                        <div>
+                            <p class="tunnel-benefit__text">{{ t('public_infrastructure.no_public_ip_exposure') }}</p>
+                            <p class="tunnel-benefit__desc">{{ t('public_infrastructure.origin_servers_are_invisible_to_port_scanners') }}</p>
+                        </div>
+                    </div>
+
+                    <div class="tunnel-benefit">
+                        <div class="tunnel-benefit__icon"><i class="ph-duotone ph-lock-key"></i></div>
+                        <div>
+                            <p class="tunnel-benefit__text">{{ t('public_infrastructure.encrypted_origin_connection') }}</p>
+                            <p class="tunnel-benefit__desc">{{ t('public_infrastructure.tls_between_cloudflare_edge_and_origin_through') }}</p>
+                        </div>
+                    </div>
+
+                    <div class="tunnel-benefit">
+                        <div class="tunnel-benefit__icon"><i class="ph-duotone ph-arrows-clockwise"></i></div>
+                        <div>
+                            <p class="tunnel-benefit__text">{{ t('public_infrastructure.automatic_failover') }}</p>
+                            <p class="tunnel-benefit__desc">{{ t('public_infrastructure.tunnel_reconnects_transparently_on_network_issues_without') }}</p>
+                        </div>
+                    </div>
+
+                    <div class="tunnel-benefit">
+                        <div class="tunnel-benefit__icon"><i class="ph-duotone ph-shield-star"></i></div>
+                        <div>
+                            <p class="tunnel-benefit__text">{{ t('public_infrastructure.zero_firewall_configuration') }}</p>
+                            <p class="tunnel-benefit__desc">{{ t('public_infrastructure.no_ports_to_open_no_rules_to') }}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Architecture SVG Diagram -->
+                <div class="architecture-diagram">
+                    <svg viewBox="0 0 600 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <!-- Internet cloud -->
+                        <g>
+                            <rect x="20" y="30" width="560" height="60" rx="8" fill="#21262D" stroke="#30363D"/>
+                            <text x="300" y="68" text-anchor="middle" fill="#8B949E" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="600">{{ t('public_infrastructure.diagram_internet') }}</text>
+                        </g>
+
+                        <!-- Arrow down -->
+                        <path d="M300 90 L300 120" stroke="#30363D" stroke-width="2" class="pulse-animate"/>
+                        <polygon points="300,130 295,120 305,120" fill="#30363D"/>
+
+                        <!-- Cloudflare Layer -->
+                        <g>
+                            <rect x="60" y="140" width="480" height="80" rx="12" fill="#21262D" stroke="#D97706" stroke-width="2"/>
+                            <text x="300" y="172" text-anchor="middle" fill="#F0F6FC" font-family="Space Grotesk, sans-serif" font-size="14" font-weight="600">{{ t('public_infrastructure.diagram_cloudflare') }}</text>
+
+                            <!-- Cloudflare services -->
+                            <g transform="translate(100, 185)">
+                                <rect width="80" height="28" rx="4" fill="rgba(217, 119, 6, 0.2)"/>
+                                <text x="40" y="18" text-anchor="middle" fill="#FBBF24" font-family="IBM Plex Mono, monospace" font-size="10">{{ t('public_infrastructure.diagram_ddos') }}</text>
+                            </g>
+                            <g transform="translate(200, 185)">
+                                <rect width="80" height="28" rx="4" fill="rgba(217, 119, 6, 0.2)"/>
+                                <text x="40" y="18" text-anchor="middle" fill="#FBBF24" font-family="IBM Plex Mono, monospace" font-size="10">{{ t('public_infrastructure.diagram_waf') }}</text>
+                            </g>
+                            <g transform="translate(300, 185)">
+                                <rect width="80" height="28" rx="4" fill="rgba(217, 119, 6, 0.2)"/>
+                                <text x="40" y="18" text-anchor="middle" fill="#FBBF24" font-family="IBM Plex Mono, monospace" font-size="10">{{ t('public_infrastructure.diagram_cache') }}</text>
+                            </g>
+                            <g transform="translate(400, 185)">
+                                <rect width="80" height="28" rx="4" fill="rgba(217, 119, 6, 0.2)"/>
+                                <text x="40" y="18" text-anchor="middle" fill="#FBBF24" font-family="IBM Plex Mono, monospace" font-size="10">{{ t('public_infrastructure.diagram_argo') }}</text>
+                            </g>
+                        </g>
+
+                        <!-- Encrypted Tunnel -->
+                        <g>
+                            <path d="M300 220 L300 260" stroke="#3FB950" stroke-width="3" stroke-dasharray="6 4" class="pulse-animate"/>
+                            <text x="380" y="245" fill="#3FB950" font-family="IBM Plex Mono, monospace" font-size="11">{{ t('public_infrastructure.diagram_tunnel') }}</text>
+                        </g>
+
+                        <!-- Origin Infrastructure Box -->
+                        <g>
+                            <rect x="60" y="270" width="480" height="120" rx="12" fill="#161B22" stroke="#30363D" stroke-width="2"/>
+                            <text x="300" y="295" text-anchor="middle" fill="#8B949E" font-family="Space Grotesk, sans-serif" font-size="12" font-weight="500">{{ t('public_infrastructure.diagram_origin') }}</text>
+
+                            <!-- nginx -->
+                            <g transform="translate(80, 305)">
+                                <rect width="120" height="35" rx="6" fill="#21262D" stroke="#30363D"/>
+                                <text x="60" y="22" text-anchor="middle" fill="#F0F6FC" font-family="Space Grotesk, sans-serif" font-size="11" font-weight="600">nginx</text>
+                            </g>
+
+                            <!-- Arrow -->
+                            <path d="M200 322 L230 322" stroke="#30363D" stroke-width="2"/>
+                            <polygon points="240,322 230,317 230,327" fill="#30363D"/>
+
+                            <!-- FastAPI -->
+                            <g transform="translate(240, 305)">
+                                <rect width="120" height="35" rx="6" fill="#21262D" stroke="#30363D"/>
+                                <text x="60" y="22" text-anchor="middle" fill="#F0F6FC" font-family="Space Grotesk, sans-serif" font-size="11" font-weight="600">FastAPI</text>
+                            </g>
+
+                            <!-- Arrow -->
+                            <path d="M360 322 L390 322" stroke="#30363D" stroke-width="2"/>
+                            <polygon points="400,322 390,317 390,327" fill="#30363D"/>
+
+                            <!-- Database -->
+                            <g transform="translate(400, 305)">
+                                <rect width="120" height="35" rx="6" fill="#21262D" stroke="#30363D"/>
+                                <text x="60" y="22" text-anchor="middle" fill="#F0F6FC" font-family="Space Grotesk, sans-serif" font-size="11" font-weight="600">SQLite + Redis</text>
+                            </g>
+
+                            <!-- Labels below -->
+                            <text x="140" y="360" text-anchor="middle" fill="#8B949E" font-family="IBM Plex Mono, monospace" font-size="9">{{ t('public_infrastructure.diagram_rate_limit') }}</text>
+                            <text x="300" y="360" text-anchor="middle" fill="#8B949E" font-family="IBM Plex Mono, monospace" font-size="9">{{ t('public_infrastructure.diagram_security') }}</text>
+                            <text x="460" y="360" text-anchor="middle" fill="#8B949E" font-family="IBM Plex Mono, monospace" font-size="9">{{ t('public_infrastructure.diagram_wal') }}</text>
+                        </g>
+
+                        <!-- Attacker blocked indicator -->
+                        <g transform="translate(20, 160)">
+                            <text x="0" y="0" fill="#EF4444" font-family="IBM Plex Mono, monospace" font-size="10">{{ t('public_infrastructure.diagram_attacker') }}</text>
+                            <path d="M45 5 L55 5" stroke="#EF4444" stroke-width="2"/>
+                            <text x="60" y="5" fill="#EF4444" font-size="14">X</text>
+                        </g>
+                    </svg>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Performance Section -->
+    <section id="performance" class="section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_infrastructure.static_content_never_touches_our_servers') }}</h2>
+                <p class="section__subtitle">{{ t('public_infrastructure.assets_are_cached_at_cloudflare_edge_locations') }}</p>
+            </div>
+
+            <div class="performance-grid" data-animate>
+                <div class="performance-card">
+                    <div class="performance-card__icon"><i class="ph-duotone ph-hard-drives"></i></div>
+                    <h3 class="performance-card__title">{{ t('public_infrastructure.nginx_local_cache') }}</h3>
+                    <p class="performance-card__text">{{ t('public_infrastructure.static_files_served_directly_by_nginx_zero') }}</p>
+                </div>
+
+                <div class="performance-card">
+                    <div class="performance-card__icon"><i class="ph-duotone ph-globe-hemisphere-west"></i></div>
+                    <h3 class="performance-card__title">{{ t('public_infrastructure.cloudflare_edge') }}</h3>
+                    <p class="performance-card__text">{{ t('public_infrastructure.day_browser_cache_automatic_webp_conversion_brotli') }}</p>
+                </div>
+
+                <div class="performance-card">
+                    <div class="performance-card__icon"><i class="ph-duotone ph-path"></i></div>
+                    <h3 class="performance-card__title">{{ t('public_infrastructure.argo_smart_routing') }}</h3>
+                    <p class="performance-card__text">{{ t('public_infrastructure.traffic_routed_through_cloudflare_s_private_backbone') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tech Stack Section -->
+    <section id="stack" class="section section--infra-dark">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_infrastructure.built_with_boring_technology') }}</h2>
+                <p class="section__subtitle">{{ t('public_infrastructure.no_bleeding_edge_experiments_battle_tested_tools') }}</p>
+            </div>
+
+            <div class="tech-stack" data-animate>
+                <div class="tech-badge">
+                    <span class="tech-badge__name">FastAPI</span>
+                    <span class="tech-badge__desc">{{ t_html('public_infrastructure.async_python_uvicorn_workers', tag_a="<br>"|safe) }}</span>
+                </div>
+
+                <div class="tech-badge">
+                    <span class="tech-badge__name">{{ t('public_infrastructure.nginx') }}</span>
+                    <span class="tech-badge__desc">{{ t_html('public_infrastructure.reverse_proxyrate_limiting', tag_a="<br>"|safe) }}</span>
+                </div>
+
+                <div class="tech-badge">
+                    <span class="tech-badge__name">Cloudflare</span>
+                    <span class="tech-badge__desc">{{ t_html('public_infrastructure.cdn_tunnelwaf_ddos', tag_a="<br>"|safe) }}</span>
+                </div>
+
+                <div class="tech-badge">
+                    <span class="tech-badge__name">SQLite</span>
+                    <span class="tech-badge__desc">{{ t_html('public_infrastructure.wal_modezero_admin', tag_a="<br>"|safe) }}</span>
+                </div>
+
+                <div class="tech-badge">
+                    <span class="tech-badge__name">{{ t('public_infrastructure.python') }}</span>
+                    <span class="tech-badge__desc">{{ t_html('public_infrastructure.type_hintsasync_await', tag_a="<br>"|safe) }}</span>
+                </div>
+            </div>
+
+            <!-- Terminal mockup -->
+            <div class="terminal" data-animate>
+                <div class="terminal__header">
+                    <span class="terminal__dot terminal__dot--red"></span>
+                    <span class="terminal__dot terminal__dot--yellow"></span>
+                    <span class="terminal__dot terminal__dot--green"></span>
+                    <span class="terminal__title">aurvek@server:~</span>
+                </div>
+                <div class="terminal__body">
+                    <div class="terminal__line">
+                        <span class="terminal__prompt">$</span>
+                        <span class="terminal__command">{{ t('public_infrastructure.python_app_py_tunnel') }}</span>
+                        <span class="terminal__comment">{{ t('public_infrastructure.cloudflare_tunnel_mode') }}</span>
+                    </div>
+                    <div class="terminal__line">
+                        <span class="terminal__prompt">$</span>
+                        <span class="terminal__command">{{ t('public_infrastructure.python_app_py_dev') }}</span>
+                        <span class="terminal__comment">{{ t('public_infrastructure.development_mode') }}</span>
+                    </div>
+                    <div class="terminal__line">
+                        <span class="terminal__prompt">$</span>
+                        <span class="terminal__command">{{ t('public_infrastructure.python_app_py_https') }}</span>
+                        <span class="terminal__comment">{{ t('public_infrastructure.https_only') }}</span>
+                    </div>
+                    <div class="terminal__line">
+                        <span class="terminal__prompt">$</span>
+                        <span class="terminal__command">{{ t('public_infrastructure.python_app_py') }}</span>
+                        <span class="terminal__comment">{{ t('public_infrastructure.dual_mode_https_http') }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Open Source Section -->
+    <section class="section section--infra-secondary">
+        <div class="container">
+            <div class="opensource-cta" data-animate>
+                <div class="opensource-cta__icon"><i class="ph-duotone ph-code"></i></div>
+                <h2 class="opensource-cta__title" style="color: var(--infra-text-primary);">{{ t('public_infrastructure.transparency_builds_trust') }}</h2>
+                <p class="opensource-cta__text">{{ t('public_infrastructure.every_security_layer_every_configuration_every_line') }}</p>
+                <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                    <a href="https://github.com/jordicor/Aurvek" class="btn btn--primary btn--large">{{ t_html('public_infrastructure.view_repository', tag_a="<i class=\"ph-duotone ph-github-logo\">"|safe, tag_b="</i>"|safe) }}</a>
+                    <a href="#" class="btn btn--secondary btn--large" style="border-color: var(--infra-border); color: var(--infra-text-primary);">{{ t('public_infrastructure.read_documentation') }}</a>
+                </div>
+                <p class="opensource-cta__license">{{ t('public_infrastructure.mit_license_use_it_fork_it_improve') }}</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer" style="background: var(--infra-bg-dark);">
+        <div class="container">
+            <div class="footer__grid">
+                <div class="footer__brand">
+                    <div class="footer__logo">{{ t_html('public_infrastructure.s_aurvek', tag_a="<span class=\"nav__logo-icon\">"|safe, tag_b="</span>"|safe) }}</div>
+                    <p class="footer__tagline">{{ t('public_infrastructure.enterprise_grade_ai_infrastructure_open_source') }}</p>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_infrastructure.platform') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="{{ primary_root }}">{{ t('public_infrastructure.overview') }}</a></li>
+                        <li><a href="{{ primary_root }}for-creators">{{ t('public_infrastructure.for_creators') }}</a></li>
+                        <li><a href="{{ primary_root }}for-teams">{{ t('public_infrastructure.for_teams') }}</a></li>
+                        <li><a href="{{ primary_root }}for-agencies">{{ t('public_infrastructure.for_agencies') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_infrastructure.infrastructure') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#security">{{ t('public_infrastructure.security') }}</a></li>
+                        <li><a href="#architecture">{{ t('public_infrastructure.architecture') }}</a></li>
+                        <li><a href="#performance">{{ t('public_infrastructure.performance') }}</a></li>
+                        <li><a href="#stack">{{ t('public_infrastructure.tech_stack') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_infrastructure.resources') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="https://github.com/jordicor/Aurvek">{{ t('public_infrastructure.github_2') }}</a></li>
+                        <li><a href="#">{{ t('public_infrastructure.documentation') }}</a></li>
+                        <li><a href="#">{{ t('public_infrastructure.api_reference') }}</a></li>
+                        <li><a href="#">{{ t('public_infrastructure.status_page') }}</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="footer__bottom" style="border-top-color: var(--infra-border);">
+                <p>{{ t('public_infrastructure.aurvek_all_rights_reserved') }}</p>
+                <div class="footer__legal">
+                    <a href="#">{{ t('public_infrastructure.privacy_policy') }}</a>
+                    <a href="#">{{ t('public_infrastructure.terms_of_service') }}</a>
+                    <a href="#">{{ t('public_infrastructure.security') }}</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    {% set i18n_domains = ['public_shell'] %}{% include 'includes/i18n.html' %}
+    <script src="{{ get_static_url('/static/js/public-landing.js') }}"></script>
+</body>
+</html>

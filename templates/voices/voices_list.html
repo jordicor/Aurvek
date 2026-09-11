@@ -1,6 +1,7 @@
+{% set i18n_domains = ['admin_voices'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Voice Management - AURVEK{% endblock %}
+{% block title %}{{ t('admin_voices.title.management') }} - AURVEK{% endblock %}
 
 {% block styles %}
 <style>
@@ -20,23 +21,23 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Voice Management{% endblock %}
+{% block page_title %}{{ t('admin_voices.title.management') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Manage all TTS voices available in your application</p>
+<p class="page-subtitle">{{ t('admin_voices.subtitle.management') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <a href="/admin/voices/new" class="btn btn-success">
-    <i class="fas fa-plus me-1"></i>Add New Voice
+    <i class="fas fa-plus me-1"></i>{{ t('admin_voices.action.add') }}
 </a>
 {% endblock %}
 
 {% block tabs %}
 <div class="internal-tabs">
-    <a href="/admin/voices" class="internal-tab active">All Voices</a>
+    <a href="/admin/voices" class="internal-tab active">{{ t('admin_voices.title.all') }}</a>
     <a href="/admin/elevenlabs-voices" class="internal-tab">
-        <i class="fas fa-sync me-1"></i> ElevenLabs Sync
+        <i class="fas fa-sync me-1"></i> {{ t('admin_voices.action.elevenlabs_sync') }}
     </a>
 </div>
 {% endblock %}
@@ -45,24 +46,24 @@
 <!-- Stats -->
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-microphone"></i> <strong id="totalCount">{{ voices|length }}</strong> Total Voices
+        <i class="fas fa-microphone"></i> <strong id="totalCount">{{ t('admin_voices.voice_count', count=voices|length) }}</strong>
     </span>
 </div>
 
 <!-- Voices Table Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-list"></i> All Voices
+        <i class="fas fa-list"></i> {{ t('admin_voices.title.all') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Voice Name</th>
-                    <th>Voice Code</th>
-                    <th>TTS Service</th>
-                    <th>Status</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('admin_voices.field.name') }}</th>
+                    <th>{{ t('admin_voices.field.code') }}</th>
+                    <th>{{ t('admin_voices.field.service') }}</th>
+                    <th>{{ t('admin_voices.field.status') }}</th>
+                    <th class="text-end">{{ t('admin_voices.label.actions') }}</th>
                 </tr>
             </thead>
             <tbody id="voicesTableBody">
@@ -75,25 +76,25 @@
                     </td>
                     <td>
                         {% if voice[5] %}
-                        <span class="badge bg-danger" title="Voice no longer available in provider">Deprecated</span>
+                        <span class="badge bg-danger" title="{{ t('admin_voices.help.deprecated') }}">{{ t('admin_voices.status.deprecated') }}</span>
                         {% elif voice[4] %}
-                        <span class="badge bg-success">Default</span>
+                        <span class="badge bg-success">{{ t('admin_voices.status.default') }}</span>
                         {% endif %}
                     </td>
                     <td class="text-end table-actions">
-                        <button onclick="setDefault({{ voice[0] }})" class="btn btn-sm btn-default-star {% if voice[4] %}btn-warning is-default{% else %}btn-outline-secondary{% endif %}" title="{% if voice[4] %}Current default{% else %}Set as default{% endif %}" data-bs-toggle="tooltip" {% if voice[5] %}disabled{% endif %}>
+                        <button onclick="setDefault({{ voice[0] }})" class="btn btn-sm btn-default-star {% if voice[4] %}btn-warning is-default{% else %}btn-outline-secondary{% endif %}" title="{{ t('admin_voices.status.current_default') if voice[4] else t('admin_voices.action.set_default') }}" data-bs-toggle="tooltip" {% if voice[5] %}disabled{% endif %}>
                             <i class="fas fa-star"></i>
                         </button>
                         {% if voice[3] != 'TTS-ELEVENLABS' %}
-                        <a href="/admin/voices/edit/{{ voice[0] }}" class="btn btn-sm btn-outline-primary" title="Edit" data-bs-toggle="tooltip">
+                        <a href="/admin/voices/edit/{{ voice[0] }}" class="btn btn-sm btn-outline-primary" title="{{ t('admin_voices.action.edit') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-edit"></i>
                         </a>
-                        <button onclick="deleteVoice({{ voice[0] }})" class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="tooltip">
+                        <button onclick="deleteVoice({{ voice[0] }})" class="btn btn-sm btn-outline-danger" title="{{ t('admin_voices.action.delete') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-trash"></i>
                         </button>
                         {% else %}
-                        <span class="badge bg-secondary" title="Manage via ElevenLabs Sync" data-bs-toggle="tooltip">
-                            <i class="fas fa-sync-alt me-1"></i>Synced
+                        <span class="badge bg-secondary" title="{{ t('admin_voices.help.elevenlabs_sync') }}" data-bs-toggle="tooltip">
+                            <i class="fas fa-sync-alt me-1"></i>{{ t('admin_voices.status.synced') }}
                         </span>
                         {% endif %}
                     </td>
@@ -107,19 +108,20 @@
 
 {% block scripts_inline %}
 <script>
+    const voiceText = (key, params) => AurvekI18n.t(`admin_voices.${key}`, params);
     function setDefault(voiceId) {
         fetch(`/admin/voices/set-default/${voiceId}`, { method: 'POST' })
             .then(r => {
                 if (r.ok) location.reload();
-                else NotificationModal.error('Error', 'Failed to set default voice.');
+                else NotificationModal.error(voiceText('notice.error'), voiceText('notice.set_default_failed'));
             })
-            .catch(e => console.error('Error:', e));
+            .catch(() => NotificationModal.error(voiceText('notice.error'), voiceText('notice.set_default_failed')));
     }
 
     function deleteVoice(voiceId) {
         NotificationModal.confirm(
-            'Delete Voice',
-            'Are you sure you want to delete this voice?',
+            voiceText('dialog.delete_title'),
+            voiceText('dialog.delete_message'),
             () => {
                 fetch(`/admin/voices/delete/${voiceId}`, {
                     method: 'DELETE'
@@ -131,18 +133,18 @@
                             updateStats();
                         }
                     } else {
-                        NotificationModal.error('Delete Failed', 'Failed to delete voice.');
+                        NotificationModal.error(voiceText('notice.delete_failed_title'), voiceText('notice.delete_failed'));
                     }
-                }).catch(error => console.error('Error:', error));
+                }).catch(() => NotificationModal.error(voiceText('notice.delete_failed_title'), voiceText('notice.delete_failed')));
             },
             null,
-            { type: 'error', confirmText: 'Delete' }
+            { type: 'error', confirmText: voiceText('action.delete') }
         );
     }
 
     function updateStats() {
         const rows = document.querySelectorAll('.voice-row');
-        document.getElementById('totalCount').textContent = rows.length;
+        document.getElementById('totalCount').textContent = voiceText('voice_count', {count: rows.length});
     }
 </script>
 {% endblock %}

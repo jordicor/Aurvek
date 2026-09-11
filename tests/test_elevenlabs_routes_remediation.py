@@ -266,3 +266,85 @@ async def test_provider_failed_status_is_definitive_not_retryable_502(
     assert response.status_code == 409
     assert json.loads(response.body)["status"] == "failed"
     mark_failed.assert_awaited_once_with(100, "provider-session", 1)
+
+
+@pytest.mark.asyncio
+async def test_completion_reconciles_valid_sdk_correction_before_persisting(
+    routes_module,
+    monkeypatch,
+):
+    routes, task = routes_module
+    conversation = {
+        "id": 100,
+        "user_id": 1,
+        "locked": 0,
+        "is_incognito": 0,
+        "role_id": 10,
+    }
+    _configure_access(monkeypatch, routes, conversation)
+    monkeypatch.setattr(
+        routes.elevenlabs_service,
+        "get_bound_session",
+        AsyncMock(
+            return_value={
+                "session_id": "provider-session",
+                "transcript_saved_at": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        routes.elevenlabs_service,
+        "check_conversation_status",
+        AsyncMock(return_value="done"),
+    )
+    monkeypatch.setattr(
+        routes.elevenlabs_service,
+        "fetch_full_transcript",
+        AsyncMock(
+            return_value=[
+                {
+                    "role": "agent",
+                    "message": "This is the full answer that was interrupted",
+                }
+            ]
+        ),
+    )
+    save_transcript = AsyncMock(return_value=(1, None, None, False))
+    monkeypatch.setattr(
+        routes.elevenlabs_service,
+        "save_transcript_to_db",
+        save_transcript,
+    )
+
+    response = await routes.complete_elevenlabs_session(
+        100,
+        JsonRequest(
+            {
+                "session_id": "provider-session",
+                "client_corrections": [
+                    {
+                        "event_id": "event-7",
+                        "original_message": "This is the full answer that was interrupted",
+                        "corrected_message": "This is the full answer",
+                        "time_in_call_secs": 2.5,
+                    }
+                ],
+            }
+        ),
+        SimpleNamespace(id=1),
+    )
+
+    assert response.status_code == 200
+    persisted_transcript = save_transcript.await_args.args[3]
+    assert persisted_transcript == [
+        {
+            "role": "agent",
+            "message": "This is the full answer",
+            "interrupted": True,
+            "original_message": "This is the full answer that was interrupted",
+            "time_in_call_secs": 2.5,
+            "event_id": "event-7",
+            "_aurvek_correction_source": "client",
+        }
+    ]
+    task.send.assert_called_once_with(100, "provider-session", 1)

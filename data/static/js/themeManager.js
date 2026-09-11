@@ -233,7 +233,7 @@ const ThemeManager = {
 
         const dropends = sidebar.querySelectorAll('.dropend');
         dropends.forEach(dropend => {
-            const submenu = dropend.querySelector('.theme-submenu');
+            const submenu = dropend.querySelector('.settings-submenu');
             if (!submenu) return;
 
             const originalParent = submenu.parentElement;
@@ -248,8 +248,8 @@ const ThemeManager = {
 
                 // Position it
                 const rect = dropend.getBoundingClientRect();
-                const submenuHeight = 400; // approximate max height
                 const viewportHeight = window.innerHeight;
+                const viewportWidth = window.innerWidth;
 
                 // Position to the right of the trigger
                 submenu.style.position = 'fixed';
@@ -263,6 +263,11 @@ const ThemeManager = {
                 submenu.style.bottom = bottom + 'px';
                 submenu.style.top = 'auto';
                 submenu.style.display = 'block';
+
+                // Keep the flyout inside narrow viewports after measuring its real width.
+                const submenuWidth = submenu.getBoundingClientRect().width;
+                const maxLeft = Math.max(8, viewportWidth - submenuWidth - 8);
+                submenu.style.left = Math.max(8, Math.min(rect.right + 4, maxLeft)) + 'px';
             };
 
             const hideSubmenu = () => {
@@ -274,6 +279,14 @@ const ThemeManager = {
 
             // Show on hover over the dropend trigger
             dropend.addEventListener('mouseenter', showSubmenu);
+            const toggle = dropend.querySelector('.dropdown-toggle');
+            if (toggle) {
+                toggle.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    showSubmenu();
+                });
+            }
 
             // Keep visible while hovering submenu
             submenu.addEventListener('mouseenter', () => {
@@ -355,7 +368,7 @@ const ThemeManager = {
      */
     hideThemeSelector() {
         // Hide theme options in navbar dropdowns
-        document.querySelectorAll('.theme-submenu').forEach(el => {
+        document.querySelectorAll('[data-submenu="theme"]').forEach(el => {
             const parent = el.closest('.dropstart, .dropend');
             if (parent) {
                 parent.style.display = 'none';
@@ -364,7 +377,7 @@ const ThemeManager = {
 
         // Hide any standalone theme dropdown triggers
         document.querySelectorAll('[data-bs-toggle="dropdown"]').forEach(el => {
-            if (el.innerHTML.includes('Theme') || el.querySelector('.fa-palette')) {
+            if (el.querySelector('.fa-palette')) {
                 const parent = el.closest('li');
                 if (parent) {
                     parent.style.display = 'none';
@@ -446,27 +459,35 @@ const ThemeManager = {
         // Setup sidebar submenu for chat page
         this.setupSidebarSubmenu();
 
-        // Setup mobile submenu toggle for navbar
-        this.setupMobileSubmenuToggle();
+        // Setup click toggles for navbar submenus
+        this.setupSubmenuToggle();
     },
 
     /**
-     * Sets up click toggle for theme submenu on mobile devices
+     * Sets up click toggles for settings submenus on desktop and mobile
      * Bootstrap doesn't automatically handle nested dropstart submenus
      */
-    setupMobileSubmenuToggle() {
-        const themeToggle = document.querySelector('.dropstart > .dropdown-toggle');
-        if (!themeToggle) return;
+    setupSubmenuToggle() {
+        document.querySelectorAll('.dropstart > .dropdown-toggle').forEach(toggle => {
+            const dropstart = toggle.closest('.dropstart');
+            const submenu = dropstart.querySelector('.settings-submenu');
+            if (!submenu) return;
+            const parentDropdown = dropstart.closest('.dropdown');
 
-        const dropstart = themeToggle.closest('.dropstart');
-        const parentDropdown = dropstart.closest('.dropdown');
-
-        themeToggle.addEventListener('click', (e) => {
-            // Only on mobile (matches CSS media query breakpoint)
-            if (window.innerWidth <= 991.98) {
+            toggle.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopImmediatePropagation(); // Stop Bootstrap from closing parent
-                dropstart.classList.toggle('show');
+                const opening = !dropstart.classList.contains('show');
+                if (opening && parentDropdown) {
+                    parentDropdown.querySelectorAll('.dropstart.show').forEach(other => {
+                        if (other !== dropstart) {
+                            other.classList.remove('show');
+                            other.querySelector('.dropdown-toggle')?.setAttribute('aria-expanded', 'false');
+                        }
+                    });
+                }
+                dropstart.classList.toggle('show', opening);
+                toggle.setAttribute('aria-expanded', String(opening));
 
                 // Ensure parent dropdown stays open
                 if (parentDropdown) {
@@ -474,38 +495,35 @@ const ThemeManager = {
                     const parentMenu = parentDropdown.querySelector('.dropdown-menu');
                     if (parentMenu) parentMenu.classList.add('show');
                 }
-            }
-        });
+            });
 
-        // Prevent clicks inside theme submenu from closing parent dropdown
-        const themeSubmenu = dropstart.querySelector('.theme-submenu');
-        if (themeSubmenu) {
-            themeSubmenu.addEventListener('click', (e) => {
-                if (window.innerWidth <= 991.98) {
-                    // Allow the theme click to work but stop propagation
-                    e.stopPropagation();
+            // Prevent clicks inside a settings submenu from closing parent dropdown
+            submenu.addEventListener('click', (e) => {
+                // Allow the option click to work but keep the parent dropdown open.
+                e.stopPropagation();
+            });
+
+            // Close submenu when clicking outside
+            document.addEventListener('click', (e) => {
+                if (dropstart.classList.contains('show')) {
+                    if (!dropstart.contains(e.target)) {
+                        dropstart.classList.remove('show');
+                        toggle.setAttribute('aria-expanded', 'false');
+                    }
                 }
             });
-        }
 
-        // Close submenu when clicking outside
-        document.addEventListener('click', (e) => {
-            if (window.innerWidth <= 991.98 && dropstart.classList.contains('show')) {
-                if (!dropstart.contains(e.target)) {
-                    dropstart.classList.remove('show');
-                }
+            // Close submenu when parent dropdown closes
+            if (parentDropdown) {
+                const observer = new MutationObserver(() => {
+                    if (!parentDropdown.classList.contains('show')) {
+                        dropstart.classList.remove('show');
+                        toggle.setAttribute('aria-expanded', 'false');
+                    }
+                });
+                observer.observe(parentDropdown, { attributes: true, attributeFilter: ['class'] });
             }
         });
-
-        // Close submenu when parent dropdown closes
-        if (parentDropdown) {
-            const observer = new MutationObserver(() => {
-                if (!parentDropdown.classList.contains('show')) {
-                    dropstart.classList.remove('show');
-                }
-            });
-            observer.observe(parentDropdown, { attributes: true, attributeFilter: ['class'] });
-        }
     },
 
     /**

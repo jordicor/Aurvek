@@ -1,6 +1,7 @@
+{% set i18n_domains = ['marketplace_storefront'] %}
 {% extends 'base.html' %}
 
-{% block title %}My Storefront{% endblock %}
+{% block title %}{{ t('marketplace_storefront.my_storefront') }}{% endblock %}
 
 {% block styles %}
 <link rel="stylesheet" href="{{ get_static_url('/static/css/storefront.css') }}">
@@ -61,9 +62,9 @@
 {% endblock %}
 
 {% block back_url %}/{% endblock %}
-{% block back_title %}Back to Home{% endblock %}
-{% block page_title %}My Storefront{% endblock %}
-{% block page_subtitle %}<p class="text-muted mb-0">Manage your public creator profile</p>{% endblock %}
+{% block back_title %}{{ t('marketplace_storefront.back_to_home') }}{% endblock %}
+{% block page_title %}{{ t('marketplace_storefront.my_storefront') }}{% endblock %}
+{% block page_subtitle %}<p class="text-muted mb-0">{{ t('marketplace_storefront.store.manage') }}</p>{% endblock %}
 
 {% block content %}
 <div class="storefront-mgmt">
@@ -73,44 +74,44 @@
             <form id="profileForm">
                 <!-- Display Name -->
                 <div class="form-section">
-                    <label for="displayName">Display Name</label>
-                    <input type="text" id="displayName" maxlength="200" placeholder="Your brand or creator name" required>
+                    <label for="displayName">{{ t('marketplace_storefront.store.display_name') }}</label>
+                    <input type="text" id="displayName" maxlength="200" placeholder="{{ t('marketplace_storefront.your_brand_or_creator_name') }}" required>
                 </div>
 
                 <!-- Slug -->
                 <div class="form-section">
-                    <label for="slugInput">Storefront URL</label>
+                    <label for="slugInput">{{ t('marketplace_storefront.storefront_url') }}</label>
                     <div class="slug-input-group">
                         <span class="slug-prefix">/store/</span>
-                        <input type="text" id="slugInput" maxlength="64" placeholder="your-slug" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]">
+                        <input type="text" id="slugInput" maxlength="64" placeholder="{{ t('marketplace_storefront.your_slug') }}" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]">
                     </div>
                     <div id="slugStatus" class="slug-status"></div>
-                    <p class="form-hint">Lowercase letters, numbers, and hyphens only.</p>
+                    <p class="form-hint">{{ t('marketplace_storefront.lowercase_letters_numbers_and_hyphens_only') }}</p>
                 </div>
 
                 <!-- Avatar -->
                 <div class="form-section">
-                    <label>Avatar</label>
+                    <label>{{ t('marketplace_storefront.store.avatar') }}</label>
                     <div class="avatar-upload-area" id="avatarUpload">
                         <div class="placeholder" id="avatarPlaceholder">
                             <i class="fas fa-camera" style="font-size: 1.5rem;"></i><br>
-                            Click to upload
+                            {{ t('marketplace_storefront.click_to_upload') }}
                         </div>
                     </div>
                     <input type="file" id="avatarInput" accept="image/*" style="display: none;">
-                    <p class="form-hint">Recommended: 256x256px or larger, square format.</p>
+                    <p class="form-hint">{{ t('marketplace_storefront.recommended_256x256px_or_larger_square_format') }}</p>
                 </div>
 
                 <!-- Bio -->
                 <div class="form-section">
-                    <label for="bioInput">Bio</label>
-                    <textarea id="bioInput" maxlength="2000" placeholder="Tell visitors about yourself or your brand..."></textarea>
-                    <p class="form-hint"><span id="bioCount">0</span>/2000</p>
+                    <label for="bioInput">{{ t('marketplace_storefront.store.bio') }}</label>
+                    <textarea id="bioInput" maxlength="2000" placeholder="{{ t('marketplace_storefront.tell_visitors_about_yourself_or_your_brand') }}"></textarea>
+                    <p class="form-hint"><span id="bioCount">{{ format_number(0) }}</span>/{{ format_number(2000) }}</p>
                 </div>
 
                 <!-- Social Links -->
                 <div class="form-section">
-                    <label>Social Links</label>
+                    <label>{{ t('marketplace_storefront.store.social_links') }}</label>
                     <div class="social-links-grid">
                         <div class="social-input-group">
                             <i class="fas fa-globe"></i>
@@ -141,19 +142,19 @@
 
                 <!-- Public Toggle -->
                 <div class="form-section">
-                    <label>Visibility</label>
+                    <label>{{ t('marketplace_storefront.store.visibility') }}</label>
                     <div class="toggle-switch">
                         <input type="checkbox" id="isPublic">
-                        <span>Make storefront public</span>
+                        <span>{{ t('marketplace_storefront.store.make_public') }}</span>
                     </div>
-                    <p class="form-hint">When public, anyone can visit your storefront at the URL above.</p>
+                    <p class="form-hint">{{ t('marketplace_storefront.when_public_anyone_can_visit_your_storefront_at_the_url_above') }}</p>
                 </div>
 
                 <!-- Actions -->
                 <div class="form-section" style="display: flex; gap: 1rem; align-items: center;">
-                    <button type="submit" class="btn-save-profile" id="saveBtn">Save Profile</button>
+                    <button type="submit" class="btn-save-profile" id="saveBtn">{{ t('marketplace_storefront.store.save_profile') }}</button>
                     <a href="#" id="viewStorefrontLink" target="_blank" style="color: var(--accent); display: none;">
-                        <i class="fas fa-external-link-alt"></i> View Storefront
+                        <i class="fas fa-external-link-alt"></i> {{ t('marketplace_storefront.view_storefront') }}
                     </a>
                 </div>
             </form>
@@ -162,7 +163,7 @@
         <!-- Right: Preview -->
         <div>
             <div class="preview-panel">
-                <h3><i class="fas fa-eye"></i> Preview</h3>
+                <h3><i class="fas fa-eye"></i> {{ t('marketplace_storefront.preview') }}</h3>
                 <div id="previewArea">
                     <div style="text-align: center; padding: 2rem;">
                         <div class="avatar-upload-area" style="margin: 0 auto 1rem; pointer-events: none;">
@@ -170,7 +171,7 @@
                                 <i class="fas fa-user" style="font-size: 2rem;"></i>
                             </div>
                         </div>
-                        <h4 id="previewName" style="color: var(--text-primary);">Your Name</h4>
+                        <h4 id="previewName" style="color: var(--text-primary);">{{ t('marketplace_storefront.your_name') }}</h4>
                         <p id="previewBio" style="color: var(--text-secondary); font-size: 0.9rem;"></p>
                         <div id="previewSocial" style="display: flex; justify-content: center; gap: 1rem; margin-top: 0.5rem;"></div>
                     </div>
@@ -218,6 +219,7 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             var resp = await fetch('/api/creator-profile');
             var data = await resp.json();
+            if (!resp.ok) throw new Error('profile_load_failed');
             if (data.profile) {
                 currentProfile = data.profile;
                 displayNameInput.value = data.profile.display_name || '';
@@ -234,8 +236,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 // Avatar
                 if (data.profile.avatar_url) {
-                    avatarUpload.innerHTML = '<img src="' + window.CDN_BASE_URL + '/' + data.profile.avatar_url + '_128.webp" alt="Avatar">';
-                    previewAvatar.innerHTML = '<img src="' + window.CDN_BASE_URL + '/' + data.profile.avatar_url + '_128.webp" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">';
+                    avatarUpload.innerHTML = '<img src="' + window.CDN_BASE_URL + '/' + data.profile.avatar_url + '_128.webp" alt="' + AurvekI18n.t('marketplace_storefront.store.avatar') + '">';
+                    previewAvatar.innerHTML = '<img src="' + window.CDN_BASE_URL + '/' + data.profile.avatar_url + '_128.webp" alt="' + AurvekI18n.t('marketplace_storefront.store.avatar') + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">';
                 }
 
                 // View link
@@ -253,27 +255,34 @@ document.addEventListener('DOMContentLoaded', function() {
             FormGuard.markClean(form);
         } catch (e) {
             console.error('Failed to load profile:', e);
+            alert(AurvekI18n.t('marketplace_storefront.load_failed'));
         }
     }
 
     function updatePreview() {
-        previewName.textContent = displayNameInput.value || 'Your Name';
+        previewName.textContent = displayNameInput.value || AurvekI18n.t('marketplace_storefront.your_name');
         previewBio.textContent = bioInput.value || '';
 
         // Update social preview
-        var html = '';
+        previewSocial.replaceChildren();
         document.querySelectorAll('.social-input-group input').forEach(function(input) {
             var val = input.value.trim();
-            if (val) {
-                var icon = socialIcons[input.dataset.key] || 'fas fa-link';
-                html += '<a href="' + val + '" target="_blank" rel="noopener" style="color: var(--text-muted); font-size: 1.2rem;" title="' + input.dataset.key + '"><i class="' + icon + '"></i></a>';
-            }
+            if (!/^https?:\/\//i.test(val)) return;
+            var link = document.createElement('a');
+            link.href = val;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.style.cssText = 'color: var(--text-muted); font-size: 1.2rem;';
+            link.title = input.dataset.key === 'website' ? AurvekI18n.t('marketplace_storefront.website') : {twitter: 'X', linkedin: 'LinkedIn', youtube: 'YouTube', instagram: 'Instagram', github: 'GitHub'}[input.dataset.key];
+            var icon = document.createElement('i');
+            icon.className = socialIcons[input.dataset.key] || 'fas fa-link';
+            link.appendChild(icon);
+            previewSocial.appendChild(link);
         });
-        previewSocial.innerHTML = html;
     }
 
     function updateBioCount() {
-        bioCount.textContent = bioInput.value.length;
+        bioCount.textContent = AurvekI18n.formatNumber(bioInput.value.length);
     }
 
     // Slug availability check
@@ -284,21 +293,24 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        slugStatus.textContent = 'Checking...';
+        slugStatus.textContent = AurvekI18n.t('marketplace_storefront.checking');
         slugStatus.className = 'slug-status';
 
         fetch('/api/creator-profile/check-slug?slug=' + encodeURIComponent(slug))
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('slug_check_failed');
+                return r.json();
+            })
             .then(function(data) {
                 if (data.available) {
-                    slugStatus.textContent = 'Available';
+                    slugStatus.textContent = AurvekI18n.t('marketplace_storefront.available');
                     slugStatus.className = 'slug-status slug-available';
                 } else {
-                    slugStatus.textContent = data.reason === 'reserved' ? 'Reserved' : 'Already taken';
+                    slugStatus.textContent = data.reason === 'reserved' ? AurvekI18n.t('marketplace_storefront.reserved') : AurvekI18n.t('marketplace_storefront.already_taken');
                     slugStatus.className = 'slug-status slug-taken';
                 }
             })
-            .catch(function() { slugStatus.textContent = ''; });
+            .catch(function() { slugStatus.textContent = AurvekI18n.t('common.error.generic'); });
     }
 
     // Event listeners
@@ -329,15 +341,15 @@ document.addEventListener('DOMContentLoaded', function() {
             var resp = await fetch('/api/creator-profile/avatar', { method: 'POST', body: formData });
             if (!resp.ok) {
                 var err = await resp.json();
-                alert(err.detail || 'Upload failed');
+                alert(err.detail || AurvekI18n.t('marketplace_storefront.upload_failed'));
                 return;
             }
             var data = await resp.json();
             var imgUrl = window.CDN_BASE_URL + '/' + data.avatar_url + '_128.webp';
-            avatarUpload.innerHTML = '<img src="' + imgUrl + '" alt="Avatar">';
-            previewAvatar.innerHTML = '<img src="' + imgUrl + '" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">';
+            avatarUpload.innerHTML = '<img src="' + imgUrl + '" alt="' + AurvekI18n.t('marketplace_storefront.store.avatar') + '">';
+            previewAvatar.innerHTML = '<img src="' + imgUrl + '" alt="' + AurvekI18n.t('marketplace_storefront.store.avatar') + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">';
         } catch (e) {
-            alert('Upload failed');
+            alert(AurvekI18n.t('marketplace_storefront.upload_failed'));
         } finally {
             saveBtn.disabled = false;
         }
@@ -347,7 +359,7 @@ document.addEventListener('DOMContentLoaded', function() {
     form.addEventListener('submit', async function(e) {
         e.preventDefault();
         saveBtn.disabled = true;
-        saveBtn.textContent = 'Saving...';
+        saveBtn.textContent = AurvekI18n.t('marketplace_storefront.saving');
 
         var socialLinks = {};
         document.querySelectorAll('.social-input-group input').forEach(function(input) {
@@ -370,7 +382,7 @@ document.addEventListener('DOMContentLoaded', function() {
             var data = await resp.json();
             if (data.success) {
                 FormGuard.markClean(form);
-                saveBtn.textContent = 'Saved!';
+                saveBtn.textContent = AurvekI18n.t('marketplace_storefront.saved');
                 if (data.slug) {
                     slugInput.value = data.slug;
                 }
@@ -380,15 +392,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else {
                     viewLink.style.display = 'none';
                 }
-                setTimeout(function() { saveBtn.textContent = 'Save Profile'; saveBtn.disabled = false; }, 2000);
+                setTimeout(function() { saveBtn.textContent = AurvekI18n.t('marketplace_storefront.save_profile'); saveBtn.disabled = false; }, 2000);
             } else {
-                alert(data.error || 'Save failed');
-                saveBtn.textContent = 'Save Profile';
+                alert(data.error || AurvekI18n.t('marketplace_storefront.save_failed'));
+                saveBtn.textContent = AurvekI18n.t('marketplace_storefront.save_profile');
                 saveBtn.disabled = false;
             }
         } catch (e) {
-            alert('Save failed');
-            saveBtn.textContent = 'Save Profile';
+            alert(AurvekI18n.t('marketplace_storefront.save_failed'));
+            saveBtn.textContent = AurvekI18n.t('marketplace_storefront.save_profile');
             saveBtn.disabled = false;
         }
     });

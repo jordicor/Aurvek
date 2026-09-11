@@ -245,6 +245,11 @@ Live voice conversations with AI through ElevenLabs ConvAI:
 
 ### WhatsApp Integration
 
+Webhook protection and operational limits are documented in
+[WhatsApp ingress protection](docs/whatsapp_ingress_protection_2026-09-10.md),
+including per-sender/receiver limits, duplicate suppression, reply budgets and
+the limits of preventing inbound charges at Twilio.
+
 AI chat via WhatsApp through Twilio:
 
 - Twilio webhook signature verification

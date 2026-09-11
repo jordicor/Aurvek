@@ -1,4 +1,6 @@
 ﻿(function() {
+    const tr = (key, params) => AurvekI18n.t(`chat_widgets.voice_call.${key}`, params);
+
     function onReady(callback) {
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', callback);
@@ -37,7 +39,7 @@
     }
 
     onReady(() => {
-        const voiceButton = document.getElementById('plus-voice-call');
+        const voiceButton = document.getElementById('embed-voice-unavailable') || document.getElementById('plus-voice-call');
         const overlay = document.getElementById('voice-overlay');
         const startStopButton = document.getElementById('voice-start-stop');
         const muteButton = document.getElementById('voice-mute-toggle');
@@ -50,7 +52,7 @@
         const helperText = document.getElementById('voice-helper-text');
         const caption = document.getElementById('voice-overlay-caption');
         const incognitoBadge = document.getElementById('incognito-chat-badge');
-        const availabilityReason = document.getElementById('voice-call-availability-reason');
+        const availabilityReason = document.getElementById('embed-voice-reason') || document.getElementById('voice-call-availability-reason');
 
         if (!voiceButton || !overlay || !startStopButton || !statusText || !statusIcon) {
             return;
@@ -94,7 +96,246 @@
         let voiceAvailability = null;
         let sessionStartRejected = false;
         let completionRetryPending = false;
-        const defaultVoiceButtonTitle = voiceButton.title || 'AI voice assistant';
+        let recentAgentResponses = [];
+        let clientCorrectionHints = [];
+        let localizedState = null;
+        let captionPresentation = {key: 'caption'};
+        const maxTrackedVoiceEvents = 100;
+        const maxTrackedVoiceTextCharacters = 8000;
+        const defaultVoiceButtonTitle = voiceButton.title || tr('button_title');
+        const voiceButtonTitle = () => window.AurvekEmbed ? tr('button_title') : defaultVoiceButtonTitle;
+
+        function resetVoiceEventTracking() {
+            recentAgentResponses = [];
+            clientCorrectionHints = [];
+        }
+
+        function normalizeVoiceEventText(value) {
+            let candidate = value;
+            if (candidate && typeof candidate === 'object') {
+                candidate = candidate.text || candidate.content || candidate.message;
+            }
+            if (typeof candidate !== 'string') {
+                return '';
+            }
+            return candidate.trim().slice(0, maxTrackedVoiceTextCharacters);
+        }
+
+        function normalizeVoiceEventId(value) {
+            if (value === null || value === undefined || typeof value === 'object') {
+                return '';
+            }
+            return String(value).trim().slice(0, 200);
+        }
+
+        function normalizeVoiceEventTime(value) {
+            if (value === null || value === undefined || value === '') {
+                return null;
+            }
+            const number = Number(value);
+            return Number.isFinite(number) && number >= 0 ? number : null;
+        }
+
+        function parsePossibleEvent(value) {
+            if (typeof value !== 'string') {
+                return value;
+            }
+            const trimmed = value.trim();
+            if (!trimmed.startsWith('{')) {
+                return value;
+            }
+            try {
+                return JSON.parse(trimmed);
+            } catch (_) {
+                return value;
+            }
+        }
+
+        function extractCorrectionEvent(payload) {
+            const root = parsePossibleEvent(payload);
+            if (!root || typeof root !== 'object') {
+                return null;
+            }
+
+            const candidates = [root];
+            [
+                'agent_response_correction_event',
+                'agentResponseCorrectionEvent',
+                'value',
+                'event',
+                'data',
+                'payload'
+            ].forEach((key) => {
+                const nested = parsePossibleEvent(root[key]);
+                if (nested && typeof nested === 'object') {
+                    candidates.push(nested);
+                    if (nested.agent_response_correction_event
+                        && typeof nested.agent_response_correction_event === 'object') {
+                        candidates.push(nested.agent_response_correction_event);
+                    }
+                }
+            });
+            const fallbackEventId = candidates
+                .map((candidate) => normalizeVoiceEventId(
+                    candidate.event_id || candidate.eventId
+                ))
+                .find(Boolean) || '';
+
+            for (let index = 0; index < candidates.length; index += 1) {
+                const candidate = candidates[index];
+                const originalMessage = normalizeVoiceEventText(
+                    candidate.original_agent_response
+                    || candidate.originalAgentResponse
+                    || candidate.original_message
+                    || candidate.originalMessage
+                );
+                const correctedMessage = normalizeVoiceEventText(
+                    candidate.corrected_agent_response
+                    || candidate.correctedAgentResponse
+                    || candidate.corrected_message
+                    || candidate.correctedMessage
+                );
+                if (!originalMessage || !correctedMessage || originalMessage === correctedMessage) {
+                    continue;
+                }
+                return {
+                    event_id: normalizeVoiceEventId(
+                        candidate.event_id
+                        || candidate.eventId
+                        || root.event_id
+                        || root.eventId
+                        || fallbackEventId
+                    ),
+                    original_message: originalMessage,
+                    corrected_message: correctedMessage,
+                    time_in_call_secs: normalizeVoiceEventTime(
+                        candidate.time_in_call_secs
+                        ?? candidate.timeInCallSecs
+                        ?? root.time_in_call_secs
+                        ?? root.timeInCallSecs
+                    )
+                };
+            }
+            return null;
+        }
+
+        function rememberCorrection(correction) {
+            if (!correction || !correction.original_message || !correction.corrected_message
+                || correction.original_message === correction.corrected_message) {
+                return;
+            }
+            const match = clientCorrectionHints.find((item) => {
+                if (correction.event_id && item.event_id) {
+                    return item.event_id === correction.event_id;
+                }
+                return item.original_message === correction.original_message
+                    && item.corrected_message === correction.corrected_message
+                    && item.time_in_call_secs === correction.time_in_call_secs;
+            });
+            if (match) {
+                Object.assign(match, correction);
+                return;
+            }
+            clientCorrectionHints.push(correction);
+            if (clientCorrectionHints.length > maxTrackedVoiceEvents) {
+                clientCorrectionHints.shift();
+            }
+        }
+
+        function rememberCorrectionFromEvent(payload) {
+            const correction = extractCorrectionEvent(payload);
+            if (!correction) {
+                return false;
+            }
+            rememberCorrection(correction);
+            return true;
+        }
+
+        function handleSdkMessage(payload) {
+            if (rememberCorrectionFromEvent(payload)) {
+                return;
+            }
+            if (!payload || typeof payload !== 'object') {
+                return;
+            }
+            const source = String(payload.source || payload.role || '').toLowerCase();
+            if (!['ai', 'agent', 'assistant', 'bot'].includes(source)) {
+                return;
+            }
+            const message = normalizeVoiceEventText(payload.message || payload.text);
+            if (!message) {
+                return;
+            }
+            recentAgentResponses.push({
+                message,
+                event_id: normalizeVoiceEventId(payload.event_id || payload.eventId || payload.id)
+            });
+            if (recentAgentResponses.length > maxTrackedVoiceEvents) {
+                recentAgentResponses.shift();
+            }
+        }
+
+        function handleSdkInterruption(payload) {
+            if (rememberCorrectionFromEvent(payload)) {
+                return;
+            }
+            const event = payload && typeof payload === 'object' ? payload : {};
+            const latestAgentResponse = recentAgentResponses[
+                recentAgentResponses.length - 1
+            ];
+            const originalMessage = normalizeVoiceEventText(
+                event.original_message
+                || event.originalMessage
+                || event.original_agent_response
+                || latestAgentResponse?.message
+            );
+            const correctedMessage = normalizeVoiceEventText(
+                event.corrected_message
+                || event.correctedMessage
+                || event.corrected_agent_response
+                || event.message
+                || event.text
+            );
+            if (!originalMessage || !correctedMessage || originalMessage === correctedMessage) {
+                return;
+            }
+            rememberCorrection({
+                event_id: normalizeVoiceEventId(
+                    event.event_id || event.eventId || latestAgentResponse?.event_id
+                ),
+                original_message: originalMessage,
+                corrected_message: correctedMessage,
+                time_in_call_secs: normalizeVoiceEventTime(
+                    event.time_in_call_secs ?? event.timeInCallSecs
+                )
+            });
+        }
+
+        function handleAgentResponseCorrection(payload, correctedMessage) {
+            if (typeof payload === 'string' && typeof correctedMessage === 'string') {
+                rememberCorrection({
+                    event_id: '',
+                    original_message: normalizeVoiceEventText(payload),
+                    corrected_message: normalizeVoiceEventText(correctedMessage),
+                    time_in_call_secs: null
+                });
+                return;
+            }
+            rememberCorrectionFromEvent(payload);
+        }
+
+        function handleSdkDebug(payload) {
+            rememberCorrectionFromEvent(payload);
+        }
+
+        function buildClientCorrectionsPayload() {
+            return clientCorrectionHints.map((item) => ({
+                event_id: item.event_id || undefined,
+                original_message: item.original_message,
+                corrected_message: item.corrected_message,
+                time_in_call_secs: item.time_in_call_secs
+            }));
+        }
 
         function getSelectedConversationId() {
             if (typeof currentConversationId === 'undefined' || currentConversationId === null) {
@@ -114,17 +355,46 @@
             return Boolean(incognitoBadge && !incognitoBadge.hidden);
         }
 
+        function localizedVoiceErrorKey(code, status) {
+            const keys = {
+                conversation_required: 'select_conversation',
+                conversation_incognito: 'incognito_unavailable',
+                insufficient_balance: 'insufficient_balance',
+                storage_quota_exceeded: 'storage_limit',
+                wellbeing_pause_active: 'pause_required',
+                wellbeing_pause_required: 'pause_required',
+                microphone_permission_denied: 'microphone_required',
+                voice_recording_unavailable: 'recording_unavailable',
+                sdk_unavailable: 'sdk_unavailable',
+                availability_pending: 'checking_availability',
+                availability_check_failed: 'availability_failed'
+            };
+            if (keys[String(code || '').toLowerCase()]) return keys[String(code).toLowerCase()];
+            if (status === 401) return typeof window !== 'undefined' && window.AurvekEmbed
+                ? 'embed.expired' : 'common.session.expired_message';
+            return 'request_failed';
+        }
+
+        function localizedVoiceError(code, status) {
+            const key = localizedVoiceErrorKey(code, status);
+            return key.includes('.') ? AurvekI18n.t(key) : tr(key);
+        }
+
+        function voiceErrorCode(payload) {
+            return payload?.error_code || payload?.error || '';
+        }
+
         function applyVoiceAvailability(available, reason = '', errorCode = '') {
-            const canonicalReason = String(reason || '').trim();
+            const canonicalReason = String(reason || localizedVoiceError(errorCode)).trim();
             const incognito = errorCode === 'conversation_incognito';
             voiceButton.disabled = !available;
             voiceButton.hidden = incognito;
             voiceButton.setAttribute('aria-disabled', available ? 'false' : 'true');
             voiceButton.dataset.availabilityCode = errorCode || '';
-            voiceButton.title = available ? defaultVoiceButtonTitle : canonicalReason;
+            voiceButton.title = available ? voiceButtonTitle() : canonicalReason;
             voiceButton.setAttribute(
                 'aria-label',
-                available ? defaultVoiceButtonTitle : `AI Voice unavailable. ${canonicalReason}`
+                available ? voiceButtonTitle() : tr('unavailable_label', {reason: canonicalReason})
             );
             if (availabilityReason) {
                 availabilityReason.textContent = available ? '' : canonicalReason;
@@ -150,15 +420,14 @@
                 const unavailable = {
                     available: false,
                     error_code: 'conversation_required',
-                    reason: 'Select a conversation to check browser voice availability.'
+                    reason: tr('select_conversation')
                 };
                 applyVoiceAvailability(false, unavailable.reason, unavailable.error_code);
                 return unavailable;
             }
 
             const pendingReason = isIncognitoConversationActive()
-                ? 'Browser voice calls are unavailable in incognito chats.'
-                : 'Checking browser voice availability…';
+                ? tr('incognito_unavailable') : tr('checking_availability');
             applyVoiceAvailability(
                 false,
                 pendingReason,
@@ -167,10 +436,10 @@
 
             try {
                 const response = await secureFetch(
-                    `/api/conversations/${conversationId}/elevenlabs/availability`
+                    `/api/conversations/${conversationId}/voice/availability`
                 );
                 if (!response) {
-                    throw new Error('No response received');
+                    throw new Error(tr('request_failed'));
                 }
                 const payload = await response.json();
                 if (requestSequence !== availabilityRequestSequence
@@ -178,8 +447,7 @@
                     return null;
                 }
                 if (!response.ok) {
-                    const reason = payload.reason || payload.message || payload.error
-                        || 'Browser voice availability could not be checked.';
+                    const reason = localizedVoiceError(payload.error_code, response.status);
                     voiceAvailability = {
                         available: false,
                         error_code: payload.error_code || 'availability_check_failed',
@@ -188,6 +456,9 @@
                 } else {
                     voiceAvailability = payload;
                 }
+                window.setApplicationConversationFunding?.(
+                    conversationId, response.ok ? (payload.application_funding ?? null) : null
+                );
                 applyVoiceAvailability(
                     Boolean(voiceAvailability.available),
                     voiceAvailability.reason,
@@ -202,7 +473,7 @@
                 voiceAvailability = {
                     available: false,
                     error_code: 'availability_check_failed',
-                    reason: 'Browser voice availability could not be checked. Check your connection and try again.'
+                    reason: tr('availability_failed')
                 };
                 applyVoiceAvailability(false, voiceAvailability.reason, voiceAvailability.error_code);
                 return voiceAvailability;
@@ -216,6 +487,7 @@
             callConversationId = null;
             completionRetryPending = false;
             configData = null;
+            resetVoiceEventTracking();
         }
 
         function setOverlayVisible(show) {
@@ -243,13 +515,49 @@
             const icon = muteButton.querySelector('i');
             muteButton.classList.toggle('muted', muteState);
             muteButton.setAttribute('aria-pressed', muteState ? 'true' : 'false');
-            muteButton.setAttribute('title', muteState ? 'Activate microphone' : 'Mute microphone');
+            muteButton.setAttribute('title', tr(muteState ? 'activate_microphone' : 'mute_microphone'));
             if (icon) {
                 icon.className = muteState ? 'fas fa-microphone-slash' : 'fas fa-microphone';
             }
         }
 
+        function message(presentation) {
+            if (!presentation?.key) return presentation?.text || '';
+            return presentation.key.includes('.')
+                ? AurvekI18n.t(presentation.key, presentation.params)
+                : tr(presentation.key, presentation.params);
+        }
+
+        function repaintLocalizedState() {
+            if (localizedState?.message) statusText.textContent = message(localizedState.message);
+            if (helperText && localizedState?.helper) helperText.textContent = message(localizedState.helper);
+            if (caption && captionPresentation) caption.textContent = message(captionPresentation);
+            const actionKey = {loading: 'loading', ready: 'start_call', connecting: 'connecting',
+                active: 'end_call', updating: 'saving', error: 'retry'}[currentState];
+            if (actionKey) startStopButton.textContent = tr(actionKey);
+            updateMuteUI();
+            if (voiceAvailability) {
+                const reason = voiceAvailability.available ? '' : localizedVoiceError(voiceAvailability.error_code);
+                applyVoiceAvailability(Boolean(voiceAvailability.available), reason, voiceAvailability.error_code);
+            }
+        }
+
+        function setLocalizedState(state, messageKey, options = {}) {
+            const defaultHelpers = {loading: 'getting_configuration', ready: 'press_start',
+                connecting: 'establishing', active: 'speak_normally',
+                updating: 'retrieving_transcript', error: 'check_connection'};
+            localizedState = {
+                message: messageKey ? {key: messageKey, params: options.messageParams} : null,
+                helper: {key: options.helperKey || defaultHelpers[state], params: options.helperParams}
+            };
+            setState(state, message(localizedState.message), {
+                helper: localizedState.helper ? message(localizedState.helper) : undefined,
+                localized: true
+            });
+        }
+
         function setState(state, message, options = {}) {
+            if (!options.localized) localizedState = null;
             currentState = state;
             window.WellbeingVoiceActive = ['connecting', 'active', 'updating'].includes(state);
             if (message) {
@@ -263,9 +571,9 @@
             switch (state) {
                 case 'loading':
                     startStopButton.disabled = true;
-                    startStopButton.textContent = 'Loading...';
+                    startStopButton.textContent = tr('loading');
                     if (helperText && !options.helper) {
-                        helperText.textContent = 'Getting ElevenLabs configuration.';
+                        helperText.textContent = tr('getting_configuration');
                     }
                     closeButton.disabled = false;
                     muteButton.classList.add('hidden');
@@ -275,9 +583,9 @@
                     break;
                 case 'ready':
                     startStopButton.disabled = false;
-                    startStopButton.textContent = 'Start call';
+                    startStopButton.textContent = tr('start_call');
                     if (helperText && !options.helper) {
-                        helperText.textContent = 'Press Start call to begin.';
+                        helperText.textContent = tr('press_start');
                     }
                     closeButton.disabled = false;
                     muteButton.classList.add('hidden');
@@ -287,9 +595,9 @@
                     break;
                 case 'connecting':
                     startStopButton.disabled = true;
-                    startStopButton.textContent = 'Connecting...';
+                    startStopButton.textContent = tr('connecting');
                     if (helperText && !options.helper) {
-                        helperText.textContent = 'Establishing session with ElevenLabs.';
+                        helperText.textContent = tr('establishing');
                     }
                     closeButton.disabled = true;
                     muteButton.classList.add('hidden');
@@ -299,9 +607,9 @@
                     break;
                 case 'active':
                     startStopButton.disabled = false;
-                    startStopButton.textContent = 'End call';
+                    startStopButton.textContent = tr('end_call');
                     if (helperText && !options.helper) {
-                        helperText.textContent = 'Speak normally. Use End call when finished.';
+                        helperText.textContent = tr('speak_normally');
                     }
                     closeButton.disabled = true;
                     muteButton.classList.remove('hidden');
@@ -311,9 +619,9 @@
                     break;
                 case 'updating':
                     startStopButton.disabled = true;
-                    startStopButton.textContent = 'Saving...';
+                    startStopButton.textContent = tr('saving');
                     if (helperText && !options.helper) {
-                        helperText.textContent = 'Retrieving transcript from ElevenLabs.';
+                        helperText.textContent = tr('retrieving_transcript');
                     }
                     closeButton.disabled = true;
                     muteButton.classList.add('hidden');
@@ -323,9 +631,9 @@
                     break;
                 case 'error':
                     startStopButton.disabled = false;
-                    startStopButton.textContent = 'Retry';
+                    startStopButton.textContent = tr('retry');
                     if (helperText && !options.helper) {
-                        helperText.textContent = 'Check your connection and try again.';
+                        helperText.textContent = tr('check_connection');
                     }
                     closeButton.disabled = false;
                     muteButton.classList.add('hidden');
@@ -399,7 +707,10 @@
             }
 
             // Add all other variables that might be in the agent template (matching ConvAI exactly)
-            dynamicVariables.language = "English";
+            // The backend resolves this from the user's primary language. An
+            // English remains the platform fallback for users who have not
+            // configured a preference yet.
+            dynamicVariables.language = configData.language || "English";
             dynamicVariables.prev_persona = "";
             dynamicVariables.persona_transition_instruction = "Continue the previous conversation naturally, picking up exactly where it left off.";
             dynamicVariables.persona_name = configData.prompt_name || "";
@@ -440,7 +751,13 @@
                 onConnect: handleConnected,
                 onDisconnect: handleDisconnected,
                 onError: handleSessionError,
-                onMessage: () => {}
+                onMessage: handleSdkMessage,
+                // Unknown callback keys are ignored by older SDK bundles. Newer
+                // releases can expose either a dedicated correction callback or
+                // the raw client event through onDebug.
+                onInterruption: handleSdkInterruption,
+                onAgentResponseCorrection: handleAgentResponseCorrection,
+                onDebug: handleSdkDebug
             };
 
             if (configData.signed_url) {
@@ -461,6 +778,13 @@
         }
 
         async function fetchConfig(force = false, conversationId = getSelectedConversationId()) {
+            if (voiceAvailability?.transport === 'aurvek') {
+                configData = {transport: 'aurvek', conversation_id: conversationId};
+                captionPresentation = {key: 'caption'};
+                if (caption) caption.textContent = message(captionPresentation);
+                setLocalizedState('ready', 'ready');
+                return configData;
+            }
             if (loadingConfig) {
                 return null;
             }
@@ -468,39 +792,33 @@
                 return configData;
             }
             if (conversationId === null) {
-                setState('error', 'Select a chat before starting the call.', {
-                    helper: 'Choose a conversation and try again.'
-                });
+                setLocalizedState('error', 'select_chat', {helperKey: 'choose_conversation'});
                 return null;
             }
 
             loadingConfig = true;
-            setState('loading', 'Requesting ElevenLabs configuration...');
+            setLocalizedState('loading', 'requesting_configuration');
             try {
                 const response = await secureFetch(`/api/conversations/${conversationId}/elevenlabs/config`);
                 if (!response) {
-                    throw new Error('No response received');
+                    throw new Error(tr('request_failed'));
                 }
                 if (!response.ok) {
-                    let detail = 'Could not get ElevenLabs configuration.';
-                    let errorPayload = null;
+                    let errorKey = 'configuration_failed';
                     try {
-                        errorPayload = await response.json();
-                        if (errorPayload && (errorPayload.reason || errorPayload.message || errorPayload.error)) {
-                            detail = errorPayload.reason || errorPayload.message || errorPayload.error;
-                        }
+                        const errorPayload = await response.json();
+                        errorKey = localizedVoiceErrorKey(voiceErrorCode(errorPayload), response.status);
                     } catch (_) {
                         // ignore
                     }
-                    const helper = response.status === 402
-                        ? 'Add credit to your account and try again.'
-                        : detail;
-                    setState('error', detail, { helper: helper });
+                    setLocalizedState('error', errorKey, {
+                        helperKey: response.status === 402 ? 'add_credit' : errorKey
+                    });
                     return null;
                 }
                 const data = await response.json();
                 if (!isSameConversation(data.conversation_id, conversationId)) {
-                    throw new Error('Configuration does not match the requested conversation');
+                    throw new Error(tr('configuration_mismatch'));
                 }
                 configData = data;
                 if (promptTag && promptAvatar && promptName) {
@@ -540,17 +858,16 @@
                     }
                 }
                 if (caption) {
-                    caption.textContent = data.conversation_name
-                        ? `Conversation ${data.conversation_name}`
-                        : 'Activate your microphone to start the ElevenLabs session.';
+                    captionPresentation = data.conversation_name
+                        ? {key: 'conversation_caption', params: {name: data.conversation_name}}
+                        : {key: 'activate_to_start'};
+                    caption.textContent = message(captionPresentation);
                 }
-                setState('ready', 'Ready to start the call.');
+                setLocalizedState('ready', 'ready');
                 return data;
             } catch (error) {
                 console.error('Error fetching ElevenLabs configuration:', error);
-                setState('error', 'Could not get ElevenLabs configuration.', {
-                    helper: 'Check your connection and try again.'
-                });
+                setLocalizedState('error', 'configuration_failed', {helperKey: 'check_connection'});
                 return null;
             } finally {
                 loadingConfig = false;
@@ -562,7 +879,7 @@
             if (conversationId === null || !sessionId) {
                 return {
                     ok: false,
-                    message: 'The voice session is missing its conversation binding.'
+                    message: tr('missing_binding'), message_key: 'missing_binding'
                 };
             }
             try {
@@ -581,28 +898,30 @@
                 if (!response) {
                     return {
                         ok: false,
-                        message: 'No response received when starting the voice session.'
+                        message: tr('start_no_response'), message_key: 'start_no_response'
                     };
                 }
                 if (!response.ok) {
-                    let message = 'Failed to start the voice session.';
+                    let message = tr('start_failed');
+                    let messageKey = 'start_failed';
                     let error = null;
                     try {
                         const payload = await response.json();
-                        error = payload && payload.error;
-                        message = (payload && (payload.message || payload.error)) || message;
+                        error = voiceErrorCode(payload);
+                        message = localizedVoiceError(error, response.status);
+                        messageKey = localizedVoiceErrorKey(error, response.status);
                     } catch (_) {
                         // ignore
                     }
                     console.warn('Failed to mark ElevenLabs session as active');
-                    return { ok: false, error, message };
+                    return { ok: false, error, message, message_key: messageKey };
                 }
                 return { ok: true };
             } catch (error) {
                 console.error('Error notifying session start:', error);
                 return {
                     ok: false,
-                    message: 'Could not notify the server that the voice session started.'
+                    message: tr('start_notify_failed'), message_key: 'start_notify_failed'
                 };
             }
         }
@@ -648,19 +967,53 @@
                 await completeSession();
                 return;
             }
+            if (voiceAvailability?.transport === 'aurvek') {
+                callConversationId = getSelectedConversationId();
+                setLocalizedState('connecting', 'connecting_voice', {helperKey: 'allow_microphone'});
+                let destinationUrl = null;
+                let recordingNoticeKey = null;
+                try {
+                    conversationRef = await window.AurvekBrowserVoice.startSession({
+                        conversationId: callConversationId,
+                        onState(state, message) {
+                            if (message === 'voice_recording_unavailable') {
+                                recordingNoticeKey = localizedVoiceErrorKey(message);
+                            }
+                            setLocalizedState('active', ({listening: 'listening',
+                                thinking: 'thinking', speaking: 'assistant_speaking'}[state] || 'call_active'),
+                                {helperKey: recordingNoticeKey});
+                        },
+                        onHandoff(result) {
+                            callConversationId = result.conversation_id;
+                            destinationUrl = result.reload_url;
+                            if (promptName) promptName.textContent = result.assistant_id;
+                        },
+                        onError() { setLocalizedState('error', 'call_error'); },
+                        async onDisconnect() {
+                            conversationRef = null;
+                            clearCallBinding();
+                            muteState = false; updateMuteUI();
+                            setLocalizedState('ready', 'call_ended', {helperKey: recordingNoticeKey});
+                            if (destinationUrl) window.location.assign(destinationUrl);
+                            else if (typeof window.refreshActiveConversation === 'function') await window.refreshActiveConversation();
+                        }
+                    });
+                } catch (error) {
+                    conversationRef = null;
+                    clearCallBinding();
+                    setLocalizedState('error', 'start_failed');
+                }
+                return;
+            }
             const Conversation = resolveConversation();
             if (!Conversation) {
-                setState('error', 'ElevenLabs SDK not available on this page.', {
-                    helper: 'Reload the page or verify /sdk/elevenlabs-client.js'
-                });
+                setLocalizedState('error', 'sdk_unavailable', {helperKey: 'reload_page'});
                 return;
             }
 
             const wellbeingStatus = window.WellbeingReminders && window.WellbeingReminders.latestStatus;
             if (wellbeingStatus && (wellbeingStatus.active_pause || wellbeingStatus.reminder?.requires_pause)) {
-                setState('error', 'A break pause is required before starting a voice call.', {
-                    helper: 'Use the break reminder prompt before continuing.'
-                });
+                setLocalizedState('error', 'pause_required', {helperKey: 'use_break_reminder'});
                 return;
             }
 
@@ -670,10 +1023,11 @@
 
             const targetConversationId = getSelectedConversationId();
             if (targetConversationId === null) {
-                setState('error', 'Select a chat before starting the call.');
+                setLocalizedState('error', 'select_chat');
                 return;
             }
             callConversationId = targetConversationId;
+            resetVoiceEventTracking();
 
             // Force refresh to get fresh watchdog hint from backend
             const config = await fetchConfig(true, targetConversationId);
@@ -683,23 +1037,19 @@
             }
             const hasMic = await ensureMicPermission();
             if (!hasMic) {
-                setState('ready', 'Microphone access required.', {
-                    helper: 'Grant browser permissions and try again.'
-                });
+                setLocalizedState('ready', 'microphone_required', {helperKey: 'grant_permissions'});
                 callConversationId = null;
                 return;
             }
             if (!isSameConversation(getSelectedConversationId(), targetConversationId)) {
                 configData = null;
                 callConversationId = null;
-                setState('error', 'The selected chat changed before the call started.', {
-                    helper: 'Open the voice panel again in the chat you want to call.'
-                });
+                setLocalizedState('error', 'chat_changed', {helperKey: 'reopen_panel'});
                 return;
             }
             const sessionConfig = buildConversationConfig();
             if (!sessionConfig) {
-                setState('error', 'Could not prepare call configuration.');
+                setLocalizedState('error', 'prepare_failed');
                 callConversationId = null;
                 return;
             }
@@ -708,7 +1058,7 @@
             sessionStartRejected = false;
             completionRetryPending = false;
             updateMuteUI();
-            setState('connecting', 'Connecting to ElevenLabs...');
+            setLocalizedState('connecting', 'connecting_service');
 
             try {
                 const startedConversation = await Conversation.startSession(sessionConfig);
@@ -722,9 +1072,7 @@
                 }
             } catch (error) {
                 console.error('Error starting ElevenLabs conversation:', error);
-                setState('error', 'Could not start ElevenLabs call.', {
-                    helper: 'Try again or check the agent configuration.'
-                });
+                setLocalizedState('error', 'start_failed', {helperKey: 'check_agent_configuration'});
                 await markSessionStatus('failed');
                 conversationRef = null;
                 clearCallBinding();
@@ -737,7 +1085,7 @@
                 await completeSession();
                 return;
             }
-            setState('updating', 'Closing call...');
+            setLocalizedState('updating', 'closing_call');
             try {
                 await conversationRef.endSession();
             } catch (error) {
@@ -748,7 +1096,7 @@
 
         async function completeSession() {
             if (!activeSessionId || callConversationId === null) {
-                setState('ready', 'The call has ended.');
+                setLocalizedState('ready', 'call_ended');
                 conversationRef = null;
                 clearCallBinding();
                 sessionStartRejected = false;
@@ -762,35 +1110,36 @@
             const completedSessionId = activeSessionId;
             let clearBindingWhenDone = false;
             completing = true;
-            setState('updating', 'Saving call transcript...', {
-                helper: 'This may take a few seconds.'
-            });
+            setLocalizedState('updating', 'saving_transcript', {helperKey: 'may_take_seconds'});
             try {
+                const completionBody = { session_id: completedSessionId };
+                if (typeof buildClientCorrectionsPayload === 'function') {
+                    const corrections = buildClientCorrectionsPayload();
+                    if (corrections.length > 0) {
+                        completionBody.client_corrections = corrections;
+                    }
+                }
                 const response = await secureFetch(`/api/conversations/${completedConversationId}/elevenlabs/complete`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ session_id: completedSessionId })
+                    body: JSON.stringify(completionBody)
                 });
                 if (!response) {
-                    throw new Error('No response received');
+                    throw new Error(tr('request_failed'));
                 }
                 if (!response.ok) {
-                    let detail = 'Could not save transcript.';
+                    let errorKey = 'save_transcript_failed';
                     try {
                         const payload = await response.json();
-                        if (payload && payload.error) {
-                            detail = payload.error;
-                        }
+                        errorKey = localizedVoiceErrorKey(voiceErrorCode(payload), response.status);
                     } catch (_) {
                         // ignore
                     }
                     const retryable = response.status === 425 || response.status === 502;
-                    setState('error', detail, {
-                        helper: retryable
-                            ? 'Retry to fetch the transcript from this same call.'
-                            : 'This call cannot be completed. Close the panel and try a new call.'
+                    setLocalizedState('error', errorKey, {
+                        helperKey: retryable ? 'retry_same_call' : 'cannot_complete'
                     });
                     if (retryable) {
                         completionRetryPending = true;
@@ -808,9 +1157,7 @@
                 // Refresh the chat messages if we saved something
                 if (saved > 0 && isSameConversation(getSelectedConversationId(), completedConversationId)) {
                     // Show loading state in overlay
-                    setState('updating', 'Updating chat...', {
-                        helper: 'Syncing messages in main chat.'
-                    });
+                    setLocalizedState('updating', 'updating_chat', {helperKey: 'syncing_messages'});
 
                     // Wait a bit for visual feedback
                     await wait(500);
@@ -851,7 +1198,14 @@
                 // Success state with visual feedback
                 if (saved > 0) {
                     // Create success state with animation
-                    statusText.innerHTML = `<i class="fas fa-check-circle" style="color: #10b981; margin-right: 8px;"></i>Transcript saved (${saved} messages)`;
+                    statusText.replaceChildren();
+                    const savedIcon = document.createElement('i');
+                    savedIcon.className = 'fas fa-check-circle';
+                    savedIcon.style.color = '#10b981';
+                    savedIcon.style.marginRight = '8px';
+                    const savedText = document.createElement('span');
+                    AurvekI18n.bindText(savedText, 'chat_widgets.voice_call.transcript_saved', {count: saved});
+                    statusText.append(savedIcon, savedText);
                     statusText.style.transform = 'scale(1.1)';
                     statusText.style.transition = 'transform 0.3s ease';
 
@@ -859,28 +1213,16 @@
                         statusText.style.transform = 'scale(1)';
                     }, 300);
 
-                    if (helperText) {
-                        helperText.innerHTML = 'You can close this window or start a new conversation';
-                    }
-
-                    setState('ready', '', {
-                        helper: 'You can close this window or start a new conversation'
-                    });
+                    setLocalizedState('ready', null, {helperKey: 'close_or_new'});
                 } else {
-                    setState('ready', 'The call has ended.', {
-                        helper: 'You can start another call whenever you want.'
-                    });
+                    setLocalizedState('ready', 'call_ended', {helperKey: 'start_another'});
                 }
             } catch (error) {
                 console.error('Error completing ElevenLabs session:', error);
                 if (clearBindingWhenDone) {
-                    setState('ready', 'The call has ended.', {
-                        helper: 'The transcript was saved, but the chat could not be refreshed.'
-                    });
+                    setLocalizedState('ready', 'call_ended', {helperKey: 'saved_refresh_failed'});
                 } else {
-                    setState('error', 'Could not save call transcript.', {
-                        helper: 'Retry to fetch the transcript from this same call.'
-                    });
+                    setLocalizedState('error', 'save_transcript_failed', {helperKey: 'retry_same_call'});
                     completionRetryPending = true;
                 }
             } finally {
@@ -910,8 +1252,8 @@
                 const ref = conversationRef;
                 clearCallBinding();
                 conversationRef = null;
-                setState('error', sessionResult.message || 'A break pause is required before starting a voice call.', {
-                    helper: shouldRefreshWellbeing ? 'Use the break reminder prompt before continuing.' : 'Try again when ready.'
+                setLocalizedState('error', sessionResult.message_key || localizedVoiceErrorKey(sessionResult.error), {
+                    helperKey: shouldRefreshWellbeing ? 'use_break_reminder' : 'try_when_ready'
                 });
                 lockChatInputs(false);
                 closeButton.disabled = false;
@@ -924,7 +1266,7 @@
                 }
                 return;
             }
-            setState('active', 'Call active. Speak normally.');
+            setLocalizedState('active', 'call_active');
         }
 
         async function handleDisconnected() {
@@ -933,9 +1275,7 @@
 
         async function handleSessionError(error) {
             console.error('ElevenLabs session error:', error);
-            setState('error', 'An error occurred in the ElevenLabs call.', {
-                helper: 'Restart the call when ready.'
-            });
+            setLocalizedState('error', 'call_error', {helperKey: 'restart_when_ready'});
             await markSessionStatus('failed');
             conversationRef = null;
             clearCallBinding();
@@ -970,9 +1310,10 @@
             }
         });
 
-        voiceButton.addEventListener('click', async () => {
+        async function openVoicePanel(toggle = false) {
             const isVisible = !overlay.classList.contains('hidden');
             if (isVisible) {
+                if (!toggle) return;
                 if (currentState === 'active' || currentState === 'connecting' || currentState === 'updating') {
                     return;
                 }
@@ -986,13 +1327,13 @@
             }
             setOverlayVisible(true);
             if (completionRetryPending) {
-                setState('error', 'The previous call transcript is still pending.', {
-                    helper: 'Retry to fetch the transcript from that same call.'
-                });
+                setLocalizedState('error', 'transcript_pending', {helperKey: 'retry_same_call'});
                 return;
             }
             await fetchConfig(false);
-        });
+        }
+        window.AurvekVoice = Object.freeze({ open: openVoicePanel });
+        voiceButton.addEventListener('click', () => { void openVoicePanel(true); });
 
         closeButton.addEventListener('click', async () => {
             if (currentState === 'active' || currentState === 'connecting' || currentState === 'updating') {
@@ -1000,16 +1341,13 @@
             }
             await cancelPendingCompletion();
             setOverlayVisible(false);
-            setState('ready', 'Ready to start the call.', {
-                helper: 'Press the voice icon to open this panel.'
-            });
+            setLocalizedState('ready', 'ready', {helperKey: 'press_voice_icon'});
         });
 
-        setState('ready', 'Ready to start the call.', {
-            helper: 'Press the voice icon to open this panel.'
-        });
+        setLocalizedState('ready', 'ready', {helperKey: 'press_voice_icon'});
         setOverlayVisible(false);
         updateMuteUI();
+        AurvekI18n.onChange(repaintLocalizedState);
         void syncVoiceAvailability(true);
         if (incognitoBadge && typeof MutationObserver !== 'undefined') {
             const observer = new MutationObserver(syncVoiceAvailability);

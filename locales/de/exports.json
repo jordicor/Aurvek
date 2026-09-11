@@ -1,0 +1,13 @@
+{
+  "conversation_filename": "unterhaltung_{id}",
+  "usage_filename": "nutzungsexport_{days}tage.csv",
+  "conversation_by": "Unterhaltung von: {username}",
+  "model": "KI-Modell: {machine} {model}",
+  "prompt": "Prompt: {name}",
+  "sender.user": "BENUTZER",
+  "sender.bot": "ASSISTENT",
+  "model_number": "Modell {number}",
+  "pdf_attached": "[PDF-Anhang: {filename} ({pages} Seiten)]",
+  "file_content": "[Inhalt der hochgeladenen Datei: {filename} ({lines} Zeilen)]",
+  "file_unavailable": "[Dateianhang: {filename} -- Inhalt nicht verfügbar]"
+}

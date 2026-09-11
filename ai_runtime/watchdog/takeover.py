@@ -62,7 +62,18 @@ def _takeover_phone_tools(machine: str) -> tuple[list | None, frozenset[str]]:
     """Expose only current-turn phone control, never the general tool catalog."""
 
     bound = current_channel_turn()
-    native = phone_tools_for_context(bound.context if bound is not None else None)
+    # Future scheduling needs the complete live prompt/time context plus the
+    # normal two-call billing reservation.  A watchdog takeover deliberately
+    # uses a compact emergency prompt, so keep that durable action on the
+    # ordinary conversational path.
+    native = [
+        tool
+        for tool in phone_tools_for_context(
+            bound.context if bound is not None else None
+        )
+        if str(tool.get("function", {}).get("name") or "")
+        != "schedule_phone_call"
+    ]
     names = frozenset(
         str(tool.get("function", {}).get("name") or "") for tool in native
     ) - {""}
@@ -771,6 +782,8 @@ async def watchdog_takeover_response_requestfree(
                                         "output_token_cost", 0
                                     ),
                                     "prompt_id": prompt_id,
+                                    **({"override_api_cost": (0.0 if resolved_key is not None else payload["override_api_cost"])}
+                                       if payload.get("override_api_cost") is not None else {}),
                                     "byok": resolved_key is not None,
                                     "idempotency_key": (
                                         "watchdog-requestfree:"

@@ -1,11 +1,12 @@
+{% set i18n_domains = ['marketplace_admin'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Marketplace Controls - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace_admin.ui.marketplace_controls') }} - AURVEK{% endblock %}
 
-{% block page_title %}Marketplace Controls{% endblock %}
+{% block page_title %}{{ t('marketplace_admin.ui.marketplace_controls') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Control public marketplace surfaces without disabling core login, chat, users, or private prompts.</p>
+<p class="page-subtitle">{{ t('marketplace_admin.ui.control_public_marketplace_surfaces_without_disabling_core_login_chat_users') }}</p>
 {% endblock %}
 
 {% block styles %}
@@ -185,7 +186,7 @@
 <div class="section-container" id="marketplaceAdminPanel">
     <div class="marketplace-header-row">
         <div class="section-title mb-0">
-            <i class="fas fa-store-slash"></i> Runtime Controls
+            <i class="fas fa-store-slash"></i> {{ t('marketplace_admin.ui.runtime_controls') }}
         </div>
         <span id="marketplaceStatusBadge" class="marketplace-status-pill status-{{ marketplace_admin_config.status_class }}">
             <i class="fas fa-circle"></i>
@@ -197,21 +198,21 @@
 
     <div class="marketplace-summary-grid">
         <div class="marketplace-summary-card">
-            <div class="marketplace-summary-label">Runtime</div>
+            <div class="marketplace-summary-label">{{ t('marketplace_admin.ui.runtime') }}</div>
             <div class="marketplace-summary-value" id="marketplaceRuntimeLabel">{{ marketplace_admin_config.status_label }}</div>
-            <div class="marketplace-summary-note">Applied immediately in this app process and refreshed across workers.</div>
+            <div class="marketplace-summary-note">{{ t('marketplace_admin.ui.applied_immediately_in_this_app_process_and_refreshed_across_workers') }}</div>
         </div>
         <div class="marketplace-summary-card">
-            <div class="marketplace-summary-label">Storage</div>
+            <div class="marketplace-summary-label">{{ t('marketplace_admin.ui.storage') }}</div>
             <div class="marketplace-summary-value">SYSTEM_CONFIG</div>
-            <div class="marketplace-summary-note">Persists across restarts unless env overrides it.</div>
+            <div class="marketplace-summary-note">{{ t('marketplace_admin.ui.persists_across_restarts_unless_env_overrides_it') }}</div>
         </div>
         <div class="marketplace-summary-card">
-            <div class="marketplace-summary-label">Overrides</div>
+            <div class="marketplace-summary-label">{{ t('marketplace_admin.ui.overrides') }}</div>
             <div class="marketplace-summary-value" id="marketplaceOverrideLabel">
-                {% if marketplace_admin_config.has_env_overrides %}Environment{% else %}None{% endif %}
+                {{ t('marketplace_admin.ui.environment') if marketplace_admin_config.has_env_overrides else t('marketplace_admin.ui.none') }}
             </div>
-            <div class="marketplace-summary-note">Environment variables are treated as emergency locks.</div>
+            <div class="marketplace-summary-note">{{ t('marketplace_admin.ui.environment_variables_are_treated_as_emergency_locks') }}</div>
         </div>
     </div>
 
@@ -239,22 +240,22 @@
                 <div class="marketplace-flag-description">{{ flag.description }}</div>
                 <div class="marketplace-flag-meta">
                     <span class="marketplace-effective-pill {% if flag.effective %}is-active{% else %}is-off{% endif %}" id="mpEffective_{{ flag.key }}">
-                        {% if flag.effective %}Active{% else %}Off{% endif %}
+                        {{ t('marketplace_admin.ui.active') if flag.effective else t('marketplace_admin.ui.off') }}
                     </span>
                     <span class="marketplace-source-pill source-{{ flag.source }}" id="mpSource_{{ flag.key }}">
-                        {{ flag.source|replace('_', ' ')|title }}
+                        {{ flag.source_label }}
                     </span>
                 </div>
                 {% if flag.env_override %}
                 <div class="marketplace-lock-note">
-                    <i class="fas fa-lock me-1"></i>{{ flag.env_var }} controls this value.
+                    <i class="fas fa-lock me-1"></i>{{ t('marketplace_admin.ui.environment_lock', variable=flag.env_var) }}
                 </div>
                 {% endif %}
             </div>
             <div class="form-check form-switch mb-0">
                 <input class="form-check-input marketplace-flag-toggle"
                        type="checkbox"
-                       role="switch"
+                       role="switch" aria-label="{{ flag.label }}"
                        id="mpToggle_{{ flag.key }}"
                        data-key="{{ flag.key }}"
                        {% if flag.desired %}checked{% endif %}
@@ -266,13 +267,13 @@
 
     <div class="marketplace-actions">
         <button type="button" class="btn btn-outline-secondary" onclick="applyMarketplacePreset('private')">
-            <i class="fas fa-lock me-1"></i> Private Webchat Mode
+            <i class="fas fa-lock me-1"></i> {{ t('marketplace_admin.ui.private_webchat_mode') }}
         </button>
         <button type="button" class="btn btn-outline-secondary" onclick="applyMarketplacePreset('all_on')">
-            <i class="fas fa-power-off me-1"></i> Enable All
+            <i class="fas fa-power-off me-1"></i> {{ t('marketplace_admin.ui.enable_all') }}
         </button>
         <button type="button" class="btn btn-primary" id="marketplaceSaveBtn" onclick="saveMarketplaceConfig()">
-            <i class="fas fa-save me-1"></i> Save Controls
+            <i class="fas fa-save me-1"></i> {{ t('marketplace_admin.ui.save_controls') }}
         </button>
     </div>
     <div id="marketplaceSaveStatus" class="mt-2"></div>
@@ -299,15 +300,15 @@
         });
 
         if (!masterOn) {
-            return { status: 'disabled', status_label: 'Disabled', status_class: 'danger' };
+            return { status: 'disabled', status_label: AurvekI18n.t('marketplace_admin.ui.disabled'), status_class: 'danger' };
         }
 
         const subflags = flags.filter(flag => flag.key !== 'marketplace_enabled');
         if (subflags.every(flag => flag.effective)) {
-            return { status: 'enabled', status_label: 'Enabled', status_class: 'success' };
+            return { status: 'enabled', status_label: AurvekI18n.t('marketplace_admin.ui.enabled'), status_class: 'success' };
         }
 
-        return { status: 'partial', status_label: 'Partial', status_class: 'warning' };
+        return { status: 'partial', status_label: AurvekI18n.t('marketplace_admin.ui.partial'), status_class: 'warning' };
     }
 
     function buildMarketplaceDraftConfig() {
@@ -341,7 +342,7 @@
         if (runtimeLabel) runtimeLabel.textContent = config.status_label;
 
         const overrideLabel = document.getElementById('marketplaceOverrideLabel');
-        if (overrideLabel) overrideLabel.textContent = config.has_env_overrides ? 'Environment' : 'None';
+        if (overrideLabel) overrideLabel.textContent = config.has_env_overrides ? AurvekI18n.t('marketplace_admin.ui.environment') : AurvekI18n.t('marketplace_admin.ui.none');
 
         config.flags.forEach(flag => {
             const checkbox = document.querySelector(`.marketplace-flag-toggle[data-key="${flag.key}"]`);
@@ -358,13 +359,13 @@
                 effective.classList.remove('is-active', 'is-off', 'is-partial');
                 if (flag.effective) {
                     effective.classList.add('is-active');
-                    effective.textContent = 'Active';
+                    effective.textContent = AurvekI18n.t('marketplace_admin.ui.active');
                 } else if (flag.key !== 'marketplace_enabled' && config.status === 'disabled' && flag.desired) {
                     effective.classList.add('is-partial');
-                    effective.textContent = 'Off by master';
+                    effective.textContent = AurvekI18n.t('marketplace_admin.ui.off_by_master');
                 } else {
                     effective.classList.add('is-off');
-                    effective.textContent = 'Off';
+                    effective.textContent = AurvekI18n.t('marketplace_admin.ui.off');
                 }
             }
 
@@ -372,7 +373,7 @@
             if (source) {
                 source.classList.remove('source-environment', 'source-system_config', 'source-default');
                 source.classList.add('source-' + flag.source);
-                source.textContent = flag.source.replace('_', ' ').replace(/\b\w/g, char => char.toUpperCase());
+                source.textContent = flag.source_label;
             }
         });
     }
@@ -420,12 +421,12 @@
         });
 
         if (!Object.keys(flags).length) {
-            marketplaceNotify('warning', 'Marketplace Controls', 'All marketplace controls are locked by environment variables.');
+            marketplaceNotify('warning', AurvekI18n.t('marketplace_admin.ui.marketplace_controls'), AurvekI18n.t('marketplace_admin.ui.all_marketplace_controls_are_locked_by_environment_variables'));
             return;
         }
 
         if (saveBtn) saveBtn.disabled = true;
-        if (status) status.textContent = 'Saving...';
+        if (status) status.textContent = AurvekI18n.t('marketplace_admin.ui.saving');
 
         try {
             const response = await secureFetch('/api/admin/marketplace-config', {
@@ -439,16 +440,16 @@
             if (data.config) renderMarketplaceConfig(data.config);
 
             if (response.ok && data.success) {
-                if (status) status.textContent = data.message || 'Saved.';
-                marketplaceNotify('success', 'Marketplace Controls', data.message || 'Marketplace controls saved.');
+                if (status) status.textContent = data.message || AurvekI18n.t('marketplace_admin.ui.saved_message');
+                marketplaceNotify('success', AurvekI18n.t('marketplace_admin.ui.marketplace_controls'), data.message || AurvekI18n.t('marketplace_admin.ui.marketplace_controls_saved'));
             } else {
-                if (status) status.textContent = data.message || 'Could not save marketplace controls.';
-                marketplaceNotify('error', 'Marketplace Controls', data.message || 'Could not save marketplace controls.');
+                if (status) status.textContent = data.message || AurvekI18n.t('marketplace_admin.ui.could_not_save_marketplace_controls');
+                marketplaceNotify('error', AurvekI18n.t('marketplace_admin.ui.marketplace_controls'), data.message || AurvekI18n.t('marketplace_admin.ui.could_not_save_marketplace_controls'));
             }
         } catch (error) {
             console.error('Error saving marketplace controls:', error);
-            if (status) status.textContent = 'Could not save marketplace controls.';
-            marketplaceNotify('error', 'Marketplace Controls', 'Could not save marketplace controls.');
+            if (status) status.textContent = AurvekI18n.t('marketplace_admin.ui.could_not_save_marketplace_controls');
+            marketplaceNotify('error', AurvekI18n.t('marketplace_admin.ui.marketplace_controls'), AurvekI18n.t('marketplace_admin.ui.could_not_save_marketplace_controls'));
         } finally {
             if (saveBtn) saveBtn.disabled = false;
         }

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import socket
 import os
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -39,6 +40,7 @@ class PhoneMemoryJob:
     provider: str | None
     attempt_count: int
     lease_token: str
+    memory_scope_json: str | None = None
 
 
 async def enqueue_phone_memory_in_transaction(
@@ -57,15 +59,15 @@ async def enqueue_phone_memory_in_transaction(
         )
         SELECT m.id, c.id, m.conversation_id, m.user_id,
                CASE
-                   WHEN CAST(json_extract(c.config_snapshot_json, '$.prompt_id') AS INTEGER) > 0
-                   THEN CAST(json_extract(c.config_snapshot_json, '$.prompt_id') AS INTEGER)
+                   WHEN CAST(json_extract(COALESCE(c.active_config_snapshot_json,c.config_snapshot_json), '$.prompt_id') AS INTEGER) > 0
+                   THEN CAST(json_extract(COALESCE(c.active_config_snapshot_json,c.config_snapshot_json), '$.prompt_id') AS INTEGER)
                    ELSE NULL
                END,
                m.message, m.date
         FROM MESSAGES AS m
         JOIN PHONE_CALLS AS c ON c.id = ?
         WHERE m.id = ?
-          AND m.conversation_id = c.conversation_id
+          AND m.conversation_id = COALESCE(c.active_conversation_id,c.conversation_id)
           AND m.user_id = c.owner_user_id
           AND m.type = 'user'
         ON CONFLICT(message_id) DO NOTHING
@@ -86,6 +88,25 @@ async def enqueue_phone_memory_in_transaction(
     # roll back the surrounding canonical message transaction.
     if row is None or str(row[0]) != str(call_id):
         raise RuntimeError("Phone caller memory handoff is incompatible")
+    # Capture policy inside the same transaction as the caller message. A job
+    # may finish much later, after the assistant changes its write destination.
+    columns = {str(item[1]) for item in await (await conn.execute(
+        "PRAGMA table_info(PHONE_MEMORY_OUTBOX)"
+    )).fetchall()}
+    if "memory_scope_json" in columns:
+        cursor = await conn.execute(
+            "SELECT memory_scope_json FROM PHONE_MEMORY_OUTBOX WHERE message_id=?", (message_id,)
+        )
+        if (await cursor.fetchone())[0] is None:
+            from integrations.applications.memory import resolve_application_memory
+
+            scope = await resolve_application_memory(int(row[1]), int(row[2]), connection=conn)
+            captured = ({"kind": "native"} if scope is None else
+                        {"kind": "application", "namespace": scope.write.as_dict() if scope.write else None})
+            await conn.execute(
+                "UPDATE PHONE_MEMORY_OUTBOX SET memory_scope_json=? WHERE message_id=? AND memory_scope_json IS NULL",
+                (json.dumps(captured), message_id),
+            )
 
 
 class PhoneMemoryOutboxRepository:
@@ -194,6 +215,7 @@ class PhoneMemoryOutboxRepository:
             provider=None if row["provider"] is None else str(row["provider"]),
             attempt_count=int(row["attempt_count"]) + 1,
             lease_token=lease_token,
+            memory_scope_json=(row["memory_scope_json"] if "memory_scope_json" in row.keys() else None),
         )
 
     async def bind_provider(self, job: PhoneMemoryJob, provider: str) -> bool:
@@ -454,12 +476,35 @@ async def record_phone_caller_memory(
         record_memory_conversation_link,
         record_memory_message_link,
     )
+    from integrations.applications.memory import (
+        MemoryNamespace, record_memory_destination, resolve_application_memory,
+    )
+
+    # Legacy jobs never acquire new application permissions on replay. Native
+    # jobs remain native; an application job retains its exact captured space.
+    scope = await resolve_application_memory(job.conversation_id, job.user_id)
+    frozen = json.loads(job.memory_scope_json) if job.memory_scope_json else {"kind": "native"}
+    namespace = None
+    if frozen.get("kind") == "application":
+        if frozen.get("namespace") is None:
+            return
+        namespace = MemoryNamespace.from_dict(frozen["namespace"])
+        if scope is None or scope.write != namespace:
+            return
+    elif frozen.get("kind") != "native" or scope is not None:
+        return
 
     preferences = await get_user_memory_preferences(job.user_id, provider)
     if preferences.get("remember_across_chats") is False:
         return
     if await _memory_message_is_linked(job.message_id, provider):
         return
+    scoped = {"namespace": namespace} if namespace is not None else {}
+    if namespace is not None:
+        await record_memory_destination(
+            provider=provider, conversation_id=job.conversation_id, user_id=job.user_id,
+            namespace=namespace, message_id=job.message_id,
+        )
     prompt_id = None if preferences.get("memory_scope") == "global" else job.prompt_id
     await record_memory_conversation_link(
         provider=provider,
@@ -479,6 +524,10 @@ async def record_phone_caller_memory(
         from atagia_sync import record_atagia_message_link
 
         bridge = get_atagia_bridge()
+        if namespace is not None:
+            current = await resolve_application_memory(job.conversation_id, job.user_id)
+            if current is None or current.write != namespace:
+                return
         await mark_provider_started()
         recorded = await bridge.ingest_message(
             user_id=job.user_id,
@@ -491,10 +540,12 @@ async def record_phone_caller_memory(
             source_seq=job.message_id,
             ingest_origin=ATAGIA_LIVE_INGEST_ORIGIN,
             confirmation_strategy=ATAGIA_LIVE_CONFIRMATION_STRATEGY,
+            **scoped,
         )
         if not recorded:
             raise RuntimeError("Atagia did not accept the caller message")
-        provider_message_id = _aurvek_atagia_message_id(job.message_id)
+        provider_message_id = (namespace.provider_message_id(job.message_id)
+                               if namespace is not None else _aurvek_atagia_message_id(job.message_id))
         assert provider_message_id is not None
         await record_atagia_message_link(
             message_id=job.message_id,
@@ -523,6 +574,10 @@ async def record_phone_caller_memory(
         from memory.providers.mem0 import get_mem0_provider
 
         mem0 = await get_mem0_provider()
+        if namespace is not None:
+            current = await resolve_application_memory(job.conversation_id, job.user_id)
+            if current is None or current.write != namespace:
+                return
         # Everything above is local/configuration work and remains retryable.
         # Persist ambiguity only at the last boundary before external Mem0 I/O.
         await mark_provider_started()
@@ -536,6 +591,7 @@ async def record_phone_caller_memory(
             user_message_id=job.message_id,
             occurred_at=job.occurred_at,
             incognito=False,
+            **scoped,
         )
         if not result:
             raise RuntimeError("Mem0 did not accept the caller message")

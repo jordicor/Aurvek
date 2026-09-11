@@ -1,63 +1,59 @@
+{% set i18n_domains = ['profile', 'account'] %}
 {% extends 'base.html' %}
 
-{% block title %}Edit Profile{% endblock %}
+{% block title %}{{ t('profile.page.edit_title') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/css/intlTelInput.css">
 {% endblock %}
 
-{% block page_title %}Edit Profile{% endblock %}
+{% block page_title %}{{ t('profile.page.edit_title') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block content %}
 <form method="post" action="/api/edit-profile" id="editProfileForm" enctype="multipart/form-data">
     <div class="section-container">
-        <div class="section-title">Account Information</div>
+        <div class="section-title">{{ t('profile.account.title') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="username" class="form-label">Username</label>
+                    <label for="username" class="form-label">{{ t('profile.account.username') }}</label>
                     <input type="text" class="form-control" id="username" name="username" value="{{ user_data['username'] }}" required>
                 </div>
                 <div class="mb-3">
-                    <label for="email" class="form-label">Email Address</label>
+                    <label for="email" class="form-label">{{ t('profile.account.email') }}</label>
                     <input type="email" class="form-control" id="email" name="email" value="{{ user_data['email'] or '' }}">
-                    <small class="form-text text-muted">Required for magic link recovery if your magic link expires</small>
+                    <small class="form-text text-muted">{{ t('profile.account.email_help') }}</small>
                 </div>
                 <div class="mb-3">
-                    <label for="phone" class="form-label">Phone Number</label>
+                    <label for="phone" class="form-label">{{ t('profile.account.phone') }}</label>
                     <input type="tel" class="form-control" id="phone" name="phone_number" value="{{ user_data['phone_number'] }}" data-original="{{ user_data['phone_number'] }}" data-phone-verified="{{ 'true' if user_data['phone_verified'] else 'false' }}">
-                    <button type="button" class="btn btn-secondary mt-2" id="sendCodeButton" style="display: none;">Send Verification Code</button>
+                    <button type="button" class="btn btn-secondary mt-2" id="sendCodeButton" style="display: none;">{{ t('profile.phone.send_code') }}</button>
                 </div>
+                {% include 'profile/_timezone_preference.html' %}
+                {% include 'profile/_language_preferences.html' %}
                 <div class="mb-3" id="verificationCodeContainer" style="display: none;">
-                    <label for="verificationCode" class="form-label">Verification Code</label>
+                    <label for="verificationCode" class="form-label">{{ t('profile.phone.verification_code') }}</label>
                     <input type="text" class="form-control" id="verificationCode" name="verification_code">
                     <input type="hidden" id="phoneVerificationId" name="phone_verification_id">
                 </div>
                 <div class="mb-3">
-                    <label for="balance" class="form-label">Balance</label>
+                    <label for="balance" class="form-label">{{ t('profile.account.balance') }}</label>
                     <input type="text" class="form-control" id="balance" value="${{ user_details['balance'] }}" readonly>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
                     <label for="voice" class="form-label">
-                        Voice Settings
-                        <span class="info-icon" data-bs-toggle="tooltip" data-bs-html="true" title="
-                            This voice setting serves two purposes:
-                            <ul>
-                                <li>In the webchat: You can listen to your own messages read aloud by clicking the 'speaker' button.</li>
-                                <li>For MP3 exports: This voice will represent you in the exported conversation with the AI.</li>
-                            </ul>
-                            Choose a voice that best represents you or fits the context of your interactions.
-                        ">ℹ️</span>
+                        {{ t('profile.voice.label') }}
+                        <span class="info-icon" data-bs-toggle="tooltip" title="{{ t('profile.voice.tooltip') }}">ℹ️</span>
                     </label>
                     <select class="form-select" id="voice" name="sample_voice_id">
                         <!-- Options will be loaded dynamically with JavaScript -->
                     </select>
-                    <small class="form-text text-muted">Select the voice that will be used for your messages when listening in the chat or exporting conversations to MP3.</small>
+                    <small class="form-text text-muted">{{ t('profile.voice.help') }}</small>
                     <div id="playButtonContainer" class="mt-2">
                         <!-- Play button and category dropdown will be added here -->
                     </div>
@@ -67,15 +63,15 @@
     </div>
 
     <div class="section-container">
-        <div class="section-title">User Information</div>
+        <div class="section-title">{{ t('profile.user.title') }}</div>
         <div class="flex-row">
             <div class="flex-column d-flex justify-content-center align-items-center">
                 <div class="mb-3 text-center">
-                    <label for="profilePicture" class="form-label">Profile Picture</label>
+                    <label for="profilePicture" class="form-label">{{ t('profile.user.picture') }}</label>
                     <div class="avatar-wrapper" style="margin: 0 auto;">
                         <div class="avatar-container" id="profilePictureContainer">
                             {% if user_data['profile_picture'] %}
-                                <img src="{{ user_data['profile_picture'] }}" alt="Profile Picture" id="currentProfilePicture">
+                                <img src="{{ user_data['profile_picture'] }}" alt="{{ t('profile.user.picture') }}" id="currentProfilePicture">
                                 <div class="avatar-icons">
                                     <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                                     <span class="avatar-icon delete"><i class="fas fa-trash"></i></span>
@@ -88,7 +84,7 @@
                             {% endif %}
                         </div>
                         <div class="avatar-preview hidden" id="previewContainer">
-                            <img id="previewImage" alt="Preview">
+                            <img id="previewImage" alt="{{ t('profile.user.preview') }}">
                             <div class="avatar-icons">
                                 <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                                 <span class="avatar-icon cancel"><i class="fas fa-times"></i></span>
@@ -101,11 +97,11 @@
             <div class="flex-column">
                 <div class="mb-3">
                     <label for="userInfo" class="form-label">
-                        About You
-                        <span class="info-icon" data-bs-toggle="tooltip" data-bs-html="true" title="This information helps the AI understand you better. It's completely confidential and only used to enhance your AI interactions.">ℹ️</span>
+                        {{ t('profile.user.about') }}
+                        <span class="info-icon" data-bs-toggle="tooltip" title="{{ t('profile.user.about_tooltip') }}">ℹ️</span>
                     </label>
-                    <textarea class="form-control" id="userInfo" name="user_info" rows="4" placeholder="Tell us about yourself, your interests, preferences, and how you'd like the AI to interact with you.">{{ user_data['user_info'] }}</textarea>
-                    <small class="form-text text-muted">Share details about your background, hobbies, communication style, or any specific preferences for AI interactions.</small>
+                    <textarea class="form-control" id="userInfo" name="user_info" rows="4" placeholder="{{ t('profile.user.about_placeholder') }}">{{ user_data['user_info'] }}</textarea>
+                    <small class="form-text text-muted">{{ t('profile.user.about_help') }}</small>
                 </div>
             </div>
         </div>
@@ -113,93 +109,75 @@
 
     <div class="section-container">
         <div class="section-title">
-            Interaction Profile
-            <span class="info-icon" data-bs-toggle="tooltip" data-bs-html="true" title="Choose how you want to interact with the AI. You can use your real profile or an alter-ego (alternative personality) for different purposes.">ℹ️</span>
+            {{ t('profile.interaction.title') }}
+            <span class="info-icon" data-bs-toggle="tooltip" title="{{ t('profile.interaction.tooltip') }}">ℹ️</span>
         </div>
         <div class="mb-3">
             <div class="form-check">
                 <input class="form-check-input" type="radio" name="profileType" id="useRealProfile" value="real" checked>
                 <label class="form-check-label" for="useRealProfile">
-                    Use my real profile
+                    {{ t('profile.interaction.real') }}
                 </label>
             </div>
             <div class="form-check">
                 <input class="form-check-input" type="radio" name="profileType" id="useAlterEgo" value="alterEgo">
                 <label class="form-check-label" for="useAlterEgo">
-                    Use an alter-ego
+                    {{ t('profile.interaction.alter_ego') }}
                 </label>
             </div>
         </div>
 
         <div id="alterEgoSelection" class="mb-3" style="display: none;">
-            <label for="alterEgo" class="form-label">Select Alter-Ego</label>
+            <label for="alterEgo" class="form-label">{{ t('profile.alter_ego.select_label') }}</label>
             <select class="form-select" id="alterEgo" name="alter_ego_id">
-                <option value="0">Select an alter-ego</option>
+                <option value="0">{{ t('profile.alter_ego.select_placeholder') }}</option>
                 <!-- Options will be loaded dynamically with JavaScript -->
             </select>
             <div id="alterEgoDetails" class="mt-3">
                 <!-- Alter-ego details will be displayed here -->
             </div>
             <div class="d-flex align-items-center mt-2">
-                <button type="button" class="btn btn-secondary" id="createAlterEgoButton">Create New Alter-Ego</button>
-                <span class="info-icon ms-2" data-bs-toggle="tooltip" data-bs-html="true" title="
-                    Create alter-egos for various purposes:
-                    <ul>
-                        <li>Role-playing different characters</li>
-                        <li>Professional interactions</li>
-                        <li>Specific hobbies or interests</li>
-                        <li>Language learning personas</li>
-                        <li>Creative writing voices</li>
-                    </ul>
-                    Alter-egos allow you to:
-                    <ul>
-                        <li>Customize AI interactions for different contexts</li>
-                        <li>Explore fictional identities</li>
-                        <li>Separate personal and professional information</li>
-                        <li>Tailor AI responses to specific needs</li>
-                        <li>Experiment with different communication styles</li>
-                    </ul>
-                    Use alter-egos to enhance your AI experience and protect your privacy when needed.
-                ">ℹ️</span>
+                <button type="button" class="btn btn-secondary" id="createAlterEgoButton">{{ t('profile.alter_ego.create') }}</button>
+                <span class="info-icon ms-2" data-bs-toggle="tooltip" title="{{ t('profile.alter_ego.tooltip') }}">ℹ️</span>
             </div>
         </div>
     </div>
 
     <div class="section-container">
         <div class="section-title">
-            After Login
-            <span class="info-icon" data-bs-toggle="tooltip" data-bs-html="true" title="Choose which page to land on after logging in.">&#8505;&#65039;</span>
+            {{ t('profile.after_login.title') }}
+            <span class="info-icon" data-bs-toggle="tooltip" title="{{ t('profile.after_login.tooltip') }}">&#8505;&#65039;</span>
         </div>
         <div class="mb-3">
-            <label class="form-label">When I log in, take me to:</label>
+            <label class="form-label">{{ t('profile.after_login.label') }}</label>
             <div class="form-check">
                 <input class="form-check-input" type="radio" name="afterLogin" id="afterLoginHome" value="/home">
                 <label class="form-check-label" for="afterLoginHome">
-                    Home
-                    <small class="text-muted d-block">Main page with search, favorites and library</small>
+                    {{ t('profile.after_login.home') }}
+                    <small class="text-muted d-block">{{ t('profile.after_login.home_help') }}</small>
                 </label>
             </div>
             <div class="form-check mt-2">
                 <input class="form-check-input" type="radio" name="afterLogin" id="afterLoginChat" value="/chat">
                 <label class="form-check-label" for="afterLoginChat">
-                    Chat
-                    <small class="text-muted d-block">Go straight to your conversations</small>
+                    {{ t('profile.after_login.chat') }}
+                    <small class="text-muted d-block">{{ t('profile.after_login.chat_help') }}</small>
                 </label>
             </div>
             {% if marketplace.discovery_enabled|default(false) %}
             <div class="form-check mt-2">
                 <input class="form-check-input" type="radio" name="afterLogin" id="afterLoginExplore" value="/explore">
                 <label class="form-check-label" for="afterLoginExplore">
-                    Explore
-                    <small class="text-muted d-block">Browse and discover public products</small>
+                    {{ t('profile.after_login.explore') }}
+                    <small class="text-muted d-block">{{ t('profile.after_login.explore_help') }}</small>
                 </label>
             </div>
             {% endif %}
             <div class="form-check mt-2">
                 <input class="form-check-input" type="radio" name="afterLogin" id="afterLoginDashboard" value="/dashboard">
                 <label class="form-check-label" for="afterLoginDashboard">
-                    Dashboard
-                    <small class="text-muted d-block">Stats, usage and account overview</small>
+                    {{ t('profile.after_login.dashboard') }}
+                    <small class="text-muted d-block">{{ t('profile.after_login.dashboard_help') }}</small>
                 </label>
             </div>
         </div>
@@ -207,14 +185,14 @@
 
     <div class="d-flex justify-content-between align-items-center">
         <div>
-            <button type="submit" class="btn btn-primary">Save Changes</button>
+            <button type="submit" class="btn btn-primary">{{ t('profile.action.save_changes') }}</button>
             {% if is_user|default(false) or is_admin|default(false) %}
             <a href="/curation-settings" class="btn btn-outline-secondary ms-2">
-                <i class="fas fa-layer-group"></i> Curation Settings
+                <i class="fas fa-layer-group"></i> {{ t('profile.action.curation_settings') }}
             </a>
             {% endif %}
         </div>
-        <a href="#" id="deleteAccountBtn" class="text-danger">Delete my account</a>
+        <a href="#" id="deleteAccountBtn" class="text-danger">{{ t('profile.action.delete_account') }}</a>
     </div>
 
 </form>
@@ -224,22 +202,22 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="alterEgoModalLabel">Create/Edit Alter-Ego</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <h5 class="modal-title" id="alterEgoModalLabel">{{ t('profile.alter_ego.edit_title') }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('profile.action.close') }}"></button>
             </div>
             <div class="modal-body">
                 <form id="alterEgoForm">
                     <input type="hidden" id="alterEgoId" name="id">
                     <div class="mb-3">
-                        <label for="alterEgoName" class="form-label">Name</label>
+                        <label for="alterEgoName" class="form-label">{{ t('profile.alter_ego.name') }}</label>
                         <input type="text" class="form-control" id="alterEgoName" name="name" required>
                     </div>
                     <div class="mb-3">
-                        <label for="alterEgoDescription" class="form-label">Description</label>
+                        <label for="alterEgoDescription" class="form-label">{{ t('profile.alter_ego.description') }}</label>
                         <textarea class="form-control" id="alterEgoDescription" name="description" rows="3"></textarea>
                     </div>
                     <div class="mb-3">
-                        <label for="alterEgoProfilePicture" class="form-label">Profile Picture</label>
+                        <label for="alterEgoProfilePicture" class="form-label">{{ t('profile.user.picture') }}</label>
                         <div class="avatar-wrapper">
                             <div class="avatar-container" id="alterEgoPictureContainer">
                                 <span class="avatar-initial" id="defaultAlterEgoInitial">P</span>
@@ -248,7 +226,7 @@
                                 </div>
                             </div>
                             <div class="avatar-preview hidden" id="previewAlterContainer">
-                                <img id="previewAlterEgoImage" alt="Preview">
+                                <img id="previewAlterEgoImage" alt="{{ t('profile.user.preview') }}">
                                 <div class="avatar-icons">
                                     <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                                     <span class="avatar-icon cancel"><i class="fas fa-times"></i></span>
@@ -260,8 +238,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="btn btn-primary" id="saveAlterEgo">Save</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('profile.action.close') }}</button>
+                <button type="button" class="btn btn-primary" id="saveAlterEgo">{{ t('profile.action.save') }}</button>
             </div>
         </div>
     </div>

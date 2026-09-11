@@ -9,6 +9,20 @@ const source = fs.readFileSync(
     path.join(repoRoot, 'data/static/js/api-credentials.js'),
     'utf8'
 );
+const { create: createI18n } = require(path.join(repoRoot, 'data/static/js/common/i18n.js'));
+
+function englishI18n() {
+    const read = domain => JSON.parse(fs.readFileSync(
+        path.join(repoRoot, 'locales/en', `${domain}.json`),
+        'utf8'
+    ));
+    return createI18n({
+        version: 1,
+        language: 'en',
+        locales: { en: 'en-US' },
+        resources: { en: { common: read('common'), profile: read('profile') } },
+    });
+}
 
 class FakeStorage {
     constructor(initial = {}) {
@@ -57,6 +71,14 @@ function makeElement(extra = {}) {
         className: '',
         classList: { add() {}, remove() {} },
         querySelector() { return makeElement(); },
+        replaceChildren(...children) {
+            this.children = children;
+            this.textContent = children.map(child => child.textContent || '').join('');
+        },
+        append(...children) {
+            this.children = [...(this.children || []), ...children];
+            this.textContent = this.children.map(child => child.textContent || '').join('');
+        },
     }, extra));
 }
 
@@ -78,6 +100,8 @@ async function loadManager(options = {}) {
     const toggleButtons = options.toggleButtons || [];
     const document = eventTarget({
         getElementById(id) { return elements[id] || null; },
+        createElement() { return makeElement(); },
+        createTextNode(textContent) { return { textContent }; },
         querySelector() { return null; },
         querySelectorAll(selector) {
             if (selector === 'input[name="storageMode"]') return radios;
@@ -92,7 +116,7 @@ async function loadManager(options = {}) {
     const toasts = [];
     const markedClean = [];
     const context = {
-        window: {},
+        window: { AurvekI18n: englishI18n() },
         document,
         localStorage,
         sessionStorage,
@@ -322,4 +346,32 @@ test('storage mode UI rolls back and Save All does not mark failed keys as saved
     assert.match(openaiStatus.innerHTML, /times-circle/);
     assert.equal(env.toasts.at(-1).kind, 'error');
     assert.equal(env.markedClean.length, 0);
+});
+
+test('an early credential draft remains guarded after initialization timers run', async () => {
+    const input = makeElement();
+    const form = makeElement();
+    const env = await loadManager({ elements: { 'key-openai': input, apiKeysForm: form } });
+    const timers = [];
+    const confirmations = [];
+    let reloads = 0;
+    env.context.window = eventTarget(env.context.window);
+    env.context.window.location = { href: '/settings', reload() { reloads += 1; } };
+    env.context.location = env.context.window.location;
+    env.context.AurvekI18n = env.context.window.AurvekI18n;
+    env.context.requestAnimationFrame = callback => callback();
+    env.context.setTimeout = callback => { timers.push(callback); return timers.length; };
+    env.context.NotificationModal.confirm = (...args) => confirmations.push(args);
+    vm.runInContext(fs.readFileSync(path.join(repoRoot, 'data/static/js/common/form-guard.js'), 'utf8'), env.context);
+    env.context.FormGuard = env.context.window.FormGuard;
+    await env.document.dispatch('DOMContentLoaded');
+    assert.equal(env.context.FormGuard.anyDirty(), false);
+    input.value = 'unsaved-fixture-key';
+    await form.dispatch('input', { target: input });
+    for (const callback of timers) callback();
+    env.context.FormGuard.reloadIfClean();
+    assert.equal(reloads, 0);
+    assert.equal(confirmations.length, 1);
+    assert.equal(env.context.FormGuard.anyDirty(), true);
+    assert.equal(input.value, 'unsaved-fixture-key');
 });

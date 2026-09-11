@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi import FastAPI, APIRouter, Depends, File, Form, HTTPException, UploadFile, Request, status
 from log_config import logger
+from i18n import Translator, get_translator
 
 # Imports from your own modules
 from models import User
@@ -65,9 +66,11 @@ _OPENAI_REALTIME_VOICES = frozenset(
 )
 
 
-async def _shared_llm_configuration(llm_id: int) -> tuple[dict, dict]:
+async def _shared_llm_configuration(llm_id: int, translator=None) -> tuple[dict, dict]:
     """Load one enabled shared model and its normalized capabilities."""
 
+    translator = translator or Translator("en")
+    t = translator.t
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(
             """
@@ -80,14 +83,14 @@ async def _shared_llm_configuration(llm_id: int) -> tuple[dict, dict]:
         )
         row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=400, detail="Selected AI model does not exist")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.selected_ai_model_does_not_exist'))
     item = dict(row)
     if not bool(item["enabled"]):
-        raise HTTPException(status_code=400, detail="Selected AI model is disabled")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.selected_ai_model_is_disabled'))
     if item["machine"] in _PHONE_BLOCKED_MACHINES:
         raise HTTPException(
             status_code=400,
-            detail="This AI model cannot be assigned to a shared prompt",
+            detail=t('prompt_editor_errors.this_ai_model_cannot_be_assigned_to_a_shared_prompt'),
         )
 
     def decode(value: str | None) -> dict:
@@ -116,7 +119,10 @@ async def _validated_reasoning_json(
     budget_tokens: int | None,
     inherit_value: str,
     field_label: str,
+    translator=None,
 ) -> str | None:
+    translator = translator or Translator("en")
+    t = translator.t
     if not isinstance(mode, str):
         mode = getattr(mode, "default", inherit_value)
     if not isinstance(mode, str):
@@ -129,9 +135,9 @@ async def _validated_reasoning_json(
     if llm_id is None:
         raise HTTPException(
             status_code=400,
-            detail=f"{field_label} requires a specific AI model",
+            detail=t('prompt_editor_errors.requires_a_specific_ai_model', field=field_label),
         )
-    _, capabilities = await _shared_llm_configuration(int(llm_id))
+    _, capabilities = await _shared_llm_configuration(int(llm_id), translator=translator)
     try:
         selection = resolve_and_validate(
             {
@@ -147,7 +153,7 @@ async def _validated_reasoning_json(
     except ReasoningValidationError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"{field_label}: {exc}",
+            detail=t('prompt_editor_errors.field_error', field=field_label, error=t('chat_errors.invalid_reasoning_selection')),
         ) from exc
     return orjson.dumps(selection.to_dict()).decode("utf-8")
 
@@ -159,19 +165,27 @@ async def _validate_phone_ai_selection(
     phone_reasoning_budget_tokens: int | None,
     phone_realtime_voice: str | None,
     inherited_llm_id: int | None,
+    translator=None,
 ) -> tuple[int | None, str | None, str | None]:
+    translator = translator or Translator("en")
+    t = translator.t
     if not isinstance(phone_llm_id, int) or isinstance(phone_llm_id, bool):
         phone_llm_id = None
     if not isinstance(phone_realtime_voice, str):
         phone_realtime_voice = None
     capabilities: dict | None = None
     if phone_llm_id is not None:
-        _, capabilities = await _shared_llm_configuration(phone_llm_id)
+        item, capabilities = await _shared_llm_configuration(phone_llm_id, translator=translator)
+        if item.get("machine") == "O1":
+            raise HTTPException(
+                status_code=400,
+                detail=t('prompt_editor_errors.selected_ai_model_is_not_available_for_phone_calls'),
+            )
         runtime = capabilities.get("runtime", {})
         if "phone" not in runtime.get("channels", []):
             raise HTTPException(
                 status_code=400,
-                detail="Selected AI model is not available for phone calls",
+                detail=t('prompt_editor_errors.selected_ai_model_is_not_available_for_phone_calls'),
             )
 
     reasoning_json = await _validated_reasoning_json(
@@ -179,19 +193,20 @@ async def _validate_phone_ai_selection(
         mode=phone_reasoning_mode,
         budget_tokens=phone_reasoning_budget_tokens,
         inherit_value="inherit",
-        field_label="Phone thinking",
+        field_label=t('prompt_editor_errors.phone_thinking'),
+        translator=translator,
     )
     runtime_kind = (
         capabilities.get("runtime", {}).get("kind")
         if capabilities is not None
         else "standard"
     )
-    if runtime_kind == "openai_realtime":
+    if runtime_kind in {"openai_realtime", "openai_live"}:
         realtime_voice = str(phone_realtime_voice or "marin").strip().lower()
         if realtime_voice not in _OPENAI_REALTIME_VOICES:
             raise HTTPException(
                 status_code=400,
-                detail="Select a supported OpenAI Realtime voice",
+                detail=t('prompt_editor_errors.select_a_supported_openai_realtime_voice'),
             )
     else:
         realtime_voice = None
@@ -211,20 +226,23 @@ async def _validate_prompt_llm_selection(
     llm_mode: str,
     forced_llm_id: Optional[int],
     allowed_llms: Optional[str],
+    translator=None,
 ) -> None:
     """Reject per-user subscription rows in shared prompt configuration."""
+    translator = translator or Translator("en")
+    t = translator.t
     selected_ids: list[int] = []
     if llm_mode == "restricted":
         if not allowed_llms:
             raise HTTPException(
                 status_code=400,
-                detail="Restricted mode requires at least one model selected",
+                detail=t('prompt_editor_errors.restricted_mode_requires_at_least_one_model_selected'),
             )
         try:
             parsed = orjson.loads(allowed_llms)
         except orjson.JSONDecodeError as exc:
             raise HTTPException(
-                status_code=400, detail="Invalid allowed_llms format"
+                status_code=400, detail=t('prompt_editor_errors.invalid_allowed_llms_format')
             ) from exc
         if (
             not isinstance(parsed, list)
@@ -233,7 +251,7 @@ async def _validate_prompt_llm_selection(
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Restricted mode requires valid model IDs",
+                detail=t('prompt_editor_errors.restricted_mode_requires_valid_model_ids'),
             )
         selected_ids = list(dict.fromkeys(parsed))
     elif llm_mode == "forced" and forced_llm_id is not None:
@@ -253,37 +271,38 @@ async def _validate_prompt_llm_selection(
         rows = await cursor.fetchall()
     found_ids = {int(row["id"]) for row in rows}
     if found_ids != set(selected_ids):
-        raise HTTPException(status_code=400, detail="One or more selected LLMs do not exist")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.one_or_more_selected_llms_do_not_exist'))
     if any(row["machine"] == _PERSONAL_SUBSCRIPTION_MACHINE for row in rows):
         raise HTTPException(
             status_code=400,
             detail=(
-                "Personal ChatGPT subscription models cannot be forced or shared "
-                "through a prompt. Each user selects them after connecting their account."
+                t('prompt_editor_errors.personal_chatgpt_subscription_models_cannot_be_forced_or_shared_through_a_prompt_each')
             ),
         )
     if any(not bool(row["enabled"]) for row in rows):
-        raise HTTPException(status_code=400, detail="Selected AI model is disabled")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.selected_ai_model_is_disabled'))
     if any(
-        str(row["model"] or "").strip().lower().startswith("gpt-realtime-2.1")
+        str(row["model"] or "").strip().lower().startswith(("gpt-realtime-2.1", "gpt-live-1"))
         for row in rows
     ):
         raise HTTPException(
             status_code=400,
-            detail="OpenAI Realtime models can only be assigned to phone calls",
+            detail=t('prompt_editor_errors.openai_realtime_models_can_only_be_assigned_to_phone_calls'),
         )
 
 
-async def _watchdog_llm_machine(llm_id: int) -> str:
+async def _watchdog_llm_machine(llm_id: int, translator=None) -> str:
+    translator = translator or Translator("en")
+    t = translator.t
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute("SELECT machine FROM LLM WHERE id = ?", (llm_id,))
         row = await cursor.fetchone()
     if not row:
-        raise ValueError(f"LLM with id {llm_id} does not exist")
+        raise ValueError(t('prompt_editor_errors.llm_with_id_does_not_exist', llm_id=translator.format_number(llm_id)))
     machine = str(row["machine"] or "")
     if machine == _PERSONAL_SUBSCRIPTION_MACHINE:
         raise ValueError(
-            "Personal ChatGPT subscription models cannot run as a shared watchdog"
+            t('prompt_editor_errors.personal_chatgpt_subscription_models_cannot_run_as_a_shared_watchdog')
         )
     return machine
 
@@ -293,9 +312,12 @@ async def _resolve_submitted_prompt_voice(
     *,
     voice_code: str,
     catalog_id: Optional[int],
+    translator=None,
 ) -> int:
     """Resolve one structurally valid catalogue voice without guessing by code."""
 
+    translator = translator or Translator("en")
+    t = translator.t
     async with conn.cursor() as cursor:
         if isinstance(catalog_id, int) and not isinstance(catalog_id, bool):
             await cursor.execute(
@@ -311,11 +333,11 @@ async def _resolve_submitted_prompt_voice(
             )
             row = await cursor.fetchone()
             if row is None:
-                raise HTTPException(status_code=404, detail="Voice not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.voice_not_found'))
             if str(row["voice_code"] or "") != str(voice_code or ""):
                 raise HTTPException(
                     status_code=409,
-                    detail="Selected voice identity no longer matches the catalogue",
+                    detail=t('prompt_editor_errors.selected_voice_identity_no_longer_matches_the_catalogue'),
                 )
         else:
             await cursor.execute(
@@ -331,11 +353,11 @@ async def _resolve_submitted_prompt_voice(
             )
             rows = await cursor.fetchall()
             if not rows:
-                raise HTTPException(status_code=404, detail="Voice not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.voice_not_found'))
             if len(rows) != 1:
                 raise HTTPException(
                     status_code=409,
-                    detail="Voice code is ambiguous; select an exact catalogue voice",
+                    detail=t('prompt_editor_errors.voice_code_is_ambiguous_select_an_exact_catalogue_voice'),
                 )
             row = rows[0]
 
@@ -345,7 +367,7 @@ async def _resolve_submitted_prompt_voice(
         or row["tts_service"] is None
         or not str(row["service_name"] or "").strip()
     ):
-        raise HTTPException(status_code=409, detail="Selected voice is unavailable")
+        raise HTTPException(status_code=409, detail=t('prompt_editor_errors.selected_voice_is_unavailable'))
     return int(row["id"])
 
 
@@ -409,11 +431,12 @@ async def can_user_access_prompt(user: User, prompt_id: int, cursor) -> bool:
 
 @router.get("/prompts", response_class=HTMLResponse)
 async def list_prompts(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
         
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     async with get_db_connection(readonly=True) as conn:
         query = """
@@ -508,16 +531,18 @@ def _save_prompt_image_variants(
     prompt_dir: str,
     prompt_id: int,
     sanitized_prompt_name: str,
+    translator=None,
 ) -> None:
     """Decode, validate, resize, and save all prompt image variants."""
+    translator = translator or Translator("en")
+    t = translator.t
     with PilImage.open(io.BytesIO(content)) as image:
         width, height = image.size
         if width * height > MAX_IMAGE_PIXELS:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Image dimensions too large. Maximum is "
-                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                    t('prompt_editor_errors.image_dimensions_too_large_maximum_is_pixels', pixels=translator.format_number(MAX_IMAGE_PIXELS))
                 ),
             )
 
@@ -542,6 +567,8 @@ async def process_prompt_image_upload(
     current_user: User
 ):
     # Verify that current_user has permissions
+    translator = Translator(getattr(current_user, "ui_language", None) or "en")
+    t = translator.t
     is_admin = await current_user.is_admin
 
     async with get_db_connection(readonly=True) as conn:
@@ -556,7 +583,7 @@ async def process_prompt_image_upload(
             owner_result = await cursor.fetchone()
 
             if not owner_result:
-                raise HTTPException(status_code=404, detail="Prompt owner not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_owner_not_found'))
 
             owner_username = owner_result[0]
 
@@ -568,7 +595,7 @@ async def process_prompt_image_upload(
             has_permission = await cursor.fetchone() is not None
 
     if not (is_admin or has_permission):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     # Prepare the directory and filenames
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(owner_username)
@@ -592,7 +619,7 @@ async def process_prompt_image_upload(
 
         # Security: Check file size limit
         if len(content) > MAX_IMAGE_UPLOAD_SIZE:
-            raise HTTPException(status_code=400, detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024*1024)}MB")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.image_too_large_maximum_size_is_mb', megabytes=translator.format_number(MAX_IMAGE_UPLOAD_SIZE // (1024*1024))))
 
         await asyncio.to_thread(
             _save_prompt_image_variants,
@@ -600,6 +627,7 @@ async def process_prompt_image_upload(
             prompt_dir=prompt_dir,
             prompt_id=prompt_id,
             sanitized_prompt_name=sanitized_prompt_name,
+            translator=translator,
         )
 
         # Build the base_image_url (without timestamp)
@@ -612,17 +640,21 @@ async def process_prompt_image_upload(
 
         return base_image_url
 
-    except Exception as e:
-        logger.error(f"Error processing image for prompt {prompt_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error processing image for prompt %s", prompt_id)
+        raise HTTPException(status_code=500, detail=t('prompt_editor_errors.error_processing_image'))
 
 @router.get("/prompts/new", response_class=HTMLResponse)
 async def create_prompt(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
         
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
     async with get_db_connection(readonly=True) as conn:
         async with conn.execute(
             """
@@ -678,14 +710,16 @@ async def create_prompt_post(
     gransabio_enabled: bool = Form(False),
     gransabio_config: Optional[str] = Form(None),
 ):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
 
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     if (public or bool(is_paid)) and not marketplace_creator_tools_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t('prompt_editor_errors.not_found'))
 
     # Mutual exclusion: disable_web_search takes priority over force_web_search
     if disable_web_search and force_web_search:
@@ -693,15 +727,16 @@ async def create_prompt_post(
 
     # Validate prompt name is not forbidden (security)
     if is_forbidden_prompt_name(name) or is_forbidden_prompt_name(slugify(name)):
-        raise HTTPException(status_code=400, detail="This name is not available. Please choose a different name.")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.this_name_is_not_available_please_choose_a_different_name'))
 
-    await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms)
+    await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms, translator=translator)
     forced_reasoning_json = await _validated_reasoning_json(
         llm_id=forced_llm_id if llm_mode == "forced" else None,
         mode=forced_reasoning_mode,
         budget_tokens=forced_reasoning_budget_tokens,
         inherit_value="default",
-        field_label="Prompt thinking",
+        field_label=t('prompt_editor_errors.prompt_thinking'),
+        translator=translator,
     )
     (
         phone_llm_id,
@@ -713,6 +748,7 @@ async def create_prompt_post(
         phone_reasoning_budget_tokens=phone_reasoning_budget_tokens,
         phone_realtime_voice=phone_realtime_voice,
         inherited_llm_id=forced_llm_id if llm_mode == "forced" else None,
+        translator=translator,
     )
 
     # Parse and validate watchdog_config
@@ -720,20 +756,20 @@ async def create_prompt_post(
     if watchdog_config and watchdog_config.strip():
         try:
             parsed_wd = orjson.loads(watchdog_config)
-            sanitized_wd = validate_watchdog_config(parsed_wd)
+            sanitized_wd = validate_watchdog_config(parsed_wd, translator=translator)
             # Async FK check for llm_id on both sub-configs
             for sub_key in ("pre_watchdog", "post_watchdog"):
                 sub_cfg = sanitized_wd.get(sub_key, {})
                 if sub_cfg.get("llm_id") is not None:
                     try:
-                        await _watchdog_llm_machine(sub_cfg["llm_id"])
+                        await _watchdog_llm_machine(sub_cfg["llm_id"], translator=translator)
                     except ValueError as exc:
-                        raise ValueError(f"{exc} ({sub_key})") from exc
+                        raise ValueError(t('prompt_editor_errors.error_sub_key', error=str(exc), sub_key=sub_key)) from exc
             watchdog_config_json = orjson.dumps(sanitized_wd).decode("utf-8")
         except orjson.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON in watchdog configuration")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.invalid_json_in_watchdog_configuration'))
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Watchdog config error: {e}")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.watchdog_config_error', error=str(e)))
 
     # GranSabio config normalization (same pattern as watchdog_config)
     if gransabio_config is not None and gransabio_config.strip() in ("", "null"):
@@ -742,12 +778,12 @@ async def create_prompt_post(
     # Bidirectional incompatibility checks (catches both directions of the conflict)
     if gransabio_enabled and extensions_auto_advance:
         return JSONResponse(
-            content={"success": False, "message": "GranSabio is incompatible with extensions auto-advance (requires tool-calling)."},
+            content={"success": False, "message": t('prompt_editor_errors.gransabio_is_incompatible_with_extensions_auto_advance_requires_tool_calling')},
             status_code=400,
         )
     if gransabio_enabled and force_web_search:
         return JSONResponse(
-            content={"success": False, "message": "GranSabio is incompatible with force_web_search (bypasses all tool calling)."},
+            content={"success": False, "message": t('prompt_editor_errors.gransabio_is_incompatible_with_force_web_search_bypasses_all_tool_calling')},
             status_code=400,
         )
 
@@ -759,12 +795,12 @@ async def create_prompt_post(
                 parsed_gs = orjson.loads(gransabio_config)
                 if not isinstance(parsed_gs, dict):
                     return JSONResponse(
-                        content={"success": False, "message": "GranSabio config must be a JSON object."},
+                        content={"success": False, "message": t('prompt_editor_errors.gransabio_config_must_be_a_json_object')},
                         status_code=400,
                     )
             except orjson.JSONDecodeError:
                 return JSONResponse(
-                    content={"success": False, "message": "Invalid GranSabio config JSON."},
+                    content={"success": False, "message": t('prompt_editor_errors.invalid_gransabio_config_json')},
                     status_code=400,
                 )
         # Always validate merged config (catches broken admin defaults + empty prompt config)
@@ -773,18 +809,19 @@ async def create_prompt_post(
             from gransabio_config import get_gransabio_config
             admin_config = await get_gransabio_config()
             merged = merge_gransabio_config(parsed_gs, admin_config)
-            valid, config_err = validate_merged_config(merged)
+            valid, config_err = validate_merged_config(merged, translator=translator)
             if not valid:
                 return JSONResponse(
-                    content={"success": False, "message": f"GranSabio config validation: {config_err}. Configure admin defaults or set per-prompt values."},
+                    content={"success": False, "message": t('prompt_editor_errors.gransabio_config_validation_configure_admin_defaults_or_set_per_prompt_values', error=config_err)},
                     status_code=400,
                 )
         except ImportError:
             logger.warning("GranSabio modules not available, skipping config validation")
-        except Exception as e:
+        except Exception:
             # DB errors loading admin config should block the save
+            logger.exception("Error validating GranSabio prompt configuration")
             return JSONResponse(
-                content={"success": False, "message": f"GranSabio config validation error: {e}"},
+                content={"success": False, "message": t('prompt_editor_errors.gransabio_config_validation_error')},
                 status_code=400,
             )
 
@@ -800,7 +837,7 @@ async def create_prompt_post(
 
     # Validate: public prompts require at least one category
     if public and not parsed_category_ids:
-        raise HTTPException(status_code=400, detail="Public prompts require at least one category")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.public_prompts_require_at_least_one_category'))
 
     prompt_id = None
     async with get_db_connection() as conn:
@@ -811,6 +848,7 @@ async def create_prompt_post(
                 conn,
                 voice_code=sample_voice_id,
                 catalog_id=sample_voice_catalog_id,
+                translator=translator,
             )
 
             # Process pricing fields
@@ -822,9 +860,9 @@ async def create_prompt_post(
             if llm_mode == "restricted" and allowed_llms:
                 parsed = orjson.loads(allowed_llms)
                 if not isinstance(parsed, list) or not all(isinstance(x, int) for x in parsed):
-                    raise HTTPException(status_code=400, detail="Invalid allowed_llms format")
+                    raise HTTPException(status_code=400, detail=t('prompt_editor_errors.invalid_allowed_llms_format'))
                 if not parsed:
-                    raise HTTPException(status_code=400, detail="Restricted mode requires at least one model selected")
+                    raise HTTPException(status_code=400, detail=t('prompt_editor_errors.restricted_mode_requires_at_least_one_model_selected'))
                 actual_allowed_llms = allowed_llms
                 actual_forced_llm_id = None
                 actual_hide_llm_name = False
@@ -875,12 +913,13 @@ async def create_prompt_post(
         except HTTPException:
             await conn.execute("ROLLBACK")
             raise
-        except Exception as e:
+        except Exception:
             await conn.execute("ROLLBACK")
-            raise HTTPException(status_code=500, detail=f"Error creating prompt: {str(e)}")
+            logger.exception("Error creating prompt")
+            raise HTTPException(status_code=500, detail=t('prompt_editor_errors.error_creating_prompt'))
 
     if prompt_id:
-        prompt_info = await get_prompt_info(prompt_id)
+        prompt_info = await get_prompt_info(prompt_id, translator=translator)
         create_prompt_directory(current_user.username, prompt_id, prompt_info['name'])
 
         if image and image.filename:
@@ -898,6 +937,8 @@ async def create_prompt_post(
 
 @router.get("/prompts/edit/{prompt_id}", response_class=HTMLResponse)
 async def edit_prompt(request: Request, prompt_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
     
@@ -915,7 +956,7 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
             prompt = await cursor.fetchone()
         
         if not prompt:
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
         
         # Verify permissions
         async with conn.execute("SELECT role_name FROM USER_ROLES WHERE id = ?", (current_user.role_id,)) as cursor:
@@ -937,7 +978,7 @@ async def edit_prompt(request: Request, prompt_id: int, current_user: User = Dep
             is_editor = await cursor.fetchone() is not None
         
         if not (is_admin or is_owner or is_editor):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
         
         # Keep the editor usable when the current voice needs repair.  Target
         # validation remains strict in the atomic phone-settings activation.
@@ -1108,6 +1149,8 @@ async def update_prompt(
     gransabio_enabled: bool = Form(False),
     gransabio_config: Optional[str] = Form(None),
 ):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
 
@@ -1126,27 +1169,28 @@ async def update_prompt(
         or allow_in_packs
         or (purchase_price is not None and purchase_price.strip() != "")
     ) and not marketplace_creator_tools_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t('prompt_editor_errors.not_found'))
 
     # Mutual exclusion: disable_web_search takes priority over force_web_search
     if disable_web_search and force_web_search:
         force_web_search = False
 
-    prompt_info = await get_prompt_info(prompt_id)
+    prompt_info = await get_prompt_info(prompt_id, translator=translator)
 
     # Validate prompt name is not forbidden (security)
     # Only check if name is being changed
     if prompt_info and name != prompt_info.get('name', ''):
         if is_forbidden_prompt_name(name) or is_forbidden_prompt_name(slugify(name)):
-            raise HTTPException(status_code=400, detail="This name is not available. Please choose a different name.")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.this_name_is_not_available_please_choose_a_different_name'))
 
-    await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms)
+    await _validate_prompt_llm_selection(llm_mode, forced_llm_id, allowed_llms, translator=translator)
     forced_reasoning_json = await _validated_reasoning_json(
         llm_id=forced_llm_id if llm_mode == "forced" else None,
         mode=forced_reasoning_mode,
         budget_tokens=forced_reasoning_budget_tokens,
         inherit_value="default",
-        field_label="Prompt thinking",
+        field_label=t('prompt_editor_errors.prompt_thinking'),
+        translator=translator,
     )
 
     # Parse and validate watchdog_config
@@ -1154,20 +1198,20 @@ async def update_prompt(
     if watchdog_config and watchdog_config.strip():
         try:
             parsed_wd = orjson.loads(watchdog_config)
-            sanitized_wd = validate_watchdog_config(parsed_wd)
+            sanitized_wd = validate_watchdog_config(parsed_wd, translator=translator)
             # Async FK check for llm_id on both sub-configs
             for sub_key in ("pre_watchdog", "post_watchdog"):
                 sub_cfg = sanitized_wd.get(sub_key, {})
                 if sub_cfg.get("llm_id") is not None:
                     try:
-                        await _watchdog_llm_machine(sub_cfg["llm_id"])
+                        await _watchdog_llm_machine(sub_cfg["llm_id"], translator=translator)
                     except ValueError as exc:
-                        raise ValueError(f"{exc} ({sub_key})") from exc
+                        raise ValueError(t('prompt_editor_errors.error_sub_key', error=str(exc), sub_key=sub_key)) from exc
             watchdog_config_json = orjson.dumps(sanitized_wd).decode("utf-8")
         except orjson.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON in watchdog configuration")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.invalid_json_in_watchdog_configuration'))
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Watchdog config error: {e}")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.watchdog_config_error', error=str(e)))
 
     # GranSabio config normalization (same pattern as watchdog_config)
     if gransabio_config is not None and gransabio_config.strip() in ("", "null"):
@@ -1176,12 +1220,12 @@ async def update_prompt(
     # Bidirectional incompatibility checks (catches both directions of the conflict)
     if gransabio_enabled and extensions_auto_advance:
         return JSONResponse(
-            content={"success": False, "message": "GranSabio is incompatible with extensions auto-advance (requires tool-calling)."},
+            content={"success": False, "message": t('prompt_editor_errors.gransabio_is_incompatible_with_extensions_auto_advance_requires_tool_calling')},
             status_code=400,
         )
     if gransabio_enabled and force_web_search:
         return JSONResponse(
-            content={"success": False, "message": "GranSabio is incompatible with force_web_search (bypasses all tool calling)."},
+            content={"success": False, "message": t('prompt_editor_errors.gransabio_is_incompatible_with_force_web_search_bypasses_all_tool_calling')},
             status_code=400,
         )
 
@@ -1193,12 +1237,12 @@ async def update_prompt(
                 parsed_gs = orjson.loads(gransabio_config)
                 if not isinstance(parsed_gs, dict):
                     return JSONResponse(
-                        content={"success": False, "message": "GranSabio config must be a JSON object."},
+                        content={"success": False, "message": t('prompt_editor_errors.gransabio_config_must_be_a_json_object')},
                         status_code=400,
                     )
             except orjson.JSONDecodeError:
                 return JSONResponse(
-                    content={"success": False, "message": "Invalid GranSabio config JSON."},
+                    content={"success": False, "message": t('prompt_editor_errors.invalid_gransabio_config_json')},
                     status_code=400,
                 )
         # Always validate merged config (catches broken admin defaults + empty prompt config)
@@ -1207,18 +1251,19 @@ async def update_prompt(
             from gransabio_config import get_gransabio_config
             admin_config = await get_gransabio_config()
             merged = merge_gransabio_config(parsed_gs, admin_config)
-            valid, config_err = validate_merged_config(merged)
+            valid, config_err = validate_merged_config(merged, translator=translator)
             if not valid:
                 return JSONResponse(
-                    content={"success": False, "message": f"GranSabio config validation: {config_err}. Configure admin defaults or set per-prompt values."},
+                    content={"success": False, "message": t('prompt_editor_errors.gransabio_config_validation_configure_admin_defaults_or_set_per_prompt_values', error=config_err)},
                     status_code=400,
                 )
         except ImportError:
             logger.warning("GranSabio modules not available, skipping config validation")
-        except Exception as e:
+        except Exception:
             # DB errors loading admin config should block the save
+            logger.exception("Error validating GranSabio prompt configuration")
             return JSONResponse(
-                content={"success": False, "message": f"GranSabio config validation error: {e}"},
+                content={"success": False, "message": t('prompt_editor_errors.gransabio_config_validation_error')},
                 status_code=400,
             )
 
@@ -1234,7 +1279,7 @@ async def update_prompt(
 
     # Validate: public prompts require at least one category
     if public and not parsed_category_ids:
-        raise HTTPException(status_code=400, detail="Public prompts require at least one category")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.public_prompts_require_at_least_one_category'))
 
     async with get_db_connection() as conn:
         # Verify permissions
@@ -1249,7 +1294,7 @@ async def update_prompt(
         is_owner = current_owner_id == current_user.id
 
         if not await can_manage_prompt(current_user.id, prompt_id, is_admin):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
         can_manage_permissions = is_admin or is_owner
 
         # Get public_id for cache invalidation
@@ -1262,7 +1307,7 @@ async def update_prompt(
             try:
                 editor_ids_list = orjson.loads(editor_ids)
                 if not isinstance(editor_ids_list, list):
-                    raise ValueError("editor_ids should be a list")
+                    raise ValueError(t('prompt_editor_errors.editor_ids_should_be_a_list'))
             except orjson.JSONDecodeError:
                 editor_ids_list = [int(id.strip()) for id in editor_ids.split(',') if id.strip()]
 
@@ -1275,6 +1320,7 @@ async def update_prompt(
             conn,
             voice_code=sample_voice_id,
             catalog_id=sample_voice_catalog_id,
+            translator=translator,
         )
         async with conn.cursor() as cursor:
             # A prompt with no explicit voice inherits the one global default.
@@ -1293,7 +1339,7 @@ async def update_prompt(
             )
             voice_state = await cursor.fetchone()
             if voice_state is None:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
             configured_voice_id = voice_state["configured_voice_id"]
             default_voice_id = voice_state["default_voice_id"]
             if configured_voice_id is None:
@@ -1301,8 +1347,7 @@ async def update_prompt(
                     raise HTTPException(
                         status_code=409,
                         detail=(
-                            "Voice is unavailable until exactly one global "
-                            "default voice is selected."
+                            t('prompt_editor_errors.voice_is_unavailable_until_exactly_one_global_default_voice_is_selected')
                         ),
                     )
                 voice_id = (
@@ -1322,9 +1367,9 @@ async def update_prompt(
             if llm_mode == "restricted" and allowed_llms:
                 parsed = orjson.loads(allowed_llms)
                 if not isinstance(parsed, list) or not all(isinstance(x, int) for x in parsed):
-                    raise HTTPException(status_code=400, detail="Invalid allowed_llms format")
+                    raise HTTPException(status_code=400, detail=t('prompt_editor_errors.invalid_allowed_llms_format'))
                 if not parsed:
-                    raise HTTPException(status_code=400, detail="Restricted mode requires at least one model selected")
+                    raise HTTPException(status_code=400, detail=t('prompt_editor_errors.restricted_mode_requires_at_least_one_model_selected'))
                 actual_allowed_llms = allowed_llms
                 actual_forced_llm_id = None
                 actual_hide_llm_name = False
@@ -1357,11 +1402,11 @@ async def update_prompt(
             is_withdrawal = prev_allow_in_packs and not allow_in_packs
 
             if pack_notice_period_days not in VALID_NOTICE_PERIODS:
-                raise HTTPException(status_code=400, detail=f"Invalid notice period. Allowed: {VALID_NOTICE_PERIODS}")
+                raise HTTPException(status_code=400, detail=t('prompt_editor_errors.invalid_notice_period_allowed', valid_notice_periods=', '.join(translator.format_number(value) for value in VALID_NOTICE_PERIODS)))
             # Enforce never-decrease rule only when NOT withdrawing
             # Withdrawal resets to 0 legitimately; the snapshot on PACK_ITEMS preserves the contract
             if not is_withdrawal and pack_notice_period_days < current_notice_days:
-                raise HTTPException(status_code=400, detail=f"Notice period can only be increased. Current: {current_notice_days} days")
+                raise HTTPException(status_code=400, detail=t('prompt_editor_errors.notice_period_can_only_be_increased_current_days', count=current_notice_days, current_notice_days=translator.format_number(current_notice_days)))
 
             # Process purchase_price: empty string or None = NULL, otherwise parse as float
             actual_purchase_price = None
@@ -1369,11 +1414,11 @@ async def update_prompt(
                 try:
                     actual_purchase_price = float(purchase_price)
                     if actual_purchase_price < 0:
-                        raise HTTPException(status_code=400, detail="Purchase price cannot be negative")
+                        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.purchase_price_cannot_be_negative'))
                     if actual_purchase_price > 0 and actual_purchase_price < 0.50:
-                        raise HTTPException(status_code=400, detail="Minimum purchase price is $0.50 (Stripe minimum)")
+                        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.minimum_purchase_price_is_0_50_stripe_minimum', amount=translator.format_currency(0.5, 'USD')))
                 except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid purchase price")
+                    raise HTTPException(status_code=400, detail=t('prompt_editor_errors.invalid_purchase_price'))
             # 0 means "no purchase gate" (Premium), convert to NULL
             if actual_purchase_price is not None and actual_purchase_price == 0:
                 actual_purchase_price = None
@@ -1414,12 +1459,11 @@ async def update_prompt(
             if cursor.rowcount != 1:
                 await cursor.execute("SELECT 1 FROM PROMPTS WHERE id = ?", (prompt_id,))
                 if await cursor.fetchone() is None:
-                    raise HTTPException(status_code=404, detail="Prompt not found")
+                    raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "This prompt has active phone audio. Change its voice through "
-                        "the atomic phone-audio activation flow."
+                        t('prompt_editor_errors.this_prompt_has_active_phone_audio_change_its_voice_through_the_atomic_phone_audio_ac')
                     ),
                 )
 
@@ -1464,7 +1508,7 @@ async def update_prompt(
                                 (prompt_id, new_owner_id)
                             )
                         except sqlite3.IntegrityError:
-                            raise HTTPException(status_code=409, detail="Owner already assigned by another request")
+                            raise HTTPException(status_code=409, detail=t('prompt_editor_errors.owner_already_assigned_by_another_request'))
                 elif not current_owner_id and is_admin:
                     # If there is no current owner and the user is admin, assign the admin as owner
                     try:
@@ -1473,7 +1517,7 @@ async def update_prompt(
                             (prompt_id, current_user.id)
                         )
                     except sqlite3.IntegrityError:
-                        raise HTTPException(status_code=409, detail="Owner already assigned by another request")
+                        raise HTTPException(status_code=409, detail=t('prompt_editor_errors.owner_already_assigned_by_another_request'))
 
                 await cursor.execute(
                     "DELETE FROM PROMPT_PERMISSIONS WHERE prompt_id = ? AND permission_level = 'edit'",
@@ -1506,8 +1550,9 @@ async def update_prompt(
 
 @router.delete("/prompts/delete/{prompt_id}")
 async def delete_prompt(prompt_id: int, current_user: User = Depends(get_current_user)):
+    t = Translator(getattr(current_user, "ui_language", None) or "en").t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=t('prompt_editor_errors.not_authenticated'))
     
     async with get_db_connection() as conn:
         # Verify if the user is admin or owner
@@ -1524,14 +1569,14 @@ async def delete_prompt(prompt_id: int, current_user: User = Depends(get_current
             prompt_info = await cursor.fetchone()
 
         if not prompt_info:
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
 
         async with conn.execute("SELECT user_id FROM PROMPT_PERMISSIONS WHERE prompt_id = ? AND permission_level = 'owner'", (prompt_id,)) as cursor:
             owner_result = await cursor.fetchone()
             is_owner = owner_result and owner_result[0] == current_user.id
 
         if not (is_admin or is_owner):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
         # Save public_id for cache invalidation (before deleting)
         prompt_public_id = prompt_info['public_id'] if 'public_id' in prompt_info.keys() else None
@@ -1563,7 +1608,7 @@ async def delete_prompt(prompt_id: int, current_user: User = Depends(get_current
             deleted = await cursor.fetchone()
 
             if not deleted:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
 
             # Delete the prompt folder and its contents
             owner_username = prompt_info['owner_username']
@@ -1595,19 +1640,24 @@ async def delete_prompt(prompt_id: int, current_user: User = Depends(get_current
 
             return JSONResponse(content={"success": True}, status_code=200)
 
-        except Exception as e:
+        except HTTPException:
             await conn.rollback()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise
+        except Exception:
+            await conn.rollback()
+            logger.exception("Error deleting prompt %s", prompt_id)
+            raise HTTPException(status_code=500, detail=t('prompt_editor_errors.error_deleting_prompt'))
 
 
 @router.post("/prompts/delete-batch")
 async def delete_prompts_batch(request: Request, current_user: User = Depends(get_current_user)):
     """Delete multiple prompts at once"""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
 
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     form_data = await request.form()
     selected_prompts = form_data.getlist("selected_prompts")
@@ -1725,8 +1775,10 @@ async def delete_prompts_batch(request: Request, current_user: User = Depends(ge
 
 @router.post("/api/delete-prompt-image/{prompt_id}")
 async def delete_prompt_image(prompt_id: int, current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None) or "en")
+    t = translator.t
     if current_user is None:
-        return JSONResponse(content={"success": False, "message": "User not authenticated"}, status_code=401)
+        return JSONResponse(content={"success": False, "message": t('prompt_editor_errors.user_not_authenticated')}, status_code=401)
 
     async with get_db_connection() as conn:
         # Get prompt information and its owner
@@ -1740,7 +1792,7 @@ async def delete_prompt_image(prompt_id: int, current_user: User = Depends(get_c
             prompt_info = await cursor.fetchone()
 
         if not prompt_info:
-            return JSONResponse(content={"success": False, "message": "Prompt not found"}, status_code=404)
+            return JSONResponse(content={"success": False, "message": t('prompt_editor_errors.prompt_not_found')}, status_code=404)
 
         # Verify permissions
         is_admin = await current_user.is_admin
@@ -1752,7 +1804,7 @@ async def delete_prompt_image(prompt_id: int, current_user: User = Depends(get_c
             has_permission = await cursor.fetchone() is not None
 
         if not (is_admin or has_permission):
-            return JSONResponse(content={"success": False, "message": "Access denied"}, status_code=403)
+            return JSONResponse(content={"success": False, "message": t('prompt_editor_errors.access_denied')}, status_code=403)
 
         # Use the owner's username for the directory structure
         hash_prefix1, hash_prefix2, user_hash = generate_user_hash(prompt_info['owner_username'])
@@ -1775,7 +1827,7 @@ async def delete_prompt_image(prompt_id: int, current_user: User = Depends(get_c
         await conn.execute("UPDATE Prompts SET image = NULL WHERE id = ?", (prompt_id,))
         await conn.commit()
 
-    return JSONResponse(content={"success": True, "message": "Prompt image deleted successfully"}, status_code=200)
+    return JSONResponse(content={"success": True, "message": t('prompt_editor_errors.prompt_image_deleted_successfully')}, status_code=200)
         
 async def get_user_accessible_prompts(user_id: int):
     """Get all prompts a user can assign to customers (including public prompts).
@@ -1999,7 +2051,8 @@ def create_pack_directory(username: str, pack_id: Union[int, str], pack_name: st
 
 
 # Function to get prompt information
-async def get_prompt_info(prompt_id: int) -> dict:
+async def get_prompt_info(prompt_id: int, translator=None) -> dict:
+    t = (translator or Translator("en")).t
     async with get_db_connection(readonly=True) as conn:
         async with conn.cursor() as cursor:
             await cursor.execute("""
@@ -2016,7 +2069,7 @@ async def get_prompt_info(prompt_id: int) -> dict:
                     "created_by_username": result[2]
                 }
             else:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
 
 
 def _get_entity_path(
@@ -2154,8 +2207,10 @@ def get_default_watchdog_config() -> dict:
     }
 
 
-def _validate_pre_watchdog_config(config: dict) -> dict:
+def _validate_pre_watchdog_config(config: dict, translator=None) -> dict:
     """Validate the pre_watchdog sub-config. Returns sanitized dict or raises ValueError."""
+    translator = translator or Translator("en")
+    t = translator.t
     defaults = get_default_watchdog_config()["pre_watchdog"]
     sanitized = defaults.copy()
 
@@ -2167,21 +2222,21 @@ def _validate_pre_watchdog_config(config: dict) -> dict:
     # llm_id — required when enabled, preserved when disabled
     llm_id = config.get("llm_id")
     if enabled and llm_id is None:
-        raise ValueError("pre_watchdog.llm_id is required when enabled")
+        raise ValueError(t('prompt_editor_errors.pre_watchdog_llm_id_is_required_when_enabled'))
     if llm_id is not None:
         try:
             sanitized["llm_id"] = int(llm_id)
         except (TypeError, ValueError):
             if enabled:
-                raise ValueError("pre_watchdog.llm_id must be an integer")
+                raise ValueError(t('prompt_editor_errors.pre_watchdog_llm_id_must_be_an_integer'))
 
     # objectives — required when enabled, preserved when disabled
     objectives = config.get("objectives", [])
     if enabled and (not isinstance(objectives, list) or not objectives):
-        raise ValueError("pre_watchdog requires at least one objective when enabled")
+        raise ValueError(t('prompt_editor_errors.pre_watchdog_requires_at_least_one_objective_when_enabled'))
     if isinstance(objectives, list):
         if len(objectives) > WATCHDOG_OBJ_MAX_COUNT:
-            raise ValueError(f"pre_watchdog: maximum {WATCHDOG_OBJ_MAX_COUNT} objectives allowed")
+            raise ValueError(t('prompt_editor_errors.pre_watchdog_maximum_objectives_allowed', watchdog_obj_max_count=translator.format_number(WATCHDOG_OBJ_MAX_COUNT)))
         sanitized_objectives = []
         for obj in objectives:
             if not isinstance(obj, str):
@@ -2190,7 +2245,7 @@ def _validate_pre_watchdog_config(config: dict) -> dict:
             if obj:
                 sanitized_objectives.append(obj)
         if enabled and not sanitized_objectives:
-            raise ValueError("pre_watchdog requires at least one non-empty objective")
+            raise ValueError(t('prompt_editor_errors.pre_watchdog_requires_at_least_one_non_empty_objective'))
         sanitized["objectives"] = sanitized_objectives
 
     # steering_prompt (optional)
@@ -2205,26 +2260,28 @@ def _validate_pre_watchdog_config(config: dict) -> dict:
     except (TypeError, ValueError):
         frequency = 1
     if frequency < WATCHDOG_FREQ_MIN or frequency > WATCHDOG_FREQ_MAX:
-        raise ValueError(f"pre_watchdog.frequency must be between {WATCHDOG_FREQ_MIN} and {WATCHDOG_FREQ_MAX}")
+        raise ValueError(t('prompt_editor_errors.pre_watchdog_frequency_must_be_between_and', watchdog_freq_min=translator.format_number(WATCHDOG_FREQ_MIN), watchdog_freq_max=translator.format_number(WATCHDOG_FREQ_MAX)))
     sanitized["frequency"] = frequency
 
     # can_takeover (bool, default True)
     can_takeover = config.get("can_takeover", True)
     if not isinstance(can_takeover, bool):
-        raise ValueError("pre_watchdog.can_takeover must be a boolean")
+        raise ValueError(t('prompt_editor_errors.pre_watchdog_can_takeover_must_be_a_boolean'))
     sanitized["can_takeover"] = can_takeover
 
     # can_lock (bool, default False)
     can_lock = config.get("can_lock", False)
     if not isinstance(can_lock, bool):
-        raise ValueError("pre_watchdog.can_lock must be a boolean")
+        raise ValueError(t('prompt_editor_errors.pre_watchdog_can_lock_must_be_a_boolean'))
     sanitized["can_lock"] = can_lock
 
     return sanitized
 
 
-def _validate_post_watchdog_config(config: dict) -> dict:
+def _validate_post_watchdog_config(config: dict, translator=None) -> dict:
     """Validate the post_watchdog sub-config. Returns sanitized dict or raises ValueError."""
+    translator = translator or Translator("en")
+    t = translator.t
     defaults = get_default_watchdog_config()["post_watchdog"]
     sanitized = defaults.copy()
     sanitized["thresholds"] = defaults["thresholds"].copy()
@@ -2237,28 +2294,28 @@ def _validate_post_watchdog_config(config: dict) -> dict:
     # llm_id — required when enabled, preserved when disabled
     llm_id = config.get("llm_id")
     if enabled and llm_id is None:
-        raise ValueError("post_watchdog.llm_id is required when enabled")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_llm_id_is_required_when_enabled'))
     if llm_id is not None:
         try:
             sanitized["llm_id"] = int(llm_id)
         except (TypeError, ValueError):
             if enabled:
-                raise ValueError("post_watchdog.llm_id must be an integer")
+                raise ValueError(t('prompt_editor_errors.post_watchdog_llm_id_must_be_an_integer'))
 
     # mode
     mode = config.get("mode", "custom")
     if mode in VALID_WATCHDOG_MODES:
         sanitized["mode"] = mode
     elif enabled:
-        raise ValueError(f"post_watchdog.mode must be one of: {', '.join(VALID_WATCHDOG_MODES)}")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_mode_must_be_one_of', join_valid_watchdog_modes=', '.join(VALID_WATCHDOG_MODES)))
 
     # objectives — required when enabled, preserved when disabled
     objectives = config.get("objectives", [])
     if enabled and (not isinstance(objectives, list) or not objectives):
-        raise ValueError("post_watchdog requires at least one objective when enabled")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_requires_at_least_one_objective_when_enabled'))
     if isinstance(objectives, list):
         if len(objectives) > WATCHDOG_OBJ_MAX_COUNT:
-            raise ValueError(f"post_watchdog: maximum {WATCHDOG_OBJ_MAX_COUNT} objectives allowed")
+            raise ValueError(t('prompt_editor_errors.post_watchdog_maximum_objectives_allowed', watchdog_obj_max_count=translator.format_number(WATCHDOG_OBJ_MAX_COUNT)))
         sanitized_objectives = []
         for obj in objectives:
             if not isinstance(obj, str):
@@ -2267,7 +2324,7 @@ def _validate_post_watchdog_config(config: dict) -> dict:
             if obj:
                 sanitized_objectives.append(obj)
         if enabled and not sanitized_objectives:
-            raise ValueError("post_watchdog requires at least one non-empty objective")
+            raise ValueError(t('prompt_editor_errors.post_watchdog_requires_at_least_one_non_empty_objective'))
         sanitized["objectives"] = sanitized_objectives
 
     # steering_prompt (optional)
@@ -2282,7 +2339,7 @@ def _validate_post_watchdog_config(config: dict) -> dict:
     except (TypeError, ValueError):
         frequency = 3
     if frequency < WATCHDOG_FREQ_MIN or frequency > WATCHDOG_FREQ_MAX:
-        raise ValueError(f"post_watchdog.frequency must be between {WATCHDOG_FREQ_MIN} and {WATCHDOG_FREQ_MAX}")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_frequency_must_be_between_and', watchdog_freq_min=translator.format_number(WATCHDOG_FREQ_MIN), watchdog_freq_max=translator.format_number(WATCHDOG_FREQ_MAX)))
     sanitized["frequency"] = frequency
 
     # max_hint_chars
@@ -2292,7 +2349,7 @@ def _validate_post_watchdog_config(config: dict) -> dict:
     except (TypeError, ValueError):
         max_hint_chars = 500
     if max_hint_chars < WATCHDOG_HINT_MIN or max_hint_chars > WATCHDOG_HINT_MAX:
-        raise ValueError(f"post_watchdog.max_hint_chars must be between {WATCHDOG_HINT_MIN} and {WATCHDOG_HINT_MAX}")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_max_hint_chars_must_be_between_and', watchdog_hint_min=translator.format_number(WATCHDOG_HINT_MIN), watchdog_hint_max=translator.format_number(WATCHDOG_HINT_MAX)))
     sanitized["max_hint_chars"] = max_hint_chars
 
     # thresholds
@@ -2312,7 +2369,7 @@ def _validate_post_watchdog_config(config: dict) -> dict:
                 else:
                     continue
             if val < WATCHDOG_THRESHOLD_MIN or val > WATCHDOG_THRESHOLD_MAX:
-                raise ValueError(f"post_watchdog threshold '{key}' must be between {WATCHDOG_THRESHOLD_MIN} and {WATCHDOG_THRESHOLD_MAX}")
+                raise ValueError(t('prompt_editor_errors.post_watchdog_threshold_must_be_between_and', key=key, watchdog_threshold_min=translator.format_number(WATCHDOG_THRESHOLD_MIN), watchdog_threshold_max=translator.format_number(WATCHDOG_THRESHOLD_MAX)))
             sanitized_thresholds[key] = val
         elif key in _REQUIRED_THRESHOLD_KEYS:
             sanitized_thresholds[key] = sanitized["thresholds"][key]
@@ -2321,7 +2378,7 @@ def _validate_post_watchdog_config(config: dict) -> dict:
     # can_takeover (bool, default False)
     can_takeover = config.get("can_takeover", False)
     if not isinstance(can_takeover, bool):
-        raise ValueError("post_watchdog.can_takeover must be a boolean")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_can_takeover_must_be_a_boolean'))
     sanitized["can_takeover"] = can_takeover
 
     # takeover_threshold (1-50, default 5)
@@ -2331,24 +2388,26 @@ def _validate_post_watchdog_config(config: dict) -> dict:
     except (TypeError, ValueError):
         takeover_threshold = 5
     if takeover_threshold < WATCHDOG_TAKEOVER_THRESHOLD_MIN or takeover_threshold > WATCHDOG_TAKEOVER_THRESHOLD_MAX:
-        raise ValueError(f"post_watchdog.takeover_threshold must be between {WATCHDOG_TAKEOVER_THRESHOLD_MIN} and {WATCHDOG_TAKEOVER_THRESHOLD_MAX}")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_takeover_threshold_must_be_between_and', watchdog_takeover_threshold_min=translator.format_number(WATCHDOG_TAKEOVER_THRESHOLD_MIN), watchdog_takeover_threshold_max=translator.format_number(WATCHDOG_TAKEOVER_THRESHOLD_MAX)))
     sanitized["takeover_threshold"] = takeover_threshold
 
     # can_lock (bool, default False)
     can_lock = config.get("can_lock", False)
     if not isinstance(can_lock, bool):
-        raise ValueError("post_watchdog.can_lock must be a boolean")
+        raise ValueError(t('prompt_editor_errors.post_watchdog_can_lock_must_be_a_boolean'))
     sanitized["can_lock"] = can_lock
 
     return sanitized
 
 
-def validate_watchdog_config(config: dict) -> dict:
+def validate_watchdog_config(config: dict, translator=None) -> dict:
     """Validate and sanitize nested watchdog config. Sync, structural only (no DB checks).
     Accepts nested {pre_watchdog: {}, post_watchdog: {}} format.
     Returns sanitized nested dict or raises ValueError."""
+    translator = translator or Translator("en")
+    t = translator.t
     if not isinstance(config, dict):
-        raise ValueError("watchdog_config must be a JSON object")
+        raise ValueError(t('prompt_editor_errors.watchdog_config_must_be_a_json_object'))
 
     pre_raw = config.get("pre_watchdog", {})
     post_raw = config.get("post_watchdog", {})
@@ -2359,13 +2418,14 @@ def validate_watchdog_config(config: dict) -> dict:
         post_raw = {}
 
     return {
-        "pre_watchdog": _validate_pre_watchdog_config(pre_raw),
-        "post_watchdog": _validate_post_watchdog_config(post_raw),
+        "pre_watchdog": _validate_pre_watchdog_config(pre_raw, translator=translator),
+        "post_watchdog": _validate_post_watchdog_config(post_raw, translator=translator),
     }
 
 
-async def get_watchdog_config(prompt_id: int) -> dict:
+async def get_watchdog_config(prompt_id: int, translator=None) -> dict:
     """Read nested watchdog config from DB, deep-merged with defaults."""
+    t = (translator or Translator("en")).t
     async with get_db_connection(readonly=True) as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
@@ -2375,7 +2435,7 @@ async def get_watchdog_config(prompt_id: int) -> dict:
             result = await cursor.fetchone()
 
             if not result:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
 
             config = get_default_watchdog_config()
             config_json = result[0]
@@ -2399,19 +2459,21 @@ async def get_watchdog_config(prompt_id: int) -> dict:
             return config
 
 
-async def set_watchdog_config(prompt_id: int, config: dict) -> bool:
+async def set_watchdog_config(prompt_id: int, config: dict, translator=None) -> bool:
     """Validate, check FK llm_ids, serialize and store nested watchdog config.
     Returns True on success. Raises ValueError on validation error."""
-    sanitized = validate_watchdog_config(config)
+    translator = translator or Translator("en")
+    t = translator.t
+    sanitized = validate_watchdog_config(config, translator=translator)
 
     # Async FK validation: check llm_id exists in LLM table for both sub-configs
     for sub_key in ("pre_watchdog", "post_watchdog"):
         sub_cfg = sanitized.get(sub_key, {})
         if sub_cfg.get("llm_id") is not None:
             try:
-                await _watchdog_llm_machine(sub_cfg["llm_id"])
+                await _watchdog_llm_machine(sub_cfg["llm_id"], translator=translator)
             except ValueError as exc:
-                raise ValueError(f"{exc} ({sub_key})") from exc
+                raise ValueError(t('prompt_editor_errors.error_sub_key', error=str(exc), sub_key=sub_key)) from exc
 
     config_json = orjson.dumps(sanitized).decode("utf-8")
 
@@ -2541,11 +2603,13 @@ async def watchdog_suggest_config(
     request: Request,
     current_user: User = Depends(get_current_user)
 ):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=t('prompt_editor_errors.not_authenticated'))
 
     if not await current_user.is_admin and not await current_user.is_user:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     body = await request.json()
     llm_id = body.get("llm_id")
@@ -2553,16 +2617,16 @@ async def watchdog_suggest_config(
 
     # Validations
     if not llm_id:
-        raise HTTPException(status_code=400, detail="llm_id is required")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.llm_id_is_required'))
     if not prompt_text or len(prompt_text) < 10:
-        raise HTTPException(status_code=400, detail="prompt_text is required (min 10 chars)")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.prompt_text_is_required_min_10_chars'))
 
     prompt_text = prompt_text[:10000]  # Truncate to limit cost
 
     # Lookup LLM
     llm_info = await get_llm_info(llm_id)
     if not llm_info:
-        raise HTTPException(status_code=404, detail="LLM not found")
+        raise HTTPException(status_code=404, detail=t('prompt_editor_errors.llm_not_found'))
 
     machine = llm_info["machine"]
     model = llm_info["model"]
@@ -2598,7 +2662,7 @@ async def watchdog_suggest_config(
     if not resolved_key and not use_system:
         raise HTTPException(
             status_code=400,
-            detail=f"API key required for provider {machine} in own-only mode.",
+            detail=t('prompt_editor_errors.api_key_required_for_provider_in_own_only_mode', provider=machine),
         )
 
     from ai_runtime.billing import assert_billable_claude_system_key
@@ -2613,7 +2677,7 @@ async def watchdog_suggest_config(
     )
     if wd_guard_error:
         logger.error(wd_guard_error)
-        raise HTTPException(status_code=500, detail=wd_guard_error)
+        raise HTTPException(status_code=500, detail=t('prompt_editor_errors.billing_is_temporarily_unavailable_please_try_again'))
 
     # Call LLM
     from tools.llm_caller import (
@@ -2637,7 +2701,7 @@ async def watchdog_suggest_config(
     except InsufficientBalanceError:
         raise HTTPException(
             status_code=402,
-            detail="Insufficient balance for AI analysis.",
+            detail=t('prompt_editor_errors.insufficient_balance_for_ai_analysis'),
         )
     except BillingReservationError:
         logger.exception(
@@ -2647,7 +2711,7 @@ async def watchdog_suggest_config(
         )
         raise HTTPException(
             status_code=503,
-            detail="Billing is temporarily unavailable. Please try again.",
+            detail=t('prompt_editor_errors.billing_is_temporarily_unavailable_please_try_again'),
         )
 
     try:
@@ -2681,7 +2745,7 @@ async def watchdog_suggest_config(
                     billing_reservation_id,
                 )
         logger.exception("Watchdog suggest-config: LLM call failed (llm_id=%s)", llm_id)
-        raise HTTPException(status_code=502, detail="AI analysis failed. Please try again or configure manually.")
+        raise HTTPException(status_code=502, detail=t('prompt_editor_errors.ai_analysis_failed_please_try_again_or_configure_manually'))
 
     try:
         if billing_reservation_id:
@@ -2729,7 +2793,7 @@ async def watchdog_suggest_config(
         )
         raise HTTPException(
             status_code=503,
-            detail="Billing is temporarily unavailable. Please try again.",
+            detail=t('prompt_editor_errors.billing_is_temporarily_unavailable_please_try_again'),
         )
 
     # Parse JSON from response
@@ -2737,7 +2801,7 @@ async def watchdog_suggest_config(
     if not suggestion:
         raise HTTPException(
             status_code=502,
-            detail="The AI returned an invalid response. Try again or configure manually."
+            detail=t('prompt_editor_errors.the_ai_returned_an_invalid_response_try_again_or_configure_manually')
         )
 
     # Sanitize and validate ranges
@@ -2746,7 +2810,7 @@ async def watchdog_suggest_config(
     if not sanitized["objectives"]:
         raise HTTPException(
             status_code=502,
-            detail="The AI could not generate valid objectives. Please configure manually."
+            detail=t('prompt_editor_errors.the_ai_could_not_generate_valid_objectives_please_configure_manually')
         )
 
     return sanitized
@@ -2807,8 +2871,10 @@ async def _generate_unique_slug(conn, prompt_id: int, name: str, exclude_id: int
 @router.get("/api/prompts/{prompt_id}/extensions")
 async def list_extensions(prompt_id: int, current_user: User = Depends(get_current_user)):
     """List all extensions for a prompt, ordered by display_order."""
+    translator = Translator(getattr(current_user, "ui_language", None) or "en")
+    t = translator.t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=t('prompt_editor_errors.authentication_required'))
 
     # Authorization: user must be able to manage the prompt OR have a conversation with it
     is_admin_user = await current_user.is_admin
@@ -2821,13 +2887,13 @@ async def list_extensions(prompt_id: int, current_user: User = Depends(get_curre
             )
             has_conversation = await cursor.fetchone()
         if not has_conversation:
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     async with get_db_connection(readonly=True) as conn:
         # Verify prompt exists
         cursor = await conn.execute("SELECT id FROM Prompts WHERE id = ?", (prompt_id,))
         if not await cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
 
         cursor = await conn.execute(
             """SELECT id, name, slug, prompt_text, description, display_order, is_default
@@ -2845,9 +2911,11 @@ async def list_extensions(prompt_id: int, current_user: User = Depends(get_curre
 @router.post("/api/prompts/{prompt_id}/extensions", status_code=201)
 async def create_extension(prompt_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Create a new extension for a prompt."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     is_admin_user = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin_user):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     body = await request.json()
     name = (body.get("name") or "").strip()
@@ -2856,15 +2924,15 @@ async def create_extension(prompt_id: int, request: Request, current_user: User 
     is_default = bool(body.get("is_default", False))
 
     if not name:
-        raise HTTPException(status_code=400, detail="Extension name is required")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.extension_name_is_required'))
     if not prompt_text:
-        raise HTTPException(status_code=400, detail="Extension prompt_text is required")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.extension_prompt_text_is_required'))
 
     async with get_db_connection() as conn:
         # Verify prompt exists
         cursor = await conn.execute("SELECT id FROM Prompts WHERE id = ?", (prompt_id,))
         if not await cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=t('prompt_editor_errors.prompt_not_found'))
 
         slug = await _generate_unique_slug(conn, prompt_id, name)
 
@@ -2905,14 +2973,16 @@ async def create_extension(prompt_id: int, request: Request, current_user: User 
 @router.put("/api/prompts/{prompt_id}/extensions/reorder")
 async def reorder_extensions(prompt_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Bulk reorder extensions by updating display_order based on array index."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     is_admin_user = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin_user):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     body = await request.json()
     order = body.get("order")
     if not isinstance(order, list) or not all(isinstance(x, int) for x in order):
-        raise HTTPException(status_code=400, detail="'order' must be an array of extension IDs")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.order_must_be_an_array_of_extension_ids'))
 
     async with get_db_connection() as conn:
         for idx, ext_id in enumerate(order):
@@ -2928,9 +2998,11 @@ async def reorder_extensions(prompt_id: int, request: Request, current_user: Use
 @router.put("/api/prompts/{prompt_id}/extensions/{extension_id}")
 async def update_extension(prompt_id: int, extension_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Update an existing extension."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     is_admin_user = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin_user):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     body = await request.json()
 
@@ -2942,16 +3014,16 @@ async def update_extension(prompt_id: int, extension_id: int, request: Request, 
         )
         existing = await cursor.fetchone()
         if not existing:
-            raise HTTPException(status_code=404, detail="Extension not found")
+            raise HTTPException(status_code=404, detail=t('prompt_editor_errors.extension_not_found'))
 
         # Determine updated values (partial update: only provided fields change)
         new_name = body["name"].strip() if "name" in body else existing["name"]
         if not new_name:
-            raise HTTPException(status_code=400, detail="Extension name cannot be empty")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.extension_name_cannot_be_empty'))
 
         new_prompt_text = body["prompt_text"].strip() if "prompt_text" in body else existing["prompt_text"]
         if not new_prompt_text:
-            raise HTTPException(status_code=400, detail="Extension prompt text cannot be empty")
+            raise HTTPException(status_code=400, detail=t('prompt_editor_errors.extension_prompt_text_cannot_be_empty'))
         new_description = body.get("description", existing["description"]) or ""
         if isinstance(new_description, str):
             new_description = new_description.strip()
@@ -2992,9 +3064,11 @@ async def update_extension(prompt_id: int, extension_id: int, request: Request, 
 @router.delete("/api/prompts/{prompt_id}/extensions/{extension_id}")
 async def delete_extension(prompt_id: int, extension_id: int, current_user: User = Depends(get_current_user)):
     """Delete an extension. Clears active_extension_id references and reassigns default if needed."""
+    translator = Translator(getattr(current_user, "ui_language", None) or "en")
+    t = translator.t
     is_admin_user = await current_user.is_admin
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin_user):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     async with get_db_connection() as conn:
         # Verify the extension exists and belongs to this prompt
@@ -3004,7 +3078,7 @@ async def delete_extension(prompt_id: int, extension_id: int, current_user: User
         )
         existing = await cursor.fetchone()
         if not existing:
-            raise HTTPException(status_code=404, detail="Extension not found")
+            raise HTTPException(status_code=404, detail=t('prompt_editor_errors.extension_not_found'))
 
         was_default = bool(existing["is_default"])
 

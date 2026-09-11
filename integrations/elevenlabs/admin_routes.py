@@ -1,4 +1,5 @@
 import asyncio
+import math
 from urllib.parse import quote, urlencode
 
 import aiohttp
@@ -16,6 +17,7 @@ from ai_runtime.voice_resolution import (
     resolve_prompt_voice,
 )
 from log_config import logger
+from i18n import get_translator
 from models import User
 from tools.tts_config import (
     VALID_FORMATS,
@@ -30,14 +32,14 @@ from tools.tts_load_balancer import get_elevenlabs_key
 router = APIRouter()
 
 
-async def _prompt_webrtc_voice_status(conn, prompt_id: int) -> dict:
+async def _prompt_webrtc_voice_status(conn, prompt_id: int, t) -> dict:
     try:
         voice = await resolve_prompt_voice(prompt_id, conn=conn)
     except CanonicalVoiceResolutionError as exc:
         return {
             "webrtc_compatible": False,
             "compatibility_code": exc.code,
-            "compatibility_reason": str(exc),
+            "compatibility_reason": t("admin_voice_integrations.voice." + exc.code),
             "canonical_voice_code": None,
             "canonical_voice_provider": None,
             "canonical_voice_inherited": False,
@@ -48,11 +50,11 @@ async def _prompt_webrtc_voice_status(conn, prompt_id: int) -> dict:
     except CanonicalVoiceResolutionError as exc:
         compatible = False
         code = exc.code
-        reason = str(exc)
+        reason = t("admin_voice_integrations.voice." + exc.code, provider=voice.provider)
     else:
         compatible = True
         code = None
-        reason = "ElevenLabs can reproduce this canonical voice exactly in browser calls."
+        reason = t("admin_voice_integrations.voice.compatible")
 
     return {
         "webrtc_compatible": compatible,
@@ -80,10 +82,11 @@ async def admin_elevenlabs_agents(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
     message = request.query_params.get("message")
     error = request.query_params.get("error")
@@ -125,10 +128,17 @@ async def admin_elevenlabs_agents(
             voice_canonicalization_conflicts = [
                 dict(row) for row in await cursor.fetchall()
             ]
+        for conflict in voice_canonicalization_conflicts:
+            reason = conflict["reason"]
+            conflict["reason_label"] = t(
+                "admin_voice_integrations.voice." + reason
+                if reason in {"explicit_voice_mismatch", "legacy_voice_unresolved", "legacy_voice_ambiguous"}
+                else "admin_voice_integrations.voice.conflict"
+            )
         for mapping in mappings:
             mapping_prompt_id = int(mapping["prompt_id"])
             mapping.update(
-                await _prompt_webrtc_voice_status(conn, mapping_prompt_id)
+                await _prompt_webrtc_voice_status(conn, mapping_prompt_id, t)
             )
 
     context = await get_template_context(request, current_user)
@@ -153,17 +163,18 @@ async def create_or_update_elevenlabs_agent(
     agent_name: str = Form(""),
     make_default: str | None = Form(None),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
     agent_id_clean = (agent_id or "").strip()
     agent_name_clean = (agent_name or "").strip()
     make_default_flag = bool(make_default)
 
     if not agent_id_clean:
-        query = urlencode({"error": "Agent ID is required"})
+        query = urlencode({"error": t("admin_voice_integrations.error.agent_id")})
         return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
     existing = None
@@ -202,10 +213,10 @@ async def create_or_update_elevenlabs_agent(
         except Exception as exc:
             await conn.rollback()
             logger.exception("[ElevenLabs] Failed to save agent %s: %s", agent_id_clean, exc)
-            query = urlencode({"error": "Could not save the agent."})
+            query = urlencode({"error": t("admin_voice_integrations.error.agent_save")})
             return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
-    message = "Agent updated" if existing else "Agent created"
+    message = t("admin_voice_integrations.notice.agent_updated") if existing else t("admin_voice_integrations.notice.agent_created")
     query = urlencode({"message": message})
     return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
@@ -216,14 +227,15 @@ async def set_default_elevenlabs_agent(
     agent_id: str,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
     agent_id_clean = (agent_id or "").strip()
     if not agent_id_clean:
-        query = urlencode({"error": "Agent not found"})
+        query = urlencode({"error": t("admin_voice_integrations.error.agent_missing")})
         return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
     async with get_db_connection() as conn:
@@ -236,16 +248,16 @@ async def set_default_elevenlabs_agent(
             )
             if cursor.rowcount == 0:
                 await conn.rollback()
-                query = urlencode({"error": "Agent not found"})
+                query = urlencode({"error": t("admin_voice_integrations.error.agent_missing")})
                 return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
             await conn.commit()
         except Exception as exc:
             await conn.rollback()
             logger.exception("[ElevenLabs] Failed to set default agent %s: %s", agent_id_clean, exc)
-            query = urlencode({"error": "Could not update the agent."})
+            query = urlencode({"error": t("admin_voice_integrations.error.agent_update")})
             return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
-    query = urlencode({"message": "Default agent updated"})
+    query = urlencode({"message": t("admin_voice_integrations.notice.default_updated")})
     return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
 
@@ -255,14 +267,15 @@ async def delete_elevenlabs_agent(
     agent_id: str,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
     agent_id_clean = (agent_id or "").strip()
     if not agent_id_clean:
-        query = urlencode({"error": "Agent not found"})
+        query = urlencode({"error": t("admin_voice_integrations.error.agent_missing")})
         return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
     async with get_db_connection() as conn:
@@ -275,16 +288,16 @@ async def delete_elevenlabs_agent(
             )
             if cursor.rowcount == 0:
                 await conn.rollback()
-                query = urlencode({"error": "Agent not found"})
+                query = urlencode({"error": t("admin_voice_integrations.error.agent_missing")})
                 return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
             await conn.commit()
         except Exception as exc:
             await conn.rollback()
             logger.exception("[ElevenLabs] Failed to delete agent %s: %s", agent_id_clean, exc)
-            query = urlencode({"error": "Could not delete the agent."})
+            query = urlencode({"error": t("admin_voice_integrations.error.agent_delete")})
             return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
-    query = urlencode({"message": "Agent deleted"})
+    query = urlencode({"message": t("admin_voice_integrations.notice.agent_deleted")})
     return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
 
@@ -295,10 +308,11 @@ async def update_elevenlabs_mapping(
     prompt_id: int = Form(...),
     agent_id: str = Form(""),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
     agent_id_clean = (agent_id or "").strip()
 
@@ -312,10 +326,10 @@ async def update_elevenlabs_mapping(
                 )
                 if not await cursor.fetchone():
                     await conn.rollback()
-                    query = urlencode({"error": "Agent not found"})
+                    query = urlencode({"error": t("admin_voice_integrations.error.agent_missing")})
                     return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
-                voice_status = await _prompt_webrtc_voice_status(conn, prompt_id)
+                voice_status = await _prompt_webrtc_voice_status(conn, prompt_id, t)
                 if voice_status["compatibility_code"] == "prompt_not_found":
                     await conn.rollback()
                     query = urlencode({"error": voice_status["compatibility_reason"]})
@@ -330,20 +344,19 @@ async def update_elevenlabs_mapping(
                     (prompt_id, agent_id_clean),
                 )
                 if voice_status["webrtc_compatible"]:
-                    message = "Assignment updated. WebRTC voice is compatible."
+                    message = t("admin_voice_integrations.notice.mapping_compatible")
                 else:
                     message = (
-                        "Assignment updated. WebRTC remains unavailable: "
-                        + voice_status["compatibility_reason"]
+                        t("admin_voice_integrations.notice.mapping_incompatible", reason=voice_status["compatibility_reason"])
                     )
             else:
                 await conn.execute("DELETE FROM PROMPT_AGENT_MAPPING WHERE prompt_id = ?", (prompt_id,))
-                message = "Assignment deleted"
+                message = t("admin_voice_integrations.notice.mapping_deleted")
             await conn.commit()
         except Exception as exc:
             await conn.rollback()
             logger.exception("[ElevenLabs] Failed to update prompt mapping for %s: %s", prompt_id, exc)
-            query = urlencode({"error": "Could not update the assignment."})
+            query = urlencode({"error": t("admin_voice_integrations.error.mapping")})
             return RedirectResponse(url=f"/admin/elevenlabs-agents?{query}", status_code=303)
 
     query = urlencode({"message": message})
@@ -355,10 +368,11 @@ async def admin_elevenlabs_voices(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("management_operations_errors.admin_required")}, status_code=403)
 
     async with get_db_connection(readonly=True) as conn:
         async with conn.execute(
@@ -381,21 +395,42 @@ async def admin_elevenlabs_tts(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return _login_response(request)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
+    error = None
+    error_code = request.query_params.get("error")
+    if error_code == "ws_model":
+        error = t("admin_elevenlabs.tts.warning_v3")
+    elif error_code == "ws_format":
+        error = t("admin_elevenlabs.tts.warning_format")
+    elif (
+        error_code == "invalid_value"
+        and request.query_params.get("field") in {"model", "format"}
+        and request.query_params.get("profile") in {"webchat", "external", "mp3"}
+    ):
+        profile_keys = {"webchat": "tts.webchat", "external": "tts.external", "mp3": "tts.download"}
+        error = t(
+            "admin_elevenlabs.error.invalid_value",
+            field=t("admin_elevenlabs.label." + request.query_params["field"]),
+            profile=t("admin_elevenlabs." + profile_keys[request.query_params["profile"]]),
+        )
+    elif error_code:
+        error = t("admin_elevenlabs.error.save_failed")
     config = await get_tts_config()
     context = await get_template_context(request, current_user)
     context.update(
         {
             "config": config,
-            "valid_models": VALID_MODELS,
-            "valid_formats": VALID_FORMATS,
+            "valid_models": [(value, t("admin_elevenlabs.model." + value)) for value, _description in VALID_MODELS],
+            "valid_formats": [(value, t("admin_elevenlabs.format." + value), codec) for value, _description, codec in VALID_FORMATS],
             "ws_incompatible_models": list(WS_INCOMPATIBLE_MODELS),
-            "message": request.query_params.get("message"),
-            "error": request.query_params.get("error"),
+            "message": t("admin_elevenlabs.notice.saved") if request.query_params.get("saved") == "1" else None,
+            "error": error,
         }
     )
     return templates.TemplateResponse("admin_elevenlabs_tts.html", context)
@@ -406,10 +441,12 @@ async def admin_elevenlabs_tts_save(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
 
     form = await request.form()
     action = form.get("action")
@@ -424,19 +461,14 @@ async def admin_elevenlabs_tts_save(
     webchat_ws = form.get("tts_webchat_ws_enabled")
     if webchat_model in WS_INCOMPATIBLE_MODELS and webchat_ws:
         return RedirectResponse(
-            url="/admin/elevenlabs-tts?error="
-            + quote(
-                f"{webchat_model} does not support WebSocket TTS. "
-                "Disable WebSocket or choose a different model for webchat."
-            ),
+            url="/admin/elevenlabs-tts?error=ws_model",
             status_code=303,
         )
 
     webchat_format = form.get("tts_webchat_format", "")
     if webchat_ws and webchat_format and not webchat_format.startswith("mp3"):
         return RedirectResponse(
-            url="/admin/elevenlabs-tts?error="
-            + quote("WebSocket streaming requires MP3 format. Disable WebSocket or select an MP3 format for webchat."),
+            url="/admin/elevenlabs-tts?error=ws_format",
             status_code=303,
         )
 
@@ -452,8 +484,7 @@ async def admin_elevenlabs_tts_save(
                         continue
                     if val not in valid_set:
                         return RedirectResponse(
-                            url="/admin/elevenlabs-tts?error="
-                            + quote(f"Invalid {field} value for {profile_name}"),
+                            url=f"/admin/elevenlabs-tts?error=invalid_value&field={field}&profile={profile_name}",
                             status_code=303,
                         )
                     await conn.execute(
@@ -471,7 +502,10 @@ async def admin_elevenlabs_tts_save(
                     val = form.get(f"{prefix}{field}", "")
                     if val:
                         try:
-                            clamped = max(0.0, min(1.0, float(val)))
+                            numeric = float(val)
+                            if not math.isfinite(numeric):
+                                continue
+                            clamped = max(0.0, min(1.0, numeric))
                         except (ValueError, TypeError):
                             continue
                         await conn.execute(
@@ -503,7 +537,7 @@ async def admin_elevenlabs_tts_save(
                     if (
                         isinstance(parsed, list)
                         and len(parsed) > 0
-                        and all(isinstance(x, int) and x > 0 for x in parsed)
+                        and all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in parsed)
                     ):
                         await conn.execute(
                             """
@@ -521,27 +555,28 @@ async def admin_elevenlabs_tts_save(
 
         invalidate_tts_config_cache()
         return RedirectResponse(
-            url="/admin/elevenlabs-tts?message=Configuration saved successfully",
+            url="/admin/elevenlabs-tts?saved=1",
             status_code=303,
         )
     except Exception as e:
         logger.error("Error saving TTS config: %s", e)
         return RedirectResponse(
-            url="/admin/elevenlabs-tts?error=" + quote(f"Error saving: {type(e).__name__}"),
+            url="/admin/elevenlabs-tts?error=save_failed",
             status_code=303,
         )
 
 
 @router.get("/api/elevenlabs/voices")
-async def get_elevenlabs_voices(current_user: User = Depends(get_current_user)):
+async def get_elevenlabs_voices(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("management_operations_errors.admin_required")}, status_code=403)
 
     eleven_key = get_elevenlabs_key()
     if not eleven_key:
-        return JSONResponse(content={"error": "ElevenLabs API key not configured"}, status_code=500)
+        return JSONResponse(content={"error": t("admin_voice_integrations.error.api_key")}, status_code=500)
 
     try:
         all_voices = []
@@ -560,9 +595,8 @@ async def get_elevenlabs_voices(current_user: User = Depends(get_current_user)):
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as response:
                     if response.status != 200:
-                        error_text = await response.text()
                         return JSONResponse(
-                            content={"error": f"ElevenLabs API error: {error_text}"},
+                            content={"error": t("admin_voice_integrations.error.api")},
                             status_code=response.status,
                         )
 
@@ -577,7 +611,7 @@ async def get_elevenlabs_voices(current_user: User = Depends(get_current_user)):
                         all_voices.append(
                             {
                                 "voice_id": voice.get("voice_id", ""),
-                                "name": voice.get("name", "Unknown"),
+                                "name": voice.get("name") or t("admin_voice_integrations.ui.unknown"),
                                 "category": voice.get("category", "unknown"),
                                 "description": voice.get("description", ""),
                                 "preview_url": voice.get("preview_url", ""),
@@ -595,10 +629,10 @@ async def get_elevenlabs_voices(current_user: User = Depends(get_current_user)):
         return JSONResponse(content={"voices": all_voices})
 
     except asyncio.TimeoutError:
-        return JSONResponse(content={"error": "Request to ElevenLabs timed out"}, status_code=504)
+        return JSONResponse(content={"error": t("admin_voice_integrations.error.timeout")}, status_code=504)
     except Exception as e:
         logger.exception("Error fetching ElevenLabs voices")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": t("admin_voice_integrations.error.fetch")}, status_code=500)
 
 
 @router.post("/api/elevenlabs/sync")
@@ -606,10 +640,11 @@ async def sync_elevenlabs_voices(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("management_operations_errors.admin_required")}, status_code=403)
 
     try:
         body = await request.json()
@@ -691,4 +726,4 @@ async def sync_elevenlabs_voices(
 
     except Exception as e:
         logger.exception("Error syncing ElevenLabs voices")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": t("admin_voice_integrations.error.sync")}, status_code=500)

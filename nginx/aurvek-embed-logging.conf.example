@@ -1,0 +1,5 @@
+# http context: no query, referrer, cookies, authorization, body or visitor IP.
+log_format aurvek_embed_private '$time_iso8601 $request_method $uri $status $body_bytes_sent $request_time';
+# Native verification credentials occur in paths, and nested authorization
+# transactions occur in login/register queries. Do not include URI here at all.
+log_format aurvek_identity_private '$time_iso8601 $request_method $status $body_bytes_sent $request_time';

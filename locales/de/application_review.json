@@ -1,0 +1,16 @@
+{
+  "title": "Gespräche ansehen",
+  "read_only": "Nur Lesezugriff. Aufrufe werden im Prüfprotokoll erfasst.",
+  "back": "Zurück zu den Gesprächen",
+  "untitled": "Gespräch ohne Titel",
+  "older_messages": "Ältere Nachrichten",
+  "client": "Kunde",
+  "assistant": "Assistent",
+  "unavailable": "Diese Datei ist nicht verfügbar.",
+  "audio": "Gespeicherte Audioaufnahme",
+  "empty_messages": "Es gibt keine Nachrichten.",
+  "applications": "Anwendungen",
+  "open": "Verlauf öffnen",
+  "empty_conversations": "Für diese Anwendung gibt es keine Gespräche.",
+  "more": "Weitere Gespräche"
+}

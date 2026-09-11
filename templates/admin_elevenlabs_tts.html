@@ -1,19 +1,20 @@
+{% set i18n_domains = ['admin_elevenlabs'] %}
 {% extends 'base_admin.html' %}
-{% block title %}ElevenLabs TTS Settings - AURVEK{% endblock %}
-{% block page_title %}ElevenLabs TTS Settings{% endblock %}
-{% block page_subtitle %}<p class="page-subtitle">Configure TTS model, quality, and streaming method per context</p>{% endblock %}
+{% block title %}{{ t('admin_elevenlabs.tts.title') }} - AURVEK{% endblock %}
+{% block page_title %}{{ t('admin_elevenlabs.tts.title') }}{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">{{ t('admin_elevenlabs.tts.subtitle') }}</p>{% endblock %}
 
 {% block alerts %}
 {% if message %}
 <div class="alert alert-success alert-dismissible fade show" role="alert">
     <i class="fas fa-check-circle me-2"></i>{{ message }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_elevenlabs.action.close') }}"></button>
 </div>
 {% endif %}
 {% if error %}
 <div class="alert alert-danger alert-dismissible fade show" role="alert">
     <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_elevenlabs.action.close') }}"></button>
 </div>
 {% endif %}
 {% endblock %}
@@ -25,10 +26,10 @@
     <!-- Section 1: Webchat (Real-time streaming) -->
     <div class="section-container">
         <div class="section-title">
-            <i class="fas fa-comments"></i> Webchat (Real-time streaming)
+            <i class="fas fa-comments"></i> {{ t('admin_elevenlabs.tts.webchat') }}
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_webchat_model">Model</label>
+            <label class="form-label" for="tts_webchat_model">{{ t('admin_elevenlabs.label.model') }}</label>
             <select class="form-select" id="tts_webchat_model" name="tts_webchat_model">
                 {% for value, description in valid_models %}
                 <option value="{{ value }}" {% if config.get('tts_webchat_model') == value %}selected{% endif %}>{{ description }}</option>
@@ -36,7 +37,7 @@
             </select>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_webchat_format">Format</label>
+            <label class="form-label" for="tts_webchat_format">{{ t('admin_elevenlabs.label.format') }}</label>
             <select class="form-select" id="tts_webchat_format" name="tts_webchat_format">
                 {% for value, description, _pydub in valid_formats %}
                 <option value="{{ value }}" {% if config.get('tts_webchat_format') == value %}selected{% endif %}>{{ description }}</option>
@@ -44,41 +45,41 @@
             </select>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_webchat_stability">Stability: <span id="tts_webchat_stability_val">{{ config.get('tts_webchat_stability', '0.45') }}</span></label>
+            <label class="form-label" for="tts_webchat_stability">{{ t('admin_elevenlabs.label.stability') }}: <span id="tts_webchat_stability_val">{{ format_number(config.get('tts_webchat_stability', '0.45')|float) }}</span></label>
             <input type="range" class="form-range" id="tts_webchat_stability" name="tts_webchat_stability" min="0" max="1" step="0.01" value="{{ config.get('tts_webchat_stability', '0.45') }}">
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_webchat_similarity">Similarity Boost: <span id="tts_webchat_similarity_val">{{ config.get('tts_webchat_similarity', '0.89') }}</span></label>
+            <label class="form-label" for="tts_webchat_similarity">{{ t('admin_elevenlabs.label.similarity') }}: <span id="tts_webchat_similarity_val">{{ format_number(config.get('tts_webchat_similarity', '0.89')|float) }}</span></label>
             <input type="range" class="form-range" id="tts_webchat_similarity" name="tts_webchat_similarity" min="0" max="1" step="0.01" value="{{ config.get('tts_webchat_similarity', '0.89') }}">
         </div>
         <div class="mb-3">
             <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="tts_webchat_ws_enabled" name="tts_webchat_ws_enabled" value="1" {% if config.get('tts_webchat_ws_enabled', '1') == '1' %}checked{% endif %}>
-                <label class="form-check-label" for="tts_webchat_ws_enabled">WebSocket Enabled</label>
+                <label class="form-check-label" for="tts_webchat_ws_enabled">{{ t('admin_elevenlabs.tts.websocket_enabled') }}</label>
             </div>
         </div>
         <div class="mb-3" id="chunk_schedule_row">
-            <label class="form-label" for="tts_webchat_chunk_schedule">Chunk Schedule</label>
+            <label class="form-label" for="tts_webchat_chunk_schedule">{{ t('admin_elevenlabs.tts.chunk_schedule') }}</label>
             <input type="text" class="form-control" id="tts_webchat_chunk_schedule" name="tts_webchat_chunk_schedule" value="{{ config.get('tts_webchat_chunk_schedule', '[120, 160, 250, 290]') }}">
-            <p class="text-muted small mt-1">JSON array of character counts for chunked streaming.</p>
+            <p class="text-muted small mt-1">{{ t('admin_elevenlabs.tts.chunk_help') }}</p>
         </div>
 
         <!-- Inline warnings -->
         <div class="alert alert-warning" id="warning_v3_ws" style="display: none;">
-            <i class="fas fa-exclamation-triangle me-2"></i>v3 does not support WebSocket TTS. Save will be blocked.
+            <i class="fas fa-exclamation-triangle me-2"></i>{{ t('admin_elevenlabs.tts.warning_v3') }}
         </div>
         <div class="alert alert-warning" id="warning_format_ws" style="display: none;">
-            <i class="fas fa-exclamation-triangle me-2"></i>WebSocket streaming requires MP3 format. Save will be blocked.
+            <i class="fas fa-exclamation-triangle me-2"></i>{{ t('admin_elevenlabs.tts.warning_format') }}
         </div>
     </div>
 
     <!-- Section 2: External Platforms (WhatsApp, Telegram) -->
     <div class="section-container">
         <div class="section-title">
-            <i class="fas fa-share-alt"></i> External Platforms (WhatsApp, Telegram)
+            <i class="fas fa-share-alt"></i> {{ t('admin_elevenlabs.tts.external') }}
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_external_model">Model</label>
+            <label class="form-label" for="tts_external_model">{{ t('admin_elevenlabs.label.model') }}</label>
             <select class="form-select" id="tts_external_model" name="tts_external_model">
                 {% for value, description in valid_models %}
                 <option value="{{ value }}" {% if config.get('tts_external_model') == value %}selected{% endif %}>{{ description }}</option>
@@ -86,7 +87,7 @@
             </select>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_external_format">Format</label>
+            <label class="form-label" for="tts_external_format">{{ t('admin_elevenlabs.label.format') }}</label>
             <select class="form-select" id="tts_external_format" name="tts_external_format">
                 {% for value, description, _pydub in valid_formats %}
                 <option value="{{ value }}" {% if config.get('tts_external_format') == value %}selected{% endif %}>{{ description }}</option>
@@ -94,11 +95,11 @@
             </select>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_external_stability">Stability: <span id="tts_external_stability_val">{{ config.get('tts_external_stability', '0.45') }}</span></label>
+            <label class="form-label" for="tts_external_stability">{{ t('admin_elevenlabs.label.stability') }}: <span id="tts_external_stability_val">{{ format_number(config.get('tts_external_stability', '0.45')|float) }}</span></label>
             <input type="range" class="form-range" id="tts_external_stability" name="tts_external_stability" min="0" max="1" step="0.01" value="{{ config.get('tts_external_stability', '0.45') }}">
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_external_similarity">Similarity Boost: <span id="tts_external_similarity_val">{{ config.get('tts_external_similarity', '0.89') }}</span></label>
+            <label class="form-label" for="tts_external_similarity">{{ t('admin_elevenlabs.label.similarity') }}: <span id="tts_external_similarity_val">{{ format_number(config.get('tts_external_similarity', '0.89')|float) }}</span></label>
             <input type="range" class="form-range" id="tts_external_similarity" name="tts_external_similarity" min="0" max="1" step="0.01" value="{{ config.get('tts_external_similarity', '0.89') }}">
         </div>
     </div>
@@ -106,10 +107,10 @@
     <!-- Section 3: MP3 Download (Conversation export) -->
     <div class="section-container">
         <div class="section-title">
-            <i class="fas fa-file-audio"></i> MP3 Download (Conversation export)
+            <i class="fas fa-file-audio"></i> {{ t('admin_elevenlabs.tts.download') }}
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_mp3_model">Model</label>
+            <label class="form-label" for="tts_mp3_model">{{ t('admin_elevenlabs.label.model') }}</label>
             <select class="form-select" id="tts_mp3_model" name="tts_mp3_model">
                 {% for value, description in valid_models %}
                 <option value="{{ value }}" {% if config.get('tts_mp3_model') == value %}selected{% endif %}>{{ description }}</option>
@@ -117,7 +118,7 @@
             </select>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_mp3_format">Format</label>
+            <label class="form-label" for="tts_mp3_format">{{ t('admin_elevenlabs.label.format') }}</label>
             <select class="form-select" id="tts_mp3_format" name="tts_mp3_format">
                 {% for value, description, _pydub in valid_formats %}
                 <option value="{{ value }}" {% if config.get('tts_mp3_format') == value %}selected{% endif %}>{{ description }}</option>
@@ -125,11 +126,11 @@
             </select>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_mp3_stability">Stability: <span id="tts_mp3_stability_val">{{ config.get('tts_mp3_stability', '0.45') }}</span></label>
+            <label class="form-label" for="tts_mp3_stability">{{ t('admin_elevenlabs.label.stability') }}: <span id="tts_mp3_stability_val">{{ format_number(config.get('tts_mp3_stability', '0.45')|float) }}</span></label>
             <input type="range" class="form-range" id="tts_mp3_stability" name="tts_mp3_stability" min="0" max="1" step="0.01" value="{{ config.get('tts_mp3_stability', '0.45') }}">
         </div>
         <div class="mb-3">
-            <label class="form-label" for="tts_mp3_similarity">Similarity Boost: <span id="tts_mp3_similarity_val">{{ config.get('tts_mp3_similarity', '0.89') }}</span></label>
+            <label class="form-label" for="tts_mp3_similarity">{{ t('admin_elevenlabs.label.similarity') }}: <span id="tts_mp3_similarity_val">{{ format_number(config.get('tts_mp3_similarity', '0.89')|float) }}</span></label>
             <input type="range" class="form-range" id="tts_mp3_similarity" name="tts_mp3_similarity" min="0" max="1" step="0.01" value="{{ config.get('tts_mp3_similarity', '0.89') }}">
         </div>
     </div>
@@ -137,7 +138,7 @@
     <!-- Save Button -->
     <div class="text-center mb-4">
         <button type="submit" class="btn btn-primary">
-            <i class="fas fa-save me-1"></i> Save Settings
+            <i class="fas fa-save me-1"></i> {{ t('admin_elevenlabs.action.save_settings') }}
         </button>
     </div>
 </form>
@@ -145,47 +146,47 @@
 <!-- Section 4: Reference - Available Models (read-only) -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-info-circle"></i> Reference - Available Models
+        <i class="fas fa-info-circle"></i> {{ t('admin_elevenlabs.tts.models_reference') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Model</th>
-                    <th>Latency</th>
-                    <th>Quality</th>
-                    <th>Cost</th>
-                    <th>Notes</th>
+                    <th>{{ t('admin_elevenlabs.label.model') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.latency') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.quality') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.cost') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.notes') }}</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td><code>eleven_flash_v2_5</code></td>
-                    <td>~75ms</td>
-                    <td>Good</td>
-                    <td>50% cheaper</td>
-                    <td>Fastest option</td>
+                    <td>{{ t('admin_elevenlabs.reference.milliseconds', value=format_number(75)) }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.good') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.cheaper') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.fastest') }}</td>
                 </tr>
                 <tr>
                     <td><code>eleven_turbo_v2_5</code></td>
-                    <td>~250ms</td>
-                    <td>Very Good</td>
-                    <td>Standard</td>
-                    <td>Current default</td>
+                    <td>{{ t('admin_elevenlabs.reference.milliseconds', value=format_number(250)) }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.very_good') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.standard') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.current_default') }}</td>
                 </tr>
                 <tr>
                     <td><code>eleven_multilingual_v2</code></td>
-                    <td>Medium</td>
-                    <td>Best</td>
-                    <td>Higher</td>
-                    <td>29 languages</td>
+                    <td>{{ t('admin_elevenlabs.reference.medium') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.best') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.higher') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.languages') }}</td>
                 </tr>
                 <tr>
                     <td><code>eleven_v3</code></td>
-                    <td>Higher</td>
-                    <td>Best</td>
-                    <td>Higher</td>
-                    <td>NO WebSocket support</td>
+                    <td>{{ t('admin_elevenlabs.reference.higher') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.best') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.higher') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.no_websocket') }}</td>
                 </tr>
             </tbody>
         </table>
@@ -195,54 +196,54 @@
 <!-- Section 5: Reference - Available Formats (read-only) -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-info-circle"></i> Reference - Available Formats
+        <i class="fas fa-info-circle"></i> {{ t('admin_elevenlabs.tts.formats_reference') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Format</th>
-                    <th>Quality</th>
-                    <th>Size</th>
-                    <th>Best For</th>
+                    <th>{{ t('admin_elevenlabs.label.format') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.quality') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.size') }}</th>
+                    <th>{{ t('admin_elevenlabs.label.best_for') }}</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td><code>mp3_22050_32</code></td>
-                    <td>Low</td>
-                    <td>Tiny</td>
-                    <td>Bandwidth saving</td>
+                    <td>{{ t('admin_elevenlabs.reference.low') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.tiny') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.bandwidth') }}</td>
                 </tr>
                 <tr>
                     <td><code>mp3_44100_64</code></td>
-                    <td>Medium</td>
-                    <td>Small</td>
-                    <td>General use</td>
+                    <td>{{ t('admin_elevenlabs.reference.medium') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.small') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.general') }}</td>
                 </tr>
                 <tr>
                     <td><code>mp3_44100_96</code></td>
-                    <td>Good</td>
-                    <td>Medium</td>
-                    <td>Good balance</td>
+                    <td>{{ t('admin_elevenlabs.reference.good') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.medium') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.balance') }}</td>
                 </tr>
                 <tr>
                     <td><code>mp3_44100_128</code></td>
-                    <td>High</td>
-                    <td>Medium</td>
-                    <td>Browser streaming (recommended)</td>
+                    <td>{{ t('admin_elevenlabs.reference.high') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.medium') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.streaming') }}</td>
                 </tr>
                 <tr>
                     <td><code>mp3_44100_192</code></td>
-                    <td>Very High</td>
-                    <td>Large</td>
-                    <td>Maximum quality</td>
+                    <td>{{ t('admin_elevenlabs.reference.very_high') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.large') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.maximum_quality') }}</td>
                 </tr>
                 <tr>
                     <td><code>opus_48000_128</code></td>
-                    <td>High</td>
-                    <td>Small</td>
-                    <td>WhatsApp/Telegram (efficient)</td>
+                    <td>{{ t('admin_elevenlabs.reference.high') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.small') }}</td>
+                    <td>{{ t('admin_elevenlabs.reference.messaging') }}</td>
                 </tr>
             </tbody>
         </table>
@@ -263,7 +264,7 @@
         const valSpan = document.getElementById(slider.id + '_val');
         if (valSpan) {
             slider.addEventListener('input', function() {
-                valSpan.textContent = this.value;
+                valSpan.textContent = AurvekI18n.formatNumber(Number(this.value), {maximumFractionDigits: 2});
             });
         }
     });

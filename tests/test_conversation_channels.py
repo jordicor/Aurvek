@@ -7,6 +7,7 @@ import pytest
 
 from chat.services.conversation_channels import get_conversation_channel_summaries
 from integrations import conversations as platform_conversations
+from i18n import Translator
 
 
 def _create_channel_db(path):
@@ -204,9 +205,11 @@ async def test_assigning_messaging_channel_preserves_the_other_channel(
     monkeypatch.setattr(platform_conversations, "get_db_connection", _test_connection)
 
     result = await platform_conversations.set_external_conversation(
-        1, 3, "whatsapp", "whatsapp"
+        1, 3, "whatsapp", "whatsapp", translator=Translator("es")
     )
     assert result["affected_conversation_ids"] == [3, 1]
+    assert result["message"] == Translator("es").render(
+        "channel_notices.conversation_moved", platform="WhatsApp", id=3, name="Target")
 
     conn = sqlite3.connect(db_path)
     platforms = json.loads(
@@ -218,3 +221,29 @@ async def test_assigning_messaging_channel_preserves_the_other_channel(
     assert platforms["whatsapp"]["conversation_id"] == 3
     assert platforms["whatsapp"]["answer"] == "voice"
     assert platforms["telegram"]["conversation_id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_channel_list_and_mode_use_locale_and_preserve_ids(tmp_path):
+    path = tmp_path / "localized-channels.db"
+    _create_channel_db(path)
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        ALTER TABLE CONVERSATIONS ADD COLUMN last_activity TEXT;
+        CREATE TABLE MESSAGES(id INTEGER PRIMARY KEY, conversation_id INTEGER);
+        INSERT INTO USER_DETAILS VALUES(1, '{"telegram":{"conversation_id":7,"answer":"text"}}');
+        INSERT INTO CONVERSATIONS VALUES(7, 1, 'Creator *name*', 1, '2026-09-08T12:00:00');
+        INSERT INTO MESSAGES VALUES(1, 7);
+    """)
+    conn.close()
+    tr = Translator("ja")
+    async with _connection(path) as db:
+        reply = await platform_conversations.change_response_mode(1, "voice", "telegram", db, translator=tr)
+        assert reply == tr.render("channel_notices.mode_changed", mode=tr.render("channel_notices.mode_voice"))
+        listing = await platform_conversations.get_chats_list(1, "telegram", db, translator=tr)
+        assert tr.render("channel_notices.chats_header_markdown") in listing
+        assert "#7" in listing and "Creator \\*name\\*" in listing
+        assert "[TG]" in listing and "[ロック中]" in listing
+        assert "!set <id>" in listing and "1件" in listing
+        row = await (await db.execute("SELECT external_platforms FROM USER_DETAILS WHERE user_id=1")).fetchone()
+        assert json.loads(row[0])["telegram"]["answer"] == "voice"

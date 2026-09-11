@@ -1,6 +1,7 @@
+{% set i18n_domains = ['auth', 'account'] %}
 {% extends 'base.html' %}
 
-{% block title %}Complete Registration{% endblock %}
+{% block title %}{{ t('auth.title.complete_registration') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -22,18 +23,18 @@
 
 {% block content %}
 <div class="container mt-5">
-    <h2>Complete Registration</h2>
+    <h2>{{ t('auth.title.complete_registration') }}</h2>
     <form action="/complete_registration" method="post">
         <input type="hidden" name="token" value="{{ token }}">
         <div class="mb-3">
-            <label for="email" class="form-label">Email Address</label>
+            <label for="email" class="form-label">{{ t('auth.label.email_address') }}</label>
             <input type="email" class="form-control" id="email" name="email" required>
         </div>
         <div class="mb-3">
-            <label for="password" class="form-label">Password</label>
+            <label for="password" class="form-label">{{ t('account.password.password_label') }}</label>
             <input type="password" class="form-control" id="password" name="password" required>
         </div>
-        <button type="submit" class="btn btn-primary">Complete Registration</button>
+        <button type="submit" class="btn btn-primary">{{ t('auth.action.complete_registration') }}</button>
     </form>
 </div>
 {% endblock %}

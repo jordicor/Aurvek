@@ -1,12 +1,13 @@
+{% set i18n_domains = ['landing_builder', 'chat_ui'] %}
 {% extends 'base.html' %}
 
-{% block title %}Public Profile - {{ prompt.name }}{% endblock %}
+{% block title %}{{ t('landing_builder.ui.public_profile_name', name=prompt.name) }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Public Profile - "{{ prompt.name }}"{% endblock %}
+{% block page_title %}{{ t('landing_builder.ui.public_profile_name', name=prompt.name) }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
@@ -14,21 +15,21 @@
         <!-- Public URL & Custom Domain Section (Unified) -->
         <div class="section-container">
             <div class="section-title">
-                <i class="fas fa-link"></i> Your Public URL
+                <i class="fas fa-link"></i> {{ t('landing_builder.ui.your_public_url') }}
                 <div class="d-flex align-items-center gap-2 ms-auto">
                     {% if not is_admin %}
                     <!-- Slots indicator -->
-                    <span class="badge bg-secondary" title="Domain slots: used / purchased">
+                    <span class="badge bg-secondary" title="{{ t('landing_builder.ui.domain_slots_used_purchased') }}">
                         <i class="fas fa-layer-group me-1"></i>
-                        <span id="slotsUsed">{{ user_slots.used }}</span>/<span id="slotsPurchased">{{ user_slots.purchased }}</span> slots
+                        <span id="slotsUsed">{{ format_number(user_slots.used, maximum_fraction_digits=0) }}</span>/<span id="slotsPurchased">{{ format_number(user_slots.purchased, maximum_fraction_digits=0) }}</span> {{ t('landing_builder.ui.slots') }}
                     </span>
                     {% endif %}
                     {% if domain_config and domain_config.is_active %}
-                    <span class="badge bg-success"><i class="fas fa-check-circle me-1"></i>Custom Domain Active</span>
+                    <span class="badge bg-success"><i class="fas fa-check-circle me-1"></i>{{ t('landing_builder.ui.custom_domain_active') }}</span>
                     {% elif domain_config and domain_config.verification_status == 'verified' %}
-                    <span class="badge bg-warning text-dark"><i class="fas fa-clock me-1"></i>Domain Verified</span>
+                    <span class="badge bg-warning text-dark"><i class="fas fa-clock me-1"></i>{{ t('landing_builder.ui.domain_verified') }}</span>
                     {% elif domain_config %}
-                    <span class="badge bg-secondary"><i class="fas fa-hourglass-half me-1"></i>Domain Pending</span>
+                    <span class="badge bg-secondary"><i class="fas fa-hourglass-half me-1"></i>{{ t('landing_builder.ui.domain_pending') }}</span>
                     {% endif %}
                 </div>
             </div>
@@ -38,10 +39,10 @@
                 <div class="public-url-box public-url-box-success">
                     <i class="fas fa-globe text-success me-2"></i>
                     <span class="url-text" id="publicUrl">https://{{ domain_config.domain }}/</span>
-                    <button type="button" class="btn btn-outline-success btn-sm" onclick="copyUrl()" title="Copy URL">
+                    <button type="button" class="btn btn-outline-success btn-sm" onclick="copyUrl()" title="{{ t('landing_builder.ui.copy_url') }}">
                         <i class="fas fa-copy"></i>
                     </button>
-                    <a href="https://{{ domain_config.domain }}/" target="_blank" class="btn btn-outline-success btn-sm" title="Open in new tab">
+                    <a href="https://{{ domain_config.domain }}/" target="_blank" class="btn btn-outline-success btn-sm" title="{{ t('landing_builder.ui.open_in_new_tab') }}">
                         <i class="fas fa-external-link-alt"></i>
                     </a>
                 </div>
@@ -49,10 +50,10 @@
                 <!-- No active custom domain - show standard URL -->
                 <div class="public-url-box">
                     <span class="url-text" id="publicUrl">{{ public_url }}</span>
-                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyUrl()" title="Copy URL">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyUrl()" title="{{ t('landing_builder.ui.copy_url') }}">
                         <i class="fas fa-copy"></i>
                     </button>
-                    <a href="{{ public_url }}" target="_blank" class="btn btn-outline-primary btn-sm" title="Open in new tab">
+                    <a href="{{ public_url }}" target="_blank" class="btn btn-outline-primary btn-sm" title="{{ t('landing_builder.ui.open_in_new_tab') }}">
                         <i class="fas fa-external-link-alt"></i>
                     </a>
                 </div>
@@ -61,7 +62,7 @@
                 {% if not has_home_page %}
                 <div class="alert alert-warning mt-3 mb-0">
                     <i class="fas fa-exclamation-triangle me-2"></i>
-                    No <code>home.html</code> page exists yet. Create one to make your public profile accessible.
+                    {{ t('landing_builder.ui.no_home_html_page_exists_yet_create_one_to_make') }}
                 </div>
                 {% endif %}
 
@@ -71,31 +72,31 @@
                     <!-- Domain is ACTIVE -->
                     <div class="d-flex align-items-center mb-3">
                         <i class="fas fa-globe text-success me-2"></i>
-                        <strong>Custom Domain</strong>
+                        <strong>{{ t('landing_builder.ui.custom_domain') }}</strong>
                     </div>
                     <div class="border rounded p-3" style="background-color: var(--bg-tertiary, #202225); border-color: var(--border-color, #40444b) !important;">
                         <div class="d-flex justify-content-between align-items-start">
                             <div>
                                 <div class="mb-2">
                                     <strong>{{ domain_config.domain }}</strong>
-                                    <span class="badge bg-success ms-2">Active</span>
+                                    <span class="badge bg-success ms-2">{{ t('landing_builder.ui.active') }}</span>
                                     {% if domain_config.activated_by_admin %}
-                                    <span class="badge bg-info ms-1">Admin</span>
+                                    <span class="badge bg-info ms-1">{{ t('landing_builder.ui.admin') }}</span>
                                     {% endif %}
                                 </div>
                                 {% if domain_config.activated_at %}
                                 <small class="text-muted d-block mb-2">
                                     <i class="fas fa-calendar me-1"></i>
-                                    Activated: {{ domain_config.activated_at }}
+                                    {{ t('landing_builder.ui.activated_date', date=domain_config.activated_at) }}
                                 </small>
                                 {% endif %}
                                 <small class="text-muted">
                                     <i class="fas fa-info-circle me-1"></i>
-                                    The standard URL <code>{{ public_url }}</code> redirects here automatically (301).
+                                    {{ t('landing_builder.ui.the_standard_url_url_redirects_here_automatically_301', url=public_url) }}
                                 </small>
                             </div>
-                            <button type="button" class="btn btn-outline-warning btn-sm" onclick="toggleDomainOff()" title="Deactivate (frees slot)">
-                                <i class="fas fa-toggle-on me-1"></i> Deactivate
+                            <button type="button" class="btn btn-outline-warning btn-sm" onclick="toggleDomainOff()" title="{{ t('landing_builder.ui.deactivate_frees_slot') }}">
+                                <i class="fas fa-toggle-on me-1"></i> {{ t('landing_builder.ui.deactivate') }}
                             </button>
                         </div>
                     </div>
@@ -104,30 +105,30 @@
                     <!-- Domain configured but NOT active (pending or verified) -->
                     <div class="d-flex align-items-center mb-3">
                         <i class="fas fa-globe text-muted me-2"></i>
-                        <strong>Custom Domain</strong>
-                        <small class="text-muted ms-2">(pending activation)</small>
+                        <strong>{{ t('landing_builder.ui.custom_domain') }}</strong>
+                        <small class="text-muted ms-2">{{ t('landing_builder.ui.pending_activation') }}</small>
                     </div>
                     <div class="rounded p-3" style="background-color: var(--bg-tertiary, #202225); border: 1px solid var(--border-color, #40444b);">
                         <div class="d-flex justify-content-between align-items-start mb-3">
                             <div>
                                 <strong>{{ domain_config.domain }}</strong>
                                 {% if domain_config.verification_status == 'verified' %}
-                                <span class="badge bg-warning text-dark ms-2">Verified</span>
+                                <span class="badge bg-warning text-dark ms-2">{{ t('landing_builder.ui.verified') }}</span>
                                 {% elif domain_config.verification_status == 'failed' %}
-                                <span class="badge bg-danger ms-2">Failed</span>
+                                <span class="badge bg-danger ms-2">{{ t('landing_builder.ui.failed') }}</span>
                                 {% else %}
-                                <span class="badge bg-secondary ms-2">Pending</span>
+                                <span class="badge bg-secondary ms-2">{{ t('landing_builder.ui.pending') }}</span>
                                 {% endif %}
                             </div>
-                            <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeDomain()" title="Remove domain configuration">
+                            <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeDomain()" title="{{ t('landing_builder.ui.remove_domain_configuration') }}">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </div>
 
                         <!-- CNAME Instructions -->
                         <div class="alert alert-info mb-3">
-                            <strong><i class="fas fa-info-circle me-1"></i>DNS Configuration:</strong>
-                            <p class="mb-2 mt-2">Point your domain's CNAME record to:</p>
+                            <strong><i class="fas fa-info-circle me-1"></i>{{ t('landing_builder.ui.dns_configuration') }}</strong>
+                            <p class="mb-2 mt-2">{{ t('landing_builder.ui.point_your_domain_s_cname_record_to') }}</p>
                             <div class="d-flex align-items-center gap-2">
                                 <code class="flex-grow-1 p-2 bg-light rounded">{{ cname_target }}</code>
                                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="navigator.clipboard.writeText('{{ cname_target }}'); this.innerHTML='<i class=\'fas fa-check\'></i>'">
@@ -147,25 +148,25 @@
                         <!-- Action buttons -->
                         <div class="d-flex gap-2 flex-wrap align-items-center">
                             <button type="button" class="btn btn-primary" onclick="verifyDomain()">
-                                <i class="fas fa-sync-alt me-1"></i> Verify DNS
+                                <i class="fas fa-sync-alt me-1"></i> {{ t('landing_builder.ui.verify_dns') }}
                             </button>
 
                             {% if domain_config.verification_status == 'verified' %}
                                 {% if is_admin %}
                                 <button type="button" class="btn btn-success" onclick="activateDomainFree()">
-                                    <i class="fas fa-bolt me-1"></i> Activate Free (Admin)
+                                    <i class="fas fa-bolt me-1"></i> {{ t('landing_builder.ui.activate_free_admin') }}
                                 </button>
                                 {% else %}
                                     {% if user_slots.available > 0 %}
                                     <button type="button" class="btn btn-success" onclick="activateDomain()">
-                                        <i class="fas fa-toggle-on me-1"></i> Activate (use 1 slot)
+                                        <i class="fas fa-toggle-on me-1"></i> {{ t('landing_builder.ui.activate_use_1_slot') }}
                                     </button>
-                                    <small class="text-muted">{{ user_slots.available }} slot(s) available</small>
+                                    <small class="text-muted">{{ t('landing_builder.ui.available_domain_slots_count', count=format_number(user_slots.available, maximum_fraction_digits=0)) }}</small>
                                     {% else %}
                                     <button type="button" class="btn btn-warning" onclick="purchaseAndActivate()">
-                                        <i class="fas fa-shopping-cart me-1"></i> Buy Slot & Activate (${{ "%.2f"|format(slot_price) }})
+                                        <i class="fas fa-shopping-cart me-1"></i> {{ t('landing_builder.ui.buy_slot_activate_amount', amount=format_currency(slot_price, 'USD', fraction_digits=2)) }}
                                     </button>
-                                    <small class="text-muted">No slots available</small>
+                                    <small class="text-muted">{{ t('landing_builder.ui.no_slots_available') }}</small>
                                     {% endif %}
                                 {% endif %}
                             {% endif %}
@@ -177,16 +178,16 @@
                     <details class="custom-domain-details" open>
                         <summary class="d-flex align-items-center" style="cursor: pointer; list-style: none;">
                             <i class="fas fa-globe text-muted me-2"></i>
-                            <strong>Connect Your Domain</strong>
+                            <strong>{{ t('landing_builder.ui.connect_your_domain') }}</strong>
                             <i class="fas fa-chevron-down ms-2 text-muted" style="font-size: 0.75rem;"></i>
                         </summary>
                         <div class="mt-3">
                             <!-- URL comparison - the hook -->
-                            <p class="text-muted mb-1">Make your landing page truly yours. Instead of:</p>
+                            <p class="text-muted mb-1">{{ t('landing_builder.ui.make_your_landing_page_truly_yours_instead_of') }}</p>
                             <div class="mb-2 ps-3" style="font-family: monospace; font-size: 0.85rem;">
                                 <span class="text-muted text-decoration-line-through">{{ public_url }}</span>
                             </div>
-                            <p class="text-muted mb-1">Your visitors will see:</p>
+                            <p class="text-muted mb-1">{{ t('landing_builder.ui.your_visitors_will_see') }}</p>
                             <div class="mb-3 ps-3" style="font-family: monospace; font-size: 0.85rem;">
                                 <span class="text-success fw-bold" id="domainPreviewUrl">https://yourproduct.com/</span>
                             </div>
@@ -194,39 +195,39 @@
                             <!-- Benefits row -->
                             <div class="row mb-3 small">
                                 <div class="col-6">
-                                    <i class="fas fa-check text-success me-1"></i> Professional branding
+                                    <i class="fas fa-check text-success me-1"></i> {{ t('landing_builder.ui.professional_branding') }}
                                 </div>
                                 <div class="col-6">
-                                    <i class="fas fa-check text-success me-1"></i> Better SEO
+                                    <i class="fas fa-check text-success me-1"></i> {{ t('landing_builder.ui.better_seo') }}
                                 </div>
                                 <div class="col-6">
-                                    <i class="fas fa-check text-success me-1"></i> Easier to share
+                                    <i class="fas fa-check text-success me-1"></i> {{ t('landing_builder.ui.easier_to_share') }}
                                 </div>
                                 <div class="col-6">
-                                    <i class="fas fa-check text-success me-1"></i> Free SSL included
+                                    <i class="fas fa-check text-success me-1"></i> {{ t('landing_builder.ui.free_ssl_included') }}
                                 </div>
                             </div>
 
                             <!-- Configuration form -->
                             <form id="configureDomainForm" class="rounded p-3" style="background-color: var(--bg-tertiary, #202225); border: 1px solid var(--border-color, #40444b);">
-                                <label for="customDomainInput" class="form-label fw-semibold">Your Domain</label>
+                                <label for="customDomainInput" class="form-label fw-semibold">{{ t('landing_builder.ui.your_domain') }}</label>
                                 <div class="input-group mb-2">
                                     <span class="input-group-text">https://</span>
                                     <input type="text" class="form-control" id="customDomainInput"
-                                           placeholder="myproduct.com" required>
+                                           placeholder="{{ t('landing_builder.ui.myproduct_com') }}" required>
                                     <button type="submit" class="btn btn-primary">
-                                        <i class="fas fa-cog me-1"></i> Configure
+                                        <i class="fas fa-cog me-1"></i> {{ t('landing_builder.ui.configure') }}
                                     </button>
                                 </div>
                                 {% if not is_admin %}
                                 <div class="d-flex align-items-center small text-muted">
                                     <i class="fas fa-layer-group me-2"></i>
-                                    <span>Uses 1 domain slot</span>
+                                    <span>{{ t('landing_builder.ui.uses_1_domain_slot') }}</span>
                                     {% if user_slots.available > 0 %}
-                                    <span class="ms-1 text-success">({{ user_slots.available }} available)</span>
+                                    <span class="ms-1 text-success">{{ t('landing_builder.ui.available_domain_slots_count', count=format_number(user_slots.available, maximum_fraction_digits=0)) }}</span>
                                     {% else %}
                                     <span class="ms-1">|</span>
-                                    <span class="ms-1 text-warning">${{ "%.2f"|format(slot_price) }} to add more</span>
+                                    <span class="ms-1 text-warning">{{ t('landing_builder.ui.additional_domain_slot_amount', amount=format_currency(slot_price, 'USD', fraction_digits=2)) }}</span>
                                     {% endif %}
                                 </div>
                                 {% endif %}
@@ -235,11 +236,7 @@
                             <!-- Buy domain hint -->
                             <div class="mt-3 pt-2 small" style="border-top: 1px solid var(--border-color, #40444b);">
                                 <i class="fas fa-info-circle text-muted me-1"></i>
-                                <span class="text-muted">Don't have a domain yet? Get one at</span>
-                                <a href="https://www.namecheap.com/?utm_source=aurvek" target="_blank" rel="noopener" class="ms-1">
-                                    Namecheap <i class="fas fa-external-link-alt" style="font-size: 0.7rem;"></i>
-                                </a>
-                                <span class="text-muted">(from ~$10/year)</span>
+                                {{ t('landing_builder.ui.need_a_domain_namecheap_offers_domains_from_approximately_amount_per', amount=format_currency(10, 'USD', fraction_digits=0)) }} <a href="https://www.namecheap.com/?utm_source=aurvek" target="_blank" rel="noopener">Namecheap <i class="fas fa-external-link-alt"></i></a>
                             </div>
                         </div>
                     </details>
@@ -250,12 +247,12 @@
         <!-- AI Wizard Section -->
         <div class="section-container text-center">
             <button type="button" class="btn btn-primary btn-lg" onclick="openAIWizard()" {% if not wizard_available %}disabled{% endif %}>
-                <i class="fas fa-magic me-2"></i> Generate with AI
+                <i class="fas fa-magic me-2"></i> {{ t('landing_builder.ui.generate_with_ai') }}
             </button>
             {% if wizard_available %}
-            <p class="text-muted mt-2 mb-0">Let AI create or modify your landing page</p>
+            <p class="text-muted mt-2 mb-0">{{ t('landing_builder.ui.let_ai_create_or_modify_your_landing_page') }}</p>
             {% else %}
-            <p class="text-muted mt-2 mb-0">Disabled until a verified OS sandbox is configured.</p>
+            <p class="text-muted mt-2 mb-0">{{ t('landing_builder.ui.disabled_until_a_verified_os_sandbox_is_configured') }}</p>
             {% endif %}
         </div>
 
@@ -263,27 +260,27 @@
         <ul class="nav nav-tabs" id="configTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="pages-tab" data-bs-toggle="tab" data-bs-target="#pages" type="button" role="tab">
-                    <i class="fas fa-file-code me-1"></i> Pages
+                    <i class="fas fa-file-code me-1"></i> {{ t('landing_builder.ui.pages') }}
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="components-tab" data-bs-toggle="tab" data-bs-target="#components" type="button" role="tab">
-                    <i class="fas fa-puzzle-piece me-1"></i> Components
+                    <i class="fas fa-puzzle-piece me-1"></i> {{ t('landing_builder.ui.components') }}
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="images-tab" data-bs-toggle="tab" data-bs-target="#images" type="button" role="tab">
-                    <i class="fas fa-images me-1"></i> Images
+                    <i class="fas fa-images me-1"></i> {{ t('landing_builder.ui.images') }}
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="registration-tab" data-bs-toggle="tab" data-bs-target="#registration" type="button" role="tab">
-                    <i class="fas fa-user-plus me-1"></i> Registration
+                    <i class="fas fa-user-plus me-1"></i> {{ t('landing_builder.ui.registration') }}
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="geoblocking-tab" data-bs-toggle="tab" data-bs-target="#geoblocking" type="button" role="tab">
-                    <i class="fas fa-globe me-1"></i> Geo-Blocking
+                    <i class="fas fa-globe me-1"></i> {{ t('landing_builder.ui.geo_blocking') }}
                 </button>
             </li>
         </ul>
@@ -296,9 +293,9 @@
                         <table class="table table-pages mb-4">
                             <thead>
                                 <tr>
-                                    <th>Page</th>
-                                    <th>URL Path</th>
-                                    <th class="text-end">Actions</th>
+                                    <th>{{ t('landing_builder.ui.page') }}</th>
+                                    <th>{{ t('landing_builder.ui.url_path') }}</th>
+                                    <th class="text-end">{{ t('landing_builder.ui.actions') }}</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -306,18 +303,18 @@
                                 <tr>
                                     <td>
                                         <i class="fas fa-file-alt text-muted me-2"></i>
-                                        {{ page.name }}{% if page.is_home %} <span class="badge bg-primary">Main</span>{% endif %}
+                                        {{ page.name }}{% if page.is_home %} <span class="badge bg-primary">{{ t('landing_builder.ui.main') }}</span>{% endif %}
                                     </td>
                                     <td><code>{{ page.url_path }}</code></td>
                                     <td class="text-end">
-                                        <a href="{{ public_url }}{{ page.name if not page.is_home else '' }}" target="_blank" class="btn btn-outline-secondary btn-sm btn-icon" title="View">
+                                        <a href="{{ public_url }}{{ page.name if not page.is_home else '' }}" target="_blank" class="btn btn-outline-secondary btn-sm btn-icon" title="{{ t('landing_builder.ui.view') }}">
                                             <i class="fas fa-eye"></i>
                                         </a>
-                                        <a href="/landing/{{ prompt.id }}/pages/{{ page.name }}/edit" class="btn btn-outline-primary btn-sm btn-icon" title="Edit">
+                                        <a href="/landing/{{ prompt.id }}/pages/{{ page.name }}/edit" class="btn btn-outline-primary btn-sm btn-icon" title="{{ t('landing_builder.ui.edit') }}">
                                             <i class="fas fa-edit"></i>
                                         </a>
                                         {% if not page.is_home %}
-                                        <button type="button" class="btn btn-outline-danger btn-sm btn-icon" onclick="deletePage('{{ page.name }}')" title="Delete">
+                                        <button type="button" class="btn btn-outline-danger btn-sm btn-icon" onclick="deletePage('{{ page.name }}')" title="{{ t('landing_builder.ui.delete') }}">
                                             <i class="fas fa-trash"></i>
                                         </button>
                                         {% endif %}
@@ -326,7 +323,7 @@
                                 {% else %}
                                 <tr>
                                     <td colspan="3" class="text-center text-muted py-4">
-                                        No pages created yet. Add your first page below.
+                                        {{ t('landing_builder.ui.no_pages_created_yet_add_your_first_page_below') }}
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -336,12 +333,12 @@
                         <!-- Add New Page -->
                         <form id="addPageForm" class="row g-2 align-items-end">
                             <div class="col-auto">
-                                <label for="newPageName" class="form-label">New Page</label>
-                                <input type="text" class="form-control" id="newPageName" placeholder="e.g., pricing, about" pattern="[a-zA-Z0-9_-]+" required>
+                                <label for="newPageName" class="form-label">{{ t('landing_builder.ui.new_page') }}</label>
+                                <input type="text" class="form-control" id="newPageName" placeholder="{{ t('landing_builder.ui.e_g_pricing_about') }}" pattern="[a-zA-Z0-9_-]+" required>
                             </div>
                             <div class="col-auto">
                                 <button type="submit" class="btn btn-success">
-                                    <i class="fas fa-plus me-1"></i> Add Page
+                                    <i class="fas fa-plus me-1"></i> {{ t('landing_builder.ui.add_page') }}
                                 </button>
                             </div>
                         </form>
@@ -356,17 +353,17 @@
                         {% if component_list %}
                         <h6 class="text-uppercase text-muted mb-2">
                             {% if type_name == 'html' %}<i class="fas fa-code me-1"></i>{% elif type_name == 'css' %}<i class="fas fa-palette me-1"></i>{% else %}<i class="fas fa-cog me-1"></i>{% endif %}
-                            {{ type_name }} Components
+                            {{ t('landing_builder.components.type_heading', name=type_name|upper) }}
                         </h6>
                         <ul class="list-group mb-4">
                             {% for comp in component_list %}
                             <li class="list-group-item d-flex justify-content-between align-items-center">
                                 <span>{{ comp }}</span>
                                 <div>
-                                    <a href="/landing/{{ prompt.id }}/components/{{ type_name }}/{{ comp }}/edit" class="btn btn-outline-primary btn-sm btn-icon" title="Edit">
+                                    <a href="/landing/{{ prompt.id }}/components/{{ type_name }}/{{ comp }}/edit" class="btn btn-outline-primary btn-sm btn-icon" title="{{ t('landing_builder.ui.edit') }}">
                                         <i class="fas fa-edit"></i>
                                     </a>
-                                    <button type="button" class="btn btn-outline-danger btn-sm btn-icon" onclick="deleteComponent('{{ type_name }}', '{{ comp }}')" title="Delete">
+                                    <button type="button" class="btn btn-outline-danger btn-sm btn-icon" onclick="deleteComponent('{{ type_name }}', '{{ comp }}')" title="{{ t('landing_builder.ui.delete') }}">
                                         <i class="fas fa-trash"></i>
                                     </button>
                                 </div>
@@ -377,29 +374,29 @@
                         {% endfor %}
 
                         {% if not components.html and not components.css and not components.js %}
-                        <p class="text-center text-muted py-4">No components created yet.</p>
+                        <p class="text-center text-muted py-4">{{ t('landing_builder.ui.no_components_created_yet') }}</p>
                         {% endif %}
 
                         <!-- Add New Component -->
                         <form id="addComponentForm" class="row g-2 align-items-end mt-3">
                             <div class="col-auto">
-                                <label for="componentName" class="form-label">New Component</label>
-                                <input type="text" name="component_name" class="form-control" id="componentName" placeholder="e.g., navbar, styles" required>
+                                <label for="componentName" class="form-label">{{ t('landing_builder.ui.new_component') }}</label>
+                                <input type="text" name="component_name" class="form-control" id="componentName" placeholder="{{ t('landing_builder.ui.e_g_navbar_styles') }}" required>
                             </div>
                             <div class="col-auto">
-                                <label class="form-label">Type</label>
+                                <label class="form-label">{{ t('landing_builder.ui.type') }}</label>
                                 <div class="btn-group" role="group">
                                     <input type="radio" class="btn-check" name="component_type" id="typeHtml" value="html" checked>
                                     <label class="btn btn-outline-secondary" for="typeHtml">HTML</label>
                                     <input type="radio" class="btn-check" name="component_type" id="typeCss" value="css">
                                     <label class="btn btn-outline-secondary" for="typeCss">CSS</label>
                                     <input type="radio" class="btn-check" name="component_type" id="typeJs" value="js">
-                                    <label class="btn btn-outline-secondary" for="typeJs">JS</label>
+                                    <label class="btn btn-outline-secondary" for="typeJs">{{ t('landing_builder.ui.js') }}</label>
                                 </div>
                             </div>
                             <div class="col-auto">
                                 <button type="submit" class="btn btn-success">
-                                    <i class="fas fa-plus me-1"></i> Add Component
+                                    <i class="fas fa-plus me-1"></i> {{ t('landing_builder.ui.add_component') }}
                                 </button>
                             </div>
                         </form>
@@ -413,12 +410,12 @@
                         <form id="imageUploadForm" enctype="multipart/form-data" class="mb-4">
                             <div class="row g-2 align-items-end">
                                 <div class="col-auto">
-                                    <label for="imageFiles" class="form-label">Upload Images</label>
+                                    <label for="imageFiles" class="form-label">{{ t('landing_builder.ui.upload_images') }}</label>
                                     <input type="file" class="form-control" id="imageFiles" name="images" accept="image/*" multiple required>
                                 </div>
                                 <div class="col-auto">
                                     <button type="submit" class="btn btn-success">
-                                        <i class="fas fa-upload me-1"></i> Upload
+                                        <i class="fas fa-upload me-1"></i> {{ t('landing_builder.ui.upload') }}
                                     </button>
                                 </div>
                             </div>
@@ -429,7 +426,7 @@
                         <div id="imagesGrid" class="image-grid">
                             <!-- Images loaded dynamically -->
                         </div>
-                        <p id="noImagesMsg" class="text-center text-muted py-4" style="display: none;">No images uploaded yet.</p>
+                        <p id="noImagesMsg" class="text-center text-muted py-4" style="display: none;">{{ t('landing_builder.ui.no_images_uploaded_yet') }}</p>
                 </div>
             </div>
 
@@ -437,13 +434,13 @@
             <div class="tab-pane fade" id="registration" role="tabpanel">
                 <div class="section-container">
                     <div class="section-title">
-                        <i class="fas fa-user-plus"></i> Registration Settings
+                        <i class="fas fa-user-plus"></i> {{ t('landing_builder.ui.registration_settings') }}
                     </div>
-                    <p class="text-muted mb-3">Configure how users are created when registering from this landing page</p>
+                    <p class="text-muted mb-3">{{ t('landing_builder.ui.configure_how_users_are_created_when_registering_from_this_landing') }}</p>
                         <!-- Loading indicator -->
                         <div id="regConfigLoading" class="text-center py-4">
                             <div class="spinner-border text-primary" role="status"></div>
-                            <p class="mt-2 text-muted">Loading configuration...</p>
+                            <p class="mt-2 text-muted">{{ t('landing_builder.ui.loading_configuration') }}</p>
                         </div>
 
                         <!-- Configuration form (hidden until loaded) -->
@@ -451,141 +448,141 @@
 
                             <!-- ========== ESSENTIAL SETTINGS ========== -->
                             <div class="mb-4">
-                                <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-credit-card me-2 text-primary"></i>Who pays for AI usage?</h6>
+                                <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-credit-card me-2 text-primary"></i>{{ t('landing_builder.ui.who_pays_for_ai_usage') }}</h6>
                                 <div class="form-check">
                                     <input type="radio" class="form-check-input" id="billingCustomerPays" name="billing_mode" value="customer_pays" checked>
                                     <label class="form-check-label" for="billingCustomerPays">
-                                        Customers pay from their own balance
+                                        {{ t('landing_builder.ui.customers_pay_from_their_own_balance') }}
                                     </label>
-                                    <div class="form-text">Customers must add funds to their account to use AI</div>
+                                    <div class="form-text">{{ t('landing_builder.ui.customers_must_add_funds_to_their_account_to_use_ai') }}</div>
                                 </div>
                                 <div class="form-check mt-2">
                                     <input type="radio" class="form-check-input" id="billingUserPays" name="billing_mode" value="user_pays">
                                     <label class="form-check-label" for="billingUserPays">
-                                        I cover usage costs for my customers
+                                        {{ t('landing_builder.ui.i_cover_usage_costs_for_my_customers') }}
                                     </label>
-                                    <div class="form-text">AI usage costs will be deducted from your balance</div>
+                                    <div class="form-text">{{ t('landing_builder.ui.ai_usage_costs_will_be_deducted_from_your_balance') }}</div>
                                 </div>
                             </div>
 
                             <div class="mb-4" id="initialBalanceSection">
-                                <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-wallet me-2 text-primary"></i>Welcome credit for new users ($)</h6>
+                                <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-wallet me-2 text-primary"></i>{{ t('landing_builder.ui.welcome_credit_for_new_users') }}</h6>
                                 <div class="input-group" style="max-width: 200px;">
                                     <span class="input-group-text">$</span>
                                     <input type="text" class="form-control" id="initialBalance" name="initial_balance" value="0.00" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')">
                                 </div>
-                                <div class="form-text">Starting balance for new customers (only when customers pay their own balance)</div>
+                                <div class="form-text">{{ t('landing_builder.ui.starting_balance_for_new_customers_only_when_customers_pay_their') }}</div>
                             </div>
 
                             <!-- ========== ADVANCED SETTINGS ========== -->
                             <details class="mb-4">
                                 <summary class="fw-semibold mb-3" style="cursor: pointer; color: var(--text-secondary, #b9bbbe);">
-                                    <i class="fas fa-cogs me-2 text-muted"></i>Advanced settings
+                                    <i class="fas fa-cogs me-2 text-muted"></i>{{ t('landing_builder.ui.advanced_settings') }}
                                 </summary>
 
                                 <!-- Marketplace Access -->
                                 <div class="mb-4 ms-2">
-                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-key me-2 text-primary"></i>Marketplace Access</h6>
+                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-key me-2 text-primary"></i>{{ t('landing_builder.ui.marketplace_access') }}</h6>
                                     <div class="form-check mb-2">
                                         <input type="checkbox" class="form-check-input" id="publicPromptsAccess" name="public_prompts_access">
                                         <label class="form-check-label" for="publicPromptsAccess">
-                                            Users can browse the public marketplace
+                                            {{ t('landing_builder.ui.users_can_browse_the_public_marketplace') }}
                                         </label>
-                                        <div class="form-text">If unchecked, users can only see this prompt (captive users)</div>
+                                        <div class="form-text">{{ t('landing_builder.ui.if_unchecked_users_can_only_see_this_prompt_captive_users') }}</div>
                                     </div>
 
                                     <div id="categoryAccessSection" class="ms-4 mt-3" style="display: none;">
-                                        <label class="form-label">Restrict visible categories</label>
+                                        <label class="form-label">{{ t('landing_builder.ui.restrict_visible_categories') }}</label>
                                         <select id="categoryAccess" class="form-select" multiple size="4">
                                             <!-- Options loaded dynamically -->
                                         </select>
-                                        <div class="form-text">Hold Ctrl/Cmd to select multiple. Leave empty for all categories.</div>
+                                        <div class="form-text">{{ t('landing_builder.ui.hold_ctrl_cmd_to_select_multiple_leave_empty_for_all') }}</div>
                                     </div>
                                 </div>
 
                                 <!-- Permissions -->
                                 <div class="mb-4 ms-2">
-                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-shield-alt me-2 text-primary"></i>Permissions</h6>
+                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-shield-alt me-2 text-primary"></i>{{ t('landing_builder.ui.permissions') }}</h6>
                                     <div class="form-check mb-2">
                                         <input type="checkbox" class="form-check-input" id="allowFileUpload" name="allow_file_upload">
                                         <label class="form-check-label" for="allowFileUpload">
-                                            Users can upload files in chat
+                                            {{ t('landing_builder.ui.users_can_upload_files_in_chat') }}
                                         </label>
-                                        <div class="form-text">Allow uploading images, PDFs, and other files</div>
+                                        <div class="form-text">{{ t('landing_builder.ui.allow_uploading_images_pdfs_and_other_files') }}</div>
                                     </div>
                                     <div class="form-check">
                                         <input type="checkbox" class="form-check-input" id="allowImageGeneration" name="allow_image_generation">
                                         <label class="form-check-label" for="allowImageGeneration">
-                                            Users can generate images
+                                            {{ t('landing_builder.ui.users_can_generate_images') }}
                                         </label>
-                                        <div class="form-text">Allow AI image generation (DALL-E, etc.)</div>
+                                        <div class="form-text">{{ t('landing_builder.ui.allow_ai_image_generation_dall_e_etc') }}</div>
                                     </div>
                                 </div>
 
                                 <!-- Default AI Model -->
                                 <div class="mb-4 ms-2">
-                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-robot me-2 text-primary"></i>Default AI model</h6>
+                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-robot me-2 text-primary"></i>{{ t('landing_builder.ui.default_ai_model') }}</h6>
                                     <select id="defaultLlmId" name="default_llm_id" class="form-select" style="max-width: 300px;">
-                                        <option value="">Use prompt's forced model (or system default)</option>
+                                        <option value="">{{ t('landing_builder.ui.use_prompt_s_forced_model_or_system_default') }}</option>
                                         <!-- Options loaded dynamically -->
                                     </select>
-                                    <div class="form-text">The AI model new users will have selected by default</div>
+                                    <div class="form-text">{{ t('landing_builder.ui.the_ai_model_new_users_will_have_selected_by_default') }}</div>
                                 </div>
 
                                 <!-- Billing Limits (only visible when user_pays) -->
                                 <div id="billingLimitSection" class="mb-4 ms-2" style="display: none;">
-                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-tachometer-alt me-2 text-primary"></i>Billing Limits</h6>
+                                    <h6 class="fw-semibold border-bottom pb-2"><i class="fas fa-tachometer-alt me-2 text-primary"></i>{{ t('landing_builder.ui.billing_limits') }}</h6>
                                     <div class="row g-2 align-items-end">
                                         <div class="col-auto">
-                                            <label class="form-label">Monthly limit per user</label>
+                                            <label class="form-label">{{ t('landing_builder.ui.monthly_limit_per_user') }}</label>
                                             <div class="input-group" style="width: 180px;">
                                                 <span class="input-group-text">$</span>
-                                                <input type="text" class="form-control" id="billingLimit" name="billing_limit" placeholder="No limit" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')">
+                                                <input type="text" class="form-control" id="billingLimit" name="billing_limit" placeholder="{{ t('landing_builder.ui.no_limit') }}" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')">
                                             </div>
                                         </div>
                                         <div class="col-auto">
-                                            <label class="form-label">When limit reached</label>
+                                            <label class="form-label">{{ t('landing_builder.ui.when_limit_reached') }}</label>
                                             <select id="billingLimitAction" name="billing_limit_action" class="form-select" style="width: 160px;" onchange="toggleAutoRefillFields()">
-                                                <option value="block">Block user</option>
-                                                <option value="notify">Notify only</option>
-                                                <option value="auto_refill">Auto-refill</option>
+                                                <option value="block">{{ t('landing_builder.ui.block_user') }}</option>
+                                                <option value="notify">{{ t('landing_builder.ui.notify_only') }}</option>
+                                                <option value="auto_refill">{{ t('landing_builder.ui.auto_refill') }}</option>
                                             </select>
                                         </div>
                                     </div>
-                                    <div class="form-text">Leave empty for unlimited. Limit resets monthly.</div>
+                                    <div class="form-text">{{ t('landing_builder.ui.leave_empty_for_unlimited_limit_resets_monthly') }}</div>
 
                                     <div id="autoRefillFields" class="mt-3 p-2 border rounded bg-light" style="display: none;">
                                         <div class="row g-2">
                                             <div class="col-auto">
-                                                <label class="form-label small">Increment by</label>
+                                                <label class="form-label small">{{ t('landing_builder.ui.increment_by') }}</label>
                                                 <div class="input-group input-group-sm" style="width: 140px;">
                                                     <span class="input-group-text">$</span>
                                                     <input type="number" class="form-control" id="billingAutoRefillAmount" name="billing_auto_refill_amount" value="10" step="0.01" min="1">
                                                 </div>
                                             </div>
                                             <div class="col-auto">
-                                                <label class="form-label small">Max limit (optional)</label>
+                                                <label class="form-label small">{{ t('landing_builder.ui.max_limit_optional') }}</label>
                                                 <div class="input-group input-group-sm" style="width: 140px;">
                                                     <span class="input-group-text">$</span>
-                                                    <input type="number" class="form-control" id="billingMaxLimit" name="billing_max_limit" placeholder="No cap" step="0.01" min="0">
+                                                    <input type="number" class="form-control" id="billingMaxLimit" name="billing_max_limit" placeholder="{{ t('landing_builder.ui.no_cap') }}" step="0.01" min="0">
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="form-text small">Auto-refill increases the limit automatically when reached</div>
+                                        <div class="form-text small">{{ t('landing_builder.ui.auto_refill_increases_the_limit_automatically_when_reached') }}</div>
                                     </div>
                                 </div>
                             </details>
 
                             <!-- Summary Preview -->
                             <div class="alert alert-info mb-4" id="regSummary">
-                                <strong><i class="fas fa-info-circle me-2"></i>Preview:</strong>
-                                <span id="regSummaryText">Users registering will have default settings.</span>
+                                <strong><i class="fas fa-info-circle me-2"></i>{{ t('landing_builder.ui.preview') }}</strong>
+                                <span id="regSummaryText">{{ t('landing_builder.ui.users_registering_will_have_default_settings') }}</span>
                             </div>
 
                             <!-- Save Button -->
                             <div class="d-flex justify-content-end">
                                 <button type="submit" class="btn btn-primary">
-                                    <i class="fas fa-save me-1"></i> Save Registration Settings
+                                    <i class="fas fa-save me-1"></i> {{ t('landing_builder.ui.save_registration_settings') }}
                                 </button>
                             </div>
                         </form>
@@ -595,7 +592,7 @@
 
                         <!-- Success message -->
                         <div id="regConfigSuccess" class="alert alert-success" style="display: none;">
-                            <i class="fas fa-check-circle me-2"></i>Settings saved successfully!
+                            <i class="fas fa-check-circle me-2"></i>{{ t('landing_builder.ui.settings_saved_successfully') }}
                         </div>
                 </div>
             </div>
@@ -604,22 +601,22 @@
             <div class="tab-pane fade" id="geoblocking" role="tabpanel">
                 <div class="section-container">
                     <div class="section-title">
-                        <i class="fas fa-globe"></i> Geo-Blocking
+                        <i class="fas fa-globe"></i> {{ t('landing_builder.ui.geo_blocking') }}
                     </div>
-                    <p class="text-muted mb-3">Control which countries can access this landing page via Cloudflare WAF rules</p>
+                    <p class="text-muted mb-3">{{ t('landing_builder.ui.control_which_countries_can_access_this_landing_page_via_cloudflare') }}</p>
 
                     <!-- Loading -->
                     <div id="geoLoading" class="text-center py-4">
                         <div class="spinner-border text-primary" role="status"></div>
-                        <p class="mt-2 text-muted">Loading geo-blocking settings...</p>
+                        <p class="mt-2 text-muted">{{ t('landing_builder.ui.loading_geo_blocking_settings') }}</p>
                     </div>
 
                     <!-- Not configured notice -->
                     <div id="geoNotConfigured" style="display:none;">
                         <div class="alert alert-info">
                             <i class="fas fa-info-circle me-2"></i>
-                            Geo-blocking is not available. Cloudflare credentials are not configured on this platform.
-                            <br><small class="text-muted">Contact the platform administrator to enable geo-blocking.</small>
+                            {{ t('landing_builder.ui.geo_blocking_is_not_available_cloudflare_credentials_are_not_configured') }}
+                            <br><small class="text-muted">{{ t('landing_builder.ui.contact_the_platform_administrator_to_enable_geo_blocking') }}</small>
                         </div>
                     </div>
 
@@ -628,50 +625,50 @@
                         <!-- Global blocks info banner -->
                         <div id="globalBlocksInfo" class="alert alert-secondary mb-3" style="display:none;">
                             <i class="fas fa-shield-alt me-2"></i>
-                            <strong>Platform-level blocks active:</strong>
-                            <span id="globalBlocksText">These countries are already blocked by the platform admin.</span>
+                            <strong>{{ t('landing_builder.ui.platform_level_blocks_active') }}</strong>
+                            <span id="globalBlocksText">{{ t('landing_builder.ui.these_countries_are_already_blocked_by_the_platform_admin') }}</span>
                             <div id="globalBlocksList" class="mt-1 small"></div>
                         </div>
 
                         <!-- Enable toggle -->
                         <div class="form-check form-switch mb-3">
                             <input class="form-check-input" type="checkbox" id="geoLandingEnabled">
-                            <label class="form-check-label fw-semibold" for="geoLandingEnabled">Enable Geo-Blocking for this Landing</label>
+                            <label class="form-check-label fw-semibold" for="geoLandingEnabled">{{ t('landing_builder.ui.enable_geo_blocking_for_this_landing') }}</label>
                         </div>
 
                         <!-- Config area (shown when enabled) -->
                         <div id="geoLandingConfigArea" style="display:none;">
                             <!-- Mode selector -->
                             <div class="mb-3">
-                                <label class="form-label fw-semibold">Mode</label>
+                                <label class="form-label fw-semibold">{{ t('landing_builder.ui.mode') }}</label>
                                 <div class="btn-group" role="group">
                                     <input type="radio" class="btn-check" name="geoLandingMode" id="landingModeDeny" value="deny" checked>
-                                    <label class="btn btn-outline-danger" for="landingModeDeny"><i class="fas fa-ban me-1"></i>Block Listed</label>
+                                    <label class="btn btn-outline-danger" for="landingModeDeny"><i class="fas fa-ban me-1"></i>{{ t('landing_builder.ui.block_listed') }}</label>
                                     <input type="radio" class="btn-check" name="geoLandingMode" id="landingModeAllow" value="allow">
-                                    <label class="btn btn-outline-success" for="landingModeAllow"><i class="fas fa-check me-1"></i>Allow Only Listed</label>
+                                    <label class="btn btn-outline-success" for="landingModeAllow"><i class="fas fa-check me-1"></i>{{ t('landing_builder.ui.allow_only_listed') }}</label>
                                 </div>
-                                <div class="form-text" id="landingModeHelp">Countries selected below will be BLOCKED from accessing this landing page.</div>
+                                <div class="form-text" id="landingModeHelp">{{ t('landing_builder.ui.countries_selected_below_will_be_blocked_from_accessing_this_landing') }}</div>
                             </div>
 
                             <!-- Continent Quick Selectors -->
                             <div class="mb-3">
-                                <label class="form-label fw-semibold">Continents</label>
+                                <label class="form-label fw-semibold">{{ t('landing_builder.ui.continents') }}</label>
                                 <div class="d-flex flex-wrap gap-2" id="landingContinentCheckboxes"></div>
                             </div>
 
                             <!-- Country Multi-Select -->
                             <div class="mb-3">
-                                <label class="form-label fw-semibold">Countries</label>
-                                <input type="text" class="form-control mb-2" id="landingCountrySearch" placeholder="Search countries...">
+                                <label class="form-label fw-semibold">{{ t('landing_builder.ui.countries') }}</label>
+                                <input type="text" class="form-control mb-2" id="landingCountrySearch" placeholder="{{ t('landing_builder.ui.search_countries') }}">
                                 <div id="landingCountryGrid" class="border rounded p-2" style="max-height: 300px; overflow-y: auto; background: var(--bg-tertiary, #202225);">
                                     <!-- Populated by JS -->
                                 </div>
-                                <small class="text-muted"><span id="landingSelectedCount">0</span> countries selected</small>
+                                <small class="text-muted"><span id="landingSelectedCount">{{ t('landing_builder.ui.selected_countries_count', count=format_number(0, maximum_fraction_digits=0)) }}</span></small>
                             </div>
 
                             <!-- Save Button -->
                             <button class="btn btn-primary" id="saveGeoBtn" onclick="saveLandingGeo()">
-                                <i class="fas fa-save me-1"></i> Save &amp; Sync to Cloudflare
+                                <i class="fas fa-save me-1"></i> {{ t('landing_builder.ui.save_sync_to_cloudflare') }}
                             </button>
                         </div>
                     </div>
@@ -684,17 +681,17 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header bg-primary text-white">
-                    <h5 class="modal-title"><i class="fas fa-magic me-2"></i>AI Landing Page Assistant</h5>
+                    <h5 class="modal-title"><i class="fas fa-magic me-2"></i>{{ t('landing_builder.ui.ai_landing_page_assistant') }}</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <!-- Files summary -->
                     <div id="modeFileSummary" class="alert alert-info mb-4">
                         <i class="fas fa-folder-open me-2"></i>
-                        <span id="modeFileSummaryText">Loading files...</span>
+                        <span id="modeFileSummaryText">{{ t('landing_builder.ui.loading_files') }}</span>
                     </div>
 
-                    <p class="mb-3">What would you like to do?</p>
+                    <p class="mb-3">{{ t('landing_builder.ui.what_would_you_like_to_do') }}</p>
 
                     <!-- Mode options -->
                     <div class="list-group">
@@ -702,8 +699,8 @@
                             <div class="d-flex align-items-center">
                                 <i class="fas fa-plus-circle text-success me-3 fa-lg"></i>
                                 <div>
-                                    <strong>Create new landing page</strong>
-                                    <br><small class="text-muted">Generate a complete landing from scratch (replaces home.html)</small>
+                                    <strong>{{ t('landing_builder.ui.create_new_landing_page') }}</strong>
+                                    <br><small class="text-muted">{{ t('landing_builder.ui.generate_a_complete_landing_from_scratch_replaces_home_html') }}</small>
                                 </div>
                             </div>
                         </button>
@@ -711,8 +708,8 @@
                             <div class="d-flex align-items-center">
                                 <i class="fas fa-edit text-primary me-3 fa-lg"></i>
                                 <div>
-                                    <strong>Modify existing landing</strong>
-                                    <br><small class="text-muted">Ask Claude to improve, add sections, or make changes</small>
+                                    <strong>{{ t('landing_builder.ui.modify_existing_landing') }}</strong>
+                                    <br><small class="text-muted">{{ t('landing_builder.ui.ask_claude_to_improve_add_sections_or_make_changes') }}</small>
                                 </div>
                             </div>
                         </button>
@@ -720,15 +717,15 @@
                             <div class="d-flex align-items-center">
                                 <i class="fas fa-trash-alt text-danger me-3 fa-lg"></i>
                                 <div>
-                                    <strong>Start fresh (delete all)</strong>
-                                    <br><small class="text-muted">Remove all files and generate from scratch</small>
+                                    <strong>{{ t('landing_builder.ui.start_fresh_delete_all') }}</strong>
+                                    <br><small class="text-muted">{{ t('landing_builder.ui.remove_all_files_and_generate_from_scratch') }}</small>
                                 </div>
                             </div>
                         </button>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('landing_builder.ui.cancel') }}</button>
                 </div>
             </div>
         </div>
@@ -739,59 +736,59 @@
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header bg-primary text-white">
-                    <h5 class="modal-title"><i class="fas fa-edit me-2"></i>Modify Existing Landing</h5>
+                    <h5 class="modal-title"><i class="fas fa-edit me-2"></i>{{ t('landing_builder.ui.modify_existing_landing_2') }}</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <!-- Current files info -->
                     <div class="alert alert-secondary mb-4">
-                        <strong><i class="fas fa-folder-open me-2"></i>Current files:</strong>
+                        <strong><i class="fas fa-folder-open me-2"></i>{{ t('landing_builder.ui.current_files') }}</strong>
                         <div id="modifyFileList" class="mt-2 small"></div>
                     </div>
 
                     <!-- Instructions textarea -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">What would you like to change?</label>
+                        <label class="form-label fw-semibold">{{ t('landing_builder.ui.what_would_you_like_to_change') }}</label>
                         <textarea id="modifyInstructions" class="form-control" rows="5"
-                            placeholder="Example: Add a testimonials section with 3 customer reviews below the hero section..."></textarea>
+                            placeholder="{{ t('landing_builder.ui.example_add_a_testimonials_section_with_3_customer_reviews_below') }}"></textarea>
                     </div>
 
                     <!-- Timeout -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Maximum execution time</label>
+                        <label class="form-label fw-semibold">{{ t('landing_builder.ui.maximum_execution_time') }}</label>
                         <div class="input-group" style="max-width: 200px;">
                             <input type="number" id="modifyTimeout" class="form-control" value="3" min="1" max="60">
-                            <span class="input-group-text">minutes</span>
+                            <span class="input-group-text">{{ t('landing_builder.ui.minutes') }}</span>
                         </div>
-                        <small class="text-muted">Max: 60 minutes.</small>
+                        <small class="text-muted">{{ t('landing_builder.ui.max_60_minutes') }}</small>
                     </div>
 
                     <!-- Examples -->
                     <div class="small text-muted">
-                        <strong>Examples:</strong>
+                        <strong>{{ t('landing_builder.ui.examples') }}</strong>
                         <ul class="mb-0 mt-1">
-                            <li>"Add a FAQ section at the bottom"</li>
-                            <li>"Make the CTA buttons more prominent with the primary color"</li>
-                            <li>"Add a pricing table with 3 tiers: Basic, Pro, Enterprise"</li>
-                            <li>"Translate all text to English"</li>
-                            <li>"Use the logo.png image in the header"</li>
+                            <li>{{ t('landing_builder.ui.add_a_faq_section_at_the_bottom') }}</li>
+                            <li>{{ t('landing_builder.ui.make_the_cta_buttons_more_prominent_with_the_primary_color') }}</li>
+                            <li>{{ t('landing_builder.ui.add_a_pricing_table_with_3_tiers_basic_pro_enterprise') }}</li>
+                            <li>{{ t('landing_builder.ui.translate_all_text_to_english') }}</li>
+                            <li>{{ t('landing_builder.ui.use_the_logo_png_image_in_the_header') }}</li>
                         </ul>
                     </div>
 
                     <!-- Progress indicator -->
                     <div id="modifyProgress" class="text-center py-4" style="display: none;">
                         <div class="spinner-border text-primary mb-3" role="status"></div>
-                        <p class="mb-0 fw-semibold">Applying modifications...</p>
-                        <small class="text-muted">Claude is reading your files and making changes...</small>
+                        <p class="mb-0 fw-semibold">{{ t('landing_builder.ui.applying_modifications') }}</p>
+                        <small class="text-muted">{{ t('landing_builder.ui.claude_is_reading_your_files_and_making_changes') }}</small>
                     </div>
 
                     <!-- Error message -->
                     <div id="modifyError" class="alert alert-danger mt-3" style="display: none;"></div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="modifyCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="modifyCancelBtn">{{ t('landing_builder.ui.cancel') }}</button>
                     <button type="button" class="btn btn-primary" id="modifyApplyBtn" onclick="applyModifications()">
-                        <i class="fas fa-check me-1"></i> Apply Changes
+                        <i class="fas fa-check me-1"></i> {{ t('landing_builder.ui.apply_changes') }}
                     </button>
                 </div>
             </div>
@@ -803,18 +800,18 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header bg-danger text-white">
-                    <h5 class="modal-title"><i class="fas fa-exclamation-triangle me-2"></i>Confirm Delete All</h5>
+                    <h5 class="modal-title"><i class="fas fa-exclamation-triangle me-2"></i>{{ t('landing_builder.ui.confirm_delete_all') }}</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <p>This will delete all landing page files:</p>
+                    <p>{{ t('landing_builder.ui.this_will_delete_all_landing_page_files') }}</p>
                     <ul id="freshDeleteList" class="text-danger"></ul>
-                    <p class="mb-0"><strong>Note:</strong> Images in <code>static/img/</code> will be preserved.</p>
+                    <p class="mb-0"><strong>{{ t('landing_builder.ui.note') }}</strong> {{ t('landing_builder.ui.images_in_static_img_will_be_preserved') }}</p>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('landing_builder.ui.cancel') }}</button>
                     <button type="button" class="btn btn-danger" onclick="confirmFreshStart()">
-                        <i class="fas fa-trash me-1"></i> Delete All & Continue
+                        <i class="fas fa-trash me-1"></i> {{ t('landing_builder.ui.delete_all_continue') }}
                     </button>
                 </div>
             </div>
@@ -826,44 +823,44 @@
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header bg-primary text-white">
-                    <h5 class="modal-title"><i class="fas fa-magic me-2"></i>Create New Landing Page</h5>
+                    <h5 class="modal-title"><i class="fas fa-magic me-2"></i>{{ t('landing_builder.ui.create_new_landing_page_2') }}</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <!-- Description -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Describe your product or service *</label>
+                        <label class="form-label fw-semibold">{{ t('landing_builder.ui.describe_your_product_or_service') }}</label>
                         <textarea id="wizardDescription" class="form-control" rows="4"
-                            placeholder="Example: I'm a life coach specialized in productivity for entrepreneurs. I help busy professionals organize their time and achieve their goals through personalized coaching sessions..."></textarea>
-                        <small class="text-muted">The more detailed your description, the better the result.</small>
+                            placeholder="{{ t('landing_builder.ui.example_i_m_a_life_coach_specialized_in_productivity_for') }}"></textarea>
+                        <small class="text-muted">{{ t('landing_builder.ui.the_more_detailed_your_description_the_better_the_result') }}</small>
                     </div>
 
                     <!-- Style -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Visual style</label>
+                        <label class="form-label fw-semibold">{{ t('landing_builder.ui.visual_style') }}</label>
                         <div class="btn-group d-flex" role="group">
                             <input type="radio" class="btn-check" name="wizardStyle" id="styleModern" value="modern" checked>
-                            <label class="btn btn-outline-primary" for="styleModern">Modern</label>
+                            <label class="btn btn-outline-primary" for="styleModern">{{ t('landing_builder.ui.modern') }}</label>
                             <input type="radio" class="btn-check" name="wizardStyle" id="styleMinimalist" value="minimalist">
-                            <label class="btn btn-outline-primary" for="styleMinimalist">Minimalist</label>
+                            <label class="btn btn-outline-primary" for="styleMinimalist">{{ t('landing_builder.ui.minimalist') }}</label>
                             <input type="radio" class="btn-check" name="wizardStyle" id="styleCorporate" value="corporate">
-                            <label class="btn btn-outline-primary" for="styleCorporate">Corporate</label>
+                            <label class="btn btn-outline-primary" for="styleCorporate">{{ t('landing_builder.ui.corporate') }}</label>
                             <input type="radio" class="btn-check" name="wizardStyle" id="styleCreative" value="creative">
-                            <label class="btn btn-outline-primary" for="styleCreative">Creative</label>
+                            <label class="btn btn-outline-primary" for="styleCreative">{{ t('landing_builder.ui.creative') }}</label>
                         </div>
                     </div>
 
                     <!-- Colors -->
                     <div class="row mb-4">
                         <div class="col-6">
-                            <label class="form-label fw-semibold">Primary color</label>
+                            <label class="form-label fw-semibold">{{ t('landing_builder.ui.primary_color') }}</label>
                             <div class="input-group">
                                 <input type="color" id="wizardPrimaryColor" class="form-control form-control-color" value="#3B82F6">
                                 <input type="text" id="wizardPrimaryColorText" class="form-control" value="#3B82F6" pattern="^#[0-9A-Fa-f]{6}$">
                             </div>
                         </div>
                         <div class="col-6">
-                            <label class="form-label fw-semibold">Secondary color</label>
+                            <label class="form-label fw-semibold">{{ t('landing_builder.ui.secondary_color') }}</label>
                             <div class="input-group">
                                 <input type="color" id="wizardSecondaryColor" class="form-control form-control-color" value="#10B981">
                                 <input type="text" id="wizardSecondaryColorText" class="form-control" value="#10B981" pattern="^#[0-9A-Fa-f]{6}$">
@@ -873,45 +870,45 @@
 
                     <!-- Language -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Content language</label>
+                        <label class="form-label fw-semibold">{{ t('landing_builder.ui.content_language') }}</label>
                         <select id="wizardLanguage" class="form-select" style="max-width: 200px;">
-                            <option value="es">Spanish</option>
-                            <option value="en">English</option>
+                            <option value="es">{{ t('landing_builder.ui.spanish') }}</option>
+                            <option value="en">{{ t('landing_builder.ui.english') }}</option>
                         </select>
                     </div>
 
                     <!-- Timeout -->
                     <div class="mb-4">
-                        <label class="form-label fw-semibold">Maximum execution time</label>
+                        <label class="form-label fw-semibold">{{ t('landing_builder.ui.maximum_execution_time') }}</label>
                         <div class="input-group" style="max-width: 200px;">
                             <input type="number" id="wizardTimeout" class="form-control" value="3" min="1" max="60">
-                            <span class="input-group-text">minutes</span>
+                            <span class="input-group-text">{{ t('landing_builder.ui.minutes') }}</span>
                         </div>
-                        <small class="text-muted">Complex pages may need more time. Max: 60 minutes.</small>
+                        <small class="text-muted">{{ t('landing_builder.ui.complex_pages_may_need_more_time_max_60_minutes') }}</small>
                     </div>
 
                     <!-- Warning if home.html exists -->
                     {% if has_home_page %}
                     <div class="alert alert-warning">
                         <i class="fas fa-exclamation-triangle me-2"></i>
-                        <strong>Warning:</strong> A <code>home.html</code> already exists. Generating a new one will overwrite it.
+                        <strong>{{ t('landing_builder.ui.warning') }}</strong> {{ t('landing_builder.ui.a_home_html_already_exists_generating_a_new_one_will') }}
                     </div>
                     {% endif %}
 
                     <!-- Progress indicator -->
                     <div id="wizardProgress" class="text-center py-4" style="display: none;">
                         <div class="spinner-border text-primary mb-3" role="status"></div>
-                        <p class="mb-0 fw-semibold">Generating your landing page...</p>
-                        <small class="text-muted">Please wait...</small>
+                        <p class="mb-0 fw-semibold">{{ t('landing_builder.ui.generating_your_landing_page') }}</p>
+                        <small class="text-muted">{{ t('landing_builder.ui.please_wait') }}</small>
                     </div>
 
                     <!-- Error message -->
                     <div id="wizardError" class="alert alert-danger" style="display: none;"></div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="wizardCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="wizardCancelBtn">{{ t('landing_builder.ui.cancel') }}</button>
                     <button type="button" class="btn btn-primary" id="wizardGenerateBtn" onclick="generateLanding()">
-                        <i class="fas fa-wand-magic-sparkles me-1"></i> Generate Landing Page
+                        <i class="fas fa-wand-magic-sparkles me-1"></i> {{ t('landing_builder.ui.generate_landing_page') }}
                     </button>
                 </div>
             </div>
@@ -965,7 +962,7 @@
                 const data = await response.json();
 
                 if (!data.success) {
-                    onError(data.message || 'Failed to get job status');
+                    onError(data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.failed_to_get_job_status'));
                     stopPolling();
                     return;
                 }
@@ -975,7 +972,7 @@
                     const elapsed = Math.round((Date.now() - new Date(data.started_at).getTime()) / 1000);
                     const progressSmall = progressElement.querySelector('small');
                     if (progressSmall) {
-                        progressSmall.textContent = `Claude is working... (${elapsed}s elapsed)`;
+                        progressSmall.textContent = AurvekI18n.t('landing_builder.ui.claude_is_working_elapsed_s_elapsed', { elapsed: AurvekI18n.formatNumber(elapsed) });
                     }
                 }
 
@@ -985,7 +982,7 @@
                     onComplete(data);
                 } else if (data.status === 'failed' || data.status === 'timeout') {
                     stopPolling();
-                    onError(data.error || `Job ${data.status}`);
+                    onError(data.error || AurvekI18n.t('landing_builder.ui.job_data', { data: AurvekI18n.t('landing_builder.job_status.' + (data.status === 'timeout' ? 'timeout' : 'failed')) }));
                 }
                 // Otherwise keep polling (pending, running)
 
@@ -1022,8 +1019,8 @@
                 if (data.success && data.has_active_job) {
                     // Show a notification that a job is in progress
                     NotificationModal.info(
-                        'Job In Progress',
-                        `A ${data.type} job is currently running. Task ID: ${data.task_id.substring(0, 8)}...`
+                        AurvekI18n.t('landing_builder.ui.job_in_progress'),
+                        AurvekI18n.t('landing_builder.job.running', { type: AurvekI18n.t('landing_builder.job_type.' + (data.type === 'modify' ? 'modify' : 'generate')), id: data.task_id.substring(0, 8) })
                     );
 
                     // Could optionally show a persistent UI indicator here
@@ -1041,7 +1038,7 @@
         function copyUrl() {
             const urlToCopy = activeCustomDomain || standardUrl;
             navigator.clipboard.writeText(urlToCopy).then(() => {
-                NotificationModal.success('Copied!', 'URL copied to clipboard!');
+                NotificationModal.success(AurvekI18n.t('landing_builder.ui.copied'), AurvekI18n.t('landing_builder.ui.url_copied_to_clipboard'));
             }).catch(err => {
                 console.error('Failed to copy:', err);
             });
@@ -1053,7 +1050,7 @@
             const pageName = document.getElementById('newPageName').value.trim().toLowerCase();
 
             if (!pageName || !/^[a-zA-Z0-9_-]+$/.test(pageName)) {
-                NotificationModal.warning('Invalid Page Name', 'Use only letters, numbers, underscores, and hyphens.');
+                NotificationModal.warning(AurvekI18n.t('landing_builder.ui.invalid_page_name'), AurvekI18n.t('landing_builder.ui.use_only_letters_numbers_underscores_and_hyphens'));
                 return;
             }
 
@@ -1069,19 +1066,19 @@
                 if (data.success) {
                     FormGuard.reloadIfClean();
                 } else {
-                    NotificationModal.error('Page Creation Failed', data.message || 'Error creating page');
+                    NotificationModal.error(AurvekI18n.t('landing_builder.ui.page_creation_failed'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_creating_page'));
                 }
             } catch (err) {
                 console.error('Error:', err);
-                NotificationModal.error('Page Creation Failed', 'Error creating page');
+                NotificationModal.error(AurvekI18n.t('landing_builder.ui.page_creation_failed'), AurvekI18n.t('landing_builder.ui.error_creating_page'));
             }
         });
 
         // Delete page
         async function deletePage(pageName) {
             NotificationModal.confirm(
-                'Delete Page',
-                `Are you sure you want to delete the page "${pageName}"?`,
+                AurvekI18n.t('landing_builder.ui.delete_page'),
+                AurvekI18n.t('landing_builder.ui.are_you_sure_you_want_to_delete_the_page_pagename', { pageName: pageName }),
                 async () => {
                     try {
                         const response = await secureFetch(`/api/landing/${promptId}/pages/${pageName}`, {
@@ -1093,23 +1090,23 @@
                         if (data.success) {
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.error('Page Deletion Failed', data.message || 'Error deleting page');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.page_deletion_failed'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_deleting_page'));
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Page Deletion Failed', 'Error deleting page');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.page_deletion_failed'), AurvekI18n.t('landing_builder.ui.error_deleting_page'));
                     }
                 },
                 null,
-                { type: 'error', confirmText: 'Delete' }
+                { type: 'error', confirmText: AurvekI18n.t('landing_builder.action.delete') }
             );
         }
 
         // Delete component
         async function deleteComponent(type, name) {
             NotificationModal.confirm(
-                'Delete Component',
-                `Are you sure you want to delete the component "${name}"?`,
+                AurvekI18n.t('landing_builder.ui.delete_component'),
+                AurvekI18n.t('landing_builder.ui.are_you_sure_you_want_to_delete_the_component_name', { name: name }),
                 async () => {
                     try {
                         const response = await secureFetch(`/api/landing/${promptId}/components/${type}/${name}`, {
@@ -1121,15 +1118,15 @@
                         if (data.success) {
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.error('Component Deletion Failed', data.message || 'Error deleting component');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.component_deletion_failed'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_deleting_component'));
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Component Deletion Failed', 'Error deleting component');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.component_deletion_failed'), AurvekI18n.t('landing_builder.ui.error_deleting_component'));
                     }
                 },
                 null,
-                { type: 'error', confirmText: 'Delete' }
+                { type: 'error', confirmText: AurvekI18n.t('landing_builder.action.delete') }
             );
         }
 
@@ -1144,7 +1141,7 @@
                 input.name = 'names';
                 input.className = 'form-control form-control-sm mt-1';
                 input.value = file.name.split('.')[0];
-                input.placeholder = `Name for ${file.name}`;
+                input.placeholder = AurvekI18n.t('landing_builder.ui.name_for_file', { file: file.name });
                 container.appendChild(input);
             }
         });
@@ -1163,14 +1160,14 @@
 
                 const data = await response.json();
                 if (data.message) {
-                    NotificationModal.info('Image Upload', data.message);
+                    NotificationModal.info(AurvekI18n.t('landing_builder.ui.image_upload'), data.message);
                     loadImages();
                     form.reset();
                     document.getElementById('imageNamesContainer').innerHTML = '';
                 }
             } catch (err) {
                 console.error('Error:', err);
-                NotificationModal.error('Upload Failed', 'Error uploading images');
+                NotificationModal.error(AurvekI18n.t('landing_builder.ui.upload_failed'), AurvekI18n.t('landing_builder.ui.error_uploading_images'));
             }
         });
 
@@ -1217,8 +1214,8 @@
         // Delete image
         async function deleteImage(imageId) {
             NotificationModal.confirm(
-                'Delete Image',
-                'Are you sure you want to delete this image?',
+                AurvekI18n.t('landing_builder.ui.delete_image'),
+                AurvekI18n.t('landing_builder.ui.are_you_sure_you_want_to_delete_this_image'),
                 async () => {
                     try {
                         const response = await secureFetch(`/api/landing/${promptId}/images/${imageId}`, {
@@ -1227,15 +1224,15 @@
                         if (!response) return; // Session expired
 
                         const data = await response.json();
-                        NotificationModal.info('Image Deleted', data.message);
+                        NotificationModal.info(AurvekI18n.t('landing_builder.ui.image_deleted'), data.message);
                         loadImages();
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Image Deletion Failed', 'Error deleting image');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.image_deletion_failed'), AurvekI18n.t('landing_builder.ui.error_deleting_image'));
                     }
                 },
                 null,
-                { type: 'error', confirmText: 'Delete' }
+                { type: 'error', confirmText: AurvekI18n.t('landing_builder.action.delete') }
             );
         }
 
@@ -1273,13 +1270,13 @@
         async function generateLanding() {
             const description = document.getElementById('wizardDescription').value.trim();
             if (!description) {
-                NotificationModal.warning('Description Required', 'Please describe your product or service');
+                NotificationModal.warning(AurvekI18n.t('landing_builder.ui.description_required'), AurvekI18n.t('landing_builder.ui.please_describe_your_product_or_service'));
                 document.getElementById('wizardDescription').focus();
                 return;
             }
 
             if (description.length < 20) {
-                NotificationModal.warning('Description Too Short', 'Please provide a more detailed description (at least 20 characters)');
+                NotificationModal.warning(AurvekI18n.t('landing_builder.ui.description_too_short'), AurvekI18n.t('landing_builder.ui.please_provide_a_more_detailed_description_at_least_20_characters'));
                 document.getElementById('wizardDescription').focus();
                 return;
             }
@@ -1297,7 +1294,7 @@
             const errorElement = document.getElementById('wizardError');
 
             // Update progress message
-            progressElement.querySelector('small').textContent = 'Starting job...';
+            progressElement.querySelector('small').textContent = AurvekI18n.t('landing_builder.ui.starting_job');
 
             // Show progress, disable buttons
             progressElement.style.display = 'block';
@@ -1325,7 +1322,7 @@
 
                 if (data.success && data.task_id) {
                     // Job started, begin polling
-                    progressElement.querySelector('small').textContent = 'Claude is working...';
+                    progressElement.querySelector('small').textContent = AurvekI18n.t('landing_builder.ui.claude_is_working');
 
                     startPolling(
                         data.task_id,
@@ -1333,7 +1330,7 @@
                         (result) => {
                             bootstrap.Modal.getInstance(document.getElementById('wizardModal')).hide();
                             const filesCreated = result.files_created ? result.files_created.join(', ') : 'home.html';
-                            NotificationModal.success('Landing Page Generated!', 'Files created: ' + filesCreated);
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.landing_page_generated'), AurvekI18n.t('landing_builder.ui.files_created_files', { files: filesCreated }));
                             FormGuard.reloadIfClean();
                         },
                         // onError
@@ -1349,7 +1346,7 @@
                     );
                 } else {
                     // Failed to start job
-                    errorElement.textContent = data.message || 'Failed to start job';
+                    errorElement.textContent = data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.failed_to_start_job');
                     errorElement.style.display = 'block';
                     progressElement.style.display = 'none';
                     document.getElementById('wizardGenerateBtn').disabled = false;
@@ -1357,7 +1354,7 @@
                 }
             } catch (err) {
                 console.error('Error:', err);
-                errorElement.textContent = 'Network error. Please try again.';
+                errorElement.textContent = AurvekI18n.t('landing_builder.ui.network_error_please_try_again');
                 errorElement.style.display = 'block';
                 progressElement.style.display = 'none';
                 document.getElementById('wizardGenerateBtn').disabled = false;
@@ -1378,7 +1375,7 @@
                 const data = await response.json();
 
                 if (!data.success) {
-                    NotificationModal.error('File Check Error', data.message || 'Unknown error');
+                    NotificationModal.error(AurvekI18n.t('landing_builder.ui.file_check_error'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.unknown_error'));
                     return;
                 }
 
@@ -1393,7 +1390,7 @@
                 }
             } catch (err) {
                 console.error('Error:', err);
-                NotificationModal.error('File Check Error', 'Error checking existing files');
+                NotificationModal.error(AurvekI18n.t('landing_builder.ui.file_check_error'), AurvekI18n.t('landing_builder.ui.error_checking_existing_files'));
             }
         }
 
@@ -1401,21 +1398,21 @@
             // Build file summary
             const parts = [];
             if (currentFiles.pages.length > 0) {
-                parts.push(`${currentFiles.pages.length} page(s)`);
+                parts.push(AurvekI18n.t('landing_builder.ui.pages_count', { count: AurvekI18n.formatNumber(currentFiles.pages.length) }));
             }
             if (currentFiles.css.length > 0) {
-                parts.push(`${currentFiles.css.length} CSS file(s)`);
+                parts.push(AurvekI18n.t('landing_builder.ui.css_files_count', { count: AurvekI18n.formatNumber(currentFiles.css.length) }));
             }
             if (currentFiles.js.length > 0) {
-                parts.push(`${currentFiles.js.length} JS file(s)`);
+                parts.push(AurvekI18n.t('landing_builder.ui.javascript_files_count', { count: AurvekI18n.formatNumber(currentFiles.js.length) }));
             }
             if (currentFiles.images.length > 0) {
-                parts.push(`${currentFiles.images.length} image(s)`);
+                parts.push(AurvekI18n.t('landing_builder.ui.images_count', { count: AurvekI18n.formatNumber(currentFiles.images.length) }));
             }
 
             const summaryText = parts.length > 0
-                ? `Current files: ${parts.join(', ')}`
-                : 'No files found';
+                ? AurvekI18n.t('landing_builder.ui.current_files_parts', { parts: parts.join(', ') })
+                : AurvekI18n.t('landing_builder.ui.no_files_found');
 
             document.getElementById('modeFileSummaryText').textContent = summaryText;
 
@@ -1469,19 +1466,19 @@
             const fileListHtml = [];
 
             if (currentFiles.pages.length > 0) {
-                fileListHtml.push(`<strong>Pages:</strong> ${currentFiles.pages.join(', ')}`);
+                fileListHtml.push(`<strong>${AurvekI18n.t('landing_builder.ui.pages_2')}</strong> ${currentFiles.pages.join(', ')}`);
             }
             if (currentFiles.css.length > 0) {
-                fileListHtml.push(`<strong>CSS:</strong> ${currentFiles.css.join(', ')}`);
+                fileListHtml.push(`<strong>${AurvekI18n.t('landing_builder.ui.css')}</strong> ${currentFiles.css.join(', ')}`);
             }
             if (currentFiles.js.length > 0) {
-                fileListHtml.push(`<strong>JS:</strong> ${currentFiles.js.join(', ')}`);
+                fileListHtml.push(`<strong>${AurvekI18n.t('landing_builder.ui.js_2')}</strong> ${currentFiles.js.join(', ')}`);
             }
             if (currentFiles.images.length > 0) {
-                fileListHtml.push(`<strong>Images:</strong> ${currentFiles.images.join(', ')}`);
+                fileListHtml.push(`<strong>${AurvekI18n.t('landing_builder.ui.images_2')}</strong> ${currentFiles.images.join(', ')}`);
             }
 
-            document.getElementById('modifyFileList').innerHTML = fileListHtml.join('<br>') || 'No files';
+            document.getElementById('modifyFileList').innerHTML = fileListHtml.join('<br>') || AurvekI18n.t('landing_builder.ui.no_files');
             document.getElementById('modifyInstructions').value = '';
             document.getElementById('modifyError').style.display = 'none';
 
@@ -1492,13 +1489,13 @@
             const instructions = document.getElementById('modifyInstructions').value.trim();
 
             if (!instructions) {
-                NotificationModal.warning('Instructions Required', 'Please describe what changes you want to make');
+                NotificationModal.warning(AurvekI18n.t('landing_builder.ui.instructions_required'), AurvekI18n.t('landing_builder.ui.please_describe_what_changes_you_want_to_make'));
                 document.getElementById('modifyInstructions').focus();
                 return;
             }
 
             if (instructions.length < 10) {
-                NotificationModal.warning('Instructions Too Short', 'Please provide more detailed instructions (at least 10 characters)');
+                NotificationModal.warning(AurvekI18n.t('landing_builder.ui.instructions_too_short'), AurvekI18n.t('landing_builder.ui.please_provide_more_detailed_instructions_at_least_10_characters'));
                 document.getElementById('modifyInstructions').focus();
                 return;
             }
@@ -1511,7 +1508,7 @@
             const errorElement = document.getElementById('modifyError');
 
             // Update progress message
-            progressElement.querySelector('small').textContent = 'Starting job...';
+            progressElement.querySelector('small').textContent = AurvekI18n.t('landing_builder.ui.starting_job');
 
             // Show progress
             progressElement.style.display = 'block';
@@ -1532,14 +1529,14 @@
 
                 if (data.success && data.task_id) {
                     // Job started, begin polling
-                    progressElement.querySelector('small').textContent = 'Claude is reading your files and making changes...';
+                    progressElement.querySelector('small').textContent = AurvekI18n.t('landing_builder.ui.claude_is_reading_your_files_and_making_changes');
 
                     startPolling(
                         data.task_id,
                         // onComplete
                         (result) => {
                             bootstrap.Modal.getInstance(document.getElementById('modifyModal')).hide();
-                            NotificationModal.success('Modifications Applied!', 'Your changes have been applied successfully.');
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.modifications_applied'), AurvekI18n.t('landing_builder.ui.your_changes_have_been_applied_successfully'));
                             FormGuard.reloadIfClean();
                         },
                         // onError
@@ -1555,7 +1552,7 @@
                     );
                 } else {
                     // Failed to start job
-                    errorElement.textContent = data.message || 'Failed to start job';
+                    errorElement.textContent = data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.failed_to_start_job');
                     errorElement.style.display = 'block';
                     progressElement.style.display = 'none';
                     document.getElementById('modifyApplyBtn').disabled = false;
@@ -1563,7 +1560,7 @@
                 }
             } catch (err) {
                 console.error('Error:', err);
-                errorElement.textContent = 'Network error. Please try again.';
+                errorElement.textContent = AurvekI18n.t('landing_builder.ui.network_error_please_try_again');
                 errorElement.style.display = 'block';
                 progressElement.style.display = 'none';
                 document.getElementById('modifyApplyBtn').disabled = false;
@@ -1588,7 +1585,7 @@
                 currentFiles.other.forEach(o => deleteItems.push(`<li>${o}</li>`));
             }
 
-            document.getElementById('freshDeleteList').innerHTML = deleteItems.join('') || '<li>No files to delete</li>';
+            document.getElementById('freshDeleteList').innerHTML = deleteItems.join('') || `<li>${AurvekI18n.t('landing_builder.ui.no_files_to_delete')}</li>`;
 
             new bootstrap.Modal(document.getElementById('freshConfirmModal')).show();
         }
@@ -1612,11 +1609,11 @@
                         new bootstrap.Modal(document.getElementById('wizardModal')).show();
                     }, 300);
                 } else {
-                    NotificationModal.error('File Deletion Failed', data.message || 'Unknown error');
+                    NotificationModal.error(AurvekI18n.t('landing_builder.ui.file_deletion_failed'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.unknown_error'));
                 }
             } catch (err) {
                 console.error('Error:', err);
-                NotificationModal.error('File Deletion Failed', 'Error deleting files');
+                NotificationModal.error(AurvekI18n.t('landing_builder.ui.file_deletion_failed'), AurvekI18n.t('landing_builder.ui.error_deleting_files'));
             }
         }
 
@@ -1640,7 +1637,7 @@
                 const data = await response.json();
 
                 if (!data.success) {
-                    showRegError(data.message || 'Failed to load configuration');
+                    showRegError(data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.failed_to_load_configuration'));
                     return;
                 }
 
@@ -1675,7 +1672,7 @@
 
             } catch (err) {
                 console.error('Error loading registration config:', err);
-                showRegError('Error loading configuration');
+                showRegError(AurvekI18n.t('landing_builder.ui.error_loading_configuration'));
             }
         }
 
@@ -1764,13 +1761,13 @@
 
             // Access
             if (!document.getElementById('publicPromptsAccess').checked) {
-                parts.push('captive (only this prompt)');
+                parts.push(AurvekI18n.t('landing_builder.ui.captive_only_this_prompt'));
             } else {
                 const selectedCats = Array.from(document.getElementById('categoryAccess').selectedOptions);
                 if (selectedCats.length > 0) {
-                    parts.push(`access to ${selectedCats.length} categor${selectedCats.length === 1 ? 'y' : 'ies'}`);
+                    parts.push(AurvekI18n.t('landing_builder.ui.accessible_categories_count', { count: AurvekI18n.formatNumber(selectedCats.length) }));
                 } else {
-                    parts.push('access to all public prompts');
+                    parts.push(AurvekI18n.t('landing_builder.ui.access_to_all_public_prompts'));
                 }
             }
 
@@ -1778,23 +1775,23 @@
             if (document.getElementById('billingUserPays').checked) {
                 const limit = document.getElementById('billingLimit').value;
                 if (limit && parseFloat(limit) > 0) {
-                    parts.push(`you pay (max $${parseFloat(limit).toFixed(2)}/month)`);
+                    parts.push(AurvekI18n.t('landing_builder.ui.you_pay_up_to_amount_per_month', { amount: AurvekI18n.formatCurrency(parseFloat(limit), 'USD', 2) }));
                 } else {
-                    parts.push('you pay (unlimited)');
+                    parts.push(AurvekI18n.t('landing_builder.ui.you_pay_unlimited'));
                 }
             } else {
                 const balance = document.getElementById('initialBalance').value;
                 if (balance && parseFloat(balance) > 0) {
-                    parts.push(`user pays (starts with $${parseFloat(balance).toFixed(2)})`);
+                    parts.push(AurvekI18n.t('landing_builder.ui.customer_pays_with_an_initial_balance_of_amount', { amount: AurvekI18n.formatCurrency(parseFloat(balance), 'USD', 2) }));
                 } else {
-                    parts.push('user pays ($0 start)');
+                    parts.push(AurvekI18n.t('landing_builder.ui.user_pays_0_start'));
                 }
             }
 
             // Permissions
             const perms = [];
-            if (document.getElementById('allowFileUpload').checked) perms.push('file upload');
-            if (document.getElementById('allowImageGeneration').checked) perms.push('image gen');
+            if (document.getElementById('allowFileUpload').checked) perms.push(AurvekI18n.t('landing_builder.ui.file_upload'));
+            if (document.getElementById('allowImageGeneration').checked) perms.push(AurvekI18n.t('landing_builder.ui.image_gen'));
             if (perms.length > 0) {
                 parts.push(perms.join(' + '));
             }
@@ -1803,11 +1800,11 @@
             const llmSelect = document.getElementById('defaultLlmId');
             if (llmSelect.value) {
                 const llmName = llmSelect.options[llmSelect.selectedIndex].text;
-                parts.push(`default: ${llmName}`);
+                parts.push(AurvekI18n.t('landing_builder.ui.default_model_name', { name: llmName }));
             }
 
             document.getElementById('regSummaryText').textContent =
-                parts.length > 0 ? `Users registering will have: ${parts.join(', ')}` : 'Users will have default settings.';
+                parts.length > 0 ? AurvekI18n.t('landing_builder.ui.users_registering_will_have_parts', { parts: parts.join(', ') }) : AurvekI18n.t('landing_builder.ui.users_will_have_default_settings');
         }
 
         // Event listeners for form changes
@@ -1884,11 +1881,11 @@
                     // Update local config
                     regConfig = { ...regConfig, ...formData };
                 } else {
-                    showRegError(data.message || 'Failed to save settings');
+                    showRegError(data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.failed_to_save_settings'));
                 }
             } catch (err) {
                 console.error('Error saving registration config:', err);
-                showRegError('Error saving settings');
+                showRegError(AurvekI18n.t('landing_builder.ui.error_saving_settings'));
             }
         });
 
@@ -1933,7 +1930,7 @@
                 const domain = document.getElementById('customDomainInput').value.trim().toLowerCase();
 
                 if (!domain) {
-                    NotificationModal.warning('Domain Required', 'Please enter a domain');
+                    NotificationModal.warning(AurvekI18n.t('landing_builder.ui.domain_required'), AurvekI18n.t('landing_builder.ui.please_enter_a_domain'));
                     return;
                 }
 
@@ -1949,14 +1946,14 @@
 
                     if (response.ok && data.success) {
                         FormGuard.markClean(document.getElementById('configureDomainForm'));
-                        NotificationModal.success('Domain Configured!', `Next step: Point your CNAME to:\n${data.cname_target}`);
+                        NotificationModal.success(AurvekI18n.t('landing_builder.ui.domain_configured'), AurvekI18n.t('landing_builder.ui.next_step_point_your_cname_to_data', { data: data.cname_target }));
                         FormGuard.reloadIfClean();
                     } else {
-                        NotificationModal.error('Domain Configuration Failed', data.detail || data.message || 'Error configuring domain');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.domain_configuration_failed'), (Array.isArray(data.detail) ? data.detail.map(item => item.msg).join('\n') : data.detail) || data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_configuring_domain'));
                     }
                 } catch (err) {
                     console.error('Error:', err);
-                    NotificationModal.error('Domain Configuration Failed', 'Error configuring domain');
+                    NotificationModal.error(AurvekI18n.t('landing_builder.ui.domain_configuration_failed'), AurvekI18n.t('landing_builder.ui.error_configuring_domain'));
                 }
             });
         }
@@ -1971,22 +1968,22 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    NotificationModal.success('DNS Verification Successful!', data.message);
+                    NotificationModal.success(AurvekI18n.t('landing_builder.ui.dns_verification_successful'), data.message);
                     FormGuard.reloadIfClean();
                 } else {
-                    NotificationModal.error('Verification Failed', data.error || data.message || 'Unknown error');
+                    NotificationModal.error(AurvekI18n.t('landing_builder.ui.verification_failed'), data.error || data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.unknown_error'));
                     FormGuard.reloadIfClean();
                 }
             } catch (err) {
                 console.error('Error:', err);
-                NotificationModal.error('Verification Error', 'Error verifying domain');
+                NotificationModal.error(AurvekI18n.t('landing_builder.ui.verification_error'), AurvekI18n.t('landing_builder.ui.error_verifying_domain'));
             }
         }
 
         async function activateDomain() {
             NotificationModal.confirm(
-                'Activate Domain',
-                'Activate this domain? This will use 1 of your available slots.',
+                AurvekI18n.t('landing_builder.ui.activate_domain'),
+                AurvekI18n.t('landing_builder.ui.activate_this_domain_this_will_use_1_of_your_available'),
                 async () => {
                     try {
                         const response = await secureFetch(`/api/domains/${promptId}/activate`, {
@@ -1997,14 +1994,14 @@
                         const data = await response.json();
 
                         if (response.ok && data.success) {
-                            NotificationModal.success('Domain Activated!', 'Slots: ' + data.slots.used + '/' + data.slots.purchased + ' in use');
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.domain_activated'), AurvekI18n.t('landing_builder.ui.domain_slots_in_use_used_of_purchased', { used: AurvekI18n.formatNumber(data.slots.used), purchased: AurvekI18n.formatNumber(data.slots.purchased) }));
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.error('Activation Failed', data.detail || data.message || 'Error activating domain');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.activation_failed'), data.detail || data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_activating_domain'));
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Activation Error', 'Error activating domain');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.activation_error'), AurvekI18n.t('landing_builder.ui.error_activating_domain'));
                     }
                 },
                 null,
@@ -2014,8 +2011,8 @@
 
         async function purchaseAndActivate() {
             NotificationModal.confirm(
-                'Purchase & Activate Domain',
-                `Purchase a domain slot and activate? This will charge $${SLOT_PRICE.toFixed(2)} from your balance.`,
+                AurvekI18n.t('landing_builder.ui.purchase_activate_domain'),
+                AurvekI18n.t('landing_builder.ui.purchase_a_domain_slot_and_activate_this_will_charge_slot', { SLOT: AurvekI18n.formatCurrency(SLOT_PRICE, 'USD', 2) }),
                 async () => {
                     try {
                         // First purchase a slot
@@ -2027,7 +2024,7 @@
                         const purchaseData = await purchaseResponse.json();
 
                         if (!purchaseResponse.ok || !purchaseData.success) {
-                            NotificationModal.error('Slot Purchase Failed', purchaseData.detail || purchaseData.message || 'Error purchasing slot');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.slot_purchase_failed'), purchaseData.detail || purchaseData.message || AurvekI18n.t('landing_builder.ui.error_purchasing_slot'));
                             return;
                         }
 
@@ -2040,26 +2037,26 @@
                         const activateData = await activateResponse.json();
 
                         if (activateResponse.ok && activateData.success) {
-                            NotificationModal.success('Domain Activated!', `Slot purchased: $${SLOT_PRICE.toFixed(2)}\nSlots: ${activateData.slots.used}/${activateData.slots.purchased} in use`);
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.domain_activated'), AurvekI18n.t('landing_builder.ui.slot_purchased_slot_slots_activatedata_activatedata_3_in_use', { SLOT: AurvekI18n.formatCurrency(SLOT_PRICE, 'USD', 2), activateData: AurvekI18n.formatNumber(activateData.slots.used), activateData_3: AurvekI18n.formatNumber(activateData.slots.purchased) }));
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.warning('Partial Success', 'Slot purchased but activation failed: ' + (activateData.detail || activateData.message));
+                            NotificationModal.warning(AurvekI18n.t('landing_builder.ui.partial_success'), AurvekI18n.t('landing_builder.ui.slot_purchased_but_activation_failed_detail', { detail: activateData.detail || activateData.message || AurvekI18n.t('landing_builder.ui.unknown_error') }));
                             FormGuard.reloadIfClean();
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Slot Purchase Error', 'Error purchasing slot');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.slot_purchase_error'), AurvekI18n.t('landing_builder.ui.error_purchasing_slot'));
                     }
                 },
                 null,
-                { type: 'warning', confirmText: 'Purchase & Activate' }
+                { type: 'warning', confirmText: AurvekI18n.t('landing_builder.ui.purchase_activate') }
             );
         }
 
         async function activateDomainFree() {
             NotificationModal.confirm(
-                'Activate Domain (Free)',
-                'Activate this domain for free (admin)?',
+                AurvekI18n.t('landing_builder.ui.activate_domain_free'),
+                AurvekI18n.t('landing_builder.ui.activate_this_domain_for_free_admin'),
                 async () => {
                     try {
                         const response = await secureFetch(`/admin/domains/${promptId}/activate-free`, {
@@ -2070,14 +2067,14 @@
                         const data = await response.json();
 
                         if (response.ok && data.success) {
-                            NotificationModal.success('Domain Activated!', 'Domain activated successfully (free)!');
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.domain_activated'), AurvekI18n.t('landing_builder.ui.domain_activated_successfully_free'));
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.error('Activation Failed', data.detail || data.message || 'Error activating domain');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.activation_failed'), data.detail || data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_activating_domain'));
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Activation Error', 'Error activating domain');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.activation_error'), AurvekI18n.t('landing_builder.ui.error_activating_domain'));
                     }
                 },
                 null,
@@ -2087,8 +2084,8 @@
 
         async function toggleDomainOff() {
             NotificationModal.confirm(
-                'Deactivate Domain',
-                'Deactivate this domain? The slot will be freed and can be used for another prompt. The domain configuration will be preserved.',
+                AurvekI18n.t('landing_builder.ui.deactivate_domain'),
+                AurvekI18n.t('landing_builder.ui.deactivate_this_domain_the_slot_will_be_freed_and_can'),
                 async () => {
                     try {
                         const response = await secureFetch(`/api/domains/${promptId}/deactivate`, {
@@ -2099,14 +2096,14 @@
                         const data = await response.json();
 
                         if (response.ok && data.success) {
-                            NotificationModal.success('Domain Deactivated', 'Slots: ' + data.slots.used + '/' + data.slots.purchased + ' in use');
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.domain_deactivated'), AurvekI18n.t('landing_builder.ui.domain_slots_in_use_used_of_purchased', { used: AurvekI18n.formatNumber(data.slots.used), purchased: AurvekI18n.formatNumber(data.slots.purchased) }));
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.error('Deactivation Failed', data.detail || data.message || 'Error deactivating domain');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.deactivation_failed'), data.detail || data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_deactivating_domain'));
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Deactivation Error', 'Error deactivating domain');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.deactivation_error'), AurvekI18n.t('landing_builder.ui.error_deactivating_domain'));
                     }
                 },
                 null,
@@ -2116,8 +2113,8 @@
 
         async function removeDomain() {
             NotificationModal.confirm(
-                'Remove Domain',
-                'Remove this domain configuration? WARNING: If you remove the domain, you will need to configure and verify it again. The slot remains available for use on any prompt.',
+                AurvekI18n.t('landing_builder.ui.remove_domain'),
+                AurvekI18n.t('landing_builder.ui.remove_this_domain_configuration_warning_if_you_remove_the_domain'),
                 async () => {
                     try {
                         const response = await secureFetch(`/api/domains/${promptId}`, {
@@ -2128,14 +2125,14 @@
                         const data = await response.json();
 
                         if (response.ok && data.success) {
-                            NotificationModal.success('Domain Removed', 'Domain configuration has been removed.');
+                            NotificationModal.success(AurvekI18n.t('landing_builder.ui.domain_removed'), AurvekI18n.t('landing_builder.ui.domain_configuration_has_been_removed'));
                             FormGuard.reloadIfClean();
                         } else {
-                            NotificationModal.error('Removal Failed', data.detail || data.message || 'Error removing domain');
+                            NotificationModal.error(AurvekI18n.t('landing_builder.ui.removal_failed'), data.detail || data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.error_removing_domain'));
                         }
                     } catch (err) {
                         console.error('Error:', err);
-                        NotificationModal.error('Removal Error', 'Error removing domain');
+                        NotificationModal.error(AurvekI18n.t('landing_builder.ui.removal_error'), AurvekI18n.t('landing_builder.ui.error_removing_domain'));
                     }
                 },
                 null,
@@ -2160,7 +2157,7 @@
                         document.getElementById('geoNotConfigured').style.display = 'block';
                         return;
                     }
-                    throw new Error('Failed to load geo config');
+                    throw new Error(AurvekI18n.t('landing_builder.ui.failed_to_load_geo_config'));
                 }
 
                 const data = await response.json();
@@ -2249,7 +2246,7 @@
             let html = '';
 
             for (const [contCode, contName] of Object.entries(continents)) {
-                const countries = geoCountryData.countries.filter(c => c.continent === contCode);
+                const countries = geoCountryData.countries.filter(c => c.continent === contCode).sort((a, b) => a.name.localeCompare(b.name, AurvekI18n.locale));
                 if (countries.length === 0) continue;
 
                 html += `<div class="mb-2"><strong class="small text-muted">${contName}</strong></div>`;
@@ -2265,7 +2262,7 @@
                                        ${isGloballyBlocked ? 'disabled' : ''}
                                        onchange="updateLandingSelectedCount()">
                                 <label class="form-check-label small ${isGloballyBlocked ? 'text-muted' : ''}" for="landing-country-${c.code}">
-                                    ${c.code} - ${c.name} ${isGloballyBlocked ? '<i class="fas fa-lock text-warning" title="Blocked globally"></i>' : ''}
+                                    ${c.code} - ${c.name} ${isGloballyBlocked ? `<i class="fas fa-lock text-warning" title="${AurvekI18n.t('landing_builder.ui.blocked_globally')}"></i>` : ''}
                                 </label>
                             </div>
                         </div>`;
@@ -2299,15 +2296,15 @@
             const mode = document.querySelector('[name="geoLandingMode"]:checked')?.value || 'deny';
             const help = document.getElementById('landingModeHelp');
             if (mode === 'deny') {
-                help.textContent = 'Countries selected below will be BLOCKED from accessing this landing page.';
+                help.textContent = AurvekI18n.t('landing_builder.ui.countries_selected_below_will_be_blocked_from_accessing_this_landing');
             } else {
-                help.textContent = 'ONLY countries selected below will be ALLOWED to access this landing page.';
+                help.textContent = AurvekI18n.t('landing_builder.ui.only_countries_selected_below_will_be_allowed_to_access_this');
             }
         }
 
         function updateLandingSelectedCount() {
             const checked = document.querySelectorAll('.landing-country-cb:checked:not(:disabled)');
-            document.getElementById('landingSelectedCount').textContent = checked.length;
+            document.getElementById('landingSelectedCount').textContent = AurvekI18n.t('landing_builder.ui.selected_countries_count', { count: AurvekI18n.formatNumber(checked.length) });
         }
 
         function filterLandingCountries(query) {
@@ -2323,7 +2320,7 @@
             const btn = document.getElementById('saveGeoBtn');
             const origText = btn.innerHTML;
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Syncing...';
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span> ${AurvekI18n.t('landing_builder.ui.syncing')}`;
 
             try {
                 const enabled = document.getElementById('geoLandingEnabled').checked;
@@ -2341,12 +2338,12 @@
 
                 if (data.success) {
                     FormGuard.markClean(document.querySelector('.tab-content'));
-                    NotificationModal.success('Geo-Blocking Saved', 'Geo-blocking settings saved and synced to Cloudflare');
+                    NotificationModal.success(AurvekI18n.t('landing_builder.ui.geo_blocking_saved'), data.message);
                 } else {
-                    NotificationModal.error('Geo-Blocking Error', data.message || 'Failed to save geo-blocking settings');
+                    NotificationModal.error(AurvekI18n.t('landing_builder.ui.geo_blocking_error'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.ui.failed_to_save_geo_blocking_settings'));
                 }
             } catch (err) {
-                NotificationModal.error('Geo-Blocking Error', 'Error saving geo-blocking settings: ' + err.message);
+                NotificationModal.error(AurvekI18n.t('landing_builder.ui.geo_blocking_error'), AurvekI18n.t('landing_builder.ui.error_saving_geo_blocking_settings_detail', { detail: err.message }));
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = origText;

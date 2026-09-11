@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demostración de integración Aurvek</title>
+<style>
+body{margin:0;background:#f6f7f9;color:#182332;font:16px system-ui}main{max-width:1100px;margin:auto;padding:20px}
+h1{font-size:1.5rem}nav{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}button,input,select{font:inherit;padding:10px;border:1px solid #b8c4d2;border-radius:7px}
+button{background:white;cursor:pointer}button:hover{background:#e8eff7}#panel{height:650px;border:1px solid #b8c4d2;border-radius:10px;background:white;overflow:hidden}
+button,input,select{min-height:44px}button:disabled{cursor:default;opacity:.55}button:focus-visible,input:focus-visible,summary:focus-visible,#status:focus-visible{outline:3px solid #3159d7;outline-offset:3px}
+#status{min-height:1.5em}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:14px;max-height:300px;overflow:auto}
+details{margin-top:16px}form{display:flex;gap:8px;flex-wrap:wrap;padding:12px 0}
+</style><main>
+<h1>Práctica con dos asistentes</h1>
+<p>El panel es de Aurvek. Estos botones pertenecen a la web que lo integra.</p>
+<nav aria-label="Acciones de la aplicación">
+<button data-command="focus">Escribir</button><button data-command="guide">Ir al guía</button>
+<button data-command="back">Volver</button><button data-command="entry">Empezar con el guía</button>
+<button data-action="attachment">Adjuntar</button><button data-action="dictation">Dictar</button>
+<button data-action="voice">Hablar</button><button data-command="stop">Detener</button>
+<button data-action="export_pdf">PDF</button><button data-action="export_mp3">MP3</button>
+<button data-command="compact">Compacto / completo</button>
+<button id="open-window" disabled aria-describedby="window-help">Abrir en otra pestaña</button>
+</nav>
+<p id="window-help">Puedes continuar esta misma conversación en una pestaña independiente si el panel no se abre.</p>
+<p id="status" role="status" tabindex="-1">Abriendo conversación…</p><div id="panel"></div>
+<details><summary>Perfil y consultas desde el servidor</summary>
+<form id="profile"><input name="display_name" aria-label="Nombre" placeholder="Nombre" required>
+<input name="pending_email" type="email" aria-label="Email de contacto pendiente" placeholder="Email de contacto pendiente"><button>Guardar perfil</button></form>
+<button id="sources">Consultar mensajes</button><button id="remote">Consultar ejercicio remoto</button>
+<pre id="result" aria-live="polite"></pre></details>
+</main><script src="aurvek-applications.js"></script><script>
+let panel, current, version, compact=false, panelReady=false, initialDestination, openingWindow=false;
+const status=document.querySelector('#status'), output=document.querySelector('#result');
+async function post(path,body={}){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||data.detail||'Error');return data;}
+function controls(){document.querySelectorAll('[data-command],[data-action],#sources,#remote').forEach(button=>{button.disabled=!panelReady;});document.querySelector('#open-window').disabled=!initialDestination||openingWindow;document.querySelector('#profile button').disabled=!Number.isSafeInteger(version);}
+function message(text){status.setAttribute('role','status');status.textContent=text;}
+function showError(error){
+ const code=error.code||error.message;
+ const messages={ready_timeout:'El panel no ha podido abrirse. Puedes continuar en otra pestaña.',popup_blocked:'Permite abrir la nueva pestaña en tu navegador y vuelve a pulsar el botón.',popup_closed:'La nueva pestaña se ha cerrado. Puedes volver a abrirla.',activity_close_pending:'La actividad sigue terminando. Espera un momento y vuelve a intentarlo.',session_expired:'La sesión ha caducado. Recarga para continuar.'};
+ status.setAttribute('role','alert');status.textContent=messages[code]||'No se ha podido completar la operación. Vuelve a intentarlo.';status.focus();
+}
+function run(work){Promise.resolve().then(work).catch(showError);}
+function profile(value){version=value.version;document.querySelector('[name=display_name]').value=value.display_name||'';document.querySelector('[name=pending_email]').value=value.pending_email||'';}
+controls();
+run(async()=>{
+ const options=await post('session');profile(options.profile);
+ initialDestination={conversation_id:options.conversationId,assistant_id:options.assistantId};controls();
+ panel=AurvekApplications.mount(document.querySelector('#panel'),{...options,onEvent:event=>{
+  if(event.application){current=event.application;message('Asistente: '+(current.display_name||current.assistant_id));}
+  if(event.event==='session_expired'){panelReady=false;controls();showError({code:'session_expired'});}
+  else if(event.event==='error')showError(event);
+ }});
+ try{await panel.ready;}catch(error){if(error.code==='destroyed'&&openingWindow)return;throw error;}
+ panelReady=true;controls();
+});
+document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>run(()=>panel.action(button.dataset.action)));
+document.querySelectorAll('[data-command]').forEach(button=>button.onclick=()=>run(async()=>{switch(button.dataset.command){case 'guide':await panel.handoff('guide');break;case 'back':await panel.back();break;case 'entry':await panel.setEntry('guide');break;case 'compact':compact=!compact;await panel.setPresentation(compact?'compact':'full');break;default:await panel[button.dataset.command]();}}));
+document.querySelector('#open-window').onclick=()=>{
+ openingWindow=true;controls();
+ // Open synchronously from the click; await stop/bootstrap inside its callback.
+ AurvekApplications.openWindow(async()=>{
+  const destination=current?{conversation_id:current.conversation_id,assistant_id:current.assistant_id}:initialDestination;
+  if(panelReady)await panel.close();else panel?.destroy();
+  panelReady=false;controls();
+  return post('bootstrap',destination);
+ },{title:'Conversación Aurvek',loadingText:'Abriendo conversación…'})
+ .then(()=>message('La conversación se está abriendo en la nueva pestaña.'))
+ .catch(showError).finally(()=>{openingWindow=false;controls();});
+};
+document.querySelector('#profile').onsubmit=e=>{e.preventDefault();run(async()=>{const values=Object.fromEntries(new FormData(e.target));const changed=await post('profile',{...values,pending_email:values.pending_email||null,operation_id:crypto.randomUUID(),expected_version:version});profile(changed);output.textContent=JSON.stringify(changed,null,2);});};
+document.querySelector('#sources').onclick=()=>run(async()=>{output.textContent=JSON.stringify(await post('sources',{conversation_id:current.conversation_id}),null,2);});
+document.querySelector('#remote').onclick=()=>run(async()=>{output.textContent=JSON.stringify(await post('remote-query',{conversation_id:current.conversation_id,operation_id:crypto.randomUUID(),topic:'practice'}),null,2);});
+</script></html>

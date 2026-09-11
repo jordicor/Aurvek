@@ -223,21 +223,28 @@
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title" id="wellbeingReminderTitle">Break reminder</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        <h5 class="modal-title" id="wellbeingReminderTitle"></h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <p class="mb-0" id="wellbeingReminderText"></p>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-outline-secondary" id="wellbeingContinueBtn">Continue</button>
+                        <button type="button" class="btn btn-outline-secondary" id="wellbeingContinueBtn"></button>
                         <button type="button" class="btn btn-outline-primary" id="wellbeingSnoozeBtn">Remind me later</button>
-                        <button type="button" class="btn btn-primary" id="wellbeingPauseBtn">Pause 5 min</button>
+                        <button type="button" class="btn btn-primary" id="wellbeingPauseBtn"></button>
                     </div>
                 </div>
             </div>
         `;
         document.body.appendChild(modal);
+        modal.querySelector('#wellbeingReminderTitle').textContent = AurvekI18n.t('chat_widgets.wellbeing.title');
+        modal.querySelector('#wellbeingContinueBtn').textContent = AurvekI18n.t('chat_widgets.wellbeing.continue');
+        modal.querySelector('#wellbeingPauseBtn').textContent = AurvekI18n.t(
+            'chat_widgets.wellbeing.pause_minutes',
+            {count: PAUSE_MINUTES}
+        );
+        modal.querySelector('.btn-close').setAttribute('aria-label', AurvekI18n.t('common.action.close'));
         modal.addEventListener('hidden.bs.modal', function() {
             modalShowing = false;
         });
@@ -245,9 +252,20 @@
     }
 
     function reminderTitle(severity) {
-        if (severity === 'strong') return 'Time to pause';
-        if (severity === 'intense') return 'Intense session';
-        return 'Break reminder';
+        if (severity === 'strong') return AurvekI18n.t('chat_widgets.wellbeing.title_strong');
+        if (severity === 'intense') return AurvekI18n.t('chat_widgets.wellbeing.title_intense');
+        return AurvekI18n.t('chat_widgets.wellbeing.title');
+    }
+
+    function reminderText(reminder) {
+        const defaultKeys = {
+            notice_soft: 'chat_widgets.wellbeing.notice_soft',
+            notice_intense: 'chat_widgets.wellbeing.notice_intense',
+            notice_strong: 'chat_widgets.wellbeing.notice_strong'
+        };
+        const key = reminder && defaultKeys[reminder.text_key];
+        if (key) return AurvekI18n.t(key);
+        return reminder?.text || AurvekI18n.t('chat_widgets.wellbeing.break_suggestion');
     }
 
     async function maybeShowReminder(status) {
@@ -268,7 +286,7 @@
 
         const modal = ensureModal();
         modal.querySelector('#wellbeingReminderTitle').textContent = reminderTitle(reminder.severity);
-        modal.querySelector('#wellbeingReminderText').textContent = reminder.text || 'Consider taking a short break before continuing.';
+        modal.querySelector('#wellbeingReminderText').textContent = reminderText(reminder);
 
         const continueBtn = modal.querySelector('#wellbeingContinueBtn');
         const snoozeBtn = modal.querySelector('#wellbeingSnoozeBtn');
@@ -278,7 +296,7 @@
         continueBtn.style.display = reminder.requires_pause ? 'none' : '';
         closeBtn.style.display = reminder.requires_pause ? 'none' : '';
         snoozeBtn.style.display = reminder.allow_snooze && !reminder.requires_pause ? '' : 'none';
-        snoozeBtn.textContent = `Remind me in ${reminder.snooze_minutes || 10} min`;
+        snoozeBtn.textContent = AurvekI18n.t('chat_widgets.wellbeing.remind_in_minutes', {count: reminder.snooze_minutes || 10});
 
         continueBtn.onclick = async function() {
             markInteraction('wellbeing_continue', false);

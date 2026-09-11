@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ t('public_terms.aurvek_terms_of_service_rules_and_conditions') }}">
+    <title>{{ t('public_terms.terms_of_service_aurvek') }}</title>
+    <meta name="robots" content="noindex">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Satoshi', system-ui, sans-serif;
+            background: #0C1220;
+            color: #E4E4E7;
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container {
+            max-width: 780px;
+            margin: 0 auto;
+            padding: 60px 24px 80px;
+        }
+        .back-link {
+            display: inline-block;
+            color: #D97706;
+            text-decoration: none;
+            font-size: 0.9rem;
+            margin-bottom: 32px;
+        }
+        .back-link:hover { text-decoration: underline; }
+        h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: clamp(1.75rem, 6vw, 2.2rem);
+            overflow-wrap: anywhere;
+            hyphens: auto;
+            font-weight: 700;
+            color: #FAFAFA;
+            margin-bottom: 8px;
+        }
+        .last-updated {
+            color: #71717A;
+            font-size: 0.85rem;
+            margin-bottom: 48px;
+        }
+        h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #FAFAFA;
+            margin: 40px 0 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #27272A;
+        }
+        p, li { color: #A1A1AA; margin-bottom: 12px; }
+        ul, ol { padding-left: 24px; margin-bottom: 16px; }
+        li { margin-bottom: 6px; }
+        a { color: #D97706; }
+        strong { color: #D4D4D8; }
+        .highlight-box {
+            background: #1A2332;
+            border-left: 3px solid #D97706;
+            padding: 16px 20px;
+            border-radius: 0 8px 8px 0;
+            margin: 20px 0;
+        }
+        .highlight-box p { margin-bottom: 0; }
+        footer {
+            margin-top: 60px;
+            padding-top: 24px;
+            border-top: 1px solid #27272A;
+            color: #52525B;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">{{ t('public_terms.back_to_aurvek') }}</a>
+        <h1>{{ t('public_terms.terms_of_service') }}</h1>
+        <p class="last-updated">{{ t('public_terms.last_updated_august') }}</p>
+
+        <div class="highlight-box">
+            <p>{{ t('public_terms.by_using_aurvek_the_platform_you_agree') }}</p>
+        </div>
+
+        <h2>{{ t('public_terms.the_service') }}</h2>
+        <p>{{ t('public_terms.aurvek_is_an_ai_infrastructure_platform_that') }}</p>
+        <ul>
+            <li>{{ t('public_terms.access_to_conversational_ai_models_from_multiple') }}</li>
+            <li>{{ t('public_terms.optional_connections_to_supported_third_party_accounts') }}</li>
+            <li>{{ t('public_terms.a_marketplace_where_creators_can_publish_sell') }}</li>
+            <li>{{ t('public_terms.tools_for_file_processing_text_to_speech') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.accounts') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.you_must_provide_accurate_information_when_creating') }}</li>
+            <li>{{ t('public_terms.you_are_responsible_for_maintaining_the_security') }}</li>
+            <li>{{ t('public_terms.one_person_or_entity_per_account_sharing') }}</li>
+            <li>{{ t('public_terms.you_may_connect_only_a_third_party') }}</li>
+            <li>{{ t('public_terms.you_must_be_at_least_years_old') }}</li>
+            <li>{{ t('public_terms.we_reserve_the_right_to_suspend_or') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.payments_and_billing') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.some_features_require_a_positive_balance_you') }}</li>
+            <li>{{ t('public_terms.ai_usage_tokens_image_generation_tts_etc') }}</li>
+            <li>{{ t('public_terms.when_you_explicitly_select_a_model_backed') }}</li>
+            <li>{{ t('public_terms.marketplace_purchases_prompts_packs_are_one_time') }}</li>
+            <li>{{ t_html('public_terms.all_payments_are_processed_by_stripe_by', tag_a="<a href=\"https://stripe.com/legal\" target=\"_blank\" rel=\"noopener\">"|safe, tag_b="</a>"|safe) }}</li>
+            <li>{{ t_html('public_terms.refunds_refunds_for_marketplace_purchases_are_handled', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+            <li>{{ t_html('public_terms.chargebacks_filing_a_fraudulent_chargeback_may_result', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.creator_marketplace') }}</h2>
+        <p>{{ t('public_terms.if_you_create_and_sell_prompts_or') }}</p>
+        <ul>
+            <li>{{ t('public_terms.you_retain_ownership_of_the_content_you') }}</li>
+            <li>{{ t('public_terms.you_grant_aurvek_a_non_exclusive_license') }}</li>
+            <li>{{ t('public_terms.you_are_responsible_for_the_accuracy_of') }}</li>
+            <li>{{ t('public_terms.the_platform_charges_a_commission_on_sales') }}</li>
+            <li>{{ t('public_terms.payouts_are_processed_via_stripe_connect_minimum') }}</li>
+            <li>{{ t('public_terms.you_must_not_sell_content_that_violates') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.acceptable_use') }}</h2>
+        <p>{{ t_html('public_terms.you_agree_not_to', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</p>
+        <ul>
+            <li>{{ t('public_terms.use_the_platform_for_any_illegal_purpose') }}</li>
+            <li>{{ t('public_terms.generate_store_or_distribute_content_that_is') }}</li>
+            <li>{{ t('public_terms.attempt_to_bypass_rate_limits_security_measures') }}</li>
+            <li>{{ t('public_terms.use_automated_tools_bots_scrapers_to_access') }}</li>
+            <li>{{ t('public_terms.reverse_engineer_decompile_or_attempt_to_extract') }}</li>
+            <li>{{ t('public_terms.impersonate_another_person_or_entity') }}</li>
+            <li>{{ t('public_terms.use_the_ai_models_to_generate_content') }}</li>
+            <li>{{ t('public_terms.use_a_connected_subscription_to_evade_provider') }}</li>
+            <li>{{ t('public_terms.resell_or_redistribute_platform_access_without_authorization') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.ai_generated_content') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.ai_responses_are_generated_by_third_party') }}</li>
+            <li><strong>{{ t('public_terms.aurvek_does_not_guarantee_the_accuracy_completeness') }}</strong></li>
+            <li>{{ t('public_terms.you_are_responsible_for_reviewing_and_verifying') }}</li>
+            <li>{{ t('public_terms.ai_generated_content_should_not_be_used') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.intellectual_property') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.the_platform_its_design_code_and_branding') }}</li>
+            <li>{{ t('public_terms.content_you_create_conversations_uploaded_files_remains') }}</li>
+            <li>{{ t('public_terms.content_generated_by_ai_models_is_subject') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.privacy') }}</h2>
+        <p>{{ t_html('public_terms.your_use_of_the_platform_is_also', tag_a="<a href=\"/privacy\">"|safe, tag_b="</a>"|safe) }}</p>
+
+        <h2>{{ t('public_terms.limitation_of_liability') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.the_platform_is_provided_as_is_without') }}</li>
+            <li>{{ t('public_terms.aurvek_is_not_liable_for_any_indirect') }}</li>
+            <li>{{ t('public_terms.our_total_liability_for_any_claim_shall') }}</li>
+            <li>{{ t('public_terms.we_are_not_responsible_for_downtime_data') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.service_availability') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.we_strive_to_maintain_high_availability_but') }}</li>
+            <li>{{ t('public_terms.we_may_modify_suspend_or_discontinue_features') }}</li>
+            <li>{{ t('public_terms.connected_subscription_models_and_quotas_are_controlled') }}</li>
+            <li>{{ t('public_terms.scheduled_maintenance_will_be_communicated_in_advance') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.termination') }}</h2>
+        <ul>
+            <li>{{ t('public_terms.you_may_close_your_account_at_any') }}</li>
+            <li>{{ t('public_terms.we_may_suspend_or_terminate_your_account') }}</li>
+            <li>{{ t('public_terms.upon_termination_your_right_to_use_the') }}</li>
+            <li>{{ t('public_terms.provisions_that_by_their_nature_should_survive') }}</li>
+        </ul>
+
+        <h2>{{ t('public_terms.changes_to_these_terms') }}</h2>
+        <p>{{ t('public_terms.we_may_update_these_terms_from_time') }}</p>
+
+        <h2>{{ t('public_terms.governing_law') }}</h2>
+        <p>{{ t('public_terms.these_terms_are_governed_by_the_laws') }}</p>
+
+        <h2>{{ t('public_terms.contact') }}</h2>
+        <p>{{ t('public_terms.for_questions_about_these_terms') }}</p>
+        <p>{{ t_html('public_terms.email_legal_aurvek_com', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</p>
+
+        <footer>
+            <p>{{ t_html('public_terms.aurvek_all_rights_reserved_privacy_policy', tag_a="<a href=\"/privacy\">"|safe, tag_b="</a>"|safe) }}</p>
+        </footer>
+    </div>
+</body>
+</html>

@@ -1,29 +1,30 @@
+{% set i18n_domains = ['admin_services'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Service Management - AURVEK{% endblock %}
+{% block title %}{{ t('admin_services.title.management') }} - AURVEK{% endblock %}
 
-{% block page_title %}Manage Services{% endblock %}
+{% block page_title %}{{ t('admin_services.title.management') }}{% endblock %}
 
 {% block page_actions %}
 <a href="/admin/services/new" class="btn btn-success">
-    <i class="fas fa-plus me-1"></i>Add New Services
+    <i class="fas fa-plus me-1"></i>{{ t('admin_services.action.add') }}
 </a>
 {% endblock %}
 
 {% block content %}
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-list"></i> All Services
+        <i class="fas fa-list"></i> {{ t('admin_services.title.all') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Service Name</th>
-                    <th>Unit</th>
-                    <th>Cost per Unit</th>
-                    <th>Type</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('admin_services.field.name') }}</th>
+                    <th>{{ t('admin_services.field.unit') }}</th>
+                    <th>{{ t('admin_services.field.cost_per_unit') }}</th>
+                    <th>{{ t('admin_services.field.type') }}</th>
+                    <th class="text-end">{{ t('admin_services.label.actions') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -31,13 +32,13 @@
                 <tr>
                     <td>{{ service[1] }}</td>
                     <td>{{ service[2] }}</td>
-                    <td>{{ service[3] }}</td>
-                    <td>{{ service[4] }}</td>
+                    <td>{{ format_number(service[3], maximum_fraction_digits=20) }}</td>
+                    <td>{{ t('admin_services.type.' ~ service[4]|lower) if service[4] in ['TTS', 'STT', 'Phone', 'Images', 'Video', 'Music'] else service[4] }}</td>
                     <td class="text-end table-actions">
-                        <a href="/admin/services/edit/{{ service[0] }}" class="btn btn-sm btn-outline-primary" data-bs-toggle="tooltip" title="Edit">
+                        <a href="/admin/services/edit/{{ service[0] }}" class="btn btn-sm btn-outline-primary" data-bs-toggle="tooltip" title="{{ t('admin_services.action.edit') }}">
                             <i class="fas fa-edit"></i>
                         </a>
-                        <a href="#" onclick="deleteService({{ service[0] }})" class="btn btn-sm btn-outline-danger" data-bs-toggle="tooltip" title="Delete">
+                        <a href="#" onclick="deleteService({{ service[0] }})" class="btn btn-sm btn-outline-danger" data-bs-toggle="tooltip" title="{{ t('admin_services.action.delete') }}">
                             <i class="fas fa-trash"></i>
                         </a>
                     </td>
@@ -51,24 +52,25 @@
 
 {% block scripts_inline %}
 <script>
+    const serviceText = (key, params) => AurvekI18n.t(`admin_services.${key}`, params);
     function deleteService(serviceId) {
         NotificationModal.confirm(
-            'Delete Service',
-            'Are you sure you want to delete this service?',
+            serviceText('dialog.delete_title'),
+            serviceText('dialog.delete_message'),
             () => {
                 fetch(`/admin/services/delete/${serviceId}`, {
                     method: 'DELETE'
                 }).then(response => {
                     if (response.ok) {
-                        NotificationModal.success('Service Deleted', 'The service has been deleted successfully.');
+                        NotificationModal.success(serviceText('notice.deleted_title'), serviceText('notice.deleted'));
                         window.location.reload();
                     } else {
-                        NotificationModal.error('Delete Failed', 'Failed to delete service. Please try again.');
+                        NotificationModal.error(serviceText('notice.delete_failed_title'), serviceText('notice.delete_failed'));
                     }
-                }).catch(error => console.error('Error:', error));
+                }).catch(() => NotificationModal.error(serviceText('notice.delete_failed_title'), serviceText('notice.delete_failed')));
             },
             null,
-            { type: 'error', confirmText: 'Delete' }
+            { type: 'error', confirmText: serviceText('action.delete') }
         );
     }
 

@@ -139,6 +139,8 @@ _CASCADE_TABLES: list[tuple[str, str, list[str]]] = [
 
 # User-level tables cleared by a plain user_id predicate, guarded on existence.
 _USER_LEVEL_TABLES: list[str] = [
+    "APPLICATION_MEMORY_MESSAGE_DESTINATIONS",
+    "APPLICATION_MEMORY_DESTINATIONS",
     "MEMORY_PROVIDER_MESSAGE_LINKS",
     "MEMORY_PROVIDER_CONVERSATION_LINKS",
     "MEMORY_USER_PREFERENCES",
@@ -367,10 +369,20 @@ async def delete_user_account(
                 "An active or unresolved phone call must be ended before account deletion."
             )
             return result
+        if await _has_active_memory_operation(conn, uid):
+            result.status = "blocked"
+            result.reason_codes = ["active_memory_operation"]
+            result.summary = "Memory delivery is still running; retry account deletion after it settles."
+            return result
 
         is_admin, admin_summary = await _is_admin_account(conn, uid, user_row["role_id"])
         result.blocking_tables = await _financial_blocks(conn, uid)
         result.atagia_link_count = await _atagia_link_count(conn, uid)
+        from integrations.applications.memory import list_memory_destinations, list_memory_message_destinations
+
+        application_destinations = await list_memory_destinations(user_id=uid, connection=conn)
+        application_message_destinations = await list_memory_message_destinations(user_id=uid, connection=conn)
+        result.atagia_link_count += sum(item["provider"] == "atagia" for item in application_destinations)
 
         result.conversation_ids = await _int_ids(
             conn, "SELECT id FROM CONVERSATIONS WHERE user_id = ?", (uid,)
@@ -446,6 +458,17 @@ async def delete_user_account(
         return result
 
     # --- External purge first (outside the local transaction) ---
+    try:
+        await _purge_application_user_memory(uid, application_destinations, bridge)
+    except Exception:
+        logger.warning("Application memory erasure failed for user_id=%s", uid, exc_info=True)
+        result.status = "application_memory_unreachable"
+        result.reason_codes = ["application_memory_unreachable"]
+        result.summary = (
+            "Application memory could not be erased; account rows and historical "
+            "destinations remain available for retry."
+        )
+        return result
     if bridge_enabled:
         try:
             result.atagia_report = await bridge.erase_user(uid)
@@ -502,6 +525,24 @@ async def delete_user_account(
                         "An active or unresolved phone call must be ended before "
                         "account deletion."
                     )
+                    return result
+                if await _has_active_memory_operation(conn, uid):
+                    await conn.rollback()
+                    result.status = "blocked"
+                    result.reason_codes = ["active_memory_operation"]
+                    result.summary = "Memory delivery started during erasure; retry before deleting account rows."
+                    return result
+                current_destinations = await list_memory_destinations(user_id=uid, connection=conn)
+                current_message_destinations = await list_memory_message_destinations(user_id=uid, connection=conn)
+                identity = lambda row: (row["provider"], row["conversation_id"], row["namespace"].key)
+                message_identity = lambda row: (row["provider"], row["message_id"], row["namespace"].key)
+                if ({identity(row) for row in current_destinations} - {identity(row) for row in application_destinations}
+                        or {message_identity(row) for row in current_message_destinations}
+                        - {message_identity(row) for row in application_message_destinations}):
+                    await conn.rollback()
+                    result.status = "blocked"
+                    result.reason_codes = ["application_memory_changed"]
+                    result.summary = "Application memory changed during erasure; retry before deleting the account."
                     return result
                 # Re-read conversation ids inside the write transaction: a
                 # conversation created after capture must not strand the USERS FK.
@@ -728,6 +769,51 @@ async def _has_active_phone_call(conn: aiosqlite.Connection, user_id: int) -> bo
         (int(user_id),),
     )
     return await cursor.fetchone() is not None
+
+
+async def _has_active_memory_operation(conn: aiosqlite.Connection, user_id: int) -> bool:
+    if not await _table_exists(conn, "PHONE_MEMORY_OPERATION_LEASES"):
+        return False
+    cursor = await conn.execute(
+        "SELECT 1 FROM PHONE_MEMORY_OPERATION_LEASES l JOIN CONVERSATIONS c "
+        "ON c.id=l.conversation_id_snapshot WHERE c.user_id=? AND l.status='active' "
+        "AND datetime(l.lease_until)>=datetime('now') LIMIT 1", (user_id,)
+    )
+    return await cursor.fetchone() is not None
+
+
+async def _purge_application_user_memory(user_id: int, destinations: list[dict], bridge: Any) -> None:
+    """Erase this account's captured runs, preserving other participants' sources."""
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for item in destinations:
+        grouped.setdefault((item["provider"], item["namespace"].key), []).append(item)
+    mem0 = None
+    for (provider, _key), items in grouped.items():
+        namespace = items[0]["namespace"]
+        if provider == "atagia":
+            if namespace.subject.startswith("member:"):
+                # Member subjects belong to one globally unique account. Erase
+                # the synthetic user's derived state as well as its source runs.
+                await bridge.erase_user(user_id, namespace=namespace)
+                continue
+            # A synthetic subject can gain another contributor while erasure is
+            # awaiting I/O, even if its destination ledger currently has one actor.
+            # Purge only captured account runs, never that entire shared identity.
+            for item in items:
+                if not await bridge.purge_conversation(user_id=user_id,
+                        conversation_id=item["conversation_id"], namespace=namespace):
+                    raise RuntimeError("Atagia application source erasure was not confirmed")
+        elif provider == "mem0":
+            if mem0 is None:
+                from memory.providers.mem0 import get_mem0_provider
+
+                mem0 = await get_mem0_provider()
+            for item in items:
+                if not await mem0.purge_conversation(user_id=user_id,
+                        conversation_id=item["conversation_id"], namespace=namespace):
+                    raise RuntimeError("Mem0 application source erasure was not confirmed")
+        else:
+            raise RuntimeError("Unknown application memory provider cannot be erased")
 
 
 async def _atagia_link_count(conn: aiosqlite.Connection, user_id: int) -> int:
@@ -1105,6 +1191,9 @@ async def _delete_local_rows(
     for required, sql, params in cross_user:
         if await _all_exist(conn, required):
             await conn.execute(sql, params)
+
+    from integrations.applications.channels import delete_user_channels_in_transaction
+    await delete_user_channels_in_transaction(conn, user_id)
 
     # Per-conversation deletion: memory links, watchdog rows, attachments, sync
     # watermark, messages, then the conversation itself, in FK-safe order.

@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
+{% set i18n_domains = ['admin_usage'] %}
 
-{% block title %}Team Consumption Dashboard{% endblock %}
+{% block title %}{{ t('admin_usage.team_consumption_dashboard') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -71,8 +72,8 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Team Consumption Dashboard{% endblock %}
-{% block page_subtitle %}<p class="text-muted mb-0">Monitor AI usage for users under your enterprise billing.</p>{% endblock %}
+{% block page_title %}{{ t('admin_usage.team_consumption_dashboard') }}{% endblock %}
+{% block page_subtitle %}<p class="text-muted mb-0">{{ t('admin_usage.monitor_ai_usage_for_users_under_your_enterprise_billing') }}</p>{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
@@ -88,56 +89,56 @@
 <div class="row">
     <div class="col-md-4 mb-4">
         <div class="stat-card primary">
-            <div class="label"><i class="fas fa-wallet me-1"></i>My Balance</div>
-            <div class="amount" id="myBalance">$0.00</div>
-            <div class="sublabel">Available for team usage</div>
+            <div class="label"><i class="fas fa-wallet me-1"></i>{{ t('admin_usage.my_balance') }}</div>
+            <div class="amount" id="myBalance">{{ format_currency(0.00, 'USD') }}</div>
+            <div class="sublabel">{{ t('admin_usage.available_for_team_usage') }}</div>
         </div>
     </div>
     <div class="col-md-4 mb-4">
         <div class="stat-card success">
-            <div class="label"><i class="fas fa-chart-bar me-1"></i>Team Spending</div>
-            <div class="amount" id="teamSpending">$0.00</div>
-            <div class="sublabel">This month | <span id="lastMonthSpending">$0.00 last month</span></div>
+            <div class="label"><i class="fas fa-chart-bar me-1"></i>{{ t('admin_usage.team_spending') }}</div>
+            <div class="amount" id="teamSpending">{{ format_currency(0.00, 'USD') }}</div>
+            <div class="sublabel"><span id="lastMonthSpending">{{ t('admin_usage.team.month_comparison', amount=format_currency(0, 'USD')) }}</span></div>
         </div>
     </div>
     <div class="col-md-4 mb-4">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-user-friends me-1"></i>Team Users</div>
+            <div class="label"><i class="fas fa-user-friends me-1"></i>{{ t('admin_usage.team_users') }}</div>
             <div class="amount" id="teamUserCount">0</div>
-            <div class="sublabel">Under enterprise billing</div>
+            <div class="sublabel">{{ t('admin_usage.under_enterprise_billing') }}</div>
         </div>
     </div>
 </div>
 
 <!-- Users Under Billing -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-users me-2"></i>Users Under My Billing</div>
+    <div class="section-title"><i class="fas fa-users me-2"></i>{{ t('admin_usage.users_under_my_billing') }}</div>
     <div class="table-responsive">
         <table class="table consumption-table">
             <thead>
                 <tr>
-                    <th>User</th>
-                    <th>Status</th>
-                    <th>This Month</th>
-                    <th>Limit</th>
-                    <th>Action</th>
+                    <th>{{ t('admin_usage.user') }}</th>
+                    <th>{{ t('admin_usage.status') }}</th>
+                    <th>{{ t('admin_usage.this_month_2') }}</th>
+                    <th>{{ t('admin_usage.limit') }}</th>
+                    <th>{{ t('admin_usage.action') }}</th>
                     <th></th>
                 </tr>
             </thead>
             <tbody id="usersTableBody">
                 <tr>
                     <td colspan="6" class="text-center text-muted">
-                        <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+                        <i class="fas fa-spinner fa-spin me-1"></i> {{ t('admin_usage.loading') }}
                     </td>
                 </tr>
             </tbody>
             <tfoot id="usersTableFoot" style="display: none;">
                 <tr class="table-light">
-                    <th colspan="2">Subtotal</th>
-                    <th id="totalSpent">$0.00</th>
+                    <th colspan="2">{{ t('admin_usage.subtotal') }}</th>
+                    <th id="totalSpent">{{ format_currency(0.00, 'USD') }}</th>
                     <th colspan="3">
                         <button class="btn btn-sm btn-outline-secondary" onclick="exportCSV()">
-                            <i class="fas fa-download me-1"></i>Export CSV
+                            <i class="fas fa-download me-1"></i>{{ t('admin_usage.export_csv') }}
                         </button>
                     </th>
                 </tr>
@@ -146,29 +147,31 @@
     </div>
     <div id="noUsersMessage" style="display: none;" class="text-center text-muted py-4">
         <i class="fas fa-info-circle me-1"></i>
-        No users are currently under your enterprise billing.
-        <a href="/create-user">Create a user</a> with "I pay for this user" enabled.
+        {{ t('admin_usage.no_users_are_currently_under_your_enterprise_billing') }}
+        {% macro create_user_link() %}<a href="/create-user">{{ t('admin_usage.create_a_user') }}</a>{% endmacro %}
+        {{ t_html('admin_usage.team.create_user_hint', link=create_user_link()) }}
     </div>
 </div>
 
 <!-- Spending by Prompt -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-robot me-2"></i>Spending Breakdown by Prompt</div>
+    <div class="section-title"><i class="fas fa-robot me-2"></i>{{ t('admin_usage.spending_breakdown_by_prompt') }}</div>
+    <p class="text-muted small">{{ t('admin_usage.team.estimate_explanation', rate=format_currency(15, 'USD')) }}</p>
     <div class="table-responsive">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Prompt</th>
-                    <th>Users</th>
-                    <th>Messages</th>
-                    <th>Tokens (M)</th>
-                    <th>Cost</th>
+                    <th>{{ t('admin_usage.prompt') }}</th>
+                    <th>{{ t('admin_usage.users') }}</th>
+                    <th>{{ t('admin_usage.messages') }}</th>
+                    <th>{{ t('admin_usage.tokens_m') }}</th>
+                    <th>{{ t('admin_usage.team.estimated_cost') }}</th>
                 </tr>
             </thead>
             <tbody id="promptsTableBody">
                 <tr>
                     <td colspan="5" class="text-center text-muted">
-                        <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+                        <i class="fas fa-spinner fa-spin me-1"></i> {{ t('admin_usage.loading') }}
                     </td>
                 </tr>
             </tbody>
@@ -178,14 +181,14 @@
 
 <!-- Recent Activity -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-history me-2"></i>Recent Activity</div>
+    <div class="section-title"><i class="fas fa-history me-2"></i>{{ t('admin_usage.recent_activity') }}</div>
     <div id="activityList">
         <div class="text-center text-muted">
-            <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+            <i class="fas fa-spinner fa-spin me-1"></i> {{ t('admin_usage.loading') }}
         </div>
     </div>
     <div id="noActivityMessage" style="display: none;" class="text-center text-muted py-3">
-        No recent activity.
+        {{ t('admin_usage.no_recent_activity') }}
     </div>
 </div>
 {% endblock %}
@@ -193,7 +196,7 @@
 {% block scripts_inline %}
 <script>
     // Set current month
-    document.getElementById('currentMonth').textContent = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    document.getElementById('currentMonth').textContent = new Date().toLocaleDateString(AurvekI18n.locale, { month: 'long', year: 'numeric' });
 
     // Load data on page load
     document.addEventListener('DOMContentLoaded', loadDashboardData);
@@ -204,14 +207,14 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.detail || 'Failed to load data');
+                throw new Error(data.error || data.detail || AurvekI18n.t('admin_usage.failed_to_load_data'));
             }
 
             // Update summary cards
             document.getElementById('myBalance').textContent = formatCurrency(data.summary.my_balance);
             document.getElementById('teamSpending').textContent = formatCurrency(data.summary.team_spending_this_month);
-            document.getElementById('lastMonthSpending').textContent = formatCurrency(data.summary.team_spending_last_month) + ' last month';
-            document.getElementById('teamUserCount').textContent = data.summary.team_user_count;
+            document.getElementById('lastMonthSpending').textContent = AurvekI18n.t('admin_usage.team.month_comparison', {amount: formatCurrency(data.summary.team_spending_last_month)});
+            document.getElementById('teamUserCount').textContent = AurvekI18n.formatNumber(data.summary.team_user_count);
 
             // Update users table
             updateUsersTable(data.users);
@@ -226,13 +229,13 @@
             console.error('Error loading dashboard:', error);
             document.getElementById('usersTableBody').innerHTML = `
                 <tr><td colspan="6" class="text-center text-danger">
-                    <i class="fas fa-exclamation-triangle me-1"></i>Failed to load data: ${error.message}
+                    <i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(AurvekI18n.t('admin_usage.failed_to_load_data'))}
                 </td></tr>`;
         }
     }
 
     function formatCurrency(amount) {
-        return '$' + (parseFloat(amount) || 0).toFixed(2);
+        return AurvekI18n.formatCurrency((parseFloat(amount) || 0), 'USD', 2);
     }
 
     function updateUsersTable(users) {
@@ -254,8 +257,10 @@
         tbody.innerHTML = users.map(user => {
             totalSpent += parseFloat(user.this_month_spent) || 0;
             const statusClass = getStatusClass(user.status);
-            const limitDisplay = user.limit ? formatCurrency(user.limit) : 'Unlimited';
-            const actionDisplay = user.limit ? user.limit_action : '-';
+            const hasLimit = user.limit !== null && user.limit !== undefined;
+            const limitDisplay = hasLimit ? formatCurrency(user.limit) : AurvekI18n.t('admin_usage.unlimited');
+            const actions = {block: 'block', notify: 'notify', auto_refill: 'auto_refill'};
+            const actionDisplay = hasLimit ? AurvekI18n.t('admin_usage.team.action.' + (actions[user.limit_action] || 'unknown')) : '-';
 
             return `
                 <tr>
@@ -263,12 +268,12 @@
                         <strong>${escapeHtml(user.username)}</strong>
                         ${user.email ? `<br><small class="text-muted">${escapeHtml(user.email)}</small>` : ''}
                     </td>
-                    <td><span class="status-badge status-${statusClass}">${user.status}</span></td>
+                    <td><span class="status-badge status-${statusClass}">${AurvekI18n.t('admin_usage.team.status.' + statusClass.replace('-', '_'))}</span></td>
                     <td>${formatCurrency(user.this_month_spent)}</td>
                     <td>${limitDisplay}</td>
                     <td>${actionDisplay}</td>
                     <td>
-                        <a href="/edit-user/${encodeURIComponent(user.username)}" class="btn btn-sm btn-outline-primary">
+                        <a href="/edit-user/${encodeURIComponent(user.username)}" class="btn btn-sm btn-outline-primary" aria-label="${escapeHtml(AurvekI18n.t('admin_usage.team.edit_user', {name: user.username}))}">
                             <i class="fas fa-edit"></i>
                         </a>
                     </td>
@@ -279,12 +284,12 @@
     }
 
     function getStatusClass(status) {
-        switch(status.toLowerCase()) {
+        switch(String(status).toLowerCase()) {
             case 'active': return 'active';
             case 'at limit': return 'at-limit';
             case 'blocked': return 'blocked';
             case 'over limit': return 'over-limit';
-            default: return 'active';
+            default: return 'unknown';
         }
     }
 
@@ -292,16 +297,16 @@
         const tbody = document.getElementById('promptsTableBody');
 
         if (!prompts || prompts.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No prompt usage data this month.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">' + AurvekI18n.t('admin_usage.no_prompt_usage_data_this_month') + '</td></tr>';
             return;
         }
 
         tbody.innerHTML = prompts.map(p => `
             <tr>
                 <td>${escapeHtml(p.prompt_name)}</td>
-                <td>${p.user_count}</td>
-                <td>${p.message_count}</td>
-                <td>${(p.tokens / 1000000).toFixed(2)}</td>
+                <td>${AurvekI18n.formatNumber(p.user_count)}</td>
+                <td>${AurvekI18n.formatNumber(p.message_count)}</td>
+                <td>${AurvekI18n.formatNumber(p.tokens / 1000000, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                 <td>${formatCurrency(p.cost)}</td>
             </tr>`).join('');
     }
@@ -321,11 +326,9 @@
             <div class="activity-item">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
-                        <strong>${escapeHtml(a.username)}</strong>
-                        <span class="text-muted">used</span>
-                        <strong>${escapeHtml(a.prompt_name)}</strong>
+                        ${escapeHtml(AurvekI18n.t('admin_usage.team.activity', {name: a.username, prompt: a.prompt_name}))}
                     </div>
-                    <span class="cost">-${formatCurrency(a.cost)}</span>
+                    <span class="cost">${escapeHtml(AurvekI18n.t('admin_usage.team.estimated_amount', {amount: formatCurrency(a.cost)}))}</span>
                 </div>
                 <div class="date">${formatDate(a.timestamp)}</div>
             </div>`).join('');
@@ -333,7 +336,7 @@
 
     function formatDate(timestamp) {
         const date = new Date(timestamp);
-        return date.toLocaleDateString('en-US', {
+        return date.toLocaleDateString(AurvekI18n.locale, {
             month: 'short',
             day: 'numeric',
             hour: '2-digit',
@@ -344,7 +347,7 @@
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
-        return div.innerHTML;
+        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     function exportCSV() {

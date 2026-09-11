@@ -15,6 +15,16 @@ const NotificationModal = {
     _modalInstance: null,
     _isInitialized: false,
 
+    // A callable label retains its message identity across an embedded locale
+    // change. Only text is rebound; dialogs and their form state stay in place.
+    _text(element, value) {
+        if (typeof value === 'function') AurvekI18n.bindValue(element, value);
+        else {
+            AurvekI18n.unbind(element);
+            element.textContent = value;
+        }
+    },
+
     /**
      * Initialize the modal system - creates modal HTML if not exists
      */
@@ -35,12 +45,12 @@ const NotificationModal = {
                                     <span id="notificationModalIcon" class="me-2"></span>
                                     <h5 class="modal-title mb-0" id="notificationModalLabel"></h5>
                                 </div>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                             </div>
                             <div class="modal-body" id="notificationModalBody"></div>
                             <div class="modal-footer" id="notificationModalFooter">
-                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="notificationModalCancelBtn">Cancel</button>
-                                <button type="button" class="btn" id="notificationModalConfirmBtn">OK</button>
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="notificationModalCancelBtn"></button>
+                                <button type="button" class="btn" id="notificationModalConfirmBtn"></button>
                             </div>
                         </div>
                     </div>
@@ -49,6 +59,10 @@ const NotificationModal = {
             document.body.insertAdjacentHTML('beforeend', modalHTML);
             this._modalElement = document.getElementById('notificationModal');
         }
+
+        AurvekI18n.bindAttribute(this._modalElement.querySelector('.btn-close'), 'aria-label', 'common.action.close');
+        document.getElementById('notificationModalCancelBtn').textContent = AurvekI18n.t('common.action.cancel');
+        document.getElementById('notificationModalConfirmBtn').textContent = AurvekI18n.t('common.action.ok');
 
         // Add styles for modal types
         this._addStyles();
@@ -316,8 +330,8 @@ const NotificationModal = {
         this.init();
 
         const {
-            confirmText = 'OK',
-            cancelText = 'Cancel',
+            confirmText = () => AurvekI18n.t('common.action.ok'),
+            cancelText = () => AurvekI18n.t('common.action.cancel'),
             showCancel = (type === 'confirm'),
             onConfirm = null,
             onCancel = null,
@@ -338,20 +352,21 @@ const NotificationModal = {
         this._modalElement.classList.add(`modal-${type}`);
 
         // Set content
-        modalLabel.textContent = title;
+        this._text(modalLabel, title);
         if (options.allowHtml === true) {
+            AurvekI18n.unbind(modalBody);
             modalBody.innerHTML = message;
         } else {
-            modalBody.textContent = message;
+            this._text(modalBody, message);
         }
         modalIcon.innerHTML = this._getIcon(type);
 
         // Configure buttons
-        confirmBtn.textContent = confirmText;
+        confirmBtn.textContent = typeof confirmText === 'function' ? confirmText() : confirmText;
         confirmBtn.style.display = '';
         confirmBtn.disabled = false;
 
-        cancelBtn.textContent = cancelText;
+        cancelBtn.textContent = typeof cancelText === 'function' ? cancelText() : cancelText;
         cancelBtn.style.display = showCancel ? '' : 'none';
 
         // Remove previous event listeners by cloning
@@ -360,6 +375,8 @@ const NotificationModal = {
 
         const newCancelBtn = cancelBtn.cloneNode(true);
         cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+        this._text(newConfirmBtn, confirmText);
+        this._text(newCancelBtn, cancelText);
 
         // Add new event listeners
         document.getElementById('notificationModalConfirmBtn').addEventListener('click', () => {
@@ -401,21 +418,22 @@ const NotificationModal = {
         const { title, message, confirmText, cancelText, showConfirm, showCancel } = options;
 
         if (title !== undefined) {
-            document.getElementById('notificationModalLabel').textContent = title;
+            this._text(document.getElementById('notificationModalLabel'), title);
         }
         if (message !== undefined) {
             const modalBody = document.getElementById('notificationModalBody');
             if (options.allowHtml === true) {
+                AurvekI18n.unbind(modalBody);
                 modalBody.innerHTML = message;
             } else {
-                modalBody.textContent = message;
+                this._text(modalBody, message);
             }
         }
         if (confirmText !== undefined) {
-            document.getElementById('notificationModalConfirmBtn').textContent = confirmText;
+            this._text(document.getElementById('notificationModalConfirmBtn'), confirmText);
         }
         if (cancelText !== undefined) {
-            document.getElementById('notificationModalCancelBtn').textContent = cancelText;
+            this._text(document.getElementById('notificationModalCancelBtn'), cancelText);
         }
         if (showConfirm !== undefined) {
             document.getElementById('notificationModalConfirmBtn').style.display = showConfirm ? '' : 'none';
@@ -490,11 +508,11 @@ const NotificationModal = {
 
         const messageSpan = document.createElement('span');
         messageSpan.className = 'notification-toast-message';
-        messageSpan.textContent = message;  // XSS-safe for caller content
+        this._text(messageSpan, message);  // XSS-safe for caller content
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'notification-toast-close';
-        closeBtn.setAttribute('aria-label', 'Close');
+        AurvekI18n.bindAttribute(closeBtn, 'aria-label', 'common.action.close');
         closeBtn.innerHTML = '&times;';  // trusted hardcoded glyph
 
         toast.appendChild(iconSpan);
@@ -524,8 +542,8 @@ const NotificationModal = {
         const type = options.type || 'confirm';
         return this.show(type, title, message, {
             showCancel: true,
-            confirmText: options.confirmText || 'Confirm',
-            cancelText: options.cancelText || 'Cancel',
+            confirmText: options.confirmText || (() => AurvekI18n.t('common.action.confirm')),
+            cancelText: options.cancelText || (() => AurvekI18n.t('common.action.cancel')),
             onConfirm,
             onCancel,
             hideOnConfirm: options.hideOnConfirm !== false,

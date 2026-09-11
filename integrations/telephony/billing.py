@@ -6,10 +6,12 @@ prices, country assumptions or SERVICES identifiers.
 
 from __future__ import annotations
 
+from integrations.applications.phone import bill_phone_component
+
 import asyncio
 import math
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping
 
@@ -274,12 +276,18 @@ async def resolve_phone_billing_rate(
         raise PhoneBillingConfigurationError(
             f"No single exact {provider}/{component} telephone billing rate"
         )
-    return await _validated_rate_row(
+    rate = await _validated_rate_row(
         conn,
         rows[0],
         provider=provider,
         component=component,
     )
+    from integrations.telephony.account_routing import twilio_snapshot
+    if provider == 'twilio' and twilio_snapshot(call) is not None:
+        # The account holder pays Twilio directly. Preserve its estimated cost
+        # and metered usage while reserving/settling only Aurvek's own charges.
+        rate = replace(rate, customer_rate_per_unit=0.0)
+    return rate
 
 
 async def upsert_phone_billing_rate(
@@ -588,6 +596,7 @@ class PhoneBillingService:
         )
         return component
 
+    @bill_phone_component
     async def _reserve_component_owned(
         self,
         *,
@@ -730,6 +739,8 @@ class PhoneBillingService:
             await conn.execute("BEGIN IMMEDIATE")
             try:
                 call = await _load_call(conn, str(call_id))
+                from integrations.applications.phone import call_operation
+                await call_operation(conn, call)
                 rate = await resolve_phone_billing_rate(
                     conn,
                     call=call,
@@ -903,11 +914,16 @@ class PhoneBillingService:
         if component.state != "reserved":
             return None
         if component.reservation_id is not None:
+            async def authorize_application_provider(connection):
+                from integrations.applications.phone import call_operation
+                call = await _load_call(connection, component.call_id)
+                await call_operation(connection, call)
             try:
                 claimed = await claim_fixed_usage_provider(
                     component.reservation_id,
                     purpose="phone",
                     user_id=await self._component_owner(component.id),
+                    transaction_guard=authorize_application_provider,
                 )
             except BillingReservationError as exc:
                 raise PhoneBillingError(
@@ -918,6 +934,9 @@ class PhoneBillingService:
         async with self._connection_factory() as conn:
             await conn.execute("BEGIN IMMEDIATE")
             try:
+                if component.reservation_id is None:
+                    from integrations.applications.phone import call_operation
+                    await call_operation(conn, await _load_call(conn, component.call_id))
                 cursor = await conn.execute(
                     """
                     UPDATE PHONE_CALL_COST_COMPONENTS
@@ -1495,6 +1514,8 @@ class PhoneBillingService:
                 provider_rate = rate.provider_rate_per_unit if rate else 0.0
                 customer_rate = rate.customer_rate_per_unit if rate else 0.0
                 provider_cost = provider_rate * normalized_quantity
+                from integrations.telephony.account_routing import twilio_snapshot
+                creator_paid = normalized_provider == 'twilio' and twilio_snapshot(call) is not None
                 insert_cursor = await conn.execute(
                     """
                     INSERT INTO PHONE_CALL_COST_COMPONENTS(
@@ -1507,7 +1528,7 @@ class PhoneBillingService:
                         platform_absorbed,rate_missing,provider_confirmed_at,
                         settled_at,last_error
                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                             'needs_attention',1,?,CURRENT_TIMESTAMP,
+                             ?,?,?,CURRENT_TIMESTAMP,
                              CURRENT_TIMESTAMP,?)
                     ON CONFLICT(call_id,dedupe_key) DO NOTHING
                     RETURNING *
@@ -1517,7 +1538,9 @@ class PhoneBillingService:
                         normalized_provider,component,key,external_usage_id,
                         normalized_quantity,0,unit,provider_rate,customer_rate,
                         provider_cost,0,provider_cost,0,provider_cost,0,
-                        rate.currency if rate else None,int(rate is None),
+                        rate.currency if rate else None,
+                        'settled' if creator_paid and rate else 'needs_attention',
+                        int(not creator_paid),int(rate is None),
                         ("provider_usage_rate_missing" if rate is None else reason),
                     ),
                 )

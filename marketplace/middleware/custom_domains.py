@@ -19,6 +19,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from cachetools import TTLCache
+from i18n import get_translator
 
 from marketplace.landing.isolation import (
     apply_creator_content_headers,
@@ -106,6 +107,11 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        # The outer ASGI embed boundary has classified the exact registered host,
+        # restricted the path, and stripped native cookies before reaching here.
+        # This is not a new primary domain or a creator-controlled landing host.
+        if getattr(request.state, "embed_host", False):
+            return await call_next(request)
         host = request.headers.get("host", "").lower().split(":")[0]
 
         creator_config = get_creator_content_config(primary_hosts=_primary_domains)
@@ -131,20 +137,20 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
 
         from marketplace.config import marketplace_public_landings_enabled
         if not marketplace_public_landings_enabled():
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         # A custom landing domain must be on a separate site from Aurvek.  A
         # sibling subdomain could otherwise receive same-site cookies and make
         # creator JavaScript an application-origin concern again.
         if not is_host_isolated_from_primary(host, primary_hosts=_primary_domains):
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         # Check if this is a custom domain
         domain_data = await self._get_domain_data(host)
 
         if domain_data is None:
             # Not a known custom domain -> 404
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         # Inject prompt data into request state
         request.state.custom_domain = True
@@ -198,7 +204,7 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
                     path=path,
                     no_store=True,
                 )
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         if route_kind == "content" and method in {"GET", "HEAD"}:
             is_preview = request.query_params.get("preview") == "1"
@@ -210,7 +216,7 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
                 no_store=is_preview,
             )
 
-        return self._not_found_response()
+        return self._not_found_response(request)
 
     async def _dispatch_custom_domain(
         self,
@@ -227,7 +233,7 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
 
         if path in {"/register", "/login"}:
             if method not in {"GET", "HEAD"}:
-                return self._not_found_response()
+                return self._not_found_response(request)
             from common import slugify
 
             auth_path = (
@@ -235,7 +241,7 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
             )
             target = primary_app_url(auth_path)
             if not target:
-                return self._not_found_response()
+                return self._not_found_response(request)
             return self._finalize_isolated_response(
                 RedirectResponse(target, status_code=302),
                 path=path,
@@ -255,12 +261,12 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
         if method in {"GET", "HEAD"} and self._valid_custom_landing_path(path):
             is_embed = request.query_params.get("embed") == "1"
             return self._finalize_isolated_response(
-                self._serve_custom_landing_html(domain_data, path),
+                self._serve_custom_landing_html(domain_data, path, request),
                 path=path,
                 allow_primary_frame=is_embed,
             )
 
-        return self._not_found_response()
+        return self._not_found_response(request)
 
     @staticmethod
     def _creator_route_kind(path: str) -> str | None:
@@ -376,18 +382,18 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
             "entity_id": entity_id,
         }
         if verify_content_token(token, expected=expected) is None:
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         from welcome_service import build_world
 
         world = await build_world(entity_type, entity_id)
         if not world:
-            return self._not_found_response()
+            return self._not_found_response(request)
         index_path = Path(world["path"]) / "welcome" / "index.html"
         try:
             html = index_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         prefix = f"/_aurvek/welcome/{entity_type}/{entity_id}/{token}/"
         html = html.replace("/home/static/", prefix + "static/")
@@ -417,28 +423,30 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
             "entity_id": entity_id,
         }
         if verify_content_token(token, expected=expected) is None:
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         from welcome_service import build_world
 
         world = await build_world(entity_type, entity_id)
         if not world:
-            return self._not_found_response()
+            return self._not_found_response(request)
         static_root = (Path(world["path"]) / "welcome" / "static").resolve()
         try:
             resolved = (static_root / resource_path).resolve(strict=True)
             resolved.relative_to(static_root)
         except (OSError, ValueError):
-            return self._not_found_response()
+            return self._not_found_response(request)
         if not resolved.is_file():
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         suffix = resolved.suffix.lower()
         media_type = _MEDIA_TYPES.get(suffix, "application/octet-stream")
         return FileResponse(resolved, media_type=media_type)
 
-    def _not_found_response(self) -> Response:
-        response = HTMLResponse(self._get_404_html(), status_code=404)
+    def _not_found_response(self, request: Request) -> Response:
+        from marketplace.landing.rendering import landing_404_response
+
+        response = landing_404_response(get_translator(request), domain=True)
         return apply_creator_content_headers(response, no_store=True)
 
     async def _get_domain_data(self, domain: str) -> Optional[Dict]:
@@ -512,14 +520,14 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
-    def _serve_custom_landing_html(self, domain_data: Dict, path: str) -> Response:
+    def _serve_custom_landing_html(self, domain_data: Dict, path: str, request: Request) -> Response:
         """Serve creator HTML directly so application routes cannot win routing."""
         if path in {"/", "/index.html"}:
             page = "home"
         else:
             page = path.strip("/")
         if not _PAGE_RE.fullmatch(page):
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         prompt_dir = _build_prompt_path(
             domain_data["username"],
@@ -532,43 +540,13 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
             resolved.relative_to(prompt_dir.resolve())
             html = resolved.read_text(encoding="utf-8")
         except (OSError, UnicodeError, ValueError):
-            return self._not_found_response()
+            return self._not_found_response(request)
 
         from marketplace.landing.rendering import inject_custom_domain_analytics
 
         html = inject_custom_domain_analytics(html, domain_data["prompt_id"])
         return HTMLResponse(html)
 
-    def _get_404_html(self) -> str:
-        """Return 404 HTML for unknown domains."""
-        return """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>404 - Domain Not Found</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            background: #f5f5f5;
-        }
-        .container { text-align: center; }
-        h1 { font-size: 6rem; color: #ddd; margin: 0; font-weight: 200; }
-        p { color: #888; font-size: 1.2rem; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>404</h1>
-        <p>Domain not configured</p>
-    </div>
-</body>
-</html>"""
 
 
 def invalidate_domain_cache(domain: str):

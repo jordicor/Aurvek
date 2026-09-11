@@ -5,10 +5,11 @@ import io
 import asyncio as stdlib_asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import orjson
 import pytest
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Request, UploadFile
 from PIL import Image as PilImage
 
 import app as app_module
@@ -31,6 +32,27 @@ class DummyUser:
     @property
     async def is_admin(self):
         return False
+
+
+@pytest.mark.asyncio
+async def test_browser_stt_forwards_language_to_shared_provider(monkeypatch) -> None:
+    captured = {}
+
+    async def shared_provider(**kwargs):
+        captured.update(kwargs)
+        return "hola"
+
+    monkeypatch.setattr(
+        voice_io,
+        "transcribe_media_with_elevenlabs",
+        shared_provider,
+    )
+
+    assert await voice_io.transcribe_with_elevenlabs(
+        audio_content=b"audio",
+        language_code="es",
+    ) == "hola"
+    assert captured["language_code"] == "es"
 
 
 class ToThreadSpy:
@@ -65,7 +87,7 @@ async def test_profile_picture_variants_run_as_one_worker_block(tmp_path, monkey
 
     base_url = await app_module.upload_profile_picture(
         _upload("avatar.png"),
-        request=None,
+        request=app_module.Request({"type": "http", "headers": []}),
         current_user=DummyUser(username="alice"),
     )
 
@@ -129,11 +151,11 @@ async def test_creator_avatar_variants_run_as_one_worker_block(tmp_path, monkeyp
     monkeypatch.setattr(storefronts, "asyncio", SimpleNamespace(to_thread=to_thread))
     monkeypatch.setattr(storefronts, "users_directory", str(tmp_path))
     monkeypatch.setattr(storefronts, "get_db_connection", fake_connection)
-    monkeypatch.setattr(storefronts, "require_storefronts_enabled", lambda: None)
+    monkeypatch.setattr(storefronts, "require_storefronts_enabled", lambda *_args: None)
 
     response = await storefronts.upload_creator_avatar(
         _upload("creator.png"),
-        request=None,
+        request=Request({"type": "http", "headers": []}),
         current_user=DummyUser(),
     )
 
@@ -163,7 +185,7 @@ async def test_pack_cover_variants_run_as_one_worker_block(tmp_path, monkeypatch
         return None
 
     monkeypatch.setattr(packs, "asyncio", SimpleNamespace(to_thread=to_thread))
-    monkeypatch.setattr(packs, "require_creator_tools_enabled", lambda: None)
+    monkeypatch.setattr(packs, "require_creator_tools_enabled", lambda translator=None: None)
     monkeypatch.setattr(packs, "get_db_connection", _empty_connection)
     monkeypatch.setattr(packs, "get_pack", fake_get_pack)
     monkeypatch.setattr(packs, "_require_admin_or_user", no_op)
@@ -176,6 +198,7 @@ async def test_pack_cover_variants_run_as_one_worker_block(tmp_path, monkeypatch
     )
 
     response = await packs.api_upload_cover_image(
+        Request({"type": "http", "headers": []}),
         7,
         file=_upload("cover.png"),
         current_user=DummyUser(),
@@ -216,6 +239,7 @@ async def test_pack_landing_image_runs_as_one_worker_block(tmp_path, monkeypatch
     monkeypatch.setattr(packs, "_get_pack_dir_and_info", fake_pack_dir)
 
     response = await packs.pack_landing_upload_images(
+        Request({"type": "http", "headers": []}),
         7,
         images=[_upload("hero.png")],
         names=["hero"],
@@ -235,7 +259,7 @@ async def test_prompt_landing_image_runs_as_one_worker_block(tmp_path, monkeypat
     async def can_manage(*_args, **_kwargs):
         return True
 
-    async def prompt_info(_prompt_id):
+    async def prompt_info(_prompt_id, translator=None):
         return {"name": "Demo Prompt"}
 
     monkeypatch.setattr(
@@ -246,7 +270,7 @@ async def test_prompt_landing_image_runs_as_one_worker_block(tmp_path, monkeypat
     monkeypatch.setattr(
         prompt_landing_builder,
         "require_creator_tools_enabled",
-        lambda: None,
+        lambda translator=None: None,
     )
     monkeypatch.setattr(prompt_landing_builder, "can_manage_prompt", can_manage)
     monkeypatch.setattr(prompt_landing_builder, "get_prompt_info", prompt_info)
@@ -257,6 +281,7 @@ async def test_prompt_landing_image_runs_as_one_worker_block(tmp_path, monkeypat
     )
 
     result = await prompt_landing_builder.upload_images(
+        Request({"type": "http", "headers": []}),
         9,
         images=[_upload("hero.png")],
         names=["hero"],
@@ -359,6 +384,7 @@ async def test_transcribe_audio_decode_runs_in_worker(monkeypatch) -> None:
     to_thread = ToThreadSpy()
     decode_calls = []
     settled = []
+    provider_calls = []
 
     def fake_from_file(file_obj, **options):
         decode_calls.append((file_obj.read(), options))
@@ -370,7 +396,8 @@ async def test_transcribe_audio_decode_runs_in_worker(monkeypatch) -> None:
     async def settle_stt_attempt(reservation_id, **_kwargs):
         settled.append(reservation_id)
 
-    async def transcribe_with_deepgram(**_kwargs):
+    async def transcribe_with_deepgram(**kwargs):
+        provider_calls.append(kwargs)
         return "transcribed"
 
     monkeypatch.setattr(voice_io, "asyncio", SimpleNamespace(to_thread=to_thread))
@@ -384,6 +411,11 @@ async def test_transcribe_audio_decode_runs_in_worker(monkeypatch) -> None:
     monkeypatch.setattr(voice_io, "stt_fallback_enabled", False)
     monkeypatch.setattr(voice_io, "reserve_stt_attempt", reserve_stt_attempt)
     monkeypatch.setattr(voice_io, "settle_stt_attempt", settle_stt_attempt)
+    monkeypatch.setattr(
+        voice_io,
+        "_load_primary_stt_language",
+        AsyncMock(return_value="de"),
+    )
     monkeypatch.setattr(voice_io, "transcribe_with_deepgram", transcribe_with_deepgram)
 
     result = await voice_io.transcribe(
@@ -396,6 +428,7 @@ async def test_transcribe_audio_decode_runs_in_worker(monkeypatch) -> None:
     assert to_thread.functions == [voice_io._decode_audio_duration]
     assert decode_calls == [(b"audio", {"format": "webm", "codec": "opus"})]
     assert settled == ["reservation"]
+    assert provider_calls[0]["language_code"] == "de"
 
 
 @pytest.mark.asyncio
@@ -428,6 +461,11 @@ async def test_transcribe_audio_defaults_to_elevenlabs_when_engine_is_unset(
     monkeypatch.setattr(voice_io, "get_browser", lambda _user_agent: "chrome")
     monkeypatch.setattr(voice_io, "reserve_stt_attempt", reserve_stt_attempt)
     monkeypatch.setattr(voice_io, "settle_stt_attempt", settle_stt_attempt)
+    monkeypatch.setattr(
+        voice_io,
+        "_load_primary_stt_language",
+        AsyncMock(return_value=voice_io.DEFAULT_STT_LANGUAGE),
+    )
     monkeypatch.setattr(
         voice_io,
         "transcribe_with_elevenlabs",
@@ -483,19 +521,26 @@ async def test_elevenlabs_primary_never_falls_back_to_deepgram(
     monkeypatch.setattr(voice_io, "reserve_stt_attempt", reserve_stt_attempt)
     monkeypatch.setattr(
         voice_io,
+        "_load_primary_stt_language",
+        AsyncMock(return_value=voice_io.DEFAULT_STT_LANGUAGE),
+    )
+    monkeypatch.setattr(
+        voice_io,
         "finalize_failed_stt_attempt",
         finalize_failed_stt_attempt,
     )
     monkeypatch.setattr(voice_io, "transcribe_with_elevenlabs", fail_elevenlabs)
     monkeypatch.setattr(voice_io, "transcribe_with_deepgram", track_deepgram)
 
-    with pytest.raises(HTTPException, match="synthetic Scribe failure"):
+    with pytest.raises(HTTPException) as exc_info:
         await voice_io.transcribe(
             SimpleNamespace(headers={}),
             audio=UploadFile(filename="voice.webm", file=io.BytesIO(b"audio")),
             user_id=31,
         )
 
+    assert exc_info.value.status_code == 500
+    assert "synthetic Scribe failure" not in exc_info.value.detail
     assert deepgram_called is False
 
 

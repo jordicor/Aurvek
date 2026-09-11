@@ -43,6 +43,9 @@ const SessionManager = {
      * Skips initialization on auth pages where user is not logged in
      */
     init() {
+        // Embedded sessions have fixed source-bound expiry, checked by each
+        // protected operation. Do not start native polling/refresh maintenance.
+        if (window.AurvekEmbed) return;
         const authPages = ['/login', '/register', '/logout', '/auth/'];
         const currentPath = window.location.pathname;
 
@@ -236,7 +239,7 @@ const SessionManager = {
 
             // Regular session check (forceCheck, refresh, or no cached data)
             if (!data) {
-                const response = await fetch('/api/check-session', {
+                const response = await fetch(window.AurvekEmbed?.sessionUrl || '/api/check-session', {
                     method: 'GET',
                     credentials: 'include',
                     headers: {
@@ -349,6 +352,7 @@ const SessionManager = {
     },
 
     shouldRefreshSoon() {
+        if (window.AurvekEmbed) return false;
         if (!this._expiresAt) {
             return false;
         }
@@ -416,7 +420,9 @@ const SessionManager = {
         const isMutating = method !== 'GET' && method !== 'HEAD';
         const isValid = await this.validateSession(isMutating);
         if (!isValid) {
-            throw new Error('Session expired');
+            const error = new Error(window.AurvekI18n.t('common.session.expired_title'));
+            error.code = 'session_expired';
+            throw error;
         }
 
         // Build headers with CSRF protection
@@ -474,6 +480,11 @@ const SessionManager = {
      * Handles session expiry with user-friendly experience
      */
     handleSessionExpiry() {
+        if (window.AurvekEmbed) {
+            this.invalidateCache();
+            window.AurvekEmbed.sessionExpired();
+            return;
+        }
         // Prevent multiple modals from showing
         if (this._modalShown) {
             return;
@@ -483,16 +494,16 @@ const SessionManager = {
         this.invalidateCache();
         this._modalShown = true;
 
-        const message = 'Your session has expired. Click "Go to Login" to authenticate again.';
+        const message = AurvekI18n.t('common.session.expired_message');
 
         // Try NotificationModal first (globally available via base.html)
         if (typeof NotificationModal !== 'undefined') {
             NotificationModal.confirm(
-                'Session Expired',
+                AurvekI18n.t('common.session.expired_title'),
                 message,
                 () => this.redirectToLogin(),
                 () => { this._modalShown = false; },
-                { confirmText: 'Go to Login', cancelText: 'Cancel' }
+                { confirmText: AurvekI18n.t('common.session.login'), cancelText: AurvekI18n.t('common.action.cancel') }
             );
 
             // Reset modal flag when modal is hidden
@@ -507,7 +518,7 @@ const SessionManager = {
         }
         // Last resort: native confirm
         else {
-            const shouldRedirect = confirm(message + ' Click OK to go to login.');
+            const shouldRedirect = confirm(AurvekI18n.t('common.session.expired_confirm'));
             this._modalShown = false;
             if (shouldRedirect) {
                 this.redirectToLogin();

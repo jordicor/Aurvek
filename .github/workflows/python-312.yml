@@ -37,6 +37,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-linux.txt
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -52,3 +57,9 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest -q
+
+      - name: Validate UI catalogs
+        run: python tools/check_i18n.py
+
+      - name: Run JavaScript regression tests
+        run: node --test tests/js/*.test.js

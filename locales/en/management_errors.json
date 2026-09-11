@@ -1,0 +1,12 @@
+{
+  "curation.access": "Only User and Admin accounts can access curation settings",
+  "curation.update_access": "Only User and Admin accounts can update curation settings",
+  "curation.load_failed": "Could not load curation settings. Please try again.",
+  "curation.save_failed": "Could not save curation settings. Please try again.",
+  "curation.negative": "Markup cannot be negative",
+  "curation.maximum": "Markup cannot exceed {amount} per million tokens",
+  "curation.saved": "Curation settings updated",
+  "curation.invalid": "Invalid markup value",
+  "prompt.not_found": "Prompt not found",
+  "access.denied": "Access denied"
+}

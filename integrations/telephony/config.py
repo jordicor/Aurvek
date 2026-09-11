@@ -236,18 +236,11 @@ async def load_telephony_config(*, conn: Any | None = None) -> TelephonyConfig:
         return parse_telephony_config(await _load_values(db_conn))
 
 
-def serialize_config_updates(values: Mapping[str, Any]) -> dict[str, str]:
-    """Validate a partial admin update and return only submitted storage keys."""
-    unknown = set(values) - set(DEFAULT_CONFIG)
-    if unknown:
-        raise TelephonyConfigError(
-            "Unsupported telephony configuration: " + ", ".join(sorted(unknown))
-        )
-    merged = dict(DEFAULT_CONFIG)
-    merged.update(values)
-    parsed = parse_telephony_config(merged)
-    public = parsed.public_dict()
-    serialized = {
+def serialize_telephony_config(config: TelephonyConfig) -> dict[str, str]:
+    """Return the canonical storage representation for a parsed config."""
+
+    public = config.public_dict()
+    return {
         "telephony_enabled": "1" if public["enabled"] else "0",
         "telephony_transport": public["transport"],
         "telephony_stt_provider": public["stt_provider"],
@@ -271,4 +264,16 @@ def serialize_config_updates(values: Mapping[str, Any]) -> dict[str, str]:
             public["max_concurrent_dispatches"]
         ),
     }
+
+
+def serialize_config_updates(values: Mapping[str, Any]) -> dict[str, str]:
+    """Validate a partial admin update and return only submitted storage keys."""
+    unknown = set(values) - set(DEFAULT_CONFIG)
+    if unknown:
+        raise TelephonyConfigError(
+            "Unsupported telephony configuration: " + ", ".join(sorted(unknown))
+        )
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(values)
+    serialized = serialize_telephony_config(parse_telephony_config(merged))
     return {key: serialized[key] for key in values}

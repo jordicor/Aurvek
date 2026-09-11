@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
+{% set i18n_domains = ['admin_users'] %}
 
-{% block title %}Create User - AURVEK{% endblock %}
+{% block title %}{{ t('admin_users.create_user_aurvek') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -11,7 +12,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/js/intlTelInput.min.js"></script>
 {% endblock %}
 
-{% block page_title %}Create User{% endblock %}
+{% block page_title %}{{ t('admin_users.create_user') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
@@ -20,11 +21,11 @@
 
     <!-- Section 1: Prompt & Model Configuration -->
     <div class="section-container">
-        <div class="section-title">Prompt & Model Configuration</div>
+        <div class="section-title">{{ t('admin_users.prompt_model_configuration') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="promptDropdown" class="form-label">Select a Prompt</label>
+                    <label for="promptDropdown" class="form-label">{{ t('admin_users.select_a_prompt') }}</label>
                     <select class="form-select" id="promptDropdown" name="prompt_id">
                         {% for prompt in prompts %}
                             <option value="{{ prompt.id }}" {% if prompt.id == selected_prompt_id %}selected{% endif %}>
@@ -37,8 +38,8 @@
             <div class="flex-column">
                 <div class="mb-3">
                     <label for="machineDropdown" class="form-label">
-                        Select a LLM
-                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="The AI model this user will use. If the selected prompt has a forced LLM, it will be auto-selected and locked."></i>
+                        {{ t('admin_users.select_a_llm') }}
+                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('admin_users.the_ai_model_this_user_will_use_if_the_selected_prompt_has_a_forced_llm') }}"></i>
                     </label>
                     <select name="machine" id="machineDropdown" class="form-select">
                         {% for model in llm_models %}
@@ -54,53 +55,53 @@
 
     <!-- Section 2: User Account Settings -->
     <div class="section-container">
-        <div class="section-title">User Account Settings</div>
+        <div class="section-title">{{ t('admin_users.user_account_settings') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 {% if is_admin %}
                 <div class="mb-3">
-                    <label for="userType" class="form-label">User Type</label>
+                    <label for="userType" class="form-label">{{ t('admin_users.user_type') }}</label>
                     <select class="form-select" id="userType" name="user_type">
-                        <option value="customer">Customer</option>
-                        <option value="user">User</option>
+                        <option value="customer">{{ t('admin_users.customer') }}</option>
+                        <option value="user">{{ t('admin_users.user') }}</option>
                     </select>
                 </div>
                 {% else %}
                     <input type="hidden" name="user_type" value="customer">
                 {% endif %}
                 <div class="mb-3">
-                    <label for="authenticationMode" class="form-label">Authentication Mode</label>
+                    <label for="authenticationMode" class="form-label">{{ t('admin_users.authentication_mode') }}</label>
                     <select class="form-select" id="authenticationMode" name="authentication_mode">
-                        <option value="magic_link_only">Magic Link Only</option>
-                        <option value="magic_link_password">Magic Link + Password</option>
-                        <option value="password_only">Password Only</option>
+                        <option value="magic_link_only">{{ t('admin_users.magic_link_only') }}</option>
+                        <option value="magic_link_password">{{ t('admin_users.magic_link_password') }}</option>
+                        <option value="password_only">{{ t('admin_users.password_only') }}</option>
                     </select>
                 </div>
                 <div class="mb-3" id="initialPasswordContainer" style="display: none;">
-                    <label for="initialPassword" class="form-label">Initial Password</label>
+                    <label for="initialPassword" class="form-label">{{ t('admin_users.initial_password') }}</label>
                     <input type="password" class="form-control" id="initialPassword" name="initial_password" minlength="8">
-                    <small class="form-text text-muted">Minimum 8 characters required for password modes</small>
+                    <small class="form-text text-muted">{{ t('admin_users.minimum_8_characters_required_for_password_modes') }}</small>
                 </div>
                 <div class="mb-3 form-check" id="canChangePasswordContainer" style="display: none;">
                     <input type="checkbox" class="form-check-input" id="canChangePassword" name="can_change_password">
-                    <label class="form-check-label" for="canChangePassword">User can change password</label>
+                    <label class="form-check-label" for="canChangePassword">{{ t('admin_users.user_can_change_password') }}</label>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="apiKeyMode" class="form-label">API Key Mode</label>
+                    <label for="apiKeyMode" class="form-label">{{ t('admin_users.api_key_mode') }}</label>
                     <select class="form-select" id="apiKeyMode" name="api_key_mode">
-                        <option value="both_prefer_own" selected>Both (Prefer Own Keys)</option>
-                        <option value="system_only">System Keys Only</option>
-                        <option value="own_only">Own Keys Only (BYOK)</option>
-                        <option value="both_prefer_system">Both (Prefer System Keys)</option>
+                        <option value="both_prefer_own" selected>{{ t('admin_users.both_prefer_own_keys') }}</option>
+                        <option value="system_only">{{ t('admin_users.system_keys_only') }}</option>
+                        <option value="own_only">{{ t('admin_users.own_keys_only_byok') }}</option>
+                        <option value="both_prefer_system">{{ t('admin_users.both_prefer_system_keys') }}</option>
                     </select>
                     <small class="form-text text-muted" id="apiKeyModeHelp">
-                        User keys take priority if configured, otherwise uses platform keys.
+                        {{ t('admin_users.user_keys_take_priority_if_configured_otherwise_uses_platform_keys') }}
                     </small>
                 </div>
                 <div class="alert alert-warning" id="ownOnlyWarning" style="display: none;">
-                    <strong>BYOK Mode:</strong> The user will NOT be able to use AI services until they configure their own API keys.
+                    <strong>{{ t('admin_users.byok_mode') }}</strong> {{ t('admin_users.the_user_will_not_be_able_to_use_ai_services_until_they_configure_their') }}
                 </div>
             </div>
         </div>
@@ -108,42 +109,42 @@
 
     <!-- Section 3: User Information -->
     <div class="section-container">
-        <div class="section-title">User Information</div>
+        <div class="section-title">{{ t('admin_users.user_information') }}</div>
         <!-- Row 1: Username | Phone Number -->
         <div class="flex-row">
             <div class="flex-column">
-                <label for="username" class="form-label">Username</label>
+                <label for="username" class="form-label">{{ t('admin_users.username') }}</label>
                 <input type="text" class="form-control" id="username" name="username"
                        minlength="3" maxlength="20"
                        pattern="^[a-zA-Z0-9_\-]+$"
-                       title="The username must be between 3 and 20 characters and can only contain letters, numbers, hyphens, and underscores.">
+                       title="{{ t('admin_users.the_username_must_be_between_3_and_20_characters_and_can_only_contain_le') }}">
                 <div class="form-check mt-2">
                     <input type="checkbox" class="form-check-input" id="useRandomUsername" name="use_random_username">
-                    <label class="form-check-label" for="useRandomUsername">Use random username</label>
+                    <label class="form-check-label" for="useRandomUsername">{{ t('admin_users.use_random_username') }}</label>
                 </div>
             </div>
             <div class="flex-column">
-                <label for="phone" class="form-label">Phone Number</label>
+                <label for="phone" class="form-label">{{ t('admin_users.phone_number') }}</label>
                 <input type="tel" class="form-control" id="phone" name="phone" inputmode="tel" oninput="this.value = this.value.replace(/[^0-9+\-() ]/g, '')">
-                <button type="button" class="btn btn-secondary mt-2" id="sendCodeButton" style="display: none;">Send Verification Code</button>
+                <button type="button" class="btn btn-secondary mt-2" id="sendCodeButton" style="display: none;">{{ t('admin_users.send_verification_code') }}</button>
             </div>
         </div>
         <!-- Row 2: Email | Balance -->
         <div class="flex-row mt-3">
             <div class="flex-column">
-                <label for="email" class="form-label">Email Address</label>
+                <label for="email" class="form-label">{{ t('admin_users.email_address') }}</label>
                 <input type="email" class="form-control" id="email" name="email">
-                <small class="form-text text-muted">Required for magic link recovery</small>
+                <small class="form-text text-muted">{{ t('admin_users.required_for_magic_link_recovery') }}</small>
             </div>
             <div class="flex-column">
-                <label for="balance" class="form-label">Balance ($0 - $500)</label>
+                <label for="balance" class="form-label">{{ t('admin_users.balance_0_500') }}</label>
                 <input type="text" class="form-control" id="balance" name="balance" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')" required>
             </div>
         </div>
         <!-- Verification Code (hidden by default) -->
         <div class="flex-row mt-3" id="verificationCodeContainer" style="display: none;">
             <div class="flex-column">
-                <label for="verificationCode" class="form-label">Verification Code</label>
+                <label for="verificationCode" class="form-label">{{ t('admin_users.verification_code') }}</label>
                 <input type="text" class="form-control" id="verificationCode" inputmode="numeric" autocomplete="one-time-code">
                 <input type="hidden" id="phoneVerificationId" name="phone_verification_id">
             </div>
@@ -153,39 +154,39 @@
 
     <!-- Section 4: Permissions -->
     <div class="section-container">
-        <div class="section-title">Permissions</div>
+        <div class="section-title">{{ t('admin_users.permissions') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="publicPromptsAccess" name="public_prompts_access">
                     <label class="form-check-label" for="publicPromptsAccess">
-                        Allow access to public prompts
-                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="If enabled, this user can see and use prompts shared publicly by other creators in the marketplace."></i>
+                        {{ t('admin_users.allow_access_to_public_prompts') }}
+                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('admin_users.if_enabled_this_user_can_see_and_use_prompts_shared_publicly_by_other_cr') }}"></i>
                     </label>
                 </div>
                 {% if is_admin %}
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="allPromptsAccess" name="all_prompts_access">
                     <label class="form-check-label" for="allPromptsAccess">
-                        Allow access to all prompts
-                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Admin only. Gives this user access to ALL prompts in the system, including private ones."></i>
+                        {{ t('admin_users.allow_access_to_all_prompts') }}
+                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('admin_users.admin_only_gives_this_user_access_to_all_prompts_in_the_system_including') }}"></i>
                     </label>
                 </div>
                 {% endif %}
                 <div class="mb-3 form-check" id="allowFileUploadContainer" style="display: none;">
                     <input type="checkbox" class="form-check-input" id="allowFileUpload" name="allow_file_upload">
-                    <label class="form-check-label" for="allowFileUpload">Allow file upload to the AI</label>
+                    <label class="form-check-label" for="allowFileUpload">{{ t('admin_users.allow_file_upload_to_the_ai') }}</label>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="allowImageGeneration" name="allow_image_generation">
-                    <label class="form-check-label" for="allowImageGeneration">Allow AI to generate images</label>
+                    <label class="form-check-label" for="allowImageGeneration">{{ t('admin_users.allow_ai_to_generate_images') }}</label>
                 </div>
                 {% if is_admin %}
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="skipVerification" name="skip_verification">
-                    <label class="form-check-label" for="skipVerification">Skip phone verification</label>
+                    <label class="form-check-label" for="skipVerification">{{ t('admin_users.skip_phone_verification') }}</label>
                 </div>
                 {% endif %}
             </div>
@@ -194,11 +195,11 @@
 
     <!-- Section 5: Category Access (visible when public prompts enabled) -->
     <div class="section-container" id="categoryAccessSection" style="display: none;">
-        <div class="section-title">Category Access</div>
-        <p class="text-muted small mb-3">Select which categories of public prompts this user can access. Leave "All Categories" checked to give access to all.</p>
+        <div class="section-title">{{ t('admin_users.category_access') }}</div>
+        <p class="text-muted small mb-3">{{ t('admin_users.select_which_categories_of_public_prompts_this_user_can_access_leave_all') }}</p>
         <div class="mb-3 form-check">
             <input type="checkbox" class="form-check-input" id="allowAllCategories" checked onchange="toggleCategorySelection()">
-            <label class="form-check-label" for="allowAllCategories"><strong>All Categories</strong> (no restriction)</label>
+            <label class="form-check-label" for="allowAllCategories"><strong>{{ t('admin_users.all_categories') }}</strong> {{ t('admin_users.no_restriction') }}</label>
         </div>
         <div id="categoryCheckboxes" style="display: none;">
             <div class="row">
@@ -217,111 +218,111 @@
                 {% endfor %}
             </div>
             <div class="mt-2">
-                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAllCategories()">Select All</button>
-                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="deselectAllCategories()">Deselect All</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAllCategories()">{{ t('admin_users.select_all') }}</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="deselectAllCategories()">{{ t('admin_users.deselect_all') }}</button>
             </div>
         </div>
     </div>
 
     <!-- Section 6: Team Billing -->
     <div class="section-container" id="billingModeSection">
-        <div class="section-title">Team Billing</div>
-        <p class="text-muted small mb-3">Choose who pays for this user's AI consumption.</p>
+        <div class="section-title">{{ t('admin_users.team_billing') }}</div>
+        <p class="text-muted small mb-3">{{ t('admin_users.choose_who_pays_for_this_user_s_ai_consumption') }}</p>
 
         <div class="mb-3">
             <div class="form-check">
                 <input type="radio" class="form-check-input" name="billing_mode" value="customer_pays" id="billingCustomerPays" checked onchange="toggleBillingOptions()">
                 <label class="form-check-label" for="billingCustomerPays">
-                    <strong>Customer pays their own balance</strong>
-                    <br><small class="text-muted">Customer must add balance to their account to use the platform.</small>
+                    <strong>{{ t('admin_users.customer_pays_their_own_balance') }}</strong>
+                    <br><small class="text-muted">{{ t('admin_users.customer_must_add_balance_to_their_account_to_use_the_platform') }}</small>
                 </label>
             </div>
             <div class="form-check mt-2">
                 <input type="radio" class="form-check-input" name="billing_mode" value="user_pays" id="billingUserPays" onchange="toggleBillingOptions()">
                 <label class="form-check-label" for="billingUserPays">
-                    <strong>I cover this user's AI usage costs</strong>
-                    <br><small class="text-muted">All AI costs will be charged to YOUR balance.</small>
+                    <strong>{{ t('admin_users.i_cover_this_user_s_ai_usage_costs') }}</strong>
+                    <br><small class="text-muted">{{ t('admin_users.all_ai_costs_will_be_charged_to_your_balance') }}</small>
                 </label>
             </div>
         </div>
 
         <div id="teamBillingOptions" style="display: none;" class="border rounded p-3 bg-light">
             <div class="mb-3">
-                <label class="form-label">Monthly Spending Limit</label>
+                <label class="form-label">{{ t('admin_users.monthly_spending_limit') }}</label>
                 <div class="form-check">
                     <input type="radio" class="form-check-input" name="billing_limit_type" value="unlimited" id="limitUnlimited" checked onchange="toggleLimitInput()">
-                    <label class="form-check-label" for="limitUnlimited">No limit (unlimited)</label>
+                    <label class="form-check-label" for="limitUnlimited">{{ t('admin_users.no_limit_unlimited') }}</label>
                 </div>
                 <div class="form-check mt-1">
                     <input type="radio" class="form-check-input" name="billing_limit_type" value="limited" id="limitSet" onchange="toggleLimitInput()">
-                    <label class="form-check-label" for="limitSet">Set limit:</label>
+                    <label class="form-check-label" for="limitSet">{{ t('admin_users.set_limit') }}</label>
                     <div class="input-group mt-1" style="max-width: 240px;">
-                        <span class="input-group-text">$</span>
+                        <span class="input-group-text">USD</span>
                         <input type="text" class="form-control" id="billingLimitInput" name="billing_limit" placeholder="25.00" inputmode="decimal" pattern="[0-9]*\.?[0-9]*" oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')" disabled>
-                        <span class="input-group-text">/month</span>
+                        <span class="input-group-text">{{ t('admin_users.flow.per_month') }}</span>
                     </div>
                 </div>
             </div>
 
             <div class="mb-3">
-                <label class="form-label">When limit is reached:</label>
+                <label class="form-label">{{ t('admin_users.when_limit_is_reached') }}</label>
                 <div class="form-check">
                     <input type="radio" class="form-check-input" name="billing_limit_action" value="block" id="actionBlock" checked onchange="toggleAutoRefillSettings()">
                     <label class="form-check-label" for="actionBlock">
-                        <strong>Block</strong> - User cannot send more messages
+                        <strong>{{ t('admin_users.block') }}</strong> {{ t('admin_users.user_cannot_send_more_messages') }}
                     </label>
                 </div>
                 <div class="form-check">
                     <input type="radio" class="form-check-input" name="billing_limit_action" value="notify" id="actionNotify" onchange="toggleAutoRefillSettings()">
                     <label class="form-check-label" for="actionNotify">
-                        <strong>Notify</strong> - Send alert but allow user to continue
+                        <strong>{{ t('admin_users.notify') }}</strong> {{ t('admin_users.send_alert_but_allow_user_to_continue') }}
                     </label>
                 </div>
                 <div class="form-check">
                     <input type="radio" class="form-check-input" name="billing_limit_action" value="auto_refill" id="actionAutoRefill" onchange="toggleAutoRefillSettings()">
                     <label class="form-check-label" for="actionAutoRefill">
-                        <strong>Auto-Refill</strong> - Automatically increase limit when reached
+                        <strong>{{ t('admin_users.auto_refill') }}</strong> {{ t('admin_users.automatically_increase_limit_when_reached') }}
                     </label>
                 </div>
             </div>
 
             <div id="autoRefillSettings" style="display: none;" class="mb-3 ms-4 p-3 border rounded bg-light">
                 <div class="mb-2">
-                    <label class="form-label small">Increment amount:</label>
+                    <label class="form-label small">{{ t('admin_users.increment_amount') }}</label>
                     <div class="input-group" style="max-width: 200px;">
-                        <span class="input-group-text">$</span>
+                        <span class="input-group-text">USD</span>
                         <input type="number" class="form-control" name="billing_auto_refill_amount" value="10.00" step="0.01" min="1" disabled>
                     </div>
-                    <small class="text-muted">How much to increase the limit each time</small>
+                    <small class="text-muted">{{ t('admin_users.how_much_to_increase_the_limit_each_time') }}</small>
                 </div>
                 <div>
-                    <label class="form-label small">Maximum limit (optional):</label>
+                    <label class="form-label small">{{ t('admin_users.maximum_limit_optional') }}</label>
                     <div class="input-group" style="max-width: 200px;">
-                        <span class="input-group-text">$</span>
-                        <input type="number" class="form-control" name="billing_max_limit" placeholder="No cap" step="0.01" min="0" disabled>
+                        <span class="input-group-text">USD</span>
+                        <input type="number" class="form-control" name="billing_max_limit" placeholder="{{ t('admin_users.no_cap') }}" step="0.01" min="0" disabled>
                     </div>
-                    <small class="text-muted">Leave empty for unlimited auto-refills</small>
+                    <small class="text-muted">{{ t('admin_users.leave_empty_for_unlimited_auto_refills') }}</small>
                 </div>
             </div>
 
             <div class="alert alert-info small mb-0">
                 <i class="fas fa-info-circle me-1"></i>
-                Spending resets on the 1st of each month. You can view team billing in the <a href="/user/team-billing">Team Billing dashboard</a>.
+                {% macro billing_link() %}<a href="/user/team-billing">{{ t('admin_users.team_billing_dashboard') }}</a>{% endmacro %}{{ t_html('admin_users.flow.billing_hint', link=billing_link()) }}
             </div>
         </div>
     </div>
 
-    <button type="submit" class="btn btn-primary" id="createUserButton">Create User</button>
+    <button type="submit" class="btn btn-primary" id="createUserButton">{{ t('admin_users.create_user') }}</button>
 </form>
 
 {% if magic_link %}
 <div class="mt-3">
-    <label for="magicLink" class="form-label">Magic Link:</label>
+    <label for="magicLink" class="form-label">{{ t('admin_users.magic_link') }}</label>
     <div class="input-group">
         <input type="text" class="form-control" id="magicLink" value="{{ magic_link }}" readonly>
-        <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard()">Copy</button>
+        <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard()">{{ t('admin_users.copy') }}</button>
     </div>
-    <div id="copyMessage" class="mt-2" style="display: none;"><strong>Magic link copied to clipboard!</strong></div>
+    <div id="copyMessage" class="mt-2" style="display: none;"><strong>{{ t('admin_users.magic_link_copied_to_clipboard') }}</strong></div>
 </div>
 {% endif %}
 {% endblock %}
@@ -363,7 +364,12 @@
             if (phoneInputJS) {
                 phoneInputJS.destroy();
             }
+            const countryNames = new Intl.DisplayNames([AurvekI18n.locale], {type: 'region'});
+            const localizedCountries = Object.fromEntries(window.intlTelInputGlobals.getCountryData().map(
+                country => [country.iso2, countryNames.of(country.iso2.toUpperCase())]
+            ));
             phoneInputJS = window.intlTelInput(phoneInputField, {
+                localizedCountries,
                 initialCountry: "auto",
                 geoIpLookup: async function(success) {
                     try {
@@ -380,6 +386,9 @@
                 },
                 utilsScript: "https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/js/utils.js"
             });
+            phoneInputField.parentElement.querySelector('.iti__selected-flag')?.setAttribute(
+                'aria-label', AurvekI18n.t('admin_users.flow.phone_country')
+            );
         }
 
         function toggleAllowFileUpload() {
@@ -426,13 +435,13 @@
             const skipVerification = Boolean(skipVerificationCheckbox?.checked);
             if (phoneNumber && !skipVerification) {
                 if (!phoneChallengeId || challengePhoneNumber !== phoneNumber) {
-                    NotificationModal.warning('Verification Required', 'Send a verification code for this phone number first.');
+                    NotificationModal.warning(AurvekI18n.t('admin_users.verification_required'), AurvekI18n.t('admin_users.send_a_verification_code_for_this_phone_number_first'));
                     return;
                 }
                 if (!phoneChallengeApproved) {
                     const code = verificationCodeInput.value.trim();
                     if (!code) {
-                        NotificationModal.warning('Verification Required', 'Please enter the verification code.');
+                        NotificationModal.warning(AurvekI18n.t('admin_users.verification_required'), AurvekI18n.t('admin_users.please_enter_the_verification_code'));
                         return;
                     }
                     try {
@@ -449,12 +458,12 @@
                         if (!verifyResponse) return;
                         const verifyResult = await verifyResponse.json();
                         if (!verifyResponse.ok || verifyResult.status !== 'approved') {
-                            NotificationModal.error('Verification Failed', verifyResult.detail || 'The verification code is invalid.');
+                            NotificationModal.error(AurvekI18n.t('admin_users.verification_failed'), verifyResult.detail || AurvekI18n.t('admin_users.the_verification_code_is_invalid'));
                             return;
                         }
                         phoneChallengeApproved = true;
                     } catch (error) {
-                        NotificationModal.error('Verification Failed', error.message || 'Could not verify the phone number.');
+                        NotificationModal.error(AurvekI18n.t('admin_users.verification_failed'), error.message || AurvekI18n.t('admin_users.could_not_verify_the_phone_number'));
                         return;
                     }
                 }
@@ -468,11 +477,11 @@
             const authMode = authenticationModeDropdown.value;
             const password = formData.get('initial_password');
             if (authMode === 'password_only' && (!password || password.length < 8)) {
-                NotificationModal.warning('Password Required', 'Password is required and must be at least 8 characters for password-only mode.');
+                NotificationModal.warning(AurvekI18n.t('admin_users.password_required'), AurvekI18n.t('admin_users.password_is_required_and_must_be_at_least_8_characters_for_password_only'));
                 return;
             }
             if (authMode === 'magic_link_password' && password && password.length < 8) {
-                NotificationModal.warning('Invalid Password', 'Password must be at least 8 characters when provided.');
+                NotificationModal.warning(AurvekI18n.t('admin_users.invalid_password'), AurvekI18n.t('admin_users.password_must_be_at_least_8_characters_when_provided'));
                 return;
             }
 
@@ -485,7 +494,7 @@
 
                 const result = await response.json();
                 if (!response.ok) {
-                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+                    throw new Error(result.detail || AurvekI18n.t('admin_users.user_creation_failed'));
                 }
 
                 if (result.status === 'success') {
@@ -496,18 +505,18 @@
                         const container = document.querySelector('.main-container');
                         const noLinkMessage = document.createElement('div');
                         noLinkMessage.className = 'alert alert-info mt-3';
-                        noLinkMessage.innerHTML = '<strong>User created successfully!</strong> No magic link generated - user will login with username/password.';
+                        noLinkMessage.innerHTML = '<strong>' + AurvekI18n.t('admin_users.user_created_successfully') + '</strong> ' + AurvekI18n.t('admin_users.no_magic_link_generated_user_will_login_with_username_password') + '';
                         container.appendChild(noLinkMessage);
                         setTimeout(() => noLinkMessage.remove(), 5000);
                     }
                     resetForm(result.selected_prompt_id, result.selected_machine);
-                    NotificationModal.success('User Created', 'User created successfully!');
+                    NotificationModal.success(AurvekI18n.t('admin_users.user_created'), AurvekI18n.t('admin_users.user_created_successfully'));
                 } else {
-                    NotificationModal.error('User Creation Failed', result.message);
+                    NotificationModal.error(AurvekI18n.t('admin_users.user_creation_failed'), result.message);
                 }
             } catch (error) {
                 console.error('Error creating user:', error);
-                NotificationModal.error('Error', error.message);
+                NotificationModal.error(AurvekI18n.t('admin_users.error'), error.message);
             }
         }
 
@@ -515,12 +524,12 @@
             let container = document.querySelector('.mt-3') || document.createElement('div');
             container.className = 'mt-3';
             container.innerHTML = `
-                <label for="magicLink" class="form-label">Magic Link:</label>
+                <label for="magicLink" class="form-label">${AurvekI18n.t('admin_users.magic_link')}</label>
                 <div class="input-group">
                     <input type="text" class="form-control" id="magicLink" value="${magicLink}" readonly>
-                    <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard()">Copy</button>
+                    <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard()">${AurvekI18n.t('admin_users.copy')}</button>
                 </div>
-                <div id="copyMessage" class="mt-2" style="display: none;"><strong>Magic link copied to clipboard!</strong></div>
+                <div id="copyMessage" class="mt-2" style="display: none;"><strong>${AurvekI18n.t('admin_users.magic_link_copied_to_clipboard')}</strong></div>
             `;
             if (!document.querySelector('.mt-3')) {
                 document.querySelector('.main-container').appendChild(container);
@@ -542,7 +551,7 @@
         async function sendVerificationCode() {
             const phoneNumber = phoneInputJS.getNumber();
             if (!phoneNumber) {
-                NotificationModal.warning('Phone Required', 'Enter a valid phone number first.');
+                NotificationModal.warning(AurvekI18n.t('admin_users.phone_required'), AurvekI18n.t('admin_users.enter_a_valid_phone_number_first'));
                 return;
             }
             try {
@@ -554,7 +563,7 @@
                 if (!checkResponse) return;
                 const checkResult = await checkResponse.json();
                 if (!checkResponse.ok || checkResult.exists) {
-                    NotificationModal.error('Phone In Use', checkResult.detail || 'This phone number is already in use.');
+                    NotificationModal.error(AurvekI18n.t('admin_users.phone_in_use'), checkResult.detail || AurvekI18n.t('admin_users.this_phone_number_is_already_in_use'));
                     return;
                 }
 
@@ -576,13 +585,13 @@
                     phoneVerificationIdInput.value = '';
                     verificationCodeInput.value = '';
                     verificationCodeContainer.style.display = 'block';
-                    NotificationModal.success('Code Sent', 'Verification code sent successfully!');
+                    NotificationModal.success(AurvekI18n.t('admin_users.code_sent'), AurvekI18n.t('admin_users.verification_code_sent_successfully'));
                 } else {
-                    NotificationModal.error('Error', result.detail || 'Unexpected error');
+                    NotificationModal.error(AurvekI18n.t('admin_users.error'), result.detail || AurvekI18n.t('admin_users.unexpected_error'));
                 }
             } catch (error) {
                 console.error('Error:', error);
-                NotificationModal.error('Error', 'An unexpected error occurred. Please try again.');
+                NotificationModal.error(AurvekI18n.t('admin_users.error'), AurvekI18n.t('admin_users.an_unexpected_error_occurred_please_try_again'));
             }
         }
 
@@ -607,7 +616,7 @@
                     // Auto-select and disable dropdown
                     machineDropdown.value = data.forced_llm_id.toString();
                     machineDropdown.disabled = true;
-                    forcedLlmInfo.textContent = 'This prompt has a forced LLM configured. Users will use this model.';
+                    forcedLlmInfo.textContent = AurvekI18n.t('admin_users.this_prompt_has_a_forced_llm_configured_users_will_use_this_model');
                     forcedLlmInfo.style.display = 'block';
                     toggleAllowFileUpload(); // Update vision checkbox visibility
                 } else {
@@ -660,10 +669,10 @@
         const ownOnlyWarning = document.getElementById('ownOnlyWarning');
 
         const apiKeyModeDescriptions = {
-            'system_only': 'User can only use platform API keys. Cannot configure their own.',
-            'own_only': 'User MUST configure their own API keys to use AI services.',
-            'both_prefer_own': 'User keys take priority if configured, otherwise uses platform keys.',
-            'both_prefer_system': 'Platform keys by default. User can optionally use their own.'
+            'system_only': AurvekI18n.t('admin_users.user_can_only_use_platform_api_keys_cannot_configure_their_own'),
+            'own_only': AurvekI18n.t('admin_users.user_must_configure_their_own_api_keys_to_use_ai_services'),
+            'both_prefer_own': AurvekI18n.t('admin_users.user_keys_take_priority_if_configured_otherwise_uses_platform_keys'),
+            'both_prefer_system': AurvekI18n.t('admin_users.platform_keys_by_default_user_can_optionally_use_their_own')
         };
 
         apiKeyModeDropdown.addEventListener('change', function() {

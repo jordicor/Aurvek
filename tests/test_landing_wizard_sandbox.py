@@ -214,7 +214,7 @@ async def test_publication_gate_preserves_private_verifier_result(
         if name.endswith("truth_sheet"):
             return SimpleNamespace(load_truth_sheet=lambda prompt_id: truth)
         return SimpleNamespace(
-            check_publication_readiness=lambda content, loaded_truth: [
+            check_publication_readiness=lambda content, loaded_truth, translator=None: [
                 f"blocked:{content}:{loaded_truth['id']}"
             ]
         )
@@ -319,7 +319,7 @@ async def test_persist_home_revokes_before_write_and_verification(
         assert prompt_id == 23
         assert not home_path.exists()
 
-    async def verify(prompt_id, content):
+    async def verify(prompt_id, content, translator=None):
         events.append("verify")
         assert prompt_id == 23
         assert home_path.read_text(encoding="utf-8") == content

@@ -114,6 +114,9 @@ CREATE TABLE USERS (
     google_id TEXT,
     auth_provider TEXT DEFAULT 'local',
     session_version INTEGER NOT NULL DEFAULT 1,
+    ui_language TEXT NOT NULL DEFAULT 'en',
+    timezone_name TEXT,
+    preferred_languages_json TEXT,
     FOREIGN KEY (role_id) REFERENCES USER_ROLES(id)
 );
 
@@ -534,7 +537,7 @@ CREATE TABLE BILLING_USAGE_RESERVATIONS (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
     billing_account_id INTEGER NOT NULL,
-    purpose TEXT NOT NULL CHECK(purpose IN ('ai', 'image', 'stt', 'tts', 'video', 'phone')),
+    purpose TEXT NOT NULL CHECK(purpose IN ('ai', 'image', 'stt', 'tts', 'video', 'phone', 'web_search')),
     service_id INTEGER,
     usage_quantity REAL CHECK(usage_quantity IS NULL OR usage_quantity > 0),
     amount REAL NOT NULL CHECK(amount > 0),
@@ -795,6 +798,7 @@ CREATE TABLE PENDING_REGISTRATIONS (
     password_hash BLOB,
     token TEXT UNIQUE NOT NULL,
     target_role TEXT NOT NULL DEFAULT 'user',
+    ui_language TEXT NOT NULL DEFAULT 'en',
     prompt_id INTEGER,
     pack_id INTEGER DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1112,6 +1116,35 @@ CREATE INDEX idx_elevenlabs_call_sessions_conversation
 CREATE UNIQUE INDEX idx_elevenlabs_one_active_call
     ON ELEVENLABS_CALL_SESSIONS(conversation_id)
     WHERE status = 'active';
+
+-- ELEVENLABS_MESSAGE_METADATA (provider transcript delivery/interruption details)
+-- -----------------------------------------------------------------------------
+CREATE TABLE ELEVENLABS_MESSAGE_METADATA (
+    message_id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_index INTEGER NOT NULL CHECK(turn_index >= 0),
+    interrupted INTEGER NOT NULL DEFAULT 0
+        CHECK(interrupted IN (0, 1)),
+    original_message TEXT,
+    time_in_call_secs REAL
+        CHECK(time_in_call_secs IS NULL OR time_in_call_secs >= 0),
+    source_event_id TEXT,
+    correction_source TEXT
+        CHECK(correction_source IS NULL OR correction_source IN ('provider', 'client')),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES MESSAGES(id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES ELEVENLABS_CALL_SESSIONS(session_id)
+        ON DELETE CASCADE,
+    UNIQUE(session_id, turn_index)
+);
+
+CREATE INDEX idx_elevenlabs_message_metadata_session
+    ON ELEVENLABS_MESSAGE_METADATA(session_id, turn_index);
+
+CREATE INDEX idx_elevenlabs_message_metadata_interrupted
+    ON ELEVENLABS_MESSAGE_METADATA(message_id)
+    WHERE interrupted = 1;
 
 -- =============================================================================
 -- PROMPT_CUSTOM_DOMAINS (custom domain configuration)
@@ -1516,14 +1549,14 @@ CREATE TABLE PHONE_CONVERSATION_BINDINGS (
     allow_outbound INTEGER NOT NULL DEFAULT 1 CHECK(allow_outbound IN (0,1)),
     active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deactivated_at TEXT,
+    deactivated_at TEXT, application_channel_json TEXT,
     FOREIGN KEY(owner_user_id) REFERENCES USERS(id) ON DELETE CASCADE,
     FOREIGN KEY(conversation_id) REFERENCES CONVERSATIONS(id) ON DELETE CASCADE,
     FOREIGN KEY(contact_id) REFERENCES PHONE_CONTACTS(id) ON DELETE CASCADE,
     FOREIGN KEY(preferred_number_id) REFERENCES TELEPHONY_NUMBERS(id) ON DELETE SET NULL
 );
 CREATE UNIQUE INDEX idx_phone_binding_active_conversation ON PHONE_CONVERSATION_BINDINGS(conversation_id) WHERE active = 1;
-CREATE UNIQUE INDEX idx_phone_binding_active_contact ON PHONE_CONVERSATION_BINDINGS(contact_id) WHERE active = 1;
+CREATE UNIQUE INDEX idx_phone_binding_active_contact ON PHONE_CONVERSATION_BINDINGS(contact_id) WHERE active = 1 AND application_channel_json IS NULL;
 CREATE INDEX idx_phone_bindings_owner ON PHONE_CONVERSATION_BINDINGS(owner_user_id, active);
 
 CREATE TABLE PHONE_ACTIVE_ROUTES (
@@ -1655,6 +1688,8 @@ CREATE TABLE PHONE_CALL_JOBS (
     id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, conversation_id INTEGER NOT NULL,
     binding_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, telephony_number_id INTEGER NOT NULL,
     scheduled_at_utc TEXT NOT NULL, timezone_name TEXT NOT NULL,
+    request_timing TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(request_timing IN ('immediate','scheduled','unknown')),
     origin TEXT NOT NULL CHECK(origin IN ('ui','assistant','api')), origin_message_id INTEGER,
     idempotency_key TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','dispatching','completed','canceled','missed','conflict','needs_attention')),
@@ -1685,6 +1720,8 @@ CREATE TABLE PHONE_CALLS (
     provider_call_sid TEXT UNIQUE, provider_session_id TEXT UNIQUE, provider_stream_sid TEXT UNIQUE,
     dispatch_token TEXT NOT NULL UNIQUE, provider_request_started_at TEXT, reconcile_deadline TEXT,
     answered_by TEXT, binding_snapshot_json TEXT NOT NULL, config_snapshot_json TEXT NOT NULL,
+    active_conversation_id INTEGER REFERENCES CONVERSATIONS(id) ON DELETE RESTRICT,
+    active_config_snapshot_json TEXT,
     foreground_fencing_token INTEGER NOT NULL DEFAULT 1 CHECK(foreground_fencing_token > 0),
     foreground_lease_owner TEXT, foreground_lease_until TEXT,
     reconnect_count INTEGER NOT NULL DEFAULT 0 CHECK(reconnect_count BETWEEN 0 AND 2),
@@ -1702,7 +1739,7 @@ CREATE TABLE PHONE_CALLS (
     FOREIGN KEY(contact_id) REFERENCES PHONE_CONTACTS(id) ON DELETE CASCADE,
     FOREIGN KEY(telephony_number_id) REFERENCES TELEPHONY_NUMBERS(id) ON DELETE RESTRICT
 );
-CREATE UNIQUE INDEX idx_phone_calls_one_incompatible_conversation ON PHONE_CALLS(conversation_id)
+CREATE UNIQUE INDEX idx_phone_calls_one_incompatible_conversation ON PHONE_CALLS(COALESCE(active_conversation_id,conversation_id))
 WHERE deleted_at IS NULL AND status IN ('created','dispatching','dispatch_unknown','queued','initiated','ringing','in_progress','unresolved');
 CREATE INDEX idx_phone_calls_owner_created ON PHONE_CALLS(owner_user_id,created_at DESC);
 CREATE INDEX idx_phone_calls_status ON PHONE_CALLS(status,updated_at);
@@ -1781,6 +1818,7 @@ CREATE TABLE PHONE_MEMORY_OUTBOX (
     prompt_id INTEGER,
     message_text TEXT NOT NULL,
     occurred_at TEXT,
+    memory_scope_json TEXT,
     provider TEXT CHECK(provider IS NULL OR provider IN ('atagia', 'mem0', 'none')),
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'processing', 'retry', 'completed', 'needs_attention')),
@@ -1960,6 +1998,20 @@ CREATE TABLE PHONE_RECORDINGS (
     FOREIGN KEY(call_id) REFERENCES PHONE_CALLS(id) ON DELETE CASCADE
 );
 CREATE INDEX idx_phone_recordings_call ON PHONE_RECORDINGS(call_id,status);
+
+CREATE TABLE PHONE_CALL_MESSAGE_AUDIO_RANGES (
+    message_id INTEGER PRIMARY KEY,
+    call_id TEXT NOT NULL,
+    start_byte INTEGER NOT NULL CHECK(start_byte >= 0),
+    end_byte INTEGER NOT NULL
+        CHECK(end_byte > start_byte AND end_byte <= 691200000),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(call_id,message_id)
+        REFERENCES PHONE_CALL_MESSAGE_LINKS(call_id,message_id)
+        ON DELETE CASCADE
+);
+CREATE INDEX idx_phone_message_audio_call
+ON PHONE_CALL_MESSAGE_AUDIO_RANGES(call_id,message_id);
 
 CREATE TABLE PHONE_DATA_PURGE_JOBS (
     id TEXT PRIMARY KEY, owner_user_id INTEGER, conversation_id INTEGER,

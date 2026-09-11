@@ -56,16 +56,16 @@ function populateFilterDropdowns() {
     const ownerSelect = document.getElementById('filterOwner');
 
     if (voiceSelect) {
-        voiceSelect.innerHTML = '<option value="">All Voices</option>';
+        voiceSelect.replaceChildren(new Option(AurvekI18n.t('creator.filters.all_voices'), ''));
         voices.forEach(v => {
-            voiceSelect.innerHTML += `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`;
+            voiceSelect.add(new Option(v, v));
         });
     }
 
     if (ownerSelect) {
-        ownerSelect.innerHTML = '<option value="">All Owners</option>';
+        ownerSelect.replaceChildren(new Option(AurvekI18n.t('creator.filters.all_owners'), ''));
         owners.forEach(o => {
-            ownerSelect.innerHTML += `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`;
+            ownerSelect.add(new Option(o, o));
         });
     }
 }
@@ -115,10 +115,10 @@ function setupEventListeners() {
             }
             e.preventDefault();
             const form = this;
-            NotificationModal.confirm('Delete Prompts', `Are you sure you want to delete ${count} prompt(s)? This action cannot be undone.`, () => {
+            NotificationModal.confirm(AurvekI18n.t('creator.prompts.delete_many_title'), AurvekI18n.t('creator.prompts.delete_many_confirm', { count }), () => {
                 confirmedSubmit = true;
                 form.requestSubmit();
-            }, null, { type: 'error', confirmText: 'Delete' });
+            }, null, { type: 'error', confirmText: AurvekI18n.t('creator.action.delete') });
         });
     }
 }
@@ -256,9 +256,9 @@ function updateStats(filteredCount) {
     const statPublic = document.getElementById('statPublic');
     const statPrivate = document.getElementById('statPrivate');
 
-    if (statTotal) statTotal.textContent = total;
-    if (statPublic) statPublic.textContent = publicCount;
-    if (statPrivate) statPrivate.textContent = privateCount;
+    if (statTotal) statTotal.textContent = AurvekI18n.t('creator.stats.total_count', {count: AurvekI18n.formatNumber(total)});
+    if (statPublic) statPublic.textContent = AurvekI18n.t('creator.stats.public_count', {count: AurvekI18n.formatNumber(publicCount)});
+    if (statPrivate) statPrivate.textContent = AurvekI18n.t('creator.stats.private_count', {count: AurvekI18n.formatNumber(privateCount)});
 
     const filteredStat = document.getElementById('statFiltered');
     const filteredContainer = document.getElementById('statFilteredContainer');
@@ -266,7 +266,7 @@ function updateStats(filteredCount) {
     if (filteredContainer) {
         if (filteredCount !== total) {
             filteredContainer.style.display = 'inline-flex';
-            if (filteredStat) filteredStat.textContent = filteredCount;
+            if (filteredStat) filteredStat.textContent = AurvekI18n.t('creator.stats.shown_count', {count: AurvekI18n.formatNumber(filteredCount)});
         } else {
             filteredContainer.style.display = 'none';
         }
@@ -295,7 +295,7 @@ function updateSelectedCount() {
     const countSpan = document.getElementById('selectedCount');
     const deleteBtn = document.getElementById('deleteBtn');
 
-    if (countSpan) countSpan.textContent = checkedCount;
+    if (countSpan) countSpan.textContent = AurvekI18n.t('creator.action.delete_count', {count: AurvekI18n.formatNumber(checkedCount)});
     if (deleteBtn) deleteBtn.disabled = checkedCount === 0;
 
     updateSelectAllState();

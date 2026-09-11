@@ -8,9 +8,12 @@ engine.
 
 from __future__ import annotations
 
+from integrations.applications.phone import bill_phone_session, phone_turn_billing_context
+
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import partial
 from datetime import UTC, datetime, timedelta
 import json
 import math
@@ -19,6 +22,11 @@ import time
 import unicodedata
 from typing import Any, Protocol
 
+from ai_runtime.channel_turns import (
+    PhoneDirection,
+    PhoneRequestSource,
+    PhoneRequestTiming,
+)
 from database import DB_MAX_RETRIES, DB_RETRY_DELAY_BASE, DEFAULT_DB_TIMEOUT
 from log_config import logger
 
@@ -59,6 +67,8 @@ from integrations.telephony.media_streams import (
 )
 from integrations.telephony.phone_context import (
     PhoneChannelTurn,
+    PhoneMessageAudioRange,
+    PhoneTurnLinkState,
     create_phone_channel_turn,
 )
 from integrations.telephony.playback import PhonePlaybackError, PhoneTurnPlayback
@@ -72,6 +82,7 @@ from integrations.telephony.realtime_playback import (
 )
 from integrations.telephony.provider_repository import TelephonyProviderRepository
 from integrations.telephony.recording import LocalCallRecorder
+from integrations.telephony.recording_storage import delete_private_call_audio
 from integrations.telephony.snapshot import (
     phone_settings_from_snapshot,
     realtime_voice_from_snapshot,
@@ -149,6 +160,10 @@ _RECORDING_RAW_PERSIST_GRACE_SECONDS = 2.0
 _BACKCHANNEL_MAX_MS = 1_200
 _PCMU_BYTES_PER_SECOND = 8_000
 _PCMU_ACTIVITY_MAGNITUDE = 512
+_TURN_AUDIO_LEAD_MS = 160
+_TURN_AUDIO_TAIL_MS = 240
+_TURN_AUDIO_FALLBACK_MIN_MS = 5_000
+_TURN_AUDIO_FALLBACK_MS_PER_CHARACTER = 500
 _BRIEF_BACKCHANNELS = frozenset(
     {
         "ah",
@@ -302,6 +317,7 @@ class _ParticipantSpeechActivity:
 
     endpointing_ms: int
     voiced_duration_ms: int = 0
+    first_voice_start_ms: int | None = None
     last_voice_end_ms: int | None = None
 
     def observe(self, payload: bytes, *, timestamp_ms: int) -> None:
@@ -316,6 +332,8 @@ class _ParticipantSpeechActivity:
             or timestamp_ms - self.last_voice_end_ms > self.endpointing_ms
         ):
             self.voiced_duration_ms = 0
+        if self.first_voice_start_ms is None:
+            self.first_voice_start_ms = timestamp_ms
         self.voiced_duration_ms += duration_ms
         self.last_voice_end_ms = max(
             timestamp_ms + duration_ms,
@@ -324,6 +342,7 @@ class _ParticipantSpeechActivity:
 
     def reset(self) -> None:
         self.voiced_duration_ms = 0
+        self.first_voice_start_ms = None
         self.last_voice_end_ms = None
 
 
@@ -340,8 +359,16 @@ class PhoneMediaSessionContext:
     foreground_lease_owner: str
     call_snapshot: Mapping[str, Any]
     recording_enabled: bool
-    direction: str
+    direction: PhoneDirection
+    request_source: PhoneRequestSource
+    request_timing: PhoneRequestTiming
     started_at: datetime
+
+    @property
+    def application_channel(self):
+        from integrations.applications.channel_models import ChannelAdmission
+        attribution = self.call_snapshot.get('_application')
+        return ChannelAdmission.from_dict(attribution['channel']) if attribution else None
 
     @classmethod
     def from_call(
@@ -352,6 +379,8 @@ class PhoneMediaSessionContext:
         stream_attempt: int,
     ) -> "PhoneMediaSessionContext":
         try:
+            from integrations.telephony.call_context import active_call
+            call = active_call(call)
             snapshot = json.loads(str(call["config_snapshot_json"]))
             # A callback can race the Media Stream start.  Use the instant at
             # which this session is admitted as a provisional anchor, never
@@ -365,6 +394,33 @@ class PhoneMediaSessionContext:
             )
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=UTC)
+            direction_raw = str(call["direction"]).strip().lower()
+            if direction_raw == "inbound":
+                direction: PhoneDirection = "inbound"
+                request_source: PhoneRequestSource = "caller"
+                request_timing: PhoneRequestTiming = "immediate"
+            elif direction_raw == "outbound":
+                direction = "outbound"
+                job_origin = str(call.get("job_origin") or "").strip().lower()
+                if job_origin == "ui":
+                    request_source = "user_ui"
+                elif job_origin == "assistant":
+                    request_source = "assistant_tool"
+                elif job_origin == "api":
+                    request_source = "external_api"
+                else:
+                    request_source = "unknown"
+                timing_raw = str(
+                    call.get("job_request_timing") or ""
+                ).strip().lower()
+                if timing_raw == "immediate":
+                    request_timing = "immediate"
+                elif timing_raw == "scheduled":
+                    request_timing = "scheduled"
+                else:
+                    request_timing = "unknown"
+            else:
+                raise ValueError("phone call direction is invalid")
             context = cls(
                 call_id=str(call["id"]),
                 provider_call_sid=str(call["provider_call_sid"]),
@@ -377,15 +433,15 @@ class PhoneMediaSessionContext:
                 foreground_lease_owner=str(call["foreground_lease_owner"]),
                 call_snapshot=snapshot,
                 recording_enabled=bool(call["recording_enabled"]),
-                direction=str(call["direction"]),
+                direction=direction,
+                request_source=request_source,
+                request_timing=request_timing,
                 started_at=started_at.astimezone(UTC),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise PhoneMediaSessionError("Phone call session context is invalid") from exc
         if not context.foreground_lease_owner:
             raise PhoneMediaSessionError("Phone call no longer owns foreground")
-        if context.direction not in {"inbound", "outbound"}:
-            raise PhoneMediaSessionError("Phone call direction is invalid")
         phone_settings_from_snapshot(context.call_snapshot)
         return context
 
@@ -424,6 +480,50 @@ class _PendingBargeIn:
         self.deferred_final_events.clear()
 
 
+@dataclass(slots=True)
+class _PreparedHandoffTransport:
+    session: "PhoneMediaSession"
+    client: RealtimeSttClient
+    source_conversation_id: int
+    speech_generation: int
+    locked: bool = False
+    applied: bool = False
+
+    async def validate(self) -> None:
+        """Hold input at the confirmed boundary until commit and transport agree."""
+        if not self.locked:
+            await self.session._turn_admission_lock.acquire()
+            try:
+                await self.session._provider_input_lock.acquire()
+            except BaseException:
+                self.session._turn_admission_lock.release()
+                raise
+            self.locked = True
+        if (
+            self.session.context.conversation_id != self.source_conversation_id
+            or self.session._speech_generation != self.speech_generation
+            or not self.session._utterances.empty()
+            or self.session._assembler.pending_segment_count
+            or self.session._stopping.is_set()
+            or self.session._stop_drain_active
+        ):
+            from integrations.embed.models import EmbedError
+            raise EmbedError("handoff_source_busy", 409)
+
+    def release(self) -> None:
+        if self.locked:
+            self.locked = False
+            self.session._provider_input_lock.release()
+            self.session._turn_admission_lock.release()
+
+    async def close(self) -> None:
+        self.release()
+        if not self.applied:
+            await self.client.close()
+        if self.session._prepared_handoff is self:
+            self.session._prepared_handoff = None
+
+
 class PhoneMediaSession:
     """Drive one stream attempt while preserving canonical turn boundaries."""
 
@@ -444,6 +544,7 @@ class PhoneMediaSession:
         sleep: Sleep = asyncio.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         billing_meter: PhoneLiveBillingMeter | None = None,
+        stt_factory: Callable[[Mapping[str, Any]], RealtimeSttClient] | None = None,
     ) -> None:
         if stt is not None and deepgram is not None:
             raise ValueError("provide one live STT client")
@@ -452,6 +553,9 @@ class PhoneMediaSession:
             raise ValueError("a live STT client is required")
         self.context = context
         self.stt = resolved_stt
+        self._stt_factory = stt_factory
+        self._prepared_handoff: _PreparedHandoffTransport | None = None
+        self._provider_input_lock = asyncio.Lock()
         self.repository = repository
         self._current_user_loader = current_user_loader
         self._hangup_call = hangup_call
@@ -491,6 +595,11 @@ class PhoneMediaSession:
             (datetime.now(UTC) - context.started_at).total_seconds(),
         )
         self._recording_attempt_offset_ms = int(call_elapsed_seconds * 1_000)
+        self._participant_media_end_byte = (
+            self._recording_attempt_offset_ms * _PCMU_BYTES_PER_SECOND // 1_000
+        )
+        self._caller_audio_floor_byte = self._participant_media_end_byte
+        self._stt_audio_offset_byte = 0
         self._call_started_monotonic = float(monotonic()) - call_elapsed_seconds
         self._assembler = PhoneUtteranceAssembler()
         self._utterances: asyncio.Queue[FinalPhoneUtterance | None] = asyncio.Queue(
@@ -555,17 +664,20 @@ class PhoneMediaSession:
         greeting_loader: GreetingLoader | None = None,
         billing_service: PhoneBillingService | None = None,
     ) -> "PhoneMediaSession":
-        settings = phone_settings_from_snapshot(context.call_snapshot)
-        options = ElevenLabsRealtimeOptions(
-            language=settings.stt_locale,
-            endpointing_ms=settings.endpointing_ms,
-        )
+        def stt_factory(snapshot: Mapping[str, Any]) -> RealtimeSttClient:
+            settings = phone_settings_from_snapshot(snapshot)
+            return ElevenLabsRealtimeClient(
+                api_key_provider=elevenlabs_api_key_provider,
+                options=ElevenLabsRealtimeOptions(
+                    language=settings.stt_locale,
+                    secondary_languages=settings.secondary_languages,
+                    endpointing_ms=settings.endpointing_ms,
+                ),
+            )
         return cls(
             context,
-            stt=ElevenLabsRealtimeClient(
-                api_key_provider=elevenlabs_api_key_provider,
-                options=options,
-            ),
+            stt=stt_factory(context.call_snapshot),
+            stt_factory=stt_factory,
             repository=repository,
             current_user_loader=current_user_loader,
             hangup_call=hangup_call,
@@ -598,13 +710,16 @@ class PhoneMediaSession:
         voice = realtime_voice_from_snapshot(context.call_snapshot)
         if voice is None:
             raise PhoneMediaSessionError("OpenAI Realtime voice is unavailable")
+        def stt_factory(snapshot: Mapping[str, Any]) -> RealtimeSttClient:
+            return OpenAIRealtimeCallBridge(
+                api_key_provider=openai_api_key_provider,
+                model=runtime_model_from_snapshot(snapshot),
+                voice=realtime_voice_from_snapshot(snapshot),
+            )
         return cls(
             context,
-            stt=OpenAIRealtimeCallBridge(
-                api_key_provider=openai_api_key_provider,
-                model=runtime_model_from_snapshot(context.call_snapshot),
-                voice=voice,
-            ),
+            stt=stt_factory(context.call_snapshot),
+            stt_factory=stt_factory,
             repository=repository,
             current_user_loader=current_user_loader,
             hangup_call=hangup_call,
@@ -623,6 +738,7 @@ class PhoneMediaSession:
 
         return self.stt
 
+    @bill_phone_session
     async def run(
         self,
         websocket: MediaWebSocket,
@@ -660,6 +776,9 @@ class PhoneMediaSession:
                 )
                 self.clock.restore_fired_milestones(delivered_milestones)
                 await self._ensure_live_billing_coverage()
+                if self.context.application_channel is not None:
+                    from integrations.applications.phone import authorize_phone_provider
+                    await authorize_phone_provider(self.repository.connection_factory, self.context.call_id)
                 await self.stt.connect()
             except PhoneBillingExhausted:
                 await self._terminate_balance_exhausted(websocket)
@@ -1090,6 +1209,8 @@ class PhoneMediaSession:
             await self._best_effort_shutdown_step(notice.disconnect)
         if realtime_bridge is not None:
             await self._best_effort_shutdown_step(realtime_bridge.close)
+        if self._prepared_handoff is not None:
+            await self._best_effort_shutdown_step(self._prepared_handoff.close)
         await self._best_effort_shutdown_step(self.stt.close)
         if self._billing_meter is not None:
             await self._best_effort_shutdown_step(
@@ -1155,7 +1276,8 @@ class PhoneMediaSession:
                 event.payload,
                 timestamp_ms=event.timestamp_ms,
             )
-            await self.stt.send_audio(event.payload)
+            async with self._provider_input_lock:
+                await self.stt.send_audio(event.payload)
             if self._billing_meter is not None:
                 self._billing_meter.note_stt_audio_sent(len(event.payload))
             if (
@@ -1170,6 +1292,15 @@ class PhoneMediaSession:
             self.recorder.record_participant(
                 event.payload,
                 start_ms=self._recording_attempt_offset_ms + event.timestamp_ms,
+            )
+            self._participant_media_end_byte = max(
+                self._participant_media_end_byte,
+                (
+                    (self._recording_attempt_offset_ms + event.timestamp_ms)
+                    * _PCMU_BYTES_PER_SECOND
+                    // 1_000
+                )
+                + len(event.payload),
             )
             return
         if isinstance(event, MarkEvent):
@@ -1214,12 +1345,22 @@ class PhoneMediaSession:
         self.clock.reanchor(started_at)
         elapsed = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
         self._recording_attempt_offset_ms = int(elapsed * 1_000)
+        self._participant_media_end_byte = (
+            self._recording_attempt_offset_ms * _PCMU_BYTES_PER_SECOND // 1_000
+        )
+        self._stt_audio_offset_byte = 0
+        self._caller_audio_floor_byte = max(
+            self._caller_audio_floor_byte,
+            self._participant_media_end_byte,
+        )
         self._call_started_monotonic = float(self._monotonic()) - elapsed
 
     async def feed_stt_event(
         self,
         event: object,
         websocket: MediaWebSocket,
+        *,
+        _provider: RealtimeSttClient | None = None,
     ) -> None:
         deferred_events: tuple[object, ...] = ()
         if isinstance(event, ElevenLabsMetadataEvent):
@@ -1283,6 +1424,8 @@ class PhoneMediaSession:
             self._participant_speech_activity.reset()
             return
         async with self._turn_admission_lock:
+            if _provider is not None and _provider is not self.stt:
+                return
             if self._stopping.is_set() or self._stop_final_admission_closed:
                 return
             for deferred_event in deferred_events:
@@ -1293,6 +1436,7 @@ class PhoneMediaSession:
                     )
             utterance = self._assembler.feed(event)
             if utterance is not None:
+                utterance = self._attach_caller_audio_range(utterance)
                 destination = (
                     self._stop_final_utterances
                     if self._stop_drain_active
@@ -1661,9 +1805,14 @@ class PhoneMediaSession:
             )
             phone_turn = create_phone_channel_turn(
                 guard,
+                application_channel=self.context.application_channel,
                 turn_id=self._turn_id(utterance),
+                link_state=self._link_state_for_utterance(utterance),
                 end_controller=self.end_controller,
                 internal_turn_context=internal_context,
+                phone_direction=self.context.direction,
+                phone_request_source=self.context.request_source,
+                phone_request_timing=self.context.request_timing,
                 persistence="ingest_only",
             )
             await self._caller_turn_persister(
@@ -1691,14 +1840,17 @@ class PhoneMediaSession:
                 self.clock.acknowledge_milestones(delivered_milestones)
 
     async def _stt_loop(self, websocket: MediaWebSocket) -> None:
-        async for event in self.stt.events():
-            await self.feed_stt_event(event, websocket)
-            if self._stopping.is_set():
-                return
-        if not self._stopping.is_set():
-            raise PhoneMediaSessionError(
-                "Live transcription stream closed unexpectedly"
-            )
+        while not self._stopping.is_set():
+            provider = self.stt
+            async for event in provider.events():
+                if provider is self.stt:
+                    await self.feed_stt_event(event, websocket, _provider=provider)
+                if self._stopping.is_set():
+                    return
+            if provider is self.stt and not self._stopping.is_set():
+                raise PhoneMediaSessionError(
+                    "Live transcription stream closed unexpectedly"
+                )
 
     async def _turn_loop(self, websocket: MediaWebSocket) -> None:
         await self._greeting_done.wait()
@@ -1758,14 +1910,23 @@ class PhoneMediaSession:
             )
             if target <= now:
                 raise PhoneMediaSessionError("Phone foreground deadline expired")
+            context = self.context
             renewed = await self.repository.renew_session_foreground(
-                call_id=self.context.call_id,
-                fencing_token=self.context.foreground_epoch,
-                lease_owner=self.context.foreground_lease_owner,
+                call_id=context.call_id,
+                fencing_token=context.foreground_epoch,
+                lease_owner=context.foreground_lease_owner,
                 lease_until=target.isoformat(timespec="seconds").replace("+00:00", "Z"),
                 now_utc=now.isoformat(timespec="seconds").replace("+00:00", "Z"),
             )
             if not renewed:
+                candidate = self._prepared_handoff
+                if candidate is not None and candidate.locked:
+                    # A committed move can precede the local context swap by
+                    # one await. Wait for that boundary before judging its fence.
+                    async with self._provider_input_lock:
+                        pass
+                if self.context is not context:
+                    continue
                 raise PhoneMediaSessionError("Phone foreground lease was lost")
             await self._sleep(_FOREGROUND_RENEW_INTERVAL_SECONDS)
 
@@ -1925,6 +2086,25 @@ class PhoneMediaSession:
         utterance: FinalPhoneUtterance,
         websocket: MediaWebSocket,
     ) -> None:
+        if self.context.application_channel is None:
+            await self._run_funded_turn(utterance, websocket)
+            return
+        async with phone_turn_billing_context(
+            self.repository.connection_factory,
+            self.context.call_id,
+            conversation_id=self.context.conversation_id,
+        ):
+            try:
+                await self._run_funded_turn(utterance, websocket)
+            finally:
+                if self._prepared_handoff is not None:
+                    await self._prepared_handoff.close()
+
+    async def _run_funded_turn(
+        self,
+        utterance: FinalPhoneUtterance,
+        websocket: MediaWebSocket,
+    ) -> None:
         self._require_started()
         tick = self.clock.peek_safe_point()
         if tick.end_call is not None:
@@ -1958,11 +2138,36 @@ class PhoneMediaSession:
                 )
         phone_turn = create_phone_channel_turn(
             guard,
+            application_channel=self.context.application_channel,
             turn_id=turn_id,
+            link_state=self._link_state_for_utterance(utterance),
             end_controller=self.end_controller,
             internal_turn_context=internal_context,
             openai_realtime_bridge=realtime_bridge,
+            phone_direction=self.context.direction,
+            phone_request_source=self.context.request_source,
+            phone_request_timing=self.context.request_timing,
+            ai_initiation_mode=str(
+                self.context.call_snapshot["ai_initiation_mode"]
+            ).strip(),  # type: ignore[arg-type]
+            prompt_id=int(self.context.call_snapshot["prompt_id"]),
         )
+        if self.context.application_channel is not None:
+            from integrations.applications.phone_handoff import prepare_phone_handoff
+            phone_turn = replace(phone_turn, context=replace(
+                phone_turn.context,
+                provenance={
+                    **phone_turn.context.provenance,
+                    "prepare_phone_handoff": partial(
+                        prepare_phone_handoff,
+                        repository=self.repository,
+                        call_id=self.context.call_id,
+                        expected_epoch=self.context.foreground_epoch,
+                        lease_owner=self.context.foreground_lease_owner,
+                        prepare_transport=self.prepare_handoff_transport,
+                    ),
+                },
+            ))
         async with self._output_state_lock:
             speech_generation = self._speech_generation
             self._starting_runtime = True
@@ -2168,11 +2373,79 @@ class PhoneMediaSession:
                 if realtime_bridge is not None:
                     await realtime_bridge.close()
 
+        if getattr(runtime, "handoff_result", None):
+            await self._apply_handoff(runtime.handoff_result)
+
+    async def prepare_handoff_transport(
+        self, snapshot: Mapping[str, Any],
+    ) -> _PreparedHandoffTransport:
+        """Connect the destination before announcing a transfer; retain the source."""
+        from integrations.embed.models import EmbedError
+        if self._stt_factory is None or runtime_kind_from_snapshot(snapshot) != runtime_kind_from_snapshot(self.context.call_snapshot):
+            raise EmbedError("handoff_voice_incompatible", 409)
+        phone_settings_from_snapshot(snapshot)
+        if self._prepared_handoff is not None:
+            raise EmbedError("handoff_already_pending", 409)
+        candidate = _PreparedHandoffTransport(
+            self, self._stt_factory(snapshot),
+            self.context.conversation_id, self._speech_generation,
+        )
+        try:
+            await candidate.client.connect()
+        except BaseException:
+            await candidate.close()
+            raise
+        self._prepared_handoff = candidate
+        return candidate
+
+    async def _apply_handoff(self, result: Mapping[str, Any]) -> None:
+        if not result.get("phone_handoff"):
+            return
+        candidate = self._prepared_handoff
+        if candidate is None:
+            raise PhoneMediaSessionError("Committed handoff has no prepared transport")
+        call = await self.repository.get_call_by_provider_sid(self.context.provider_call_sid)
+        if call is None:
+            raise PhoneMediaSessionError("Transferred call is unavailable")
+        context = PhoneMediaSessionContext.from_call(
+            call, account_sid=self.context.account_sid,
+            stream_attempt=self.context.stream_attempt,
+        )
+        if context.conversation_id != int(result["conversation_id"]):
+            raise PhoneMediaSessionError("Transferred call destination changed")
+        previous = self.stt
+        self.context = context
+        self.settings = phone_settings_from_snapshot(context.call_snapshot)
+        # The physical call keeps its original hard deadline and milestones.
+        self.silence.settings = self.settings
+        self.stt = candidate.client
+        self._assembler = PhoneUtteranceAssembler()
+        self._pending_barge_in.reset()
+        self._participant_speech_activity = _ParticipantSpeechActivity(
+            endpointing_ms=self.settings.endpointing_ms,
+        )
+        self._stt_audio_offset_byte = self._participant_media_end_byte - (
+            self._recording_attempt_offset_ms * _PCMU_BYTES_PER_SECOND // 1_000
+        )
+        self._caller_audio_floor_byte = self._participant_media_end_byte
+        candidate.applied = True
+        candidate.release()
+        await previous.close()
+
     async def _timer_loop(self, websocket: MediaWebSocket) -> None:
         while not self._stopping.is_set():
             if self._twilio_stop_observed:
                 return
             try:
+                if self.context.application_channel is not None:
+                    # Access supervision shares the native one-second timer.
+                    # Audio frames must keep their 20 ms transport cadence.
+                    from integrations.applications.phone import authorize_phone_provider
+                    from integrations.embed.models import EmbedError
+                    try:
+                        await authorize_phone_provider(self.repository.connection_factory, self.context.call_id)
+                    except EmbedError as exc:
+                        raise PhoneBillingError(exc.code) from None
                 await self._ensure_live_billing_coverage()
             except PhoneBillingExhausted:
                 if self._twilio_stop_observed:
@@ -2537,7 +2810,7 @@ class PhoneMediaSession:
             name=f"phone-recording-raw-persist-{self.context.call_id}",
         )
         try:
-            await asyncio.wait_for(
+            recording_id = await asyncio.wait_for(
                 asyncio.shield(persistence),
                 timeout=_RECORDING_RAW_PERSIST_GRACE_SECONDS,
             )
@@ -2566,17 +2839,36 @@ class PhoneMediaSession:
         except Exception:
             logger.exception("Telephone raw recording persistence failed")
             return False
+        if recording_id is None:
+            await self._delete_rejected_local_recording(asset)
+            return False
         return has_raw_audio
 
     async def _mix_and_update_recording(self) -> None:
         asset = await self.recorder.finalize_async()
-        await self.repository.persist_local_recording(
+        recording_id = await self.repository.persist_local_recording(
             call_id=self.context.call_id,
             participant_path=str(asset.participant_path) if asset.participant_path else None,
             assistant_path=str(asset.assistant_path) if asset.assistant_path else None,
             mixed_path=str(asset.mixed_path) if asset.mixed_path else None,
             duration_seconds=max(0, int(math.ceil(asset.duration_ms / 1_000))),
             mix_error=asset.mix_error,
+        )
+        if recording_id is None:
+            await self._delete_rejected_local_recording(asset)
+
+    async def _delete_rejected_local_recording(self, asset: Any) -> None:
+        """Honor a recording tombstone that won the finalization race."""
+
+        await asyncio.to_thread(
+            delete_private_call_audio,
+            self.context.call_id,
+            (
+                asset.participant_path,
+                asset.assistant_path,
+                asset.mixed_path,
+            ),
+            root=self.recorder.root,
         )
 
     def _require_started(self) -> None:
@@ -2589,6 +2881,101 @@ class PhoneMediaSession:
         # It therefore continues across stream attempts without either
         # colliding between genuine turns or encoding a transient attempt ID.
         return f"stt-{self._caller_turns + 1}"
+
+    def _attach_caller_audio_range(
+        self,
+        utterance: FinalPhoneUtterance,
+    ) -> FinalPhoneUtterance:
+        """Attach a trusted call-track range while utterance timing is live."""
+
+        if not self.recorder.enabled:
+            return utterance
+        attempt_start = (
+            self._recording_attempt_offset_ms * _PCMU_BYTES_PER_SECOND // 1_000
+        )
+        start_byte: int | None = None
+        end_byte: int | None = None
+        if (
+            utterance.start_seconds is not None
+            and utterance.end_seconds is not None
+            and utterance.end_seconds > utterance.start_seconds
+        ):
+            start_byte = attempt_start + self._stt_audio_offset_byte + int(
+                math.floor(utterance.start_seconds * _PCMU_BYTES_PER_SECOND)
+            )
+            end_byte = attempt_start + self._stt_audio_offset_byte + int(
+                math.ceil(utterance.end_seconds * _PCMU_BYTES_PER_SECOND)
+            )
+        elif (
+            self._participant_speech_activity.first_voice_start_ms is not None
+            and self._participant_speech_activity.last_voice_end_ms is not None
+        ):
+            start_byte = attempt_start + (
+                self._participant_speech_activity.first_voice_start_ms
+                * _PCMU_BYTES_PER_SECOND
+                // 1_000
+            )
+            end_byte = attempt_start + (
+                self._participant_speech_activity.last_voice_end_ms
+                * _PCMU_BYTES_PER_SECOND
+                // 1_000
+            )
+        elif self._participant_media_end_byte > self._caller_audio_floor_byte:
+            # Scribe supplies committed text without media timestamps.  Its
+            # speech can be quieter than our deliberately conservative local
+            # barge-in detector, so a trusted final transcript falls back to a
+            # bounded suffix of the bytes observed since the previous caller
+            # turn.  Text length makes the window generous for slow speech
+            # without attaching an arbitrarily long silent part of the call.
+            fallback_ms = max(
+                _TURN_AUDIO_FALLBACK_MIN_MS,
+                len(utterance.text) * _TURN_AUDIO_FALLBACK_MS_PER_CHARACTER
+                + 2 * self.settings.endpointing_ms,
+            )
+            fallback_bytes = fallback_ms * _PCMU_BYTES_PER_SECOND // 1_000
+            end_byte = self._participant_media_end_byte
+            start_byte = max(
+                attempt_start,
+                self._caller_audio_floor_byte,
+                end_byte - fallback_bytes,
+            )
+        if start_byte is None or end_byte is None:
+            return utterance
+        padding_lead = _TURN_AUDIO_LEAD_MS * _PCMU_BYTES_PER_SECOND // 1_000
+        padding_tail = _TURN_AUDIO_TAIL_MS * _PCMU_BYTES_PER_SECOND // 1_000
+        start_byte = max(
+            attempt_start,
+            self._caller_audio_floor_byte,
+            start_byte - padding_lead,
+        )
+        end_byte = min(self._participant_media_end_byte, end_byte + padding_tail)
+        if end_byte <= start_byte:
+            return utterance
+        self._caller_audio_floor_byte = end_byte
+        return replace(
+            utterance,
+            audio_start_byte=start_byte,
+            audio_end_byte=end_byte,
+        )
+
+    def _link_state_for_utterance(
+        self,
+        utterance: FinalPhoneUtterance,
+    ) -> PhoneTurnLinkState:
+        state = PhoneTurnLinkState()
+        if (
+            self.recorder.enabled
+            and utterance.audio_start_byte is not None
+            and utterance.audio_end_byte is not None
+        ):
+            state.set_audio_range(
+                "caller",
+                PhoneMessageAudioRange(
+                    start_byte=utterance.audio_start_byte,
+                    end_byte=utterance.audio_end_byte,
+                ),
+            )
+        return state
 
 
 def _has_cause(error: BaseException, expected: type[BaseException]) -> bool:

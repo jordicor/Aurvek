@@ -1,0 +1,30 @@
+{
+  "description": "Pack d’IA sur AURVEK",
+  "twitter_description": "Pack de prompts d’IA sur AURVEK",
+  "cover": "Couverture de {name}",
+  "by_creator": "par {creator}",
+  "get_started": "Commencer",
+  "create_first": "Créez d’abord un compte, puis achetez ce pack.",
+  "minimum_password": "8 caractères minimum",
+  "repeat_password": "Répétez le mot de passe",
+  "sign_up": "S’inscrire",
+  "sign_up_access": "S’inscrire et obtenir l’accès",
+  "login_purchase": "Se connecter et acheter",
+  "login_add": "Se connecter et ajouter le pack",
+  "purchase_price": "Acheter - {price}",
+  "already_owned": "Vous possédez déjà ce pack !",
+  "start_chatting": "Commencer à discuter",
+  "get_free_pack": "Obtenir ce pack gratuitement",
+  "already_have": "Vous avez déjà ce pack !",
+  "powered_by": "Propulsé par {brand}",
+  "fields_required": "Veuillez remplir tous les champs.",
+  "account_created_paid": "Compte créé ! Vérifiez votre e-mail pour confirmer votre compte, puis revenez effectuer l’achat.",
+  "account_created": "Compte créé ! Vérifiez votre e-mail pour confirmer votre compte.",
+  "claiming": "Obtention du pack…",
+  "not_found": "Page introuvable",
+  "access_denied": "Accès refusé",
+  "inside": {
+    "one": "Contenu ({number} prompt)",
+    "other": "Contenu ({number} prompts)"
+  }
+}

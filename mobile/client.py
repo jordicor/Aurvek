@@ -108,12 +108,12 @@ def ios_purchase_blocked(request: Any) -> bool:
     return is_ios_client(request) and not ios_purchases_enabled()
 
 
-def ios_purchase_disabled_response() -> JSONResponse:
+def ios_purchase_disabled_response(*, message: str | None = None) -> JSONResponse:
     return JSONResponse(
         {
             "error": IOS_PURCHASE_DISABLED_ERROR,
             "reason": IOS_PURCHASE_DISABLED_REASON,
-            "message": "Purchases are unavailable in the iOS client until in-app purchases are configured.",
+            "message": message if message is not None else "Purchases are unavailable in the iOS client until in-app purchases are configured.",
             "purchase_available": False,
         },
         status_code=409,

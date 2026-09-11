@@ -1,32 +1,33 @@
+{% set i18n_domains = ['prompt_editor'] %}
 {% extends 'base.html' %}
 
-{% block title %}Create Prompt - AURVEK{% endblock %}
+{% block title %}{{ t('prompt_editor.runtime.create_prompt_aurvek') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js - category styles now in default.css #}
 {% endblock %}
 
-{% block page_title %}Create New Prompt{% endblock %}
+{% block page_title %}{{ t('prompt_editor.runtime.create_new_prompt') }}{% endblock %}
 
 {% block back_url %}/prompts{% endblock %}
-{% block back_title %}Back to Prompts{% endblock %}
+{% block back_title %}{{ t('prompt_editor.runtime.back_to_prompts') }}{% endblock %}
 
 {% block content %}
 <form action="/prompts/new" method="post" enctype="multipart/form-data" id="createPromptForm">
 
     <!-- Section 1: Basic Information -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-info-circle me-2"></i>Basic Information</div>
+        <div class="section-title"><i class="fas fa-info-circle me-2"></i>{{ t('prompt_editor.text.basic_information') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="promptName" class="form-label">Prompt Name</label>
+                    <label for="promptName" class="form-label">{{ t('prompt_editor.text.prompt_name') }}</label>
                     <input type="text" class="form-control" id="promptName" name="name" required>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="description" class="form-label">Description</label>
+                    <label for="description" class="form-label">{{ t('prompt_editor.text.description') }}</label>
                     <textarea class="form-control" id="description" name="description" rows="3" required></textarea>
                 </div>
             </div>
@@ -35,14 +36,14 @@
 
     <!-- Section 2: Appearance & Voice -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-palette me-2"></i>Appearance & Voice</div>
+        <div class="section-title"><i class="fas fa-palette me-2"></i>{{ t('prompt_editor.text.appearance_voice') }}</div>
         <div class="flex-row">
             <div class="flex-column d-flex justify-content-center align-items-center">
                 <div class="mb-3 text-center">
-                    <label for="promptImageInput" class="form-label">Prompt Image</label>
+                    <label for="promptImageInput" class="form-label">{{ t('prompt_editor.text.prompt_image') }}</label>
                     <div class="avatar-wrapper" style="margin: 0 auto;">
                         <div class="avatar-container" id="promptImageContainer">
-                            <span class="avatar-initial" id="defaultPromptInitial">P</span>
+                            <span class="avatar-initial" id="defaultPromptInitial">{{ t('prompt_editor.text.p') }}</span>
                             <div class="avatar-icons">
                                 <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                             </div>
@@ -61,7 +62,7 @@
             <div class="flex-column">
                 <div class="voice-section">
                     <label for="voiceSelect" class="form-label">
-                        <i class="fas fa-microphone me-1"></i>Voice
+                        <i class="fas fa-microphone me-1"></i>{{ t('prompt_editor.text.voice') }}
                     </label>
                     <div class="voice-controls">
                         <select class="form-select" id="voiceSelect" name="sample_voice_id" required>
@@ -72,10 +73,10 @@
                             <!-- Categories will be loaded dynamically -->
                         </select>
                         <button type="button" class="btn" id="playVoiceButton" style="display: none;">
-                            <i class="fas fa-play"></i>Play Sample
+                            <i class="fas fa-play"></i>{{ t('prompt_editor.text.play_sample') }}
                         </button>
                     </div>
-                    <small class="form-text text-muted mt-2">Select a voice for this prompt's text-to-speech.</small>
+                    <small class="form-text text-muted mt-2">{{ t('prompt_editor.text.select_a_voice_for_this_prompt_s_text_to_speech') }}</small>
                 </div>
             </div>
         </div>
@@ -83,26 +84,26 @@
 
     <!-- Section 3: Prompt Content -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-file-alt me-2"></i>Prompt Content</div>
+        <div class="section-title"><i class="fas fa-file-alt me-2"></i>{{ t('prompt_editor.text.prompt_content') }}</div>
         <div class="mb-3">
-            <label for="promptText" class="form-label">Prompt Text</label>
+            <label for="promptText" class="form-label">{{ t('prompt_editor.text.prompt_text') }}</label>
             <textarea class="form-control" id="promptText" name="prompt" rows="10" required></textarea>
-            <small class="form-text text-muted">The system prompt that defines the AI's personality and behavior</small>
+            <small class="form-text text-muted">{{ t('prompt_editor.text.the_system_prompt_that_defines_the_ai_s_personality_and_') }}</small>
         </div>
     </div>
 
     <!-- Section: Extensions -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-layer-group me-2"></i>Extensions (Levels / Phases)</div>
+        <div class="section-title"><i class="fas fa-layer-group me-2"></i>{{ t('prompt_editor.text.extensions_levels_phases') }}</div>
 
         <!-- Enable toggle -->
         <div class="mb-3 form-check form-switch">
             <input class="form-check-input" type="checkbox" id="extensions_enabled" name="extensions_enabled_toggle"
                    onchange="toggleExtensionsPanel()">
             <label class="form-check-label" for="extensions_enabled">
-                Enable Extensions
+                {{ t('prompt_editor.text.enable_extensions') }}
                 <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
-                   title="Extensions add levels/phases to your prompt. The main prompt defines the base personality. Each extension adds specific instructions for a level or phase."></i>
+                   title="{{ t('prompt_editor.attribute.extensions_add_levels_phases_to_your_prompt_the_main_pro') }}"></i>
             </label>
         </div>
 
@@ -114,9 +115,9 @@
                     <div class="form-check form-switch">
                         <input class="form-check-input" type="checkbox" id="extensions_auto_advance">
                         <label class="form-check-label" for="extensions_auto_advance">
-                            AI can auto-advance
+                            {{ t('prompt_editor.text.ai_can_auto_advance') }}
                             <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
-                               title="When enabled, the AI can decide when to move to the next level during the conversation."></i>
+                               title="{{ t('prompt_editor.attribute.when_enabled_the_ai_can_decide_when_to_move_to_the_next_') }}"></i>
                         </label>
                     </div>
                 </div>
@@ -124,9 +125,9 @@
                     <div class="form-check form-switch">
                         <input class="form-check-input" type="checkbox" id="extensions_free_selection" checked>
                         <label class="form-check-label" for="extensions_free_selection">
-                            Users can select any level
+                            {{ t('prompt_editor.text.users_can_select_any_level') }}
                             <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
-                               title="When enabled, users can jump to any level. When disabled, levels must be followed in order."></i>
+                               title="{{ t('prompt_editor.attribute.when_enabled_users_can_jump_to_any_level_when_disabled_l') }}"></i>
                         </label>
                     </div>
                 </div>
@@ -134,7 +135,7 @@
 
             <!-- Extension list placeholder -->
             <div id="extensions-list" class="mb-3">
-                <p class="text-muted small">Save the prompt first, then add extensions here.</p>
+                <p class="text-muted small">{{ t('prompt_editor.text.save_the_prompt_first_then_add_extensions_here') }}</p>
             </div>
         </div>
 
@@ -145,61 +146,61 @@
 
     <!-- Section 4: Settings -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-cog me-2"></i>Settings</div>
+        <div class="section-title"><i class="fas fa-cog me-2"></i>{{ t('prompt_editor.text.settings') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="isPublic" name="public">
                     <label class="form-check-label" for="isPublic">
-                        <i class="fas fa-globe me-1 text-muted"></i>Share My Prompt
-                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Making a prompt public lists it in the marketplace. You must select at least one category. You can set a price to earn money when others use it."></i>
+                        <i class="fas fa-globe me-1 text-muted"></i>{{ t('prompt_editor.text.share_my_prompt') }}
+                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.making_a_prompt_public_lists_it_in_the_marketplace_you_m') }}"></i>
                     </label>
-                    <small class="form-text text-muted d-block">Share with the community and earn money when others use it</small>
+                    <small class="form-text text-muted d-block">{{ t('prompt_editor.text.share_with_the_community_and_earn_money_when_others_use_') }}</small>
                 </div>
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="disableWebSearch" name="disable_web_search">
                     <label class="form-check-label" for="disableWebSearch">
-                        <i class="fas fa-globe-americas me-1 text-muted"></i>Disable Web Search
+                        <i class="fas fa-globe-americas me-1 text-muted"></i>{{ t('prompt_editor.text.disable_web_search') }}
                     </label>
-                    <small class="form-text text-muted d-block">Prevent AI from searching the internet when using this prompt</small>
+                    <small class="form-text text-muted d-block">{{ t('prompt_editor.text.prevent_ai_from_searching_the_internet_when_using_this_p') }}</small>
                 </div>
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="forceWebSearch" name="force_web_search">
                     <label class="form-check-label" for="forceWebSearch">
-                        <i class="fas fa-globe me-1 text-muted"></i>Force Web Search Always On
+                        <i class="fas fa-globe me-1 text-muted"></i>{{ t('prompt_editor.text.force_web_search_always_on') }}
                     </label>
-                    <small class="form-text text-muted d-block">Web search will always be active and users cannot disable it for this prompt</small>
+                    <small class="form-text text-muted d-block">{{ t('prompt_editor.text.web_search_will_always_be_active_and_users_cannot_disabl') }}</small>
                 </div>
                 <div class="mb-3 form-check">
                     <input type="checkbox" class="form-check-input" id="enableModeration" name="enable_moderation">
                     <label class="form-check-label" for="enableModeration">
-                        <i class="fas fa-shield-alt me-1 text-muted"></i>Enable Content Moderation
-                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Messages are checked by OpenAI's moderation API before processing. Flags inappropriate content like hate speech, violence, sexual content, self-harm, etc."></i>
+                        <i class="fas fa-shield-alt me-1 text-muted"></i>{{ t('prompt_editor.text.enable_content_moderation') }}
+                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.messages_are_checked_by_openai_s_moderation_api_before_p') }}"></i>
                     </label>
-                    <small class="form-text text-muted d-block">Pre-screen user messages for inappropriate content before AI responds</small>
+                    <small class="form-text text-muted d-block">{{ t('prompt_editor.text.pre_screen_user_messages_for_inappropriate_content_befor') }}</small>
                 </div>
 
                 <!-- AI Model Restrictions -->
                 <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
-                    <label class="form-label"><i class="fas fa-robot me-1 text-muted"></i>AI Model Restrictions</label>
+                    <label class="form-label"><i class="fas fa-robot me-1 text-muted"></i>{{ t('prompt_editor.text.ai_model_restrictions') }}</label>
                     <div class="form-check">
                         <input class="form-check-input" type="radio" name="llm_mode" id="llmModeAny" value="any" checked onchange="toggleLLMOptions()">
                         <label class="form-check-label" for="llmModeAny">
-                            Any model (user chooses)
+                            {{ t('prompt_editor.text.any_model_user_chooses') }}
                         </label>
                     </div>
                     <div class="form-check mt-2">
                         <input class="form-check-input" type="radio" name="llm_mode" id="llmModeRestricted" value="restricted" onchange="toggleLLMOptions()">
                         <label class="form-check-label" for="llmModeRestricted">
-                            Restrict to specific models
-                            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Users can only choose from the selected models when using this prompt."></i>
+                            {{ t('prompt_editor.text.restrict_to_specific_models') }}
+                            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.users_can_only_choose_from_the_selected_models_when_usin') }}"></i>
                         </label>
                     </div>
                     <div class="form-check mt-2">
                         <input class="form-check-input" type="radio" name="llm_mode" id="llmModeForced" value="forced" onchange="toggleLLMOptions()">
                         <label class="form-check-label" for="llmModeForced">
-                            Force specific model
-                            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="When enabled, users cannot choose a different AI model. The selected model will always be used for this prompt."></i>
+                            {{ t('prompt_editor.text.force_specific_model') }}
+                            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.when_enabled_users_cannot_choose_a_different_ai_model_th') }}"></i>
                         </label>
                     </div>
 
@@ -212,68 +213,68 @@
                     <!-- Forced options: single select + hide name -->
                     <div id="forcedLLMOptions" style="display: none;">
                         <div class="mb-3 mt-2">
-                            <label for="forcedLLM" class="form-label">Select Model</label>
+                            <label for="forcedLLM" class="form-label">{{ t('prompt_editor.text.select_model') }}</label>
                             <select class="form-select" id="forcedLLM" name="forced_llm_id">
                                 <!-- LLMs loaded dynamically -->
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="forcedReasoningMode" class="form-label">Prompt thinking</label>
+                            <label for="forcedReasoningMode" class="form-label">{{ t('prompt_editor.text.prompt_thinking') }}</label>
                             <select class="form-select" id="forcedReasoningMode" name="forced_reasoning_mode">
-                                <option value="default">User/provider default</option>
+                                <option value="default">{{ t('prompt_editor.runtime.user_provider_default') }}</option>
                             </select>
-                            <small class="form-text text-muted">Optionally enforce one thinking level whenever this prompt uses the forced model.</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.optionally_enforce_one_thinking_level_whenever_this_prom') }}</small>
                         </div>
                         <div class="mb-3" id="forcedReasoningBudgetWrap" hidden>
-                            <label for="forcedReasoningBudget" class="form-label">Thinking token budget</label>
+                            <label for="forcedReasoningBudget" class="form-label">{{ t('prompt_editor.text.thinking_token_budget') }}</label>
                             <input class="form-control" id="forcedReasoningBudget" name="forced_reasoning_budget_tokens" type="number">
                         </div>
                         <div class="form-check mb-3">
                             <input type="checkbox" class="form-check-input" id="hideLLMName" name="hide_llm_name">
                             <label class="form-check-label" for="hideLLMName">
-                                Hide model name in chat UI
-                                <small class="text-muted d-block">Show "AI" instead of model name</small>
+                                {{ t('prompt_editor.text.hide_model_name_in_chat_ui') }}
+                                <small class="text-muted d-block">{{ t('prompt_editor.text.show_ai_instead_of_model_name') }}</small>
                             </label>
                         </div>
                     </div>
 
                     <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
-                        <label class="form-label"><i class="fas fa-phone me-1 text-muted"></i>Phone call AI</label>
+                        <label class="form-label"><i class="fas fa-phone me-1 text-muted"></i>{{ t('prompt_editor.text.phone_call_ai') }}</label>
                         <div class="mb-3">
-                            <label for="phoneLLM" class="form-label">Model</label>
+                            <label for="phoneLLM" class="form-label">{{ t('prompt_editor.text.model') }}</label>
                             <select class="form-select" id="phoneLLM" name="phone_llm_id">
-                                <option value="">Use the conversation model</option>
+                                <option value="">{{ t('prompt_editor.text.use_the_conversation_model') }}</option>
                             </select>
-                            <small class="form-text text-muted">GPT Realtime 2.1 Mini is preselected for low-latency calls; you can choose another phone model or use the conversation model.</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.gpt_realtime_2_1_mini_is_preselected_for_low_latency_cal') }}</small>
                         </div>
                         <div class="mb-3">
-                            <label for="phoneReasoningMode" class="form-label">Thinking</label>
+                            <label for="phoneReasoningMode" class="form-label">{{ t('prompt_editor.text.thinking') }}</label>
                             <select class="form-select" id="phoneReasoningMode" name="phone_reasoning_mode">
-                                <option value="inherit">Inherit the prompt/model setting</option>
+                                <option value="inherit">{{ t('prompt_editor.text.inherit_the_prompt_model_setting') }}</option>
                             </select>
                         </div>
                         <div class="mb-3" id="phoneReasoningBudgetWrap" hidden>
-                            <label for="phoneReasoningBudget" class="form-label">Thinking token budget</label>
+                            <label for="phoneReasoningBudget" class="form-label">{{ t('prompt_editor.text.thinking_token_budget') }}</label>
                             <input class="form-control" id="phoneReasoningBudget" name="phone_reasoning_budget_tokens" type="number">
                         </div>
                         <div class="mb-3" id="phoneRealtimeVoiceWrap" hidden>
                             <label for="phoneRealtimeVoice" class="form-label">
-                                OpenAI phone voice
-                                <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="OpenAI speech-to-speech models use an OpenAI voice for conversational replies, so those replies can sound different from the prompt's selected voice. The prompt voice remains unchanged and still handles cached greetings and technical notices."></i>
+                                {{ t('prompt_editor.text.openai_phone_voice') }}
+                                <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="{{ t('prompt_editor.attribute.openai_speech_to_speech_models_use_an_openai_voice_for_c') }}"></i>
                             </label>
                             <select class="form-select" id="phoneRealtimeVoice" name="phone_realtime_voice">
-                                <option value="marin" selected>Marin (recommended)</option>
-                                <option value="cedar">Cedar (recommended)</option>
-                                <option value="alloy">Alloy</option>
-                                <option value="ash">Ash</option>
-                                <option value="ballad">Ballad</option>
-                                <option value="coral">Coral</option>
-                                <option value="echo">Echo</option>
-                                <option value="sage">Sage</option>
-                                <option value="shimmer">Shimmer</option>
-                                <option value="verse">Verse</option>
+                                <option value="marin" selected>{{ t('prompt_editor.text.marin_recommended') }}</option>
+                                <option value="cedar">{{ t('prompt_editor.text.cedar_recommended') }}</option>
+                                <option value="alloy">{{ t('prompt_editor.text.alloy') }}</option>
+                                <option value="ash">{{ t('prompt_editor.text.ash') }}</option>
+                                <option value="ballad">{{ t('prompt_editor.text.ballad') }}</option>
+                                <option value="coral">{{ t('prompt_editor.text.coral') }}</option>
+                                <option value="echo">{{ t('prompt_editor.text.echo') }}</option>
+                                <option value="sage">{{ t('prompt_editor.text.sage') }}</option>
+                                <option value="shimmer">{{ t('prompt_editor.text.shimmer') }}</option>
+                                <option value="verse">{{ t('prompt_editor.text.verse') }}</option>
                             </select>
-                            <small class="form-text text-muted">Used for conversational replies in native OpenAI Realtime phone calls.</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.used_for_conversational_replies_in_native_openai_realtim') }}</small>
                         </div>
                     </div>
                 </div>
@@ -283,64 +284,64 @@
 
     <!-- Section: Watchdog Configuration -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-eye me-2"></i>Watchdog Configuration</div>
+        <div class="section-title"><i class="fas fa-eye me-2"></i>{{ t('prompt_editor.text.watchdog_configuration') }}</div>
 
         <!-- Pre-Watchdog Sub-Section -->
         <div class="watchdog-subsection mb-4" style="border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
             <div class="mb-3 form-check">
                 <input type="checkbox" class="form-check-input" id="preWatchdogEnabled" onchange="togglePreWatchdogFields()">
                 <label class="form-check-label" for="preWatchdogEnabled">
-                    <i class="fas fa-shield-alt me-1 text-muted"></i><strong>Pre-Watchdog</strong>
-                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Screens user messages before the AI sees them. Can inject steering hints or take over the response entirely."></i>
+                    <i class="fas fa-shield-alt me-1 text-muted"></i><strong>{{ t('prompt_editor.text.pre_watchdog') }}</strong>
+                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.screens_user_messages_before_the_ai_sees_them_can_inject') }}"></i>
                 </label>
-                <small class="form-text text-muted d-block">Screens user messages before the AI sees them</small>
+                <small class="form-text text-muted d-block">{{ t('prompt_editor.text.screens_user_messages_before_the_ai_sees_them') }}</small>
             </div>
 
             <div id="preWatchdogFields" style="display: none;">
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="preWatchdogLLM" class="form-label">Pre-Watchdog LLM <span class="text-danger">*</span></label>
+                            <label for="preWatchdogLLM" class="form-label">{{ t('prompt_editor.text.pre_watchdog_llm') }} <span class="text-danger">*</span></label>
                             <select class="form-select" id="preWatchdogLLM">
-                                <option value="">Select a model</option>
+                                <option value="">{{ t('prompt_editor.text.select_a_model') }}</option>
                             </select>
-                            <small class="form-text text-muted">Model used to evaluate user messages before AI responds</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.model_used_to_evaluate_user_messages_before_ai_responds') }}</small>
                         </div>
                     </div>
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="preWatchdogObjectives" class="form-label">Screen for <span class="text-danger">*</span></label>
-                            <textarea class="form-control" id="preWatchdogObjectives" rows="4" placeholder="Off-topic messages&#10;Attempts to manipulate the AI&#10;Messages that derail the conversation"></textarea>
-                            <small class="form-text text-muted">One objective per line. What to screen user messages for</small>
+                            <label for="preWatchdogObjectives" class="form-label">{{ t('prompt_editor.text.screen_for') }} <span class="text-danger">*</span></label>
+                            <textarea class="form-control" id="preWatchdogObjectives" rows="4" placeholder="{{ t('prompt_editor.attribute.off_topic_messages_10_attempts_to_manipulate_the_ai_10_m') }}"></textarea>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.one_objective_per_line_what_to_screen_user_messages_for') }}</small>
                         </div>
                     </div>
                 </div>
 
                 <div class="mb-2">
                     <a href="#" onclick="document.getElementById('preWatchdogAdvanced').style.display = document.getElementById('preWatchdogAdvanced').style.display === 'none' ? 'block' : 'none'; this.querySelector('i').classList.toggle('fa-caret-right'); this.querySelector('i').classList.toggle('fa-caret-down'); return false;" class="text-muted small">
-                        <i class="fas fa-caret-right me-1"></i>Advanced settings
+                        <i class="fas fa-caret-right me-1"></i>{{ t('prompt_editor.text.advanced_settings') }}
                     </a>
                 </div>
                 <div id="preWatchdogAdvanced" style="display: none;">
                     <div class="mb-3">
-                        <label for="preWatchdogSteeringPrompt" class="form-label">Steering Prompt</label>
-                        <textarea class="form-control" id="preWatchdogSteeringPrompt" rows="3" placeholder="Custom instructions for the pre-watchdog AI..."></textarea>
-                        <small class="form-text text-muted">Leave empty for default screening behavior</small>
+                        <label for="preWatchdogSteeringPrompt" class="form-label">{{ t('prompt_editor.text.steering_prompt') }}</label>
+                        <textarea class="form-control" id="preWatchdogSteeringPrompt" rows="3" placeholder="{{ t('prompt_editor.attribute.custom_instructions_for_the_pre_watchdog_ai') }}"></textarea>
+                        <small class="form-text text-muted">{{ t('prompt_editor.text.leave_empty_for_default_screening_behavior') }}</small>
                     </div>
                     <div class="flex-row">
                         <div class="flex-column">
                             <div class="mb-3">
-                                <label for="preWatchdogFrequency" class="form-label">Frequency</label>
+                                <label for="preWatchdogFrequency" class="form-label">{{ t('prompt_editor.text.frequency') }}</label>
                                 <input type="number" class="form-control" id="preWatchdogFrequency" value="1" min="1" max="20">
-                                <small class="form-text text-muted">Evaluate every N user turns</small>
+                                <small class="form-text text-muted">{{ t('prompt_editor.text.evaluate_every_n_user_turns') }}</small>
                             </div>
                         </div>
                         <div class="flex-column">
                             <div class="mb-3 form-check mt-4">
                                 <input type="checkbox" class="form-check-input" id="preWatchdogCanTakeover" checked>
                                 <label class="form-check-label" for="preWatchdogCanTakeover">
-                                    Can take over response
-                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="When enabled, the pre-watchdog can completely replace the AI response when it detects a serious issue."></i>
+                                    {{ t('prompt_editor.text.can_take_over_response') }}
+                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.when_enabled_the_pre_watchdog_can_completely_replace_the') }}"></i>
                                 </label>
                             </div>
                         </div>
@@ -348,8 +349,8 @@
                             <div class="mb-3 form-check mt-4">
                                 <input type="checkbox" class="form-check-input" id="preWatchdogCanLock">
                                 <label class="form-check-label" for="preWatchdogCanLock">
-                                    Can lock conversation
-                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="When enabled, the pre-watchdog can permanently lock the conversation on critical alerts."></i>
+                                    {{ t('prompt_editor.text.can_lock_conversation') }}
+                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.when_enabled_the_pre_watchdog_can_permanently_lock_the_c') }}"></i>
                                 </label>
                             </div>
                         </div>
@@ -363,60 +364,60 @@
             <div class="mb-3 form-check">
                 <input type="checkbox" class="form-check-input" id="postWatchdogEnabled" onchange="togglePostWatchdogFields()">
                 <label class="form-check-label" for="postWatchdogEnabled">
-                    <i class="fas fa-eye me-1 text-muted"></i><strong>Post-Watchdog</strong>
-                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="Monitors the conversation after each AI response and steers it toward objectives. Runs in background."></i>
+                    <i class="fas fa-eye me-1 text-muted"></i><strong>{{ t('prompt_editor.text.post_watchdog') }}</strong>
+                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.monitors_the_conversation_after_each_ai_response_and_ste') }}"></i>
                 </label>
-                <small class="form-text text-muted d-block">Monitors the conversation and steers the AI</small>
+                <small class="form-text text-muted d-block">{{ t('prompt_editor.text.monitors_the_conversation_and_steers_the_ai') }}</small>
             </div>
 
             <div id="postWatchdogFields" style="display: none;">
                 <div class="mb-3 d-flex align-items-center gap-2">
                     <button type="button" class="btn btn-outline-primary btn-sm" id="watchdogAutoFillBtn"
                             onclick="requestWatchdogAutoFill()">
-                        <i class="fas fa-wand-magic-sparkles me-1"></i>AI Auto-fill
+                        <i class="fas fa-wand-magic-sparkles me-1"></i>{{ t('prompt_editor.text.ai_auto_fill') }}
                     </button>
                     <i class="fas fa-info-circle text-muted"
                        data-bs-toggle="tooltip" data-bs-placement="right"
-                       title="Uses the selected Post-Watchdog LLM to analyze your prompt and suggest optimal settings (mode, objectives, steering prompt, frequency, thresholds)."></i>
+                       title="{{ t('prompt_editor.attribute.uses_the_selected_post_watchdog_llm_to_analyze_your_prom') }}"></i>
                 </div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="postWatchdogLLM" class="form-label">Post-Watchdog LLM <span class="text-danger">*</span></label>
+                            <label for="postWatchdogLLM" class="form-label">{{ t('prompt_editor.text.post_watchdog_llm') }} <span class="text-danger">*</span></label>
                             <select class="form-select" id="postWatchdogLLM">
-                                <option value="">Select a model</option>
+                                <option value="">{{ t('prompt_editor.text.select_a_model') }}</option>
                             </select>
-                            <small class="form-text text-muted">Model used to evaluate conversations after AI responds</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.model_used_to_evaluate_conversations_after_ai_responds') }}</small>
                         </div>
                         <div class="mb-3">
-                            <label for="postWatchdogMode" class="form-label">Mode</label>
+                            <label for="postWatchdogMode" class="form-label">{{ t('prompt_editor.text.mode') }}</label>
                             <select class="form-select" id="postWatchdogMode">
-                                <option value="interview">Interview</option>
-                                <option value="coaching">Coaching</option>
-                                <option value="education">Education</option>
-                                <option value="custom" selected>Custom</option>
+                                <option value="interview">{{ t('prompt_editor.text.interview') }}</option>
+                                <option value="coaching">{{ t('prompt_editor.text.coaching') }}</option>
+                                <option value="education">{{ t('prompt_editor.text.education') }}</option>
+                                <option value="custom" selected>{{ t('prompt_editor.text.custom') }}</option>
                             </select>
                         </div>
                     </div>
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="postWatchdogObjectives" class="form-label">Objectives <span class="text-danger">*</span></label>
-                            <textarea class="form-control" id="postWatchdogObjectives" rows="4" placeholder="Track topic coverage&#10;Detect drift from objectives&#10;Flag factual inconsistencies"></textarea>
-                            <small class="form-text text-muted">One objective per line. These tell the watchdog what to evaluate</small>
+                            <label for="postWatchdogObjectives" class="form-label">{{ t('prompt_editor.text.objectives') }} <span class="text-danger">*</span></label>
+                            <textarea class="form-control" id="postWatchdogObjectives" rows="4" placeholder="{{ t('prompt_editor.attribute.track_topic_coverage_10_detect_drift_from_objectives_10_') }}"></textarea>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.one_objective_per_line_these_tell_the_watchdog_what_to_e') }}</small>
                         </div>
                     </div>
                 </div>
                 <div class="mb-3">
-                    <label for="postWatchdogSteeringPrompt" class="form-label">Steering Prompt</label>
-                    <textarea class="form-control" id="postWatchdogSteeringPrompt" rows="3" placeholder="Custom instructions for the watchdog AI..."></textarea>
-                    <small class="form-text text-muted">Leave empty for a default prompt based on the selected mode</small>
+                    <label for="postWatchdogSteeringPrompt" class="form-label">{{ t('prompt_editor.text.steering_prompt') }}</label>
+                    <textarea class="form-control" id="postWatchdogSteeringPrompt" rows="3" placeholder="{{ t('prompt_editor.attribute.custom_instructions_for_the_watchdog_ai') }}"></textarea>
+                    <small class="form-text text-muted">{{ t('prompt_editor.text.leave_empty_for_a_default_prompt_based_on_the_selected_m') }}</small>
                 </div>
                 <div class="flex-row">
                     <div class="flex-column">
                         <div class="mb-3">
-                            <label for="postWatchdogFrequency" class="form-label">Frequency</label>
+                            <label for="postWatchdogFrequency" class="form-label">{{ t('prompt_editor.text.frequency') }}</label>
                             <input type="number" class="form-control" id="postWatchdogFrequency" value="3" min="1" max="20">
-                            <small class="form-text text-muted">Evaluate every N user turns (not every message)</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.text.evaluate_every_n_user_turns_not_every_message') }}</small>
                         </div>
                     </div>
                     <div class="flex-column"></div>
@@ -425,7 +426,7 @@
                 <!-- Post-Watchdog Takeover Settings -->
                 <div class="mb-2">
                     <a href="#" onclick="document.getElementById('postWatchdogTakeover').style.display = document.getElementById('postWatchdogTakeover').style.display === 'none' ? 'block' : 'none'; this.querySelector('i').classList.toggle('fa-caret-right'); this.querySelector('i').classList.toggle('fa-caret-down'); return false;" class="text-muted small">
-                        <i class="fas fa-caret-right me-1"></i>Takeover settings
+                        <i class="fas fa-caret-right me-1"></i>{{ t('prompt_editor.text.takeover_settings') }}
                     </a>
                 </div>
                 <div id="postWatchdogTakeover" style="display: none;">
@@ -434,24 +435,24 @@
                             <div class="mb-3 form-check">
                                 <input type="checkbox" class="form-check-input" id="postWatchdogCanTakeover">
                                 <label class="form-check-label" for="postWatchdogCanTakeover">
-                                    Can take over response
-                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="After N consecutive hints are ignored, the watchdog takes over the AI response."></i>
+                                    {{ t('prompt_editor.text.can_take_over_response') }}
+                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.after_n_consecutive_hints_are_ignored_the_watchdog_takes') }}"></i>
                                 </label>
                             </div>
                         </div>
                         <div class="flex-column">
                             <div class="mb-3">
-                                <label for="postWatchdogTakeoverThreshold" class="form-label">Takeover threshold</label>
+                                <label for="postWatchdogTakeoverThreshold" class="form-label">{{ t('prompt_editor.text.takeover_threshold') }}</label>
                                 <input type="number" class="form-control" id="postWatchdogTakeoverThreshold" value="5" min="1" max="50">
-                                <small class="form-text text-muted">Consecutive ignored hints before takeover</small>
+                                <small class="form-text text-muted">{{ t('prompt_editor.text.consecutive_ignored_hints_before_takeover') }}</small>
                             </div>
                         </div>
                         <div class="flex-column">
                             <div class="mb-3 form-check mt-4">
                                 <input type="checkbox" class="form-check-input" id="postWatchdogCanLock">
                                 <label class="form-check-label" for="postWatchdogCanLock">
-                                    Can lock conversation
-                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="When enabled, the post-watchdog can permanently lock the conversation on takeover."></i>
+                                    {{ t('prompt_editor.text.can_lock_conversation') }}
+                                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.when_enabled_the_post_watchdog_can_permanently_lock_the_') }}"></i>
                                 </label>
                             </div>
                         </div>
@@ -461,26 +462,26 @@
                 <!-- Post-Watchdog Advanced Settings -->
                 <div class="mb-2">
                     <a href="#" onclick="document.getElementById('postWatchdogAdvanced').style.display = document.getElementById('postWatchdogAdvanced').style.display === 'none' ? 'block' : 'none'; this.querySelector('i').classList.toggle('fa-caret-right'); this.querySelector('i').classList.toggle('fa-caret-down'); return false;" class="text-muted small">
-                        <i class="fas fa-caret-right me-1"></i>Advanced settings
+                        <i class="fas fa-caret-right me-1"></i>{{ t('prompt_editor.text.advanced_settings') }}
                     </a>
                 </div>
                 <div id="postWatchdogAdvanced" style="display: none;">
                     <div class="flex-row">
                         <div class="flex-column">
                             <div class="mb-3">
-                                <label for="postWatchdogMaxHintChars" class="form-label">Max hint chars</label>
+                                <label for="postWatchdogMaxHintChars" class="form-label">{{ t('prompt_editor.text.max_hint_chars') }}</label>
                                 <input type="number" class="form-control" id="postWatchdogMaxHintChars" value="500" min="100" max="2000">
                             </div>
                         </div>
                         <div class="flex-column">
                             <div class="mb-3">
-                                <label for="postWatchdogMaxOffTopic" class="form-label">Max turns off-topic</label>
+                                <label for="postWatchdogMaxOffTopic" class="form-label">{{ t('prompt_editor.text.max_turns_off_topic') }}</label>
                                 <input type="number" class="form-control" id="postWatchdogMaxOffTopic" value="3" min="1" max="50">
                             </div>
                         </div>
                         <div class="flex-column">
                             <div class="mb-3">
-                                <label for="postWatchdogMaxSameSubtopic" class="form-label">Max turns same subtopic</label>
+                                <label for="postWatchdogMaxSameSubtopic" class="form-label">{{ t('prompt_editor.text.max_turns_same_subtopic') }}</label>
                                 <input type="number" class="form-control" id="postWatchdogMaxSameSubtopic" value="5" min="1" max="50">
                             </div>
                         </div>
@@ -495,79 +496,79 @@
     <!-- Section: GranSabio Pipeline (toggle only, full config via edit) -->
     <div class="section-container">
         <div class="section-title">
-            <i class="fas fa-brain me-2"></i>GranSabio Pipeline
+            <i class="fas fa-brain me-2"></i>{{ t('prompt_editor.text.gransabio_pipeline') }}
         </div>
         <div class="mb-3 form-check form-switch">
             <input class="form-check-input" type="checkbox" id="gransabioEnabled" name="gransabio_enabled">
             <label class="form-check-label" for="gransabioEnabled">
-                Enable GranSabio QA Pipeline
+                {{ t('prompt_editor.text.enable_gransabio_qa_pipeline') }}
             </label>
         </div>
         <p class="text-muted small">
             <i class="fas fa-info-circle me-1"></i>
-            Full GranSabio configuration (QA layers, models, etc.) available after creation via the edit form.
+            {{ t('prompt_editor.text.full_gransabio_configuration_qa_layers_models_etc_availa') }}
         </p>
         <input type="hidden" id="gransabioConfigInput" name="gransabio_config" value="">
     </div>
 
     <!-- Section 5: Categories (shown for public prompts) -->
     <div class="section-container" id="categoriesSection" style="display: none;">
-        <div class="section-title"><i class="fas fa-tags me-2"></i>Categories</div>
-        <p class="text-muted small mb-3">Select at least one category for your public prompt</p>
+        <div class="section-title"><i class="fas fa-tags me-2"></i>{{ t('prompt_editor.text.categories') }}</div>
+        <p class="text-muted small mb-3">{{ t('prompt_editor.text.select_at_least_one_category_for_your_public_prompt') }}</p>
         <div class="categories-grid" id="categoriesGrid">
             <!-- Categories will be loaded dynamically -->
             <div class="text-center py-3">
                 <div class="spinner-border spinner-border-sm" role="status"></div>
-                <span class="ms-2">Loading categories...</span>
+                <span class="ms-2">{{ t('prompt_editor.text.loading_categories') }}</span>
             </div>
         </div>
         <input type="hidden" id="categoryIds" name="category_ids" value="">
         <div id="categoryError" class="text-danger small mt-2" style="display: none;">
-            Public prompts require at least one category
+            {{ t('prompt_editor.text.public_prompts_require_at_least_one_category') }}
         </div>
     </div>
 
     <!-- Section 6: Pricing (shown for public prompts) -->
     <div class="section-container" id="pricingSection" style="display: none;">
         <div class="section-title">
-            <i class="fas fa-dollar-sign me-2"></i>Monetization
-            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="You can make your prompt free or set a markup per million tokens. You receive 70% of your markup; 30% goes to the platform."></i>
+            <i class="fas fa-dollar-sign me-2"></i>{{ t('prompt_editor.text.monetization') }}
+            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ t('prompt_editor.attribute.monetization_help') }}"></i>
         </div>
-        <p class="text-muted small mb-3">Configure pricing for your public prompt. You earn 70% of your markup when others use it.</p>
+        <p class="text-muted small mb-3">{{ t('prompt_editor.runtime.configure_pricing_for_your_public_prompt_you_earn_70_of_your_markup_when_others_use_i') }}</p>
 
         <div class="mb-3">
-            <label class="form-label">Pricing Model</label>
+            <label class="form-label">{{ t('prompt_editor.text.pricing_model') }}</label>
             <div class="form-check">
                 <input class="form-check-input" type="radio" name="is_paid" id="pricingFree" value="0" checked onchange="togglePricingOptions()">
                 <label class="form-check-label" for="pricingFree">
-                    <i class="fas fa-gift me-1 text-success"></i>Standard
-                    <small class="text-muted d-block">Anyone can use. No creator earnings.</small>
+                    <i class="fas fa-gift me-1 text-success"></i>{{ t('prompt_editor.text.standard') }}
+                    <small class="text-muted d-block">{{ t('prompt_editor.text.anyone_can_use_no_creator_earnings') }}</small>
                 </label>
             </div>
             <div class="form-check mt-2">
                 <input class="form-check-input" type="radio" name="is_paid" id="pricingPaid" value="1" onchange="togglePricingOptions()">
                 <label class="form-check-label" for="pricingPaid">
-                    <i class="fas fa-coins me-1 text-warning"></i>Premium / VIP
-                    <small class="text-muted d-block">Earn money when others use this prompt.</small>
+                    <i class="fas fa-coins me-1 text-warning"></i>{{ t('prompt_editor.text.premium_vip') }}
+                    <small class="text-muted d-block">{{ t('prompt_editor.text.earn_money_when_others_use_this_prompt') }}</small>
                 </label>
             </div>
         </div>
 
         <div id="markupOptions" style="display: none;">
             <div class="mb-3">
-                <label for="markupInput" class="form-label">Your Markup ($ per million tokens)</label>
+                <label for="markupInput" class="form-label">{{ t('prompt_editor.text.your_markup_per_million_tokens') }}</label>
                 <div class="input-group">
                     <span class="input-group-text">$</span>
                     <input type="text" class="form-control" id="markupInput" name="markup_per_mtokens"
                            value="0" inputmode="decimal" pattern="[0-9]*\.?[0-9]*"
                            oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'); updateEarningsPreview()">
-                    <span class="input-group-text">/ Mtokens</span>
+                    <span class="input-group-text">{{ t('prompt_editor.text.mtokens') }}</span>
                 </div>
             </div>
 
             <div class="alert alert-success" id="earningsPreview">
                 <i class="fas fa-calculator me-2"></i>
-                <strong>You will earn:</strong> <span id="previewEarnings">$0.00</span> per million tokens (70% of markup)
+                <strong>{{ t('prompt_editor.text.you_will_earn') }}</strong> <span id="previewEarnings">{{ format_currency(0, 'USD') }}</span> {{ t('prompt_editor.pricing.earnings_unit', share=format_number(70)) }}
             </div>
         </div>
     </div>
@@ -575,10 +576,10 @@
     <!-- Action Buttons -->
     <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">
-            <i class="fas fa-save me-1"></i>Create Prompt
+            <i class="fas fa-save me-1"></i>{{ t('prompt_editor.text.create_prompt') }}
         </button>
         <a href="{{ url_for('list_prompts') }}" class="btn btn-secondary">
-            <i class="fas fa-arrow-left me-1"></i>Back to List
+            <i class="fas fa-arrow-left me-1"></i>{{ t('prompt_editor.text.back_to_list') }}
         </a>
     </div>
 </form>
@@ -591,18 +592,18 @@
             <div class="modal-header">
                 <div class="d-flex align-items-center">
                     <i class="fas fa-wand-magic-sparkles me-2" style="color: var(--accent);"></i>
-                    <h5 class="modal-title mb-0" id="wdSuggestionLabel">AI Suggested Configuration</h5>
+                    <h5 class="modal-title mb-0" id="wdSuggestionLabel">{{ t('prompt_editor.text.ai_suggested_configuration') }}</h5>
                 </div>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('prompt_editor.attribute.close') }}"></button>
             </div>
             <div class="modal-body" id="wdSuggestionBody">
                 <!-- Populated dynamically by JS -->
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('prompt_editor.text.cancel') }}</button>
                 <button type="button" class="btn btn-primary" id="wdSuggestionApplyBtn"
                         onclick="applyWatchdogSuggestions()">
-                    Apply Selected (7)
+                    {{ t('prompt_editor.watchdog.apply_selected', number=format_number(7)) }}
                 </button>
             </div>
         </div>
@@ -672,6 +673,8 @@
 
 {% block scripts_inline %}
 <script>
+    const peT = (key, params) => AurvekI18n.t("prompt_editor." + key, params);
+
 
     let audioPlayer = null;
 
@@ -680,7 +683,7 @@
             .then(response => response.json())
             .then(voices => {
                 const voiceSelect = document.getElementById('voiceSelect');
-                voiceSelect.innerHTML = '<option value="">Select a voice</option>';
+                voiceSelect.innerHTML = `<option value="">${escapeHtml(peT('runtime.select_a_voice'))}</option>`;
                 voices.forEach(voice => {
                     const option = document.createElement('option');
                     option.value = voice.id;
@@ -699,18 +702,18 @@
         const playButton = document.getElementById('playVoiceButton');
 
         const categories = [
-            "Children and Basic Education",
-            "Finance and Business",
-            "Relaxation and Meditation",
-            "Casual Conversation",
-            "Drama and Emotional Narration",
-            "Storytelling",
-            "Advertising and Announcements",
-            "Science and Technology",
-            "Education and Advanced Training",
-            "Corporate Environments",
-            "Mystery and Suspense",
-            "Sports and Energy"
+            peT('runtime.children_and_basic_education'),
+            peT('runtime.finance_and_business'),
+            peT('runtime.relaxation_and_meditation'),
+            peT('runtime.casual_conversation'),
+            peT('runtime.drama_and_emotional_narration'),
+            peT('runtime.storytelling'),
+            peT('runtime.advertising_and_announcements'),
+            peT('runtime.science_and_technology'),
+            peT('runtime.education_and_advanced_training'),
+            peT('runtime.corporate_environments'),
+            peT('runtime.mystery_and_suspense'),
+            peT('runtime.sports_and_energy')
         ];
 
         categories.forEach((category, index) => {
@@ -741,11 +744,11 @@
             audioPlayer.pause();
             audioPlayer.currentTime = 0;
             audioPlayer = null;
-            playVoiceButton.innerHTML = '<i class="fas fa-play me-1"></i>Play Sample';
+            playVoiceButton.innerHTML = `<i class="fas fa-play me-1"></i>${escapeHtml(peT('text.play_sample'))}`;
             return;
         }
 
-        playVoiceButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Loading...';
+        playVoiceButton.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${escapeHtml(peT('runtime.loading'))}`;
         playVoiceButton.disabled = true;
 
         fetch(`/api/voice-sample/${voiceId}?category=${categoryId}`)
@@ -755,18 +758,18 @@
                 audioPlayer = new Audio(url);
 
                 audioPlayer.onended = function() {
-                    playVoiceButton.innerHTML = '<i class="fas fa-play me-1"></i>Play Sample';
+                    playVoiceButton.innerHTML = `<i class="fas fa-play me-1"></i>${escapeHtml(peT('text.play_sample'))}`;
                     playVoiceButton.disabled = false;
                     audioPlayer = null;
                 };
 
                 audioPlayer.play();
-                playVoiceButton.innerHTML = '<i class="fas fa-stop me-1"></i>Stop Sample';
+                playVoiceButton.innerHTML = `<i class="fas fa-stop me-1"></i>${escapeHtml(peT('runtime.stop_sample'))}`;
                 playVoiceButton.disabled = false;
             })
             .catch(error => {
                 console.error('Error playing voice sample:', error);
-                playVoiceButton.innerHTML = '<i class="fas fa-play me-1"></i>Play Sample';
+                playVoiceButton.innerHTML = `<i class="fas fa-play me-1"></i>${escapeHtml(peT('text.play_sample'))}`;
                 playVoiceButton.disabled = false;
             });
     }
@@ -782,7 +785,7 @@
                 grid.innerHTML = '';
 
                 if (categories.length === 0) {
-                    grid.innerHTML = '<p class="text-muted">No categories available</p>';
+                    grid.innerHTML = `<p class="text-muted">${escapeHtml(peT('runtime.no_categories_available'))}</p>`;
                     return;
                 }
 
@@ -794,8 +797,8 @@
                                id="cat_${cat.id}" value="${cat.id}"
                                data-age-restricted="${cat.is_age_restricted}">
                         <label class="form-check-label" for="cat_${cat.id}">
-                            <i class="fas ${cat.icon} me-1"></i>
-                            ${cat.name}
+                            <i class="fas ${escapeHtml(cat.icon)} me-1"></i>
+                            ${escapeHtml(cat.name)}
                             ${cat.is_age_restricted ? '<span class="badge bg-danger ms-1">18+</span>' : ''}
                         </label>
                     `;
@@ -810,7 +813,7 @@
             .catch(error => {
                 console.error('Error loading categories:', error);
                 document.getElementById('categoriesGrid').innerHTML =
-                    '<p class="text-danger">Error loading categories</p>';
+                    `<p class="text-danger">${escapeHtml(peT('runtime.error_loading_categories'))}</p>`;
             });
     }
 
@@ -862,7 +865,7 @@
     function updateEarningsPreview() {
         const markup = parseFloat(document.getElementById('markupInput').value) || 0;
         const earnings = markup * 0.70;  // 70% to creator
-        document.getElementById('previewEarnings').textContent = `$${earnings.toFixed(2)}`;
+        document.getElementById('previewEarnings').textContent = `${AurvekI18n.formatCurrency(earnings, 'USD', 2)}`;
     }
 
     function toggleLLMOptions() {
@@ -877,9 +880,9 @@
 
     let promptLLMCatalog = [];
     const promptReasoningLabels = {
-        default: 'Provider default', off: 'Off', auto: 'Automatic',
-        minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
-        xhigh: 'Very high', max: 'Maximum', custom: 'Custom token budget'
+        default: peT('runtime.provider_default'), off: peT('text.off'), auto: peT('runtime.automatic'),
+        minimal: peT('runtime.minimal'), low: peT('runtime.low'), medium: peT('runtime.medium'), high: peT('runtime.high'),
+        xhigh: peT('runtime.very_high'), max: peT('runtime.maximum'), custom: peT('runtime.custom_token_budget')
     };
 
     function catalogModel(id) {
@@ -921,7 +924,7 @@
             document.getElementById('forcedReasoningMode'),
             forcedModel,
             'default',
-            'User/provider default',
+            peT('runtime.user_provider_default'),
             document.getElementById('forcedReasoningBudgetWrap'),
             document.getElementById('forcedReasoningBudget')
         );
@@ -933,12 +936,12 @@
             document.getElementById('phoneReasoningMode'),
             phoneModel || inheritedModel,
             'inherit',
-            'Inherit the prompt/model setting',
+            peT('text.inherit_the_prompt_model_setting'),
             document.getElementById('phoneReasoningBudgetWrap'),
             document.getElementById('phoneReasoningBudget')
         );
         document.getElementById('phoneRealtimeVoiceWrap').hidden =
-            phoneModel?.capabilities?.runtime?.kind !== 'openai_realtime';
+            !['openai_realtime', 'openai_live'].includes(phoneModel?.capabilities?.runtime?.kind);
     }
 
     function loadLLMs() {
@@ -953,10 +956,10 @@
                 const preWdSelect = document.getElementById('preWatchdogLLM');
                 const postWdSelect = document.getElementById('postWatchdogLLM');
                 const checkboxList = document.getElementById('llmCheckboxList');
-                select.innerHTML = '<option value="">Select a model</option>';
-                phoneSelect.innerHTML = '<option value="">Use the conversation model</option>';
-                preWdSelect.innerHTML = '<option value="">Select a model</option>';
-                postWdSelect.innerHTML = '<option value="">Select a model</option>';
+                select.innerHTML = `<option value="">${escapeHtml(peT('text.select_a_model'))}</option>`;
+                phoneSelect.innerHTML = `<option value="">${escapeHtml(peT('text.use_the_conversation_model'))}</option>`;
+                preWdSelect.innerHTML = `<option value="">${escapeHtml(peT('text.select_a_model'))}</option>`;
+                postWdSelect.innerHTML = `<option value="">${escapeHtml(peT('text.select_a_model'))}</option>`;
                 checkboxList.innerHTML = '';
                 llms.forEach(llm => {
                     const option = document.createElement('option');
@@ -971,12 +974,12 @@
                     div.className = 'form-check';
                     div.innerHTML = `
                         <input class="form-check-input llm-restrict-checkbox" type="checkbox" id="llmRestrict_${llm.id}" value="${llm.id}">
-                        <label class="form-check-label" for="llmRestrict_${llm.id}">${llm.machine} - ${llm.model}</label>
+                        <label class="form-check-label" for="llmRestrict_${llm.id}">${escapeHtml(llm.machine)} - ${escapeHtml(llm.model)}</label>
                     `;
                     checkboxList.appendChild(div);
                 });
                 phoneLlms
-                    .filter(llm => !['GPTSub', 'GranSabio'].includes(llm.machine)
+                    .filter(llm => !['GPTSub', 'GranSabio', 'O1'].includes(llm.machine)
                         && llm.capabilities?.runtime?.channels?.includes('phone'))
                     .forEach(llm => {
                         const option = document.createElement('option');
@@ -1048,7 +1051,7 @@
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
-        return div.innerHTML;
+        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     async function requestWatchdogAutoFill() {
@@ -1057,16 +1060,16 @@
 
         if (!llmSelect.value) {
             NotificationModal.warning(
-                'Post-Watchdog LLM Required',
-                'Please select a Post-Watchdog LLM before using AI Auto-fill.'
+                peT('runtime.post_watchdog_llm_required'),
+                peT('runtime.please_select_a_post_watchdog_llm_before_using_ai_auto_fill')
             );
             return;
         }
 
         if (!promptTextarea.value.trim()) {
             NotificationModal.warning(
-                'Prompt Text Required',
-                'Write the main prompt text first. The AI needs it to suggest appropriate watchdog settings.'
+                peT('runtime.prompt_text_required'),
+                peT('runtime.write_the_main_prompt_text_first_the_ai_needs_it_to_suggest_appropriate_watchdog_sett')
             );
             return;
         }
@@ -1074,7 +1077,7 @@
         const btn = document.getElementById('watchdogAutoFillBtn');
         const originalHTML = btn.innerHTML;
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Analyzing...';
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${escapeHtml(peT('runtime.analyzing'))}`;
 
         try {
             const response = await fetch('/api/watchdog/suggest-config', {
@@ -1087,7 +1090,7 @@
             });
 
             if (!response.ok) {
-                const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                const err = await response.json().catch(() => ({ detail: peT('runtime.unknown_error') }));
                 throw new Error(err.detail || `HTTP ${response.status}`);
             }
 
@@ -1097,8 +1100,8 @@
         } catch (error) {
             console.error('Watchdog auto-fill error:', error);
             NotificationModal.error(
-                'Auto-fill Error',
-                'Could not get AI suggestions. Please try again or configure manually.'
+                peT('runtime.auto_fill_error'),
+                peT('runtime.could_not_get_ai_suggestions_please_try_again_or_configure_manually')
             );
         } finally {
             btn.disabled = false;
@@ -1110,45 +1113,45 @@
         const fields = [
             {
                 key: 'mode',
-                label: 'Mode',
+                label: peT('text.mode'),
                 value: suggestion.mode,
-                display: suggestion.mode.charAt(0).toUpperCase() + suggestion.mode.slice(1)
+                display: ({interview: peT('text.interview'), coaching: peT('text.coaching'), education: peT('text.education'), custom: peT('text.custom')})[suggestion.mode] || suggestion.mode
             },
             {
                 key: 'objectives',
-                label: 'Objectives',
+                label: peT('text.objectives'),
                 value: suggestion.objectives,
                 display: suggestion.objectives.map(o => '- ' + o).join('\n')
             },
             {
                 key: 'steering_prompt',
-                label: 'Steering Prompt',
+                label: peT('text.steering_prompt'),
                 value: suggestion.steering_prompt,
                 display: suggestion.steering_prompt
             },
             {
                 key: 'frequency',
-                label: 'Frequency',
+                label: peT('text.frequency'),
                 value: suggestion.frequency,
-                display: suggestion.frequency + ' (every ' + suggestion.frequency + ' user turns)'
+                display: peT('watchdog.frequency', {count: suggestion.frequency, turns: AurvekI18n.formatNumber(suggestion.frequency)})
             },
             {
                 key: 'max_hint_chars',
-                label: 'Max Hint Chars',
+                label: peT('runtime.max_hint_chars'),
                 value: suggestion.max_hint_chars,
-                display: String(suggestion.max_hint_chars)
+                display: AurvekI18n.formatNumber(suggestion.max_hint_chars)
             },
             {
                 key: 'max_turns_off_topic',
-                label: 'Max Turns Off-Topic',
+                label: peT('runtime.max_turns_off_topic'),
                 value: suggestion.thresholds.max_turns_off_topic,
-                display: String(suggestion.thresholds.max_turns_off_topic)
+                display: AurvekI18n.formatNumber(suggestion.thresholds.max_turns_off_topic)
             },
             {
                 key: 'max_turns_same_subtopic',
-                label: 'Max Turns Same Subtopic',
+                label: peT('runtime.max_turns_same_subtopic'),
                 value: suggestion.thresholds.max_turns_same_subtopic,
-                display: String(suggestion.thresholds.max_turns_same_subtopic)
+                display: AurvekI18n.formatNumber(suggestion.thresholds.max_turns_same_subtopic)
             }
         ];
 
@@ -1166,11 +1169,11 @@
         const modalBody = document.getElementById('wdSuggestionBody');
         modalBody.innerHTML = `
             <p class="text-muted mb-3" style="font-size: 0.9rem;">
-                The AI analyzed your prompt and suggests these settings:
+                ${escapeHtml(peT('runtime.the_ai_analyzed_your_prompt_and_suggests_these_settings'))}
             </p>
             <div class="bulk-actions">
-                <a href="#" onclick="toggleAllSuggestions(true); return false;">Select All</a>
-                <a href="#" onclick="toggleAllSuggestions(false); return false;">Deselect All</a>
+                <a href="#" onclick="toggleAllSuggestions(true); return false;">${escapeHtml(peT('runtime.select_all'))}</a>
+                <a href="#" onclick="toggleAllSuggestions(false); return false;">${escapeHtml(peT('runtime.deselect_all'))}</a>
             </div>
             <div class="suggestion-list">${itemsHTML}</div>
         `;
@@ -1201,7 +1204,7 @@
         const checkedCount = [...checkboxes].filter(cb => cb.checked).length;
         const applyBtn = document.getElementById('wdSuggestionApplyBtn');
         applyBtn.disabled = checkedCount === 0;
-        applyBtn.textContent = 'Apply Selected (' + checkedCount + ')';
+        applyBtn.textContent = peT('watchdog.apply_selected', {number: AurvekI18n.formatNumber(checkedCount)});
     }
 
     function applyWatchdogSuggestions() {

@@ -2,7 +2,7 @@
 <nav class="aurvek-world-nav" id="aurvek-world-nav">
     <div class="aurvek-world-nav-left">
         <a href="/home" class="aurvek-world-nav-logo-link">
-            <img src="{{ get_static_url('/static/img/aurvek-logo.svg') }}" class="aurvek-world-nav-logo" alt="Aurvek" onerror="this.style.display='none'">
+            <span class="aurvek-world-nav-logo">Aurvek</span>
         </a>
         <a href="#" class="aurvek-world-nav-back" id="world-back-to-pack" style="display:none">
             <i class="fas fa-arrow-left"></i>
@@ -19,25 +19,25 @@
         </div>
     </div>
     <div class="aurvek-world-nav-right">
-        <a href="/chat" class="aurvek-world-nav-btn aurvek-world-nav-btn--accent" title="Chat">
+        <a href="/chat" class="aurvek-world-nav-btn aurvek-world-nav-btn--accent" title="{{ t('public_shell.chat') }}">
             <i class="fas fa-comment"></i>
-            <span class="aurvek-world-nav-btn-text">Chat</span>
+            <span class="aurvek-world-nav-btn-text">{{ t('public_shell.chat') }}</span>
         </a>
-        <a href="/home" class="aurvek-world-nav-btn" title="Home">
+        <a href="/home" class="aurvek-world-nav-btn" title="{{ t('public_shell.home') }}">
             <i class="fas fa-home"></i>
         </a>
         <div class="aurvek-world-nav-settings" id="world-settings">
-            <button class="aurvek-world-nav-btn" id="world-settings-btn" title="Settings">
+            <button class="aurvek-world-nav-btn" id="world-settings-btn" title="{{ t('public_shell.settings') }}">
                 <i class="fas fa-cog"></i>
             </button>
             <div class="aurvek-world-nav-dropdown aurvek-world-nav-settings-dropdown" id="world-settings-dropdown">
                 <a href="/settings" class="aurvek-world-nav-dropdown-item">
                     <i class="fas fa-user-cog" style="font-size:14px;opacity:0.7;width:24px;text-align:center"></i>
-                    <span class="aurvek-world-nav-dropdown-name">Settings</span>
+                    <span class="aurvek-world-nav-dropdown-name">{{ t('public_shell.settings') }}</span>
                 </a>
                 <button class="aurvek-world-nav-dropdown-item" id="world-classic-home-btn" type="button" style="width:100%;border:none;background:none;font:inherit;text-align:left;cursor:pointer">
                     <i class="fas fa-th-large" style="font-size:14px;opacity:0.7;width:24px;text-align:center"></i>
-                    <span class="aurvek-world-nav-dropdown-name">Classic Home</span>
+                    <span class="aurvek-world-nav-dropdown-name">{{ t('public_shell.classic_home') }}</span>
                 </button>
             </div>
         </div>
@@ -45,4 +45,5 @@
 </nav>
 <link rel="stylesheet" href="{{ get_static_url('/static/css/world-nav.css') }}">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+{% include 'includes/i18n.html' %}
 <script src="{{ get_static_url('/static/js/world-nav.js') }}"></script>

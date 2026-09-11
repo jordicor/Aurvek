@@ -1,7 +1,7 @@
 from ai_runtime.dependencies import *
 from ai_runtime.config import _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
-from ai_runtime.persistence.messages import persistence_error_payload, save_content_to_db
+from ai_runtime.persistence.messages import persistence_error_payload, persistence_result_payload, save_content_to_db
 from ai_runtime.providers.openai_chat import _chat_reasoning_effort, call_llm_api
 from ai_runtime.providers.openai_responses import _convert_messages_for_responses_api
 from ai_runtime.provider_health import record_provider_error_for_label, record_provider_success_for_label
@@ -89,6 +89,12 @@ async def call_xai_responses_api(messages, model, temperature, max_tokens, promp
     """
     global stop_signals
     logger.info("enters call_xai_responses_api")
+
+    from integrations.applications.billing import current_application_operation
+    from integrations.embed.models import EmbedError
+    if current_application_operation(current_user.id) is not None and any(
+            item.get("type") in {"web_search", "x_search"} for item in (tools or [])):
+        raise EmbedError("application_search_connector_required", 403)
 
     error_yielded = False
     api_url = "https://api.x.ai/v1/responses"
@@ -451,10 +457,9 @@ async def call_xai_responses_api(messages, model, temperature, max_tokens, promp
                                                                         strip_device_action_blocks=strip_device_action_blocks,
                                                                         billing_reservation_id=billing_reservation_id,
                                                                         billing_only_accumulated_usage=bool(billing_reservation_id))
-            if user_message_id and bot_message_id:
-                yield f"data: {orjson.dumps({'message_ids': {'user': user_message_id, 'bot': bot_message_id}}).decode()}\n\n"
-            else:
-                yield f"data: {orjson.dumps(persistence_error_payload()).decode()}\n\n"
+            persisted = persistence_result_payload(user_message_id, bot_message_id)
+            yield f"data: {orjson.dumps(persisted).decode()}\n\n"
+            if persisted.get("persistence_error"):
                 return
 
         yield content.strip()

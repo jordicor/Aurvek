@@ -46,7 +46,7 @@ async def _llm_machines(llm_ids: list[int]) -> dict[int, str]:
     return {int(row["id"]): str(row["machine"] or "") for row in rows}
 
 
-async def validate_shared_landing_config(config: dict) -> dict:
+async def validate_shared_landing_config(config: dict, *, translator=None) -> dict:
     """Return a copy whose default exists and is not a personal subscription."""
     result = dict(config or {})
     default_llm_id = _coerce_llm_id(result.get("default_llm_id"))
@@ -55,13 +55,13 @@ async def validate_shared_landing_config(config: dict) -> dict:
         return result
     machines = await _llm_machines([default_llm_id])
     if default_llm_id not in machines:
-        raise HTTPException(status_code=400, detail="Default LLM does not exist")
+        raise HTTPException(status_code=400, detail=(translator.t('marketplace_admin.response.default_llm_does_not_exist') if translator else "Default LLM does not exist"))
     if machines[default_llm_id] == _PERSONAL_SUBSCRIPTION_MACHINE:
         raise HTTPException(
             status_code=400,
             detail=(
-                "A personal ChatGPT subscription cannot be a registration "
-                "default. Each user must connect their own account first."
+                (translator.t('marketplace_admin.response.a_personal_chatgpt_subscription_cannot_be_a_registration_default_each_user_must_conne') if translator else "A personal ChatGPT subscription cannot be a registration "
+                "default. Each user must connect their own account first.")
             ),
         )
     result["default_llm_id"] = default_llm_id

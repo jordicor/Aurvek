@@ -1,26 +1,27 @@
+{% set i18n_domains = ['admin_models'] %}
 {% extends 'base.html' %}
 
-{% block title %}Create LLM - AURVEK{% endblock %}
+{% block title %}{{ t('admin_models.title.create') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Create New LLM{% endblock %}
+{% block page_title %}{{ t('admin_models.title.create') }}{% endblock %}
 
 {% block back_url %}{{ url_for('llm_list') }}{% endblock %}
-{% block back_title %}Back to LLM List{% endblock %}
+{% block back_title %}{{ t('admin_models.action.back') }}{% endblock %}
 
 {% block content %}
 <form id="createLlmForm" action="/admin/llm/new" method="post" data-form-guard>
 
     <!-- Section 1: Model Information -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-robot me-2"></i>Model Information</div>
+        <div class="section-title"><i class="fas fa-robot me-2"></i>{{ t('admin_models.title.information') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="machine" class="form-label">Machine</label>
+                    <label for="machine" class="form-label">{{ t('admin_models.field.provider') }}</label>
                     <select class="form-select" id="machine" name="machine" required>
                         <option value="GPT">GPT</option>
                         <option value="xAI">xAI</option>
@@ -31,24 +32,24 @@
                         <option value="MiniMax">MiniMax</option>
                         <option value="Kimi">Kimi</option>
                         <option value="Ollama">Ollama</option>
-                        <option value="Manual">Manual</option>
+                        <option value="Manual">{{ t('admin_models.status.manual') }}</option>
                     </select>
-                    <small class="form-text text-muted">Select the AI provider/machine type</small>
+                    <small class="form-text text-muted">{{ t('admin_models.help.provider') }}</small>
                 </div>
                 <div class="mb-3">
-                    <label for="model" class="form-label">Model Name</label>
+                    <label for="model" class="form-label">{{ t('admin_models.field.name') }}</label>
                     <input type="text" class="form-control" id="model" name="model" required
-                           placeholder="e.g., gpt-4o-mini, claude-3-sonnet">
-                    <small class="form-text text-muted">The exact model identifier used by the API</small>
+                           placeholder="{{ t('admin_models.help.model_placeholder') }}">
+                    <small class="form-text text-muted">{{ t('admin_models.help.identifier') }}</small>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3 form-check mt-4">
                     <input type="checkbox" class="form-check-input" id="vision" name="vision">
                     <label class="form-check-label" for="vision">
-                        <i class="fas fa-eye me-1"></i>Vision Capability
+                        <i class="fas fa-eye me-1"></i>{{ t('admin_models.field.vision') }}
                     </label>
-                    <small class="form-text text-muted d-block">Enable if this model can process images</small>
+                    <small class="form-text text-muted d-block">{{ t('admin_models.help.vision') }}</small>
                 </div>
             </div>
         </div>
@@ -56,32 +57,32 @@
 
     <!-- Section 2: Pricing -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-dollar-sign me-2"></i>Pricing (per token)</div>
+        <div class="section-title"><i class="fas fa-dollar-sign me-2"></i>{{ t('admin_models.title.pricing') }}</div>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="inputTokenCost" class="form-label">Input Token Cost (per million)</label>
+                    <label for="inputTokenCost" class="form-label">{{ t('admin_models.field.input_cost') }}</label>
                     <div class="input-group">
                         <span class="input-group-text">$</span>
                         <input type="text" class="form-control" id="inputTokenCost"
                                name="input_token_cost" placeholder="0.15" inputmode="decimal" pattern="[0-9]*\.?[0-9]*"
                                oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')">
-                        <span class="input-group-text">/ MTok</span>
+                        <span class="input-group-text">{{ t('admin_models.unit.per_million_tokens') }}</span>
                     </div>
-                    <small class="form-text text-muted">Cost per million input tokens in USD (e.g., 0.15 for gpt-4o-mini)</small>
+                    <small class="form-text text-muted">{{ t('admin_models.help.input_cost') }}</small>
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label for="outputTokenCost" class="form-label">Output Token Cost (per million)</label>
+                    <label for="outputTokenCost" class="form-label">{{ t('admin_models.field.output_cost') }}</label>
                     <div class="input-group">
                         <span class="input-group-text">$</span>
                         <input type="text" class="form-control" id="outputTokenCost"
                                name="output_token_cost" placeholder="0.60" inputmode="decimal" pattern="[0-9]*\.?[0-9]*"
                                oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')">
-                        <span class="input-group-text">/ MTok</span>
+                        <span class="input-group-text">{{ t('admin_models.unit.per_million_tokens') }}</span>
                     </div>
-                    <small class="form-text text-muted">Cost per million output tokens in USD (e.g., 0.60 for gpt-4o-mini)</small>
+                    <small class="form-text text-muted">{{ t('admin_models.help.output_cost') }}</small>
                 </div>
             </div>
         </div>
@@ -90,10 +91,10 @@
     <!-- Action Buttons -->
     <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">
-            <i class="fas fa-plus me-1"></i>Create LLM
+            <i class="fas fa-plus me-1"></i>{{ t('admin_models.action.create') }}
         </button>
         <a href="{{ url_for('llm_list') }}" class="btn btn-secondary">
-            <i class="fas fa-times me-1"></i>Cancel
+            <i class="fas fa-times me-1"></i>{{ t('admin_models.action.cancel') }}
         </a>
     </div>
 </form>

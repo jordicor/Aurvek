@@ -12,6 +12,7 @@ from ai_runtime.watchdog import takeover as watchdog_takeover
 from integrations.telephony.foreground import ForegroundCommitGuard
 from integrations.telephony.phone_context import create_phone_channel_turn
 from integrations.telephony.tooling import (
+    CallSchedulePolicy,
     CallStartController,
     PHONE_END_CALL_TOOL,
     phone_tools_for_context,
@@ -32,11 +33,62 @@ def _phone_turn(*, openai_realtime_bridge=None):
     )
 
 
+def _phone_turn_with_schedule(mode="on_request", *, openai_realtime_bridge=None):
+    return create_phone_channel_turn(
+        ForegroundCommitGuard(
+            conversation_id=7,
+            epoch=2,
+            expected_owner="phone",
+            call_id="call-tool",
+            lease_owner="media-tool",
+        ),
+        turn_id="turn-tool",
+        openai_realtime_bridge=openai_realtime_bridge,
+        ai_initiation_mode=mode,
+        prompt_id=1,
+    )
+
+
 class _PendingRealtimeBridge:
     _aurvek_internal_realtime_bridge = True
 
     def __init__(self):
         self.finish_pending_output = AsyncMock(return_value=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ready", [True, False])
+async def test_realtime_transfer_uses_native_audio_confirmation_and_records_its_message(monkeypatch, ready):
+    from integrations.applications import billing, tools, tool_handoff
+    from integrations.embed.models import EmbedError
+    pending = SimpleNamespace(bot_message_id=None)
+    monkeypatch.setattr(billing, "current_application_operation", lambda *_: object())
+    monkeypatch.setattr(billing, "revalidate_application_operation", AsyncMock())
+    monkeypatch.setattr(tools, "authorize_application_tool", AsyncMock(return_value=object()))
+    monkeypatch.setattr(tool_handoff, "request_tool_handoff", AsyncMock(
+        return_value=pending, side_effect=None if ready else EmbedError("handoff_voice_unavailable", 409)))
+    monkeypatch.setattr(execution, "revalidate_user_billing", AsyncMock(return_value=True))
+    direct_save = AsyncMock()
+    monkeypatch.setattr(execution, "save_content_to_db", direct_save)
+    responses = []
+
+    async def provider(**kwargs):
+        responses.append(kwargs["messages"][-1])
+        yield 'data: {"content":"Te paso con B."}\n\n'
+        yield 'data: {"message_ids":{"user":81,"bot":82}}\n\n'
+
+    arguments = {"assistant_id": "b", "reply_message": "Te paso con B."}
+    chunks = [chunk async for chunk in execution.handle_function_call(
+        "transfer_to_assistant", arguments, [], "gpt-realtime-2.1-mini", 0, 1000,
+        "", 7, SimpleNamespace(id=4), None, 10, 5, 15, None, 4, "GPT", "prompt",
+        tool_call={"id": "transfer-b", "name": "transfer_to_assistant", "arguments": arguments},
+        api_func_override=provider)]
+    result = orjson.loads(responses[0]["output"])
+    assert pending.bot_message_id == (82 if ready else None)
+    assert result["ready"] is ready
+    assert result.get("reply_message") == ("Te paso con B." if ready else None)
+    assert sum('"content"' in chunk for chunk in chunks) == 1
+    direct_save.assert_not_awaited()
 
 
 class _TakeoverUser:
@@ -270,6 +322,56 @@ def test_start_call_tool_is_scoped_to_the_prompt_mode_and_current_turn():
     assert phone_tools_for_context(ChannelContext(channel="web")) == []
 
 
+def test_schedule_call_tool_is_scoped_and_requires_normalized_time_fields():
+    on_request = phone_tools_for_context(
+        ChannelContext(
+            channel="whatsapp",
+            provenance={"call_schedule_policy": CallSchedulePolicy("on_request")},
+        )
+    )
+    proactive_phone = phone_tools_for_context(
+        _phone_turn_with_schedule("proactive").context
+    )
+
+    schedule = on_request[0]["function"]
+    assert schedule["name"] == "schedule_phone_call"
+    assert "supplies the missing timezone/location" in schedule["description"]
+    assert schedule["parameters"]["required"] == [
+        "scheduled_at",
+        "timezone_name",
+        "fold",
+    ]
+    assert [tool["function"]["name"] for tool in proactive_phone] == [
+        "end_call",
+        "schedule_phone_call",
+    ]
+    assert "You may propose" in proactive_phone[1]["function"]["description"]
+
+
+def test_schedule_idempotency_fallback_is_stable_per_turn_and_unique_between_turns():
+    first = CallSchedulePolicy("on_request")
+    second = CallSchedulePolicy("on_request")
+
+    first_key = execution._phone_schedule_idempotency_key(
+        conversation_id=7,
+        tool_call=None,
+        request_nonce=first.request_nonce,
+    )
+    repeated_key = execution._phone_schedule_idempotency_key(
+        conversation_id=7,
+        tool_call=None,
+        request_nonce=first.request_nonce,
+    )
+    second_key = execution._phone_schedule_idempotency_key(
+        conversation_id=7,
+        tool_call=None,
+        request_nonce=second.request_nonce,
+    )
+
+    assert first_key == repeated_key
+    assert second_key != first_key
+
+
 @pytest.mark.asyncio
 async def test_end_call_tool_persists_farewell_and_arms_hangup_after_audio(monkeypatch):
     phone_turn = _phone_turn()
@@ -389,6 +491,327 @@ async def test_realtime_end_call_returns_result_to_same_provider_before_hangup(
     assert phone_turn.end_controller.pending.final_message.endswith("soon!")
     assert not any("phone_end_call_requested" in chunk for chunk in chunks)
     assert any("Thanks for calling" in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_schedule_call_creates_durable_job_before_standard_model_confirms(
+    monkeypatch,
+):
+    events = []
+
+    class FakeScheduleService:
+        def __init__(self, _repository):
+            pass
+
+        async def create_ai_scheduled_call_job(self, **kwargs):
+            events.append(("scheduled", kwargs))
+            return (
+                {
+                    "id": "job-scheduled",
+                    "scheduled_at_utc": "2030-01-08T00:00:00Z",
+                    "timezone_name": "America/New_York",
+                },
+                True,
+            )
+
+    async def provider(**kwargs):
+        events.append(("provider", kwargs))
+        yield 'data: {"content":"Perfecto, te llamaré entonces."}\n\n'
+
+    monkeypatch.setattr(execution, "TelephonyRepository", lambda: object())
+    monkeypatch.setattr(execution, "UserPhoneService", FakeScheduleService)
+    monkeypatch.setattr(execution, "call_kimi_api", provider)
+    monkeypatch.setattr(
+        execution, "revalidate_user_billing", AsyncMock(return_value=True)
+    )
+    context = ChannelContext(
+        channel="whatsapp",
+        provenance={
+            "call_schedule_policy": CallSchedulePolicy(
+                "on_request",
+                prompt_id=1,
+            )
+        },
+    )
+    messages = []
+    with bind_channel_turn(context):
+        chunks = [
+            chunk
+            async for chunk in execution.handle_function_call(
+                "schedule_phone_call",
+                {
+                    "scheduled_at": "2030-01-07T19:00:00",
+                    "timezone_name": "America/New_York",
+                    "fold": "not_ambiguous",
+                },
+                messages,
+                "kimi-test",
+                0.3,
+                1000,
+                "",
+                7,
+                SimpleNamespace(id=4),
+                None,
+                10,
+                5,
+                15,
+                None,
+                4,
+                "Kimi",
+                "prompt",
+                user_message="El lunes a las siete.",
+                tool_call={
+                    "id": "call-schedule-1",
+                    "name": "schedule_phone_call",
+                    "arguments": {
+                        "scheduled_at": "2030-01-07T19:00:00",
+                        "timezone_name": "America/New_York",
+                        "fold": "not_ambiguous",
+                    },
+                },
+            )
+        ]
+
+    assert [event[0] for event in events] == ["scheduled", "provider"]
+    scheduled_kwargs = events[0][1]
+    assert scheduled_kwargs["owner_user_id"] == 4
+    assert scheduled_kwargs["conversation_id"] == 7
+    assert scheduled_kwargs["expected_prompt_id"] == 1
+    assert scheduled_kwargs["expected_initiation_mode"] == "on_request"
+    assert callable(scheduled_kwargs["transaction_guard"])
+    assert scheduled_kwargs["idempotency_key"].startswith("assistant-schedule-")
+    tool_result = orjson.loads(messages[-1]["content"])
+    assert tool_result["status"] == "scheduled"
+    assert tool_result["job_id"] == "job-scheduled"
+    assert any("Perfecto" in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_realtime_schedule_failure_returns_private_error_then_speaks(
+    monkeypatch,
+):
+    class FailingScheduleService:
+        def __init__(self, _repository):
+            pass
+
+        async def create_ai_scheduled_call_job(self, **_kwargs):
+            raise execution.TelephonyConflictError(
+                "You already have a future scheduled call"
+            )
+
+    provider_calls = []
+
+    async def provider(**kwargs):
+        provider_calls.append(kwargs)
+        yield 'data: {"content":"Ya tienes otra llamada programada."}\n\n'
+        yield "Ya tienes otra llamada programada."
+
+    bridge = _PendingRealtimeBridge()
+    phone_turn = _phone_turn_with_schedule(
+        openai_realtime_bridge=bridge
+    )
+    monkeypatch.setattr(execution, "TelephonyRepository", lambda: object())
+    monkeypatch.setattr(execution, "UserPhoneService", FailingScheduleService)
+    monkeypatch.setattr(
+        execution, "revalidate_user_billing", AsyncMock(return_value=True)
+    )
+    messages = []
+    with bind_channel_turn(phone_turn.context, handle=SimpleNamespace()):
+        chunks = [
+            chunk
+            async for chunk in execution.handle_function_call(
+                "schedule_phone_call",
+                {
+                    "scheduled_at": "2030-01-07T19:00:00",
+                    "timezone_name": "America/New_York",
+                    "fold": "not_ambiguous",
+                },
+                messages,
+                "gpt-realtime-2.1-mini",
+                0.3,
+                1000,
+                "",
+                7,
+                SimpleNamespace(id=4),
+                None,
+                10,
+                5,
+                15,
+                None,
+                4,
+                "GPT",
+                "prompt",
+                user_message="El lunes a las siete.",
+                tool_call={
+                    "id": "call-schedule-realtime",
+                    "name": "schedule_phone_call",
+                    "arguments": {
+                        "scheduled_at": "2030-01-07T19:00:00",
+                        "timezone_name": "America/New_York",
+                        "fold": "not_ambiguous",
+                    },
+                },
+                api_func_override=provider,
+            )
+        ]
+
+    assert len(provider_calls) == 1
+    result = orjson.loads(messages[-1]["output"])
+    assert result["status"] == "error"
+    assert "already have" in result["error"]
+    assert "Do not claim" in result["instruction"]
+    assert any("otra llamada" in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_realtime_schedule_success_returns_private_result_then_confirms(
+    monkeypatch,
+):
+    class SuccessfulScheduleService:
+        def __init__(self, _repository):
+            pass
+
+        async def create_ai_scheduled_call_job(self, **_kwargs):
+            return (
+                {
+                    "id": "job-realtime-success",
+                    "scheduled_at_utc": "2030-01-08T00:00:00Z",
+                    "timezone_name": "America/New_York",
+                },
+                True,
+            )
+
+    provider_calls = []
+
+    async def provider(**kwargs):
+        provider_calls.append(kwargs)
+        yield 'data: {"content":"Perfecto, te llamaré el lunes a las siete."}\n\n'
+        yield "Perfecto, te llamaré el lunes a las siete."
+
+    bridge = _PendingRealtimeBridge()
+    phone_turn = _phone_turn_with_schedule(openai_realtime_bridge=bridge)
+    monkeypatch.setattr(execution, "TelephonyRepository", lambda: object())
+    monkeypatch.setattr(execution, "UserPhoneService", SuccessfulScheduleService)
+    monkeypatch.setattr(
+        execution,
+        "revalidate_user_billing",
+        AsyncMock(return_value=True),
+    )
+    messages = []
+    with bind_channel_turn(phone_turn.context, handle=SimpleNamespace()):
+        chunks = [
+            chunk
+            async for chunk in execution.handle_function_call(
+                "schedule_phone_call",
+                {
+                    "scheduled_at": "2030-01-07T19:00:00",
+                    "timezone_name": "America/New_York",
+                    "fold": "not_ambiguous",
+                },
+                messages,
+                "gpt-realtime-2.1-mini",
+                0.3,
+                1000,
+                "",
+                7,
+                SimpleNamespace(id=4),
+                None,
+                10,
+                5,
+                15,
+                None,
+                4,
+                "GPT",
+                "prompt",
+                user_message="El lunes a las siete.",
+                tool_call={
+                    "id": "call-schedule-realtime-success",
+                    "name": "schedule_phone_call",
+                    "arguments": {},
+                },
+                api_func_override=provider,
+            )
+        ]
+
+    assert len(provider_calls) == 1
+    result = orjson.loads(messages[-1]["output"])
+    assert result["status"] == "scheduled"
+    assert result["job_id"] == "job-realtime-success"
+    assert not any("job-realtime-success" in chunk for chunk in chunks)
+    assert any("te llamaré" in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_schedule_reserves_followup_before_creating_durable_job(monkeypatch):
+    service_calls = []
+
+    class MustNotScheduleService:
+        def __init__(self, _repository):
+            pass
+
+        async def create_ai_scheduled_call_job(self, **kwargs):
+            service_calls.append(kwargs)
+            raise AssertionError("job creation must remain behind billing")
+
+    extension = AsyncMock(
+        side_effect=execution.InsufficientBalanceError("no balance")
+    )
+    monkeypatch.setattr(execution, "TelephonyRepository", lambda: object())
+    monkeypatch.setattr(execution, "UserPhoneService", MustNotScheduleService)
+    monkeypatch.setattr(execution, "extend_ai_reservation", extension)
+    context = ChannelContext(
+        channel="whatsapp",
+        provenance={
+            "call_schedule_policy": CallSchedulePolicy(
+                "on_request",
+                prompt_id=1,
+            )
+        },
+    )
+
+    with bind_channel_turn(context):
+        chunks = [
+            chunk
+            async for chunk in execution.handle_function_call(
+                "schedule_phone_call",
+                {
+                    "scheduled_at": "2030-01-07T19:00:00",
+                    "timezone_name": "America/New_York",
+                    "fold": "not_ambiguous",
+                },
+                [],
+                "kimi-test",
+                0.3,
+                1000,
+                "",
+                7,
+                SimpleNamespace(id=4),
+                None,
+                10,
+                5,
+                15,
+                None,
+                4,
+                "Kimi",
+                "prompt",
+                user_message="El lunes a las siete.",
+                billing_reservation_id="reservation-schedule",
+                billing_followup_hold_amount=0.25,
+                tool_call={
+                    "id": "call-schedule-billing",
+                    "name": "schedule_phone_call",
+                    "arguments": {},
+                },
+            )
+        ]
+
+    extension.assert_awaited_once_with(
+        reservation_id="reservation-schedule",
+        user_id=4,
+        additional_amount=0.25,
+    )
+    assert service_calls == []
+    assert any("Insufficient balance" in chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio
@@ -609,6 +1032,15 @@ async def test_realtime_at_field_extends_followup_reservation_once(monkeypatch):
         ("dream_of_consciousness", {}, "error"),
         ("atFieldActivate", {}, "error"),
         ("start_phone_call", {"reply_message": "Call me"}, "error"),
+        (
+            "schedule_phone_call",
+            {
+                "scheduled_at": "2030-01-07T19:00:00",
+                "timezone_name": "America/New_York",
+                "fold": "not_ambiguous",
+            },
+            "error",
+        ),
         ("zipItDrEvil", {}, "error"),
         ("pass_turn", {"reason_code": "OTHER"}, "success"),
         ("advanceExtension", {"target_extension_id": "invalid"}, "error"),
@@ -794,7 +1226,7 @@ async def test_start_call_fails_closed_without_a_turn_capability():
 async def test_phone_watchdog_takeover_can_end_only_the_bound_call(
     monkeypatch,
 ):
-    phone_turn = _phone_turn()
+    phone_turn = _phone_turn_with_schedule()
     saved = []
     provider_tools = []
 
@@ -818,6 +1250,7 @@ async def test_phone_watchdog_takeover_can_end_only_the_bound_call(
         chunks = await _collect_takeover()
 
     assert provider_tools[0]["function"]["name"] == "end_call"
+    assert [tool["function"]["name"] for tool in provider_tools] == ["end_call"]
     assert phone_turn.end_controller.pending.final_message == "Hasta pronto."
     assert saved[0][0][0] == "Hasta pronto."
     assert any("phone_end_call_requested" in chunk for chunk in chunks)
@@ -832,7 +1265,10 @@ async def test_non_phone_watchdog_takeover_uses_current_turn_call_outbox_control
     controller = CallStartController(mode)
     context = ChannelContext(
         channel="telegram",
-        provenance={"call_start_controller": controller},
+        provenance={
+            "call_start_controller": controller,
+            "call_schedule_policy": CallSchedulePolicy(mode, prompt_id=1),
+        },
     )
     saved = []
     provider_tools = []
@@ -856,6 +1292,9 @@ async def test_non_phone_watchdog_takeover_uses_current_turn_call_outbox_control
         chunks = await _collect_takeover()
 
     assert provider_tools[0]["function"]["name"] == "start_phone_call"
+    assert [tool["function"]["name"] for tool in provider_tools] == [
+        "start_phone_call"
+    ]
     assert controller.directive.reply_message == "Te llamo ahora."
     assert saved[0][0][0] == "Te llamo ahora."
     assert any("phone_call_requested" in chunk for chunk in chunks)

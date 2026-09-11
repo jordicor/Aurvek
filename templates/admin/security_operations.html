@@ -1,6 +1,7 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_operations'] %}
 
-{% block title %}Security Operations - Admin - AURVEK{% endblock %}
+{% block title %}{{ t('admin_operations.security_operations_admin_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -79,15 +80,15 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Security Operations{% endblock %}
+{% block page_title %}{{ t('admin_operations.security_operations') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Operate IP blocks and Cloudflare synchronization from a single admin panel</p>
+<p class="page-subtitle">{{ t('admin_operations.operate_ip_blocks_and_cloudflare_synchronization_from_a_single_admin_pan') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <button id="refreshButton" class="btn btn-outline-secondary btn-sm" onclick="refreshSecurityPanel()">
-    <i class="fas fa-sync-alt me-1"></i> Refresh
+    <i class="fas fa-sync-alt me-1"></i> {{ t('admin_operations.refresh') }}
 </button>
 {% endblock %}
 
@@ -99,30 +100,30 @@
 <div class="row mb-4">
     <div class="col-md-3 col-6 mb-3">
         <div class="security-stat-card">
-            <div class="label"><i class="fas fa-ban me-1"></i>Blocked IPs</div>
+            <div class="label"><i class="fas fa-ban me-1"></i>{{ t('admin_operations.blocked_ips') }}</div>
             <div id="statBlockedIps" class="value">-</div>
-            <div id="statBlockedIpsSub" class="subtext">Current active blocks</div>
+            <div id="statBlockedIpsSub" class="subtext">{{ t('admin_operations.current_active_blocks') }}</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="security-stat-card">
-            <div class="label"><i class="fas fa-shield-alt me-1"></i>Total Block Events</div>
+            <div class="label"><i class="fas fa-shield-alt me-1"></i>{{ t('admin_operations.total_block_events') }}</div>
             <div id="statBlockEvents" class="value">-</div>
-            <div class="subtext">All time counter</div>
+            <div class="subtext">{{ t('admin_operations.all_time_counter') }}</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="security-stat-card">
-            <div class="label"><i class="fas fa-cloud me-1"></i>Cloudflare Escalations</div>
+            <div class="label"><i class="fas fa-cloud me-1"></i>{{ t('admin_operations.cloudflare_escalations') }}</div>
             <div id="statCloudflareEscalations" class="value">-</div>
-            <div class="subtext">Tracked in security backend</div>
+            <div class="subtext">{{ t('admin_operations.tracked_in_security_backend') }}</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="security-stat-card">
-            <div class="label"><i class="fas fa-database me-1"></i>Active Backend</div>
+            <div class="label"><i class="fas fa-database me-1"></i>{{ t('admin_operations.active_backend') }}</div>
             <div id="statBackend" class="value security-monospace">-</div>
-            <div id="statBackendSub" class="subtext">Security tracker storage</div>
+            <div id="statBackendSub" class="subtext">{{ t('admin_operations.security_tracker_storage') }}</div>
         </div>
     </div>
 </div>
@@ -130,7 +131,7 @@
 <div class="row mb-4">
     <div class="col-lg-6 mb-3">
         <div class="section-container h-100">
-            <div class="section-title"><i class="fas fa-user-shield me-2"></i>Manual Operations</div>
+            <div class="section-title"><i class="fas fa-user-shield me-2"></i>{{ t('admin_operations.manual_operations') }}</div>
 
             <form id="blockIpForm" class="row g-2 mb-3">
                 <div class="col-md-4">
@@ -138,28 +139,28 @@
                     <input id="blockIp" class="form-control" type="text" placeholder="203.0.113.10" required>
                 </div>
                 <div class="col-md-3">
-                    <label class="form-label mb-1" for="blockHours">Hours</label>
+                    <label class="form-label mb-1" for="blockHours">{{ t('admin_operations.hours') }}</label>
                     <input id="blockHours" class="form-control" type="number" min="1" max="720" value="24" required>
                 </div>
                 <div class="col-md-5">
-                    <label class="form-label mb-1" for="blockReason">Reason</label>
-                    <input id="blockReason" class="form-control" type="text" value="Manual block from admin panel" maxlength="200">
+                    <label class="form-label mb-1" for="blockReason">{{ t('admin_operations.reason') }}</label>
+                    <input id="blockReason" class="form-control" type="text" placeholder="{{ t('admin_operations.security.default_reason') }}" maxlength="200">
                 </div>
                 <div class="col-12">
                     <button class="btn btn-danger btn-sm" type="submit">
-                        <i class="fas fa-ban me-1"></i> Block IP
+                        <i class="fas fa-ban me-1"></i> {{ t('admin_operations.block_ip') }}
                     </button>
                 </div>
             </form>
 
             <form id="checkIpForm" class="row g-2">
                 <div class="col-md-8">
-                    <label class="form-label mb-1" for="statusIp">Check IP status</label>
+                    <label class="form-label mb-1" for="statusIp">{{ t('admin_operations.check_ip_status') }}</label>
                     <input id="statusIp" class="form-control" type="text" placeholder="198.51.100.20" required>
                 </div>
                 <div class="col-md-4 d-flex align-items-end">
                     <button class="btn btn-outline-primary btn-sm w-100" type="submit">
-                        <i class="fas fa-search me-1"></i> Check
+                        <i class="fas fa-search me-1"></i> {{ t('admin_operations.check') }}
                     </button>
                 </div>
                 <div class="col-12">
@@ -171,45 +172,45 @@
 
     <div class="col-lg-6 mb-3">
         <div class="section-container h-100">
-            <div class="section-title"><i class="fas fa-sliders-h me-2"></i>Backend Status</div>
+            <div class="section-title"><i class="fas fa-sliders-h me-2"></i>{{ t('admin_operations.backend_status') }}</div>
             <div class="mb-2">
-                <span id="backendModePill" class="health-pill warn">Loading...</span>
+                <span id="backendModePill" class="health-pill warn">{{ t('admin_operations.loading') }}</span>
             </div>
             <div class="small text-muted mb-2">
-                Mode: <code id="statusMode">-</code>
+                {{ t('admin_operations.mode_2') }} <code id="statusMode">-</code>
             </div>
             <div class="small text-muted mb-2">
-                Redis available: <code id="statusRedisAvailable">-</code>
+                {{ t('admin_operations.redis_available') }} <code id="statusRedisAvailable">-</code>
             </div>
             <div class="small text-muted mb-2">
-                Cloudflare escalation: <code id="statusCloudflareEnabled">-</code>
+                {{ t('admin_operations.cloudflare_escalation') }} <code id="statusCloudflareEnabled">-</code>
             </div>
             <div class="small text-muted mb-0">
-                Last backend error: <code id="statusBackendError">None</code>
+                {{ t('admin_operations.last_backend_error') }} <code id="statusBackendError">{{ t('admin_operations.none_2') }}</code>
             </div>
         </div>
     </div>
 </div>
 
 <div class="section-container mb-4">
-    <div class="section-title"><i class="fas fa-list me-2"></i>Blocked IPs</div>
+    <div class="section-title"><i class="fas fa-list me-2"></i>{{ t('admin_operations.blocked_ips') }}</div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
                     <th>IP</th>
-                    <th>Origin</th>
-                    <th>Reason</th>
-                    <th>Blocked At</th>
-                    <th>Expires</th>
-                    <th>Sync Status</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('admin_operations.origin') }}</th>
+                    <th>{{ t('admin_operations.reason') }}</th>
+                    <th>{{ t('admin_operations.blocked_at') }}</th>
+                    <th>{{ t('admin_operations.expires') }}</th>
+                    <th>{{ t('admin_operations.sync_status') }}</th>
+                    <th class="text-end">{{ t('admin_operations.actions') }}</th>
                 </tr>
             </thead>
             <tbody id="blockedIpsTableBody">
                 <tr>
                     <td colspan="7" class="text-center text-muted py-4">
-                        <i class="fas fa-spinner fa-spin me-2"></i>Loading blocked IPs...
+                        <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_operations.loading_blocked_ips') }}
                     </td>
                 </tr>
             </tbody>
@@ -218,24 +219,24 @@
 </div>
 
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-history me-2"></i>Recent Block Events</div>
+    <div class="section-title"><i class="fas fa-history me-2"></i>{{ t('admin_operations.recent_block_events') }}</div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Timestamp</th>
+                    <th>{{ t('admin_operations.timestamp') }}</th>
                     <th>IP</th>
-                    <th>Origin</th>
-                    <th>Category</th>
-                    <th>Reason</th>
-                    <th>Expiration</th>
-                    <th>Cloudflare</th>
+                    <th>{{ t('admin_operations.origin') }}</th>
+                    <th>{{ t('admin_operations.category') }}</th>
+                    <th>{{ t('admin_operations.reason') }}</th>
+                    <th>{{ t('admin_operations.expiration') }}</th>
+                    <th>{{ t('admin_operations.cloudflare') }}</th>
                 </tr>
             </thead>
             <tbody id="eventsTableBody">
                 <tr>
                     <td colspan="7" class="text-center text-muted py-4">
-                        <i class="fas fa-spinner fa-spin me-2"></i>Loading events...
+                        <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_operations.loading_events') }}
                     </td>
                 </tr>
             </tbody>
@@ -245,37 +246,37 @@
 
 <!-- IP Reputation System -->
 <div class="section-container mb-4" style="margin-top: 2rem;">
-    <div class="section-title"><i class="fas fa-brain me-2"></i>IP Reputation System</div>
+    <div class="section-title"><i class="fas fa-brain me-2"></i>{{ t('admin_operations.ip_reputation_system') }}</div>
 
     <div class="row mb-3">
         <div class="col-md-3 col-6 mb-2">
             <div class="security-stat-card">
-                <div class="label"><i class="fas fa-crosshairs me-1"></i>Tracked IPs</div>
+                <div class="label"><i class="fas fa-crosshairs me-1"></i>{{ t('admin_operations.tracked_ips') }}</div>
                 <div id="repStatTracked" class="value">-</div>
-                <div class="subtext">IPs with reputation data</div>
+                <div class="subtext">{{ t('admin_operations.ips_with_reputation_data') }}</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-2">
             <div class="security-stat-card">
-                <div class="label"><i class="fas fa-skull-crossbones me-1"></i>Reputation Banned</div>
+                <div class="label"><i class="fas fa-skull-crossbones me-1"></i>{{ t('admin_operations.reputation_banned') }}</div>
                 <div id="repStatBanned" class="value">-</div>
-                <div class="subtext">Currently banned by reputation</div>
+                <div class="subtext">{{ t('admin_operations.currently_banned_by_reputation') }}</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-2">
             <div class="security-stat-card">
-                <div class="label"><i class="fas fa-clock me-1"></i>Pending Flush</div>
+                <div class="label"><i class="fas fa-clock me-1"></i>{{ t('admin_operations.pending_flush') }}</div>
                 <div id="repStatPending" class="value">-</div>
-                <div class="subtext">Updates awaiting DB write</div>
+                <div class="subtext">{{ t('admin_operations.updates_awaiting_db_write') }}</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-2">
             <div class="security-stat-card">
-                <div class="label"><i class="fas fa-search me-1"></i>IP Lookup</div>
+                <div class="label"><i class="fas fa-search me-1"></i>{{ t('admin_operations.ip_lookup') }}</div>
                 <div style="margin-top: 0.5rem;">
                     <form id="repLookupForm" class="input-group input-group-sm">
                         <input id="repLookupIp" class="form-control" type="text" placeholder="1.2.3.4" required>
-                        <button class="btn btn-outline-primary" type="submit">Lookup</button>
+                        <button class="btn btn-outline-primary" type="submit">{{ t('admin_operations.lookup') }}</button>
                     </form>
                 </div>
             </div>
@@ -285,23 +286,23 @@
     <div id="repIpDetailCard" class="mb-3" style="display: none;">
         <div class="p-3" style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px;">
             <div class="d-flex justify-content-between align-items-center mb-2">
-                <strong>IP Detail: <code id="repDetailIp">-</code></strong>
-                <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('repIpDetailCard').style.display='none'">Close</button>
+                <strong>{{ t('admin_operations.ip_detail') }} <code id="repDetailIp">-</code></strong>
+                <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('repIpDetailCard').style.display='none'">{{ t('admin_operations.close') }}</button>
             </div>
             <div class="row small">
-                <div class="col-md-3"><span class="text-muted">Score:</span> <strong id="repDetailScore">-</strong></div>
-                <div class="col-md-3"><span class="text-muted">Total Requests:</span> <span id="repDetailTotal">-</span></div>
-                <div class="col-md-3"><span class="text-muted">Error Ratio:</span> <span id="repDetailRatio">-</span></div>
-                <div class="col-md-3"><span class="text-muted">Pattern Hits:</span> <span id="repDetailPatterns">-</span></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.score') }}</span> <strong id="repDetailScore">-</strong></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.total_requests') }}</span> <span id="repDetailTotal">-</span></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.error_ratio') }}</span> <span id="repDetailRatio">-</span></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.pattern_hits') }}</span> <span id="repDetailPatterns">-</span></div>
             </div>
             <div class="row small mt-1">
-                <div class="col-md-3"><span class="text-muted">Times Banned:</span> <span id="repDetailBanned">-</span></div>
-                <div class="col-md-3"><span class="text-muted">First Seen:</span> <span id="repDetailFirstSeen">-</span></div>
-                <div class="col-md-3"><span class="text-muted">Last Seen:</span> <span id="repDetailLastSeen">-</span></div>
-                <div class="col-md-3"><span class="text-muted">Last Path:</span> <code id="repDetailPath" class="text-truncate d-inline-block" style="max-width: 200px;">-</code></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.times_banned') }}</span> <span id="repDetailBanned">-</span></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.first_seen') }}</span> <span id="repDetailFirstSeen">-</span></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.last_seen') }}</span> <span id="repDetailLastSeen">-</span></div>
+                <div class="col-md-3"><span class="text-muted">{{ t('admin_operations.last_path') }}</span> <code id="repDetailPath" class="text-truncate d-inline-block" style="max-width: 200px;">-</code></div>
             </div>
             <div class="row small mt-1">
-                <div class="col-12"><span class="text-muted">Last Ban Reason:</span> <span id="repDetailReason">-</span></div>
+                <div class="col-12"><span class="text-muted">{{ t('admin_operations.last_ban_reason') }}</span> <span id="repDetailReason">-</span></div>
             </div>
         </div>
     </div>
@@ -313,7 +314,7 @@
             <button class="btn btn-outline-secondary" data-size="100">100</button>
             <button class="btn btn-outline-secondary" data-size="500">500</button>
         </div>
-        <span class="rep-showing" id="repShowingText">Showing 0-0 of 0 IPs</span>
+        <span class="rep-showing" id="repShowingText">{{ t('admin_operations.showing_0_0_of_0_ips') }}</span>
     </div>
 
     <div class="table-wrapper">
@@ -321,20 +322,20 @@
             <thead>
                 <tr>
                     <th>IP</th>
-                    <th class="sortable active" data-sort="score">Score <i class="fas fa-sort-down sort-icon"></i></th>
-                    <th class="sortable" data-sort="requests">Requests <i class="fas fa-sort sort-icon"></i></th>
-                    <th class="sortable" data-sort="error_ratio">Error Ratio <i class="fas fa-sort sort-icon"></i></th>
-                    <th class="sortable" data-sort="pattern_hits">Pattern Hits <i class="fas fa-sort sort-icon"></i></th>
-                    <th class="sortable" data-sort="times_banned">Times Banned <i class="fas fa-sort sort-icon"></i></th>
-                    <th>First Seen</th>
-                    <th class="sortable" data-sort="last_seen">Last Seen <i class="fas fa-sort sort-icon"></i></th>
-                    <th class="text-end">Actions</th>
+                    <th class="sortable active" data-sort="score">{{ t('admin_operations.score_2') }} <i class="fas fa-sort-down sort-icon"></i></th>
+                    <th class="sortable" data-sort="requests">{{ t('admin_operations.requests') }} <i class="fas fa-sort sort-icon"></i></th>
+                    <th class="sortable" data-sort="error_ratio">{{ t('admin_operations.error_ratio_2') }} <i class="fas fa-sort sort-icon"></i></th>
+                    <th class="sortable" data-sort="pattern_hits">{{ t('admin_operations.pattern_hits_2') }} <i class="fas fa-sort sort-icon"></i></th>
+                    <th class="sortable" data-sort="times_banned">{{ t('admin_operations.times_banned_2') }} <i class="fas fa-sort sort-icon"></i></th>
+                    <th>{{ t('admin_operations.first_seen_2') }}</th>
+                    <th class="sortable" data-sort="last_seen">{{ t('admin_operations.last_seen_2') }} <i class="fas fa-sort sort-icon"></i></th>
+                    <th class="text-end">{{ t('admin_operations.actions') }}</th>
                 </tr>
             </thead>
             <tbody id="repTopIpsTableBody">
                 <tr>
                     <td colspan="9" class="text-center text-muted py-4">
-                        <i class="fas fa-spinner fa-spin me-2"></i>Loading reputation data...
+                        <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_operations.loading_reputation_data') }}
                     </td>
                 </tr>
             </tbody>
@@ -342,9 +343,9 @@
     </div>
 
     <div class="rep-pagination" id="repPagination">
-        <button class="btn btn-outline-secondary" id="repPrevPage" disabled>&lt; Prev</button>
-        <span class="page-info" id="repPageInfo">Page 1 of 1</span>
-        <button class="btn btn-outline-secondary" id="repNextPage" disabled>Next &gt;</button>
+        <button class="btn btn-outline-secondary" id="repPrevPage" disabled>{{ t('admin_operations.prev') }}</button>
+        <span class="page-info" id="repPageInfo">{{ t('admin_operations.page_1_of_1') }}</span>
+        <button class="btn btn-outline-secondary" id="repNextPage" disabled>{{ t('admin_operations.next_2') }}</button>
     </div>
 </div>
 {% endblock %}
@@ -373,17 +374,29 @@
         if (!value) return '-';
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return escapeHtml(value);
-        return date.toLocaleString();
+        return date.toLocaleString(AurvekI18n.locale);
+    }
+
+    function formatHours(hours) {
+        return AurvekI18n.formatNumber(hours, {style: 'unit', unit: 'hour', unitDisplay: 'long'});
+    }
+
+    function securityLabel(code) {
+        if (code === 'redis') return 'Redis';
+        const shared = {synced: 'synced', disabled: 'disabled', enabled: 'enabled', created: 'created', error: 'error_2'};
+        if (Object.hasOwn(shared, code)) return AurvekI18n.t('admin_operations.' + shared[code]);
+        const known = ['memory', 'auto', 'off', 'required', 'below_threshold', 'non_public_ip', 'missing_credentials', 'already_escalated', 'missing_account_id', 'existing', 'api_error', 'missing_rule_id', 'manual', 'instant_pattern', 'too_many_404s', 'other'];
+        return AurvekI18n.t(known.includes(code) ? 'admin_operations.security.' + code : 'admin_operations.unknown');
     }
 
     function formatOrigin(source) {
-        if (!source) return 'unknown';
-        if (source === 'manual') return 'FastAPI (manual)';
-        if (source === '404_threshold') return 'FastAPI (404 threshold)';
-        if (source === 'instant_pattern') return 'FastAPI (instant pattern)';
-        if (source === 'cloudflare') return 'Cloudflare';
-        if (source === 'nginx') return 'Nginx';
-        if (source === 'reputation') return 'Reputation system';
+        if (!source) return AurvekI18n.t('admin_operations.unknown');
+        if (source === 'manual') return AurvekI18n.t('admin_operations.fastapi_manual');
+        if (source === '404_threshold') return AurvekI18n.t('admin_operations.fastapi_404_threshold');
+        if (source === 'instant_pattern') return AurvekI18n.t('admin_operations.fastapi_instant_pattern');
+        if (source === 'cloudflare') return AurvekI18n.t('admin_operations.cloudflare');
+        if (source === 'nginx') return AurvekI18n.t('admin_operations.nginx');
+        if (source === 'reputation') return AurvekI18n.t('admin_operations.reputation_system');
         return source;
     }
 
@@ -391,16 +404,16 @@
         const cloudflare = item.cloudflare || null;
         if (item.cloudflare_synced && cloudflare) {
             const source = cloudflare.source ? ` (${escapeHtml(cloudflare.source)})` : '';
-            const rule = cloudflare.rule_id ? `<div class="sync-meta">rule: <code>${escapeHtml(cloudflare.rule_id)}</code></div>` : '';
-            const timestamp = cloudflare.timestamp ? `<div class="sync-meta">at: ${formatDateTime(cloudflare.timestamp)}</div>` : '';
-            return `<span class="badge bg-success">Synced${source}</span>${rule}${timestamp}`;
+            const rule = cloudflare.rule_id ? `<div class="sync-meta">${AurvekI18n.t('admin_operations.rule')} <code>${escapeHtml(cloudflare.rule_id)}</code></div>` : '';
+            const timestamp = cloudflare.timestamp ? `<div class="sync-meta">${AurvekI18n.t('admin_operations.at')} ${formatDateTime(cloudflare.timestamp)}</div>` : '';
+            return `<span class="badge bg-success">${AurvekI18n.t('admin_operations.synced')}${source}</span>${rule}${timestamp}`;
         }
 
         if (securityState.stats && securityState.stats.cloudflare_escalation && !securityState.stats.cloudflare_escalation.enabled) {
-            return '<span class="badge bg-secondary">Disabled</span>';
+            return '<span class="badge bg-secondary">' + AurvekI18n.t('admin_operations.disabled') + '</span>';
         }
 
-        return '<span class="badge bg-warning text-dark">Pending</span>';
+        return '<span class="badge bg-warning text-dark">' + AurvekI18n.t('admin_operations.pending') + '</span>';
     }
 
     function showAlert(type, message) {
@@ -410,7 +423,7 @@
         container.innerHTML = `
             <div class="alert alert-${escapeHtml(type)} alert-dismissible fade show" role="alert">
                 ${escapeHtml(message)}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="${escapeHtml(AurvekI18n.t('admin_operations.close'))}"></button>
             </div>
         `;
     }
@@ -422,7 +435,7 @@
                 ...(options.headers || {})
             },
             ...options
-        });
+        }).catch(() => { throw new Error(AurvekI18n.t('common.error.generic')); });
 
         let payload = null;
         try {
@@ -432,7 +445,7 @@
         }
 
         if (!response.ok) {
-            const errorText = (payload && payload.detail) ? payload.detail : `Request failed: ${response.status}`;
+            const errorText = (payload && payload.detail) ? payload.detail : AurvekI18n.t('common.error.generic');
             throw new Error(errorText);
         }
 
@@ -441,15 +454,15 @@
 
     function renderStats() {
         const stats = securityState.stats || {};
-        document.getElementById('statBlockedIps').textContent = stats.blocked_ips_count ?? '-';
-        document.getElementById('statBlockEvents').textContent = stats.block_events_total ?? '-';
-        document.getElementById('statCloudflareEscalations').textContent = stats.cloudflare_escalations_total ?? '-';
-        document.getElementById('statBackend').textContent = stats.active_backend || '-';
+        document.getElementById('statBlockedIps').textContent = stats.blocked_ips_count == null ? '-' : AurvekI18n.formatNumber(stats.blocked_ips_count);
+        document.getElementById('statBlockEvents').textContent = stats.block_events_total == null ? '-' : AurvekI18n.formatNumber(stats.block_events_total);
+        document.getElementById('statCloudflareEscalations').textContent = stats.cloudflare_escalations_total == null ? '-' : AurvekI18n.formatNumber(stats.cloudflare_escalations_total);
+        document.getElementById('statBackend').textContent = securityLabel(stats.active_backend);
 
-        const mode = stats.mode || '-';
-        const redisAvailable = stats.redis_available ? 'yes' : 'no';
-        const cfEnabled = (stats.cloudflare_escalation && stats.cloudflare_escalation.enabled) ? 'enabled' : 'disabled';
-        const backendError = stats.last_backend_error || 'None';
+        const mode = securityLabel(stats.mode);
+        const redisAvailable = AurvekI18n.t(stats.redis_available ? 'admin_operations.yes' : 'admin_operations.no');
+        const cfEnabled = AurvekI18n.t((stats.cloudflare_escalation && stats.cloudflare_escalation.enabled) ? 'admin_operations.enabled' : 'admin_operations.disabled');
+        const backendError = stats.last_backend_error || AurvekI18n.t('admin_operations.none_2');
 
         document.getElementById('statusMode').textContent = mode;
         document.getElementById('statusRedisAvailable').textContent = redisAvailable;
@@ -460,16 +473,16 @@
         const backend = stats.active_backend || 'unknown';
         if (backend === 'redis') {
             pill.className = 'health-pill ok';
-            pill.textContent = 'Redis backend active';
+            pill.textContent = AurvekI18n.t('admin_operations.redis_backend_active');
         } else if (backend === 'memory') {
             pill.className = 'health-pill warn';
-            pill.textContent = 'Memory backend active';
+            pill.textContent = AurvekI18n.t('admin_operations.memory_backend_active');
         } else {
             pill.className = 'health-pill danger';
-            pill.textContent = 'Backend unknown';
+            pill.textContent = AurvekI18n.t('admin_operations.backend_unknown');
         }
 
-        document.getElementById('statBackendSub').textContent = `mode: ${mode} | redis: ${redisAvailable}`;
+        document.getElementById('statBackendSub').textContent = AurvekI18n.t('admin_operations.security.mode_summary', {mode, available: redisAvailable});
     }
 
     function renderBlockedIps() {
@@ -480,7 +493,7 @@
             tbody.innerHTML = `
                 <tr>
                     <td colspan="7" class="text-center text-muted py-4">
-                        <i class="fas fa-check-circle me-2"></i>No blocked IPs.
+                        <i class="fas fa-check-circle me-2"></i>${AurvekI18n.t('admin_operations.no_blocked_ips')}
                     </td>
                 </tr>
             `;
@@ -526,7 +539,7 @@
             tbody.innerHTML = `
                 <tr>
                     <td colspan="7" class="text-center text-muted py-4">
-                        <i class="fas fa-info-circle me-2"></i>No events.
+                        <i class="fas fa-info-circle me-2"></i>${AurvekI18n.t('admin_operations.no_events')}
                     </td>
                 </tr>
             `;
@@ -536,15 +549,15 @@
         const rows = events.map((event) => {
             const cloudflare = event.cloudflare || null;
             const cfStatus = cloudflare
-                ? `<span class="badge bg-success">${escapeHtml(cloudflare.status || cloudflare.source || 'synced')}</span>`
-                : '<span class="badge bg-secondary">none</span>';
+                ? `<span class="badge bg-success">${escapeHtml(securityLabel(cloudflare.status || 'synced'))}</span>`
+                : '<span class="badge bg-secondary">' + AurvekI18n.t('admin_operations.none') + '</span>';
 
             return `
                 <tr>
                     <td>${formatDateTime(event.timestamp)}</td>
                     <td><code>${escapeHtml(event.ip || '-')}</code></td>
                     <td>${escapeHtml(formatOrigin(event.source))}</td>
-                    <td>${escapeHtml(event.reason_category || '-')}</td>
+                    <td>${escapeHtml(securityLabel(event.reason_category))}</td>
                     <td class="cell-reason">${escapeHtml(event.reason || '-')}</td>
                     <td>${formatDateTime(event.blocked_until)}</td>
                     <td>${cfStatus}</td>
@@ -578,10 +591,9 @@
             method: 'POST',
             body: JSON.stringify({ ip })
         });
-        let msg = `IP ${ip} unblocked.`;
-        if (payload && payload.cloudflare_deleted) {
-            msg += ` Cloudflare rule ${payload.cloudflare_rule_id || ''} also deleted.`;
-        }
+        const msg = payload && payload.cloudflare_deleted
+            ? AurvekI18n.t('admin_operations.security.ip_and_rule_unblocked', {ip, rule: payload.cloudflare_rule_id || '-'})
+            : AurvekI18n.t('admin_operations.security.ip_unblocked', {ip});
         showAlert('success', msg);
         await refreshSecurityPanel();
     }
@@ -592,7 +604,7 @@
             body: JSON.stringify({ ip, reason: 'Manual sync retry from admin panel' })
         });
         const status = payload && payload.result ? payload.result.status : 'unknown';
-        showAlert('info', `Sync retry for ${ip} executed. Status: ${status}`);
+        showAlert('info', AurvekI18n.t('admin_operations.security.sync_result', {ip, status: securityLabel(status)}));
         await refreshSecurityPanel();
     }
 
@@ -609,7 +621,7 @@
                 loadReputationTopIps()
             ]);
         } catch (error) {
-            showAlert('danger', error.message || 'Failed to load security panel data.');
+            showAlert('danger', error.message || AurvekI18n.t('admin_operations.failed_to_load_security_panel_data'));
         } finally {
             if (refreshButton) refreshButton.disabled = false;
         }
@@ -630,14 +642,14 @@
         if (!ts) return '-';
         const date = new Date(ts * 1000);
         if (Number.isNaN(date.getTime())) return '-';
-        return date.toLocaleString();
+        return date.toLocaleString(AurvekI18n.locale);
     }
 
     function renderReputationStats() {
         const stats = reputationState.stats || {};
-        document.getElementById('repStatTracked').textContent = stats.tracked_ips ?? '-';
-        document.getElementById('repStatBanned').textContent = stats.reputation_banned ?? '-';
-        document.getElementById('repStatPending').textContent = stats.pending_flush ?? '-';
+        document.getElementById('repStatTracked').textContent = stats.tracked_ips == null ? '-' : AurvekI18n.formatNumber(stats.tracked_ips);
+        document.getElementById('repStatBanned').textContent = stats.reputation_banned == null ? '-' : AurvekI18n.formatNumber(stats.reputation_banned);
+        document.getElementById('repStatPending').textContent = stats.pending_flush == null ? '-' : AurvekI18n.formatNumber(stats.pending_flush);
     }
 
     const SORT_FIELD_MAP = {
@@ -688,12 +700,12 @@
             tbody.innerHTML = `
                 <tr>
                     <td colspan="9" class="text-center text-muted py-4">
-                        <i class="fas fa-check-circle me-2"></i>No reputation data yet.
+                        <i class="fas fa-check-circle me-2"></i>${AurvekI18n.t('admin_operations.no_reputation_data_yet')}
                     </td>
                 </tr>
             `;
-            showingText.textContent = 'Showing 0-0 of 0 IPs';
-            pageInfo.textContent = 'Page 1 of 1';
+            showingText.textContent = AurvekI18n.t('admin_operations.showing_0_0_of_0_ips');
+            pageInfo.textContent = AurvekI18n.t('admin_operations.page_1_of_1');
             prevBtn.disabled = true;
             nextBtn.disabled = true;
             updateRepSortHeaders();
@@ -715,11 +727,11 @@
 
         const rows = pageIps.map((item) => {
             const ip = escapeHtml(item.ip || '-');
-            const score = (item.score || 0).toFixed(1);
-            const totalReqs = item.total_requests || 0;
-            const ratio = ((item.error_ratio || 0) * 100).toFixed(0) + '%';
-            const patterns = item.pattern_hits || 0;
-            const banned = item.times_banned || 0;
+            const score = AurvekI18n.formatNumber(item.score || 0, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+            const totalReqs = AurvekI18n.formatNumber(item.total_requests || 0);
+            const ratio = AurvekI18n.formatNumber(item.error_ratio || 0, {style: 'percent', maximumFractionDigits: 0});
+            const patterns = AurvekI18n.formatNumber(item.pattern_hits || 0);
+            const banned = AurvekI18n.formatNumber(item.times_banned || 0);
             const firstSeen = formatTimestamp(item.first_seen);
             const lastSeen = formatTimestamp(item.last_seen);
 
@@ -737,13 +749,13 @@
                     <td>${firstSeen}</td>
                     <td>${lastSeen}</td>
                     <td class="text-end table-actions">
-                        <button class="btn btn-sm btn-outline-info me-1" data-action="rep-lookup" data-ip="${ip}" title="View details">
+                        <button class="btn btn-sm btn-outline-info me-1" data-action="rep-lookup" data-ip="${ip}" title="${escapeHtml(AurvekI18n.t('admin_operations.view_details'))}">
                             <i class="fas fa-search"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-danger me-1" data-action="rep-block" data-ip="${ip}" title="Block IP (24h)">
+                        <button class="btn btn-sm btn-outline-danger me-1" data-action="rep-block" data-ip="${ip}" title="${escapeHtml(AurvekI18n.t('admin_operations.security.block_duration', {duration: formatHours(24)}))}">
                             <i class="fas fa-lock"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-warning" data-action="rep-reset" data-ip="${ip}" title="Reset score">
+                        <button class="btn btn-sm btn-outline-warning" data-action="rep-reset" data-ip="${ip}" title="${escapeHtml(AurvekI18n.t('admin_operations.reset_score'))}">
                             <i class="fas fa-undo"></i>
                         </button>
                     </td>
@@ -754,8 +766,8 @@
         tbody.innerHTML = rows.join('');
 
         // Update toolbar and pagination
-        showingText.textContent = `Showing ${start + 1}-${end} of ${total} IPs`;
-        pageInfo.textContent = `Page ${page} of ${totalPages}`;
+        showingText.textContent = AurvekI18n.t('admin_operations.security.ip_range', {start: AurvekI18n.formatNumber(start + 1), end: AurvekI18n.formatNumber(end), total: AurvekI18n.formatNumber(total)});
+        pageInfo.textContent = AurvekI18n.t('admin_operations.page', {page: AurvekI18n.formatNumber(page), pages: AurvekI18n.formatNumber(totalPages)});
         prevBtn.disabled = page <= 1;
         nextBtn.disabled = page >= totalPages;
 
@@ -777,17 +789,17 @@
         const payload = await fetchJson(`/admin/security/reputation/ip-detail?ip=${encodeURIComponent(ip)}`);
         const card = document.getElementById('repIpDetailCard');
         if (!payload.found) {
-            showAlert('info', `No reputation data found for IP ${ip}`);
+            showAlert('info', AurvekI18n.t('admin_operations.security.no_ip_record', {ip}));
             card.style.display = 'none';
             return;
         }
 
         document.getElementById('repDetailIp').textContent = payload.ip || '-';
-        document.getElementById('repDetailScore').textContent = (payload.score || 0).toFixed(1);
-        document.getElementById('repDetailTotal').textContent = payload.total_requests || 0;
-        document.getElementById('repDetailRatio').textContent = ((payload.error_ratio || 0) * 100).toFixed(0) + '%';
-        document.getElementById('repDetailPatterns').textContent = payload.pattern_hits || 0;
-        document.getElementById('repDetailBanned').textContent = payload.times_banned || 0;
+        document.getElementById('repDetailScore').textContent = AurvekI18n.formatNumber(payload.score || 0, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+        document.getElementById('repDetailTotal').textContent = AurvekI18n.formatNumber(payload.total_requests || 0);
+        document.getElementById('repDetailRatio').textContent = AurvekI18n.formatNumber(payload.error_ratio || 0, {style: 'percent', maximumFractionDigits: 0});
+        document.getElementById('repDetailPatterns').textContent = AurvekI18n.formatNumber(payload.pattern_hits || 0);
+        document.getElementById('repDetailBanned').textContent = AurvekI18n.formatNumber(payload.times_banned || 0);
         document.getElementById('repDetailFirstSeen').textContent = formatTimestamp(payload.first_seen);
         document.getElementById('repDetailLastSeen').textContent = formatTimestamp(payload.last_seen);
         document.getElementById('repDetailPath').textContent = payload.last_path || '-';
@@ -801,9 +813,9 @@
             body: JSON.stringify({ ip })
         });
         if (payload.success) {
-            showAlert('success', `Reputation score reset for ${ip}`);
+            showAlert('success', AurvekI18n.t('admin_operations.security.score_reset', {ip}));
         } else {
-            showAlert('warning', `No reputation record found for ${ip}`);
+            showAlert('warning', AurvekI18n.t('admin_operations.security.no_ip_record', {ip}));
         }
         await loadReputationTopIps();
         await loadReputationStats();
@@ -822,13 +834,13 @@
                     method: 'POST',
                     body: JSON.stringify({ ip, hours, reason })
                 });
-                showAlert('success', `IP ${ip} blocked for ${hours}h.`);
+                showAlert('success', AurvekI18n.t('admin_operations.security.ip_blocked_duration', {ip, duration: formatHours(hours)}));
                 blockIpForm.reset();
                 document.getElementById('blockHours').value = '24';
-                document.getElementById('blockReason').value = 'Manual block from admin panel';
+                document.getElementById('blockReason').value = '';
                 await refreshSecurityPanel();
             } catch (error) {
-                showAlert('danger', error.message || 'Failed to block IP.');
+                showAlert('danger', error.message || AurvekI18n.t('admin_operations.failed_to_block_ip'));
             }
         });
 
@@ -840,11 +852,11 @@
             try {
                 const payload = await fetchJson(`/admin/security/ip-status?ip=${encodeURIComponent(ip)}`);
                 target.textContent = payload.blocked
-                    ? `IP ${ip} is currently blocked.`
-                    : `IP ${ip} is not blocked.`;
+                    ? AurvekI18n.t('admin_operations.security.ip_blocked', {ip})
+                    : AurvekI18n.t('admin_operations.security.ip_not_blocked', {ip});
                 target.className = payload.blocked ? 'text-danger' : 'text-success';
             } catch (error) {
-                target.textContent = error.message || 'Failed to check status.';
+                target.textContent = error.message || AurvekI18n.t('admin_operations.failed_to_check_status');
                 target.className = 'text-danger';
             }
         });
@@ -865,7 +877,7 @@
                     await retryCloudflareSync(ip);
                 }
             } catch (error) {
-                showAlert('danger', error.message || 'Security action failed.');
+                showAlert('danger', error.message || AurvekI18n.t('admin_operations.security_action_failed'));
             }
         });
 
@@ -877,7 +889,7 @@
             try {
                 await lookupReputationIp(ip);
             } catch (error) {
-                showAlert('danger', error.message || 'Failed to lookup IP reputation.');
+                showAlert('danger', error.message || AurvekI18n.t('admin_operations.failed_to_lookup_ip_reputation'));
             }
         });
 
@@ -895,18 +907,18 @@
                 if (action === 'rep-lookup') {
                     await lookupReputationIp(ip);
                 } else if (action === 'rep-block') {
-                    if (!confirm(`Block IP ${ip} for 24 hours?`)) return;
+                    if (!confirm(AurvekI18n.t('admin_operations.security.block_confirm', {ip, duration: formatHours(24)}))) return;
                     await fetchJson('/admin/security/block-ip', {
                         method: 'POST',
                         body: JSON.stringify({ ip, hours: 24, reason: 'Blocked from reputation panel' })
                     });
-                    showAlert('success', `IP ${ip} blocked for 24h.`);
+                    showAlert('success', AurvekI18n.t('admin_operations.security.ip_blocked_duration', {ip, duration: formatHours(24)}));
                     await refreshSecurityPanel();
                 } else if (action === 'rep-reset') {
                     await resetReputationScore(ip);
                 }
             } catch (error) {
-                showAlert('danger', error.message || 'Reputation action failed.');
+                showAlert('danger', error.message || AurvekI18n.t('admin_operations.reputation_action_failed'));
             }
         });
 

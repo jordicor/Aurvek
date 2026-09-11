@@ -1,6 +1,7 @@
+{% set i18n_domains = ['landing_builder'] %}
 {% extends 'base.html' %}
 
-{% block title %}Components List - {{ prompt_name }}{% endblock %}
+{% block title %}{{ t('landing_builder.components.list') }} - {{ prompt_name }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -41,19 +42,19 @@
         <div class="col-md-8">
             <div class="card">
                 <div class="card-header bg-primary text-white">
-                    <h2 class="mb-0"><i class="fas fa-puzzle-piece me-2"></i>Components for {{ prompt_name }}</h2>
+                    <h2 class="mb-0"><i class="fas fa-puzzle-piece me-2"></i>{{ t('landing_builder.components.for_prompt', name=prompt_name) }}</h2>
                 </div>
                 <div class="card-body">
                     <ul class="list-group">
                         {% for component_type, components in components_by_type.items() %}
                         <li class="list-group-item">
-                            <h5>{{ component_type|upper }} Components</h5>
+                            <h5>{{ t('landing_builder.components.type_heading', name=component_type|upper) }}</h5>
                             <ul class="list-group list-group-flush">
                                 {% for component in components %}
                                 <li class="list-group-item d-flex justify-content-between align-items-center">
                                     <span><i class="fas fa-code me-2"></i>{{ component }}</span>
                                     <a href="{% if is_pack %}/landing/pack/{{ prompt_id }}/components/{{ component_type }}/{{ component }}/edit{% else %}/landing/{{ prompt_id }}/components/{{ component_type }}/{{ component }}/edit{% endif %}" class="btn btn-outline-primary btn-sm">
-                                        <i class="fas fa-edit me-1"></i>Edit
+                                        <i class="fas fa-edit me-1"></i>{{ t('landing_builder.action.edit') }}
                                     </a>
                                 </li>
                                 {% endfor %}
@@ -64,9 +65,9 @@
 
                     <form id="addComponentForm" class="mt-4">
                         <div class="input-group">
-                            <input type="text" name="component_name" class="form-control" placeholder="New component name" required>
+                            <input type="text" name="component_name" class="form-control" placeholder="{{ t('landing_builder.components.new_name') }}" required>
                             <button type="button" class="btn btn-success" id="showComponentTypeOptions">
-                                <i class="fas fa-plus me-1"></i>Create New Component
+                                <i class="fas fa-plus me-1"></i>{{ t('landing_builder.components.create_new') }}
                             </button>
                         </div>
                         <div class="component-type-options" id="componentTypeOptions">
@@ -89,7 +90,7 @@
                                 </label>
                             </div>
                             <button type="submit" class="btn btn-primary mt-2">
-                                Create Component
+                                {{ t('landing_builder.components.create') }}
                             </button>
                         </div>
                     </form>
@@ -97,21 +98,21 @@
                 <!-- Modify image upload section -->
                     <div class="card mt-4">
                         <div class="card-header bg-success text-white">
-                            <h5 class="mb-0"><i class="fas fa-image me-2"></i>Upload Images</h5>
+                            <h5 class="mb-0"><i class="fas fa-image me-2"></i>{{ t('landing_builder.images.upload') }}</h5>
                         </div>
                         <div class="card-body">
                             <form id="imageUploadForm" enctype="multipart/form-data">
                                 <div class="mb-3">
-                                    <label for="imageUpload" class="form-label">Select Image(s)</label>
+                                    <label for="imageUpload" class="form-label">{{ t('landing_builder.images.select') }}</label>
                                     <input type="file" class="form-control" id="imageUpload" name="images" accept="image/*" required multiple>
                                 </div>
                                 <div id="imageNames"></div>
                                 <div class="mb-3">
-                                    <label for="imagePreview" class="form-label">Preview</label>
+                                    <label for="imagePreview" class="form-label">{{ t('landing_builder.images.preview') }}</label>
                                     <div id="imagePreview" class="image-preview"></div>
                                 </div>
                                 <button type="submit" class="btn btn-success">
-                                    <i class="fas fa-upload me-1"></i>Upload Image(s)
+                                    <i class="fas fa-upload me-1"></i>{{ t('landing_builder.images.upload_action') }}
                                 </button>
                             </form>
                         </div>
@@ -120,7 +121,7 @@
                     <!-- Modify uploaded images section -->
                     <div class="card mt-4">
                         <div class="card-header bg-info text-white">
-                            <h5 class="mb-0"><i class="fas fa-images me-2"></i>Uploaded Images</h5>
+                            <h5 class="mb-0"><i class="fas fa-images me-2"></i>{{ t('landing_builder.images.uploaded') }}</h5>
                         </div>
                         <div class="card-body">
                             <div id="uploadedImagesContainer" class="row">
@@ -134,7 +135,7 @@
 
         <div class="text-center mt-4">
             <a href="/" class="btn btn-secondary">
-                <i class="fas fa-arrow-left me-1"></i>Back to Admin Index
+                <i class="fas fa-arrow-left me-1"></i>{{ t('landing_builder.action.back_to_admin') }}
             </a>
             </div>
         </div>
@@ -158,7 +159,7 @@
         const componentType = this.querySelector('input[name="component_type"]:checked')?.value;
 
         if (!componentName || !componentType) {
-            NotificationModal.warning('Missing Information', 'Please enter a component name and select a type');
+            NotificationModal.warning(AurvekI18n.t('landing_builder.validation.missing_information'), AurvekI18n.t('landing_builder.components.name_and_type_required'));
             return;
         }
 
@@ -172,12 +173,12 @@
             if (data.success) {
                 window.location.reload();
             } else {
-                NotificationModal.error('Error', data.message || 'Error creating component');
+                NotificationModal.error(AurvekI18n.t('landing_builder.error.title'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.components.create_error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            NotificationModal.error('Error', 'Error creating component');
+            NotificationModal.error(AurvekI18n.t('landing_builder.error.title'), AurvekI18n.t('landing_builder.components.create_error'));
         });
     });
 
@@ -193,7 +194,7 @@
             nameInput.name = 'names';
             nameInput.className = 'form-control mt-2';
             nameInput.value = file.name.split('.')[0];  // Filename without extension
-            nameInput.placeholder = `Name for ${file.name}`;
+            nameInput.placeholder = AurvekI18n.t('landing_builder.images.name_for', { name: file.name });
             imageNames.appendChild(nameInput);
 
             const reader = new FileReader();
@@ -218,15 +219,17 @@
         })
         .then(response => response.json())
         .then(data => {
-            if(data.message) {
-                NotificationModal.success('Upload Complete', data.message);
+            if (Array.isArray(data.images) && data.images.length > 0) {
+                NotificationModal.success(AurvekI18n.t('landing_builder.images.upload_complete'), data.message);
                 updateImageList();
                 resetImageUploadForm();
+            } else {
+                NotificationModal.error(AurvekI18n.t('landing_builder.images.upload_error_title'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.images.upload_error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            NotificationModal.error('Upload Error', 'An error occurred while uploading the image');
+            NotificationModal.error(AurvekI18n.t('landing_builder.images.upload_error_title'), AurvekI18n.t('landing_builder.images.upload_error'));
             resetImageUploadForm();
         });
     });
@@ -272,7 +275,9 @@
 
                 const btn = document.createElement('button');
                 btn.className = 'btn btn-danger btn-sm';
-                btn.innerHTML = '<i class="fas fa-trash me-1"></i>Delete';
+                const icon = document.createElement('i');
+                icon.className = 'fas fa-trash me-1';
+                btn.append(icon, document.createTextNode(AurvekI18n.t('landing_builder.action.delete')));
                 btn.addEventListener('click', () => deleteImage(image.id));
                 body.appendChild(btn);
 
@@ -294,12 +299,16 @@
         })
         .then(response => response.json())
         .then(data => {
-            NotificationModal.success('Image Deleted', data.message);
-            updateImageList();
+            if (data.success) {
+                NotificationModal.success(AurvekI18n.t('landing_builder.images.deleted'), data.message);
+                updateImageList();
+            } else {
+                NotificationModal.error(AurvekI18n.t('landing_builder.action.delete_failed'), data.message || (typeof data.detail === 'string' ? data.detail : null) || AurvekI18n.t('landing_builder.images.delete_error'));
+            }
         })
         .catch(error => {
             console.error('Error:', error);
-            NotificationModal.error('Delete Error', 'An error occurred while deleting the image');
+            NotificationModal.error(AurvekI18n.t('landing_builder.action.delete_failed'), AurvekI18n.t('landing_builder.images.delete_error'));
         });
     }
 

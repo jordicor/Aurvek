@@ -1,0 +1,13 @@
+{
+  "conversation_filename": "会話_{id}",
+  "usage_filename": "利用状況_{days}日.csv",
+  "conversation_by": "{username}の会話",
+  "model": "AIモデル: {machine} {model}",
+  "prompt": "プロンプト: {name}",
+  "sender.user": "ユーザー",
+  "sender.bot": "アシスタント",
+  "model_number": "モデル{number}",
+  "pdf_attached": "[添付PDF: {filename}（{pages}ページ）]",
+  "file_content": "[アップロードされたファイルの内容: {filename}（{lines}行）]",
+  "file_unavailable": "[添付ファイル: {filename} -- 内容を取得できません]"
+}

@@ -122,7 +122,7 @@ async def test_inherited_phone_model_inherits_forced_reasoning_only_without_phon
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("machine", "enabled"),
-    [("Claude", 0), ("GPTSub", 1), ("GranSabio", 1)],
+    [("Claude", 0), ("GPTSub", 1), ("GranSabio", 1), ("O1", 1)],
 )
 async def test_phone_snapshot_rejects_unavailable_standard_models(machine, enabled):
     conn = await _database()

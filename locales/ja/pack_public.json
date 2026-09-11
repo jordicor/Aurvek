@@ -1,0 +1,30 @@
+{
+  "description": "AURVEK の AI パック",
+  "twitter_description": "AURVEK の AI プロンプトパック",
+  "cover": "{name} のカバー",
+  "by_creator": "作成者：{creator}",
+  "get_started": "始める",
+  "create_first": "まずアカウントを作成してから、このパックを購入してください。",
+  "minimum_password": "8文字以上",
+  "repeat_password": "パスワードを再入力",
+  "sign_up": "登録",
+  "sign_up_access": "登録して利用する",
+  "login_purchase": "ログインして購入",
+  "login_add": "ログインしてパックを追加",
+  "purchase_price": "購入 - {price}",
+  "already_owned": "このパックは購入済みです！",
+  "start_chatting": "チャットを始める",
+  "get_free_pack": "このパックを無料で入手",
+  "already_have": "このパックは取得済みです！",
+  "powered_by": "{brand} 提供",
+  "fields_required": "すべての項目を入力してください。",
+  "account_created_paid": "アカウントを作成しました！メールを確認して認証を済ませてから、購入に戻ってください。",
+  "account_created": "アカウントを作成しました！メールを確認して認証を完了してください。",
+  "claiming": "パックを取得中…",
+  "not_found": "ページが見つかりません",
+  "access_denied": "アクセスが拒否されました",
+  "inside": {
+    "one": "内容（{number}個のプロンプト）",
+    "other": "内容（{number}個のプロンプト）"
+  }
+}

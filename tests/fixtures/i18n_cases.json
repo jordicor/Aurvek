@@ -1,0 +1,42 @@
+{
+  "catalogs": {
+    "en": {"common": {"error.generic": "Something went wrong."}, "sample": {
+      "items": {"one": "{count} item", "other": "{count} items"},
+      "fallback": {"one": "{count} fallback item", "other": "{count} fallback items"},
+      "hello": "Hello {name}", "braces": "Literal {{name}} and {name}",
+      "order": "{first} before {second}"
+    }},
+    "es": {"common": {"error.generic": "Se produjo un error."}, "sample": {
+      "items": {"one": "{count} elemento", "other": "{count} elementos"},
+      "hello": "Hola {name}", "braces": "Literal {{name}} y {name}",
+      "order": "{first} antes de {second}"
+    }},
+    "ja": {"common": {"error.generic": "エラーが発生しました。"}, "sample": {
+      "items": {"other": "{count} 件"}, "hello": "こんにちは、{name}",
+      "braces": "リテラル {{name}} と {name}", "order": "{second} より前に {first}"
+    }},
+    "fr": {"sample": {"items": {"one": "{count} article", "other": "{count} articles"}}},
+    "pt": {"sample": {"items": {"one": "{count} item", "other": "{count} itens"}}},
+    "it": {"sample": {"items": {"one": "{count} elemento", "other": "{count} elementi"}}},
+    "de": {"sample": {"items": {"one": "{count} Element", "other": "{count} Elemente"}}}
+  },
+  "cases": [
+    {"language": "en", "key": "sample.items", "params": {"count": 1}, "expected": "1 item"},
+    {"language": "en", "key": "sample.items", "params": {"count": 2}, "expected": "2 items"},
+    {"language": "es", "key": "sample.items", "params": {"count": 0}, "expected": "0 elementos"},
+    {"language": "es", "key": "sample.items", "params": {"count": -1}, "expected": "-1 elemento"},
+    {"language": "ja", "key": "sample.items", "params": {"count": 1}, "expected": "1 件"},
+    {"language": "ja", "key": "sample.items", "params": {"count": 7}, "expected": "7 件"},
+    {"language": "fr", "key": "sample.items", "params": {"count": 0}, "expected": "0 article"},
+    {"language": "fr", "key": "sample.items", "params": {"count": 1.2}, "expected": "1.2 article"},
+    {"language": "pt", "key": "sample.items", "params": {"count": 0}, "expected": "0 itens"},
+    {"language": "pt", "key": "sample.items", "params": {"count": 1.2}, "expected": "1.2 itens"},
+    {"language": "it", "key": "sample.items", "params": {"count": 2}, "expected": "2 elementi"},
+    {"language": "de", "key": "sample.items", "params": {"count": 1.0001}, "expected": "1.0001 Elemente"},
+    {"language": "ja", "key": "sample.fallback", "params": {"count": 1}, "expected": "1 fallback item"},
+    {"language": "fr", "key": "sample.fallback", "params": {"count": 0}, "expected": "0 fallback items"},
+    {"language": "ja", "key": "sample.order", "params": {"first": "A", "second": "B"}, "expected": "B より前に A"},
+    {"language": "es", "key": "sample.braces", "params": {"name": "{second}"}, "expected": "Literal {name} y {second}"},
+    {"language": "en", "key": "sample.hello", "params": {"name": "<script>alert(1)</script>"}, "expected": "Hello <script>alert(1)</script>"}
+  ]
+}

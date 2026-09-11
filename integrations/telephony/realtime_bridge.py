@@ -37,6 +37,7 @@ MAX_INPUT_AUDIO_BYTES = 64 * 1024 * 1024
 DEFAULT_RESPONSE_TIMEOUT_SECONDS = 20.0
 MAX_RESPONSE_TIMEOUT_SECONDS = 300.0
 DEFAULT_CANCEL_ACCOUNTING_TIMEOUT_SECONDS = 0.5
+_PCMU_BYTES_PER_MILLISECOND = 8
 
 _END = object()
 AudioInput: TypeAlias = (
@@ -118,6 +119,242 @@ class RealtimeDoneEvent:
     status: str
 
 
+@dataclass(frozen=True, slots=True)
+class RealtimeTextCheckpoint:
+    """A transcript prefix and the conservative audio frontier backing it."""
+
+    text: str
+    played_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeItemTruncation:
+    """Provider-local truncation target for a turn-global audio playhead."""
+
+    item_id: str
+    content_index: int
+    played_ms: int
+    delete_item_ids: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class _RealtimeItemCheckpointState:
+    audio_bytes: int = 0
+    audio_start_bytes: int | None = None
+    audio_end_bytes: int = 0
+    text: str = ""
+    audio_final: bool = False
+    transcript_final: bool = False
+    published: bool = False
+
+
+@dataclass(slots=True)
+class RealtimeTextAudioCheckpoints:
+    """Transcript prefixes backed by complete provider audio-item boundaries.
+
+    OpenAI does not expose word timestamps, so transcript deltas never create
+    checkpoints. A prefix becomes eligible only when the provider has closed
+    both the native audio content and its audio transcript for the same
+    response item/content index. Mid-item barge-in therefore remains
+    caller-only unless an earlier complete item is fully behind the playhead.
+    """
+
+    _audio_bytes: int = 0
+    _items: dict[tuple[str, str, int], _RealtimeItemCheckpointState] = field(
+        default_factory=dict
+    )
+    _audio_order: list[tuple[str, str, int]] = field(default_factory=list)
+    _confirmed: list[RealtimeTextCheckpoint] = field(default_factory=list)
+    _published_audio_count: int = 0
+    _alignment_valid: bool = True
+
+    @property
+    def audio_bytes(self) -> int:
+        return self._audio_bytes
+
+    def note_audio(
+        self,
+        audio: bytes | bytearray | memoryview,
+        *,
+        response_id: str,
+        item_id: str,
+        content_index: int,
+        is_final: bool,
+    ) -> None:
+        if not isinstance(audio, (bytes, bytearray, memoryview)):
+            raise ValueError("checkpoint audio must be bytes")
+        raw = bytes(audio)
+        if not raw and not is_final:
+            raise ValueError("non-final checkpoint audio cannot be empty")
+        key = self._item_key(response_id, item_id, content_index)
+        state = self._items.setdefault(key, _RealtimeItemCheckpointState())
+        if state.audio_final and raw:
+            raise ValueError("checkpoint audio arrived after item finalization")
+        if raw:
+            if state.audio_start_bytes is None:
+                if self._audio_order:
+                    previous = self._items[self._audio_order[-1]]
+                    if not previous.audio_final:
+                        raise ValueError(
+                            "checkpoint audio item changed before finalization"
+                        )
+                state.audio_start_bytes = self._audio_bytes
+                self._audio_order.append(key)
+            elif self._audio_order[-1] != key:
+                raise ValueError("checkpoint audio items cannot interleave")
+            self._audio_bytes += len(raw)
+            state.audio_bytes += len(raw)
+            state.audio_end_bytes = self._audio_bytes
+        if (
+            is_final
+            and state.audio_start_bytes is not None
+            and self._audio_order[-1] != key
+        ):
+            raise ValueError("checkpoint audio final arrived out of order")
+        if is_final:
+            state.audio_final = True
+            state.audio_end_bytes = self._audio_bytes
+        self._publish_contiguous()
+
+    def note_text(
+        self,
+        text: str,
+        *,
+        channel: str,
+        response_id: str,
+        item_id: str,
+        content_index: int,
+        is_final: bool,
+    ) -> None:
+        if not isinstance(text, str):
+            raise ValueError("checkpoint text must be a string")
+        key = self._item_key(response_id, item_id, content_index)
+        state = self._items.setdefault(key, _RealtimeItemCheckpointState())
+        if state.transcript_final and text:
+            raise ValueError("checkpoint text arrived after item finalization")
+        if text:
+            state.text += text
+        if channel != "audio_transcript":
+            # Text-only output has no corresponding audio boundary. Previously
+            # published item checkpoints remain exact prefixes, but later text
+            # cannot be skipped when constructing another prefix.
+            self._alignment_valid = False
+            return
+        if is_final:
+            state.transcript_final = True
+        self._publish_contiguous()
+
+    @staticmethod
+    def _item_key(
+        response_id: str,
+        item_id: str,
+        content_index: int,
+    ) -> tuple[str, str, int]:
+        if not response_id or not item_id:
+            raise ValueError("checkpoint response and item IDs are required")
+        if (
+            isinstance(content_index, bool)
+            or not isinstance(content_index, int)
+            or content_index < 0
+        ):
+            raise ValueError("checkpoint content_index must be non-negative")
+        return response_id, item_id, content_index
+
+    def _publish_contiguous(self) -> None:
+        if not self._alignment_valid:
+            return
+        while self._published_audio_count < len(self._audio_order):
+            key = self._audio_order[self._published_audio_count]
+            state = self._items[key]
+            if (
+                not state.audio_final
+                or not state.transcript_final
+                or state.audio_bytes <= 0
+                or state.audio_end_bytes <= 0
+                or not state.text
+            ):
+                return
+            prefix = (
+                (self._confirmed[-1].text if self._confirmed else "")
+                + state.text
+            )
+            state.published = True
+            self._confirmed.append(
+                RealtimeTextCheckpoint(
+                    text=prefix,
+                    played_ms=int(
+                        math.ceil(
+                            state.audio_end_bytes
+                            / _PCMU_BYTES_PER_MILLISECOND
+                        )
+                    ),
+                )
+            )
+            self._published_audio_count += 1
+
+    def truncation_for(self, played_ms: int) -> RealtimeItemTruncation | None:
+        """Map a global playhead to its item and remove later audio items."""
+
+        if (
+            isinstance(played_ms, bool)
+            or not isinstance(played_ms, int)
+            or played_ms < 0
+        ):
+            raise ValueError("played_ms must be a non-negative integer")
+        if not self._audio_order:
+            return None
+        global_bytes = played_ms * _PCMU_BYTES_PER_MILLISECOND
+        target_index = len(self._audio_order) - 1
+        for index, key in enumerate(self._audio_order):
+            state = self._items[key]
+            assert state.audio_start_bytes is not None
+            item_end_bytes = state.audio_start_bytes + state.audio_bytes
+            if global_bytes < item_end_bytes:
+                target_index = index
+                break
+        target_key = self._audio_order[target_index]
+        target = self._items[target_key]
+        assert target.audio_start_bytes is not None
+        local_bytes = min(
+            target.audio_bytes,
+            max(0, global_bytes - target.audio_start_bytes),
+        )
+        later_ids: list[str] = []
+        seen_ids = {target_key[1]}
+        for later_key in self._audio_order[target_index + 1 :]:
+            later_item_id = later_key[1]
+            if later_item_id not in seen_ids:
+                later_ids.append(later_item_id)
+                seen_ids.add(later_item_id)
+        return RealtimeItemTruncation(
+            item_id=target_key[1],
+            content_index=target_key[2],
+            played_ms=(local_bytes // _PCMU_BYTES_PER_MILLISECOND),
+            delete_item_ids=tuple(later_ids),
+        )
+
+    def confirmed_prefix(self, played_ms: int) -> str:
+        checkpoint = self.confirmed_checkpoint(played_ms)
+        return checkpoint.text if checkpoint is not None else ""
+
+    def confirmed_checkpoint(
+        self,
+        played_ms: int,
+    ) -> RealtimeTextCheckpoint | None:
+        if (
+            isinstance(played_ms, bool)
+            or not isinstance(played_ms, int)
+            or played_ms < 0
+        ):
+            raise ValueError("played_ms must be a non-negative integer")
+        if not self._confirmed:
+            return None
+        for checkpoint in reversed(self._confirmed):
+            if checkpoint.played_ms <= played_ms:
+                return checkpoint
+        return None
+
+
 BridgeEvent: TypeAlias = (
     RealtimeTranscriptEvent
     | RealtimeToolCallEvent
@@ -141,6 +378,9 @@ class _Cycle:
     runtime_queue: asyncio.Queue[Any]
     done: asyncio.Event = field(default_factory=asyncio.Event)
     transcript_parts: list[str] = field(default_factory=list)
+    text_audio_checkpoints: RealtimeTextAudioCheckpoints = field(
+        default_factory=RealtimeTextAudioCheckpoints
+    )
     usage: RealtimeUsage = field(default_factory=RealtimeUsage)
     status: str = "in_progress"
     text_delta_keys: set[tuple[str, str, int]] = field(default_factory=set)
@@ -319,6 +559,25 @@ class RealtimeTurnBridge:
         async for chunk in self._cycle_audio(cycle):
             yield chunk
 
+    def confirmed_text_prefix(self, played_ms: int) -> str:
+        """Return the latest transcript checkpoint behind ``played_ms``."""
+
+        cycle = self._primary_cycle
+        if cycle is None:
+            return ""
+        return cycle.text_audio_checkpoints.confirmed_prefix(played_ms)
+
+    def confirmed_text_checkpoint(
+        self,
+        played_ms: int,
+    ) -> RealtimeTextCheckpoint | None:
+        """Return text plus its conservative native-audio frontier."""
+
+        cycle = self._primary_cycle
+        if cycle is None:
+            return None
+        return cycle.text_audio_checkpoints.confirmed_checkpoint(played_ms)
+
     async def continue_function_call(self, call_id: str, output: Any) -> None:
         cycle = self._primary_cycle
         if cycle is None or call_id not in cycle.pending_calls:
@@ -333,7 +592,7 @@ class RealtimeTurnBridge:
             await self._client.send_function_output(call_id, output)
             cycle.pending_calls.pop(call_id, None)
             self._begin_response_attempt(cycle)
-            await self._client.create_response()
+            await self._client.create_response(tool_choice="none")
             self._arm_response_watchdog(cycle)
         except BaseException:
             await self._fail_cycle(
@@ -377,13 +636,23 @@ class RealtimeTurnBridge:
     async def truncate_output(self, *, played_ms: int) -> None:
         if not isinstance(played_ms, int) or played_ms < 0:
             raise ValueError("played_ms must be a non-negative integer")
-        if self._closed or not self._client.connected or self._current_item_id is None:
+        if self._closed or not self._client.connected:
+            return
+        cycle = self._primary_cycle
+        plan = (
+            cycle.text_audio_checkpoints.truncation_for(played_ms)
+            if cycle is not None
+            else None
+        )
+        if plan is None:
             return
         await self._client.truncate_item(
-            self._current_item_id,
-            played_ms,
-            content_index=self._current_content_index,
+            plan.item_id,
+            plan.played_ms,
+            content_index=plan.content_index,
         )
+        for item_id in plan.delete_item_ids:
+            await self._client.delete_item(item_id)
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -439,6 +708,14 @@ class RealtimeTurnBridge:
                     self._current_response_id = event.response_id
                     self._current_item_id = event.item_id
                     self._current_content_index = event.content_index
+                    if event.audio or event.is_final:
+                        cycle.text_audio_checkpoints.note_audio(
+                            event.audio,
+                            response_id=event.response_id,
+                            item_id=event.item_id,
+                            content_index=event.content_index,
+                            is_final=event.is_final,
+                        )
                     if event.audio:
                         await cycle.audio_queue.put(event.audio)
                 elif isinstance(event, OpenAIOutputTextEvent):
@@ -509,7 +786,17 @@ class RealtimeTurnBridge:
             text = event.text
         else:
             text = ""
-        if not text or not cycle.publish_runtime:
+        if not cycle.publish_runtime:
+            return
+        cycle.text_audio_checkpoints.note_text(
+            text,
+            channel=event.channel,
+            response_id=event.response_id,
+            item_id=event.item_id,
+            content_index=event.content_index,
+            is_final=event.is_final,
+        )
+        if not text:
             return
         cycle.transcript_parts.append(text)
         await cycle.runtime_queue.put(
@@ -823,6 +1110,21 @@ class RealtimeBridgeHandle:
             return
         async for chunk in bridge.output_pcmu():
             yield chunk
+
+    def confirmed_text_prefix(self, played_ms: int) -> str:
+        bridge = self._bridge
+        if bridge is None:
+            return ""
+        return bridge.confirmed_text_prefix(played_ms)
+
+    def confirmed_text_checkpoint(
+        self,
+        played_ms: int,
+    ) -> RealtimeTextCheckpoint | None:
+        bridge = self._bridge
+        if bridge is None:
+            return None
+        return bridge.confirmed_text_checkpoint(played_ms)
 
     async def cancel_output(self) -> None:
         bridge = await self._wait_bridge(allow_timeout=True)

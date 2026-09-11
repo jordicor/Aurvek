@@ -10,6 +10,7 @@ from captcha_service import get_captcha_config
 from common import GOOGLE_CLIENT_ID, get_template_context, templates
 from database import get_db_connection
 from log_config import logger
+from i18n import Translator, get_translator
 from models import User
 
 from chat.routes.conversations import is_admin
@@ -24,6 +25,7 @@ static_directory = Path("data/static")
 
 @router.get("/admin/chat", response_class=HTMLResponse)
 async def admin_conversations(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse(
             "login.html",
@@ -34,7 +36,7 @@ async def admin_conversations(request: Request, current_user: User = Depends(get
             },
         )
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
     await ensure_conversation_privacy_schema()
 
     f_search = request.query_params.get("search", "").strip()
@@ -218,10 +220,11 @@ async def admin_conversations(request: Request, current_user: User = Depends(get
 
 @router.get("/api/admin/conversations")
 async def get_all_conversations(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request})
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
 
     await log_admin_action(
         admin_id=current_user.id,
@@ -260,10 +263,11 @@ async def get_all_conversations(request: Request, current_user: User = Depends(g
 
 @router.get("/api/admin/users/autocomplete")
 async def admin_users_autocomplete(q: str = "", current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
     if len(q) < 2:
         return []
     async with get_db_connection(readonly=True) as db:
@@ -281,16 +285,17 @@ async def toggle_conversation_lock(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await is_admin(current_user.id):
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.admin_required')}, status_code=403)
 
     try:
         data = await request.json()
         lock = data.get("lock", True)
     except Exception:
-        return JSONResponse(content={"error": "Invalid request body"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('chat_errors.invalid_request')}, status_code=400)
 
     async with conversation_write_lock(conversation_id):
         async with get_db_connection() as conn:
@@ -298,7 +303,7 @@ async def toggle_conversation_lock(
             await cursor.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,))
             result = await cursor.fetchone()
             if not result:
-                return JSONResponse(content={"error": "Conversation not found"}, status_code=404)
+                return JSONResponse(content={"error": translator.t('chat_errors.conversation_not_found')}, status_code=404)
 
         if lock:
             from tools.watchdog import _finalize_conversation_lock
@@ -353,20 +358,21 @@ async def toggle_conversation_lock(
 
 @router.post("/admin/api/conversations/bulk_lock")
 async def bulk_lock_conversations(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await is_admin(current_user.id):
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.admin_required')}, status_code=403)
 
     try:
         data = await request.json()
         conversation_ids = data.get("conversation_ids", [])
         lock = data.get("lock", True)
     except Exception:
-        return JSONResponse(content={"error": "Invalid request body"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('chat_errors.invalid_request')}, status_code=400)
 
     if not conversation_ids or not isinstance(conversation_ids, list):
-        return JSONResponse(content={"error": "No conversation IDs provided"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.conversation_ids_required')}, status_code=400)
 
     processed = 0
     for conv_id in conversation_ids:
@@ -417,26 +423,32 @@ async def bulk_lock_conversations(request: Request, current_user: User = Depends
 
 @router.delete("/admin/api/conversations/{conversation_id}")
 async def delete_conversation_absolute(conversation_id: int, current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
+    if current_user is None:
+        return unauthenticated_response()
     if await is_admin(current_user.id):
         user_id = await delete_conversation_recursively(conversation_id)
         if user_id:
             success = await delete_conversation_folder(static_directory, user_id, conversation_id)
             if success:
-                return JSONResponse(content={"message": "Conversation deleted successfully"})
-            return JSONResponse(content={"message": "Conversation deleted from database, but failed to delete folder"}, status_code=500)
-        return JSONResponse(content={"message": "Conversation not found"}, status_code=404)
+                return JSONResponse(content={"message": translator.t('management_operations_errors.conversation_deleted')})
+            return JSONResponse(content={"message": translator.t('management_operations_errors.conversation_folder_failed')}, status_code=500)
+        return JSONResponse(content={"message": translator.t('chat_errors.conversation_not_found')}, status_code=404)
     return unauthenticated_response()
 
 
 @router.post("/admin/api/conversations/bulk_delete")
 async def delete_multiple_conversations(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    if current_user is None:
+        return unauthenticated_response()
     if not await is_admin(current_user.id):
         return unauthenticated_response()
 
     body = await request.json()
     conversation_ids = body.get("conversation_ids")
     if not conversation_ids:
-        return JSONResponse(content={"error": "No conversation IDs provided"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.conversation_ids_required')}, status_code=400)
 
     failed_conversations = []
     for conversation_id in conversation_ids:
@@ -449,9 +461,9 @@ async def delete_multiple_conversations(request: Request, current_user: User = D
     if failed_conversations:
         return JSONResponse(
             content={
-                "message": "Some conversations were deleted from database, but failed to delete folders",
+                "message": translator.t('management_operations_errors.conversations_folder_failed'),
                 "failed_conversations": failed_conversations,
             },
             status_code=500,
         )
-    return JSONResponse(content={"message": "Conversations deleted successfully"})
+    return JSONResponse(content={"message": translator.t('management_operations_errors.conversations_deleted')})

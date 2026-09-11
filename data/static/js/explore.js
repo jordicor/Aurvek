@@ -1,3 +1,6 @@
+const mt = (key, params) => AurvekI18n.t('marketplace.' + key, params);
+const mh = (key, params) => escapeAttr(mt(key, params));
+
 /* ============================================================
    PROMPT & PACK EXPLORER - Frontend Logic
    Vanilla JS: fetch, filter, paginate, detail modal
@@ -168,8 +171,8 @@ function handleLandingPurchaseRequest(event) {
         ExploreState.purchaseRequestPending = false;
     };
     NotificationModal.confirm(
-        'Continue to checkout',
-        `Open the secure Aurvek checkout for "${item.name || 'this prompt'}"?`,
+        mt('explore.checkout_title'),
+        mt('explore.checkout_confirm', {name: item.name || mt('explore.this_prompt')}),
         () => {
             resetPending();
             window.location.assign(`/purchase/prompt/${Number(item.id)}`);
@@ -194,7 +197,8 @@ function switchTab(tab, tabEl) {
     const searchInput = document.getElementById('exploreSearch');
     if (searchInput) {
         searchInput.value = '';
-        searchInput.placeholder = tab === 'prompts' ? 'Search prompts...' : 'Search packs...';
+        searchInput.placeholder = tab === 'prompts' ? mt('explore.search') : mt('explore.search_packs');
+        searchInput.setAttribute('aria-label', searchInput.placeholder);
     }
 
     // Update tab buttons
@@ -331,7 +335,7 @@ async function loadPrompts() {
     } catch (err) {
         if (err.name !== 'AbortError' && isExploreRequestCurrent(request)) {
             console.error('Failed to load prompts:', err);
-            showEmptyState('Error loading prompts. Please try again.');
+            showEmptyState(mt('explore.load_prompts_error'));
         }
     } finally {
         finishExploreRequest(request);
@@ -374,7 +378,7 @@ async function loadPacks() {
     } catch (err) {
         if (err.name !== 'AbortError' && isExploreRequestCurrent(request)) {
             console.error('Failed to load packs:', err);
-            showEmptyState('Error loading packs. Please try again.');
+            showEmptyState(mt('explore.load_packs_error'));
         }
     } finally {
         finishExploreRequest(request);
@@ -394,15 +398,15 @@ function renderCategories() {
 
     // "All" chip
     let html = `<button class="category-chip ${noFilter ? 'active' : ''}" data-chip-action="category">
-        <i class="fas fa-globe"></i> All
+        <i class="fas fa-globe"></i> ${mh('explore.all')}
     </button>`;
 
     // Special filter chips
     html += `<button class="category-chip ${ExploreState.activeFilter === 'mine' ? 'active' : ''}" data-chip-action="filter" data-filter="mine">
-        <i class="fas fa-user"></i> My Prompts
+        <i class="fas fa-user"></i> ${mh('explore.my_prompts')}
     </button>`;
     html += `<button class="category-chip ${ExploreState.activeFilter === 'favorites' ? 'active' : ''}" data-chip-action="filter" data-filter="favorites">
-        <i class="fas fa-star"></i> Favorites
+        <i class="fas fa-star"></i> ${mh('explore.favorites')}
     </button>`;
 
     // Visual divider
@@ -412,16 +416,16 @@ function renderCategories() {
         if (cat.is_age_restricted) return;
         html += `<button class="category-chip ${ExploreState.activeCategory === cat.id ? 'active' : ''}" data-chip-action="category" data-category-id="${escapeAttr(String(cat.id))}">
             <i class="fas ${escapeAttr(cat.icon || 'fa-tag')}"></i> ${escapeHtml(cat.name)}
-            <span class="chip-count">${cat.count}</span>
+            <span class="chip-count">${escapeHtml(AurvekI18n.formatNumber(cat.count))}</span>
         </button>`;
     });
 
     const ageRestricted = ExploreState.categories.filter(c => c.is_age_restricted);
     if (ageRestricted.length > 0) {
         ageRestricted.forEach(cat => {
-            html += `<button class="category-chip ${ExploreState.activeCategory === cat.id ? 'active' : ''}" data-chip-action="category" data-category-id="${escapeAttr(String(cat.id))}" title="Age-restricted content">
+            html += `<button class="category-chip ${ExploreState.activeCategory === cat.id ? 'active' : ''}" data-chip-action="category" data-category-id="${escapeAttr(String(cat.id))}" title="${mh('explore.age_restricted')}">
                 <i class="fas ${escapeAttr(cat.icon || 'fa-tag')}"></i> ${escapeHtml(cat.name)}
-                <span class="chip-count">${cat.count}</span>
+                <span class="chip-count">${escapeHtml(AurvekI18n.formatNumber(cat.count))}</span>
             </button>`;
         });
     }
@@ -437,10 +441,10 @@ function renderPackChips() {
     const noFilter = !ExploreState.activeFilter;
 
     let html = `<button class="category-chip ${noFilter ? 'active' : ''}" data-chip-action="filter">
-        <i class="fas fa-globe"></i> All
+        <i class="fas fa-globe"></i> ${mh('explore.all')}
     </button>`;
     html += `<button class="category-chip ${ExploreState.activeFilter === 'mine' ? 'active' : ''}" data-chip-action="filter" data-filter="mine">
-        <i class="fas fa-user"></i> My Packs
+        <i class="fas fa-user"></i> ${mh('explore.my_packs')}
     </button>`;
 
     container.innerHTML = html;
@@ -483,7 +487,7 @@ function renderPrompts() {
     if (!grid) return;
 
     if (ExploreState.prompts.length === 0) {
-        showEmptyState('No prompts found matching your criteria.');
+        showEmptyState(mt('explore.no_prompts'));
         return;
     }
 
@@ -495,7 +499,7 @@ function renderPrompts() {
 
         const descSnippet = prompt.description
             ? escapeHtml(prompt.description.substring(0, 120))
-            : 'No description available.';
+            : mh('explore.no_description');
 
         const tagsHtml = (prompt.categories || [])
             .slice(0, 3)
@@ -504,17 +508,17 @@ function renderPrompts() {
 
         let paidBadge = '';
         if (prompt.is_paid && prompt.purchase_price > 0) {
-            paidBadge = '<span class="card-paid-badge card-badge-vip">VIP</span>';
+            paidBadge = '<span class="card-paid-badge card-badge-vip">' + mh('explore.vip') + '</span>';
         } else if (prompt.is_paid) {
-            paidBadge = '<span class="card-paid-badge card-badge-premium">Premium</span>';
+            paidBadge = '<span class="card-paid-badge card-badge-premium">' + mh('explore.premium') + '</span>';
         }
 
         let visibilityBadge = '';
         if (ExploreState.activeFilter === 'mine') {
             if (!prompt.is_public) {
-                visibilityBadge = '<span class="card-visibility-badge private"><i class="fas fa-lock"></i> Private</span>';
+                visibilityBadge = '<span class="card-visibility-badge private"><i class="fas fa-lock"></i> ' + mh('explore.private') + '</span>';
             } else if (prompt.is_unlisted) {
-                visibilityBadge = '<span class="card-visibility-badge unlisted"><i class="fas fa-eye-slash"></i> Unlisted</span>';
+                visibilityBadge = '<span class="card-visibility-badge unlisted"><i class="fas fa-eye-slash"></i> ' + mh('explore.unlisted') + '</span>';
             }
         }
 
@@ -524,7 +528,7 @@ function renderPrompts() {
         html += `<div class="prompt-card" data-explore-item-type="prompt" data-explore-item-id="${escapeAttr(String(prompt.id))}">
             ${paidBadge}
             ${visibilityBadge}
-            <button class="explore-fav-btn ${favClass}" data-favorite-prompt-id="${escapeAttr(String(prompt.id))}" title="${prompt.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
+            <button class="explore-fav-btn ${favClass}" data-favorite-prompt-id="${escapeAttr(String(prompt.id))}" title="${prompt.is_favorite ? mh('explore.remove_favorite') : mh('explore.add_favorite')}">
                 <i class="${favIcon} fa-star"></i>
             </button>
             ${avatarHtml}
@@ -546,7 +550,7 @@ function renderPacks() {
     if (!grid) return;
 
     if (ExploreState.packs.length === 0) {
-        showEmptyState('No packs found matching your criteria.');
+        showEmptyState(mt('explore.no_packs'));
         return;
     }
 
@@ -556,9 +560,9 @@ function renderPacks() {
             ? `<div class="pack-card-cover"><img src="/api/packs/${encodeURIComponent(pack.id)}/cover/512" alt="" loading="lazy"></div>`
             : `<div class="pack-card-cover pack-cover-placeholder"><span>${escapeHtml(pack.name ? pack.name.charAt(0).toUpperCase() : '?')}</span></div>`;
 
-        const priceLabel = pack.is_paid ? `$${Number(pack.price).toFixed(2)}` : 'FREE';
+        const priceLabel = pack.is_paid ? AurvekI18n.formatCurrency(pack.price) : mt('store.free');
         const itemCount = pack.item_count || 0;
-        const creator = pack.created_by_username || 'Unknown';
+        const creator = pack.created_by_username || mt('explore.unknown');
 
         const descSnippet = pack.description
             ? escapeHtml(pack.description.substring(0, 100))
@@ -567,9 +571,9 @@ function renderPacks() {
         let visibilityBadge = '';
         if (ExploreState.activeFilter === 'mine') {
             if (pack.status === 'draft') {
-                visibilityBadge = '<span class="card-visibility-badge draft"><i class="fas fa-pencil-alt"></i> Draft</span>';
+                visibilityBadge = '<span class="card-visibility-badge draft"><i class="fas fa-pencil-alt"></i> ' + mh('explore.draft') + '</span>';
             } else if (!pack.is_public) {
-                visibilityBadge = '<span class="card-visibility-badge private"><i class="fas fa-lock"></i> Private</span>';
+                visibilityBadge = '<span class="card-visibility-badge private"><i class="fas fa-lock"></i> ' + mh('explore.private') + '</span>';
             }
         }
 
@@ -580,10 +584,10 @@ function renderPacks() {
                 <div class="card-name">${escapeHtml(pack.name)}</div>
                 ${descSnippet ? `<div class="card-description">${descSnippet}</div>` : ''}
                 <div class="pack-card-meta">
-                    <span>${itemCount} prompt${itemCount !== 1 ? 's' : ''}</span>
-                    <span>by @${escapeHtml(creator)}</span>
+                    <span>${mh('explore.prompt_count', {count: itemCount, number: AurvekI18n.formatNumber(itemCount)})}</span>
+                    <span>${mh('explore.by_creator', {name: '@' + creator})}</span>
                 </div>
-                <div class="pack-card-price">${priceLabel}</div>
+                <div class="pack-card-price">${escapeHtml(priceLabel)}</div>
             </div>
         </div>`;
     });
@@ -640,8 +644,8 @@ function updateResultsBar() {
     }
     const start = (ExploreState.currentPage - 1) * ExploreState.limit + 1;
     const end = Math.min(ExploreState.currentPage * ExploreState.limit, ExploreState.total);
-    const label = ExploreState.activeTab === 'prompts' ? 'prompts' : 'packs';
-    bar.textContent = `Showing ${start}-${end} of ${ExploreState.total} ${label}`;
+    const key = ExploreState.activeTab === 'prompts' ? 'explore.results_prompts' : 'explore.results_packs';
+    bar.textContent = mt(key, {count: ExploreState.total, start: AurvekI18n.formatNumber(start), end: AurvekI18n.formatNumber(end), total: AurvekI18n.formatNumber(ExploreState.total)});
 }
 
 // ============================================================
@@ -661,7 +665,7 @@ function renderPagination() {
     let html = '';
 
     // Previous button
-    html += `<button class="page-btn" data-page="${currentPage - 1}" ${currentPage <= 1 ? 'disabled' : ''}>
+    html += `<button class="page-btn" aria-label="${mh('explore.previous')}" data-page="${currentPage - 1}" ${currentPage <= 1 ? 'disabled' : ''}>
         <i class="fas fa-chevron-left"></i>
     </button>`;
 
@@ -671,12 +675,12 @@ function renderPagination() {
         if (p === '...') {
             html += `<span class="page-btn" style="cursor:default;border:none;">...</span>`;
         } else {
-            html += `<button class="page-btn ${p === currentPage ? 'active' : ''}" data-page="${p}">${p}</button>`;
+            html += `<button class="page-btn ${p === currentPage ? 'active' : ''}" data-page="${p}">${escapeHtml(AurvekI18n.formatNumber(p))}</button>`;
         }
     });
 
     // Next button
-    html += `<button class="page-btn" data-page="${currentPage + 1}" ${currentPage >= totalPages ? 'disabled' : ''}>
+    html += `<button class="page-btn" aria-label="${mh('explore.next')}" data-page="${currentPage + 1}" ${currentPage >= totalPages ? 'disabled' : ''}>
         <i class="fas fa-chevron-right"></i>
     </button>`;
 
@@ -731,15 +735,15 @@ function openModal(prompt) {
         .map(c => `<span class="modal-tag"><i class="fas ${escapeAttr(c.icon || 'fa-tag')}"></i> ${escapeHtml(c.name)}</span>`)
         .join('');
 
-    const description = prompt.description || 'No description available.';
-    const creatorName = prompt.creator_name || 'Unknown';
+    const description = prompt.description || mt('explore.no_description');
+    const creatorName = prompt.creator_name || mt('explore.unknown');
 
     const landingUrl = prompt.public_id && prompt.slug
         ? `/p/${encodeURIComponent(prompt.public_id)}/${encodeURIComponent(prompt.slug)}/`
         : null;
 
     const landingBtn = landingUrl
-        ? `<a href="${escapeAttr(landingUrl)}" target="_blank" class="modal-secondary-btn"><i class="fas fa-external-link-alt"></i> Landing Page</a>`
+        ? `<a href="${escapeAttr(landingUrl)}" target="_blank" class="modal-secondary-btn"><i class="fas fa-external-link-alt"></i> ${mh('explore.landing_page')}</a>`
         : '';
 
     const modalFavClass = prompt.is_favorite ? 'is-favorite' : '';
@@ -748,9 +752,9 @@ function openModal(prompt) {
     let visibilityNotice = '';
     if (ExploreState.activeFilter === 'mine') {
         if (!prompt.is_public) {
-            visibilityNotice = '<div class="visibility-notice"><i class="fas fa-lock"></i> This prompt is private — only you can see it</div>';
+            visibilityNotice = '<div class="visibility-notice"><i class="fas fa-lock"></i> ' + mh('explore.prompt_private') + '</div>';
         } else if (prompt.is_unlisted) {
-            visibilityNotice = '<div class="visibility-notice"><i class="fas fa-eye-slash"></i> This prompt is unlisted — only accessible via direct link</div>';
+            visibilityNotice = '<div class="visibility-notice"><i class="fas fa-eye-slash"></i> ' + mh('explore.prompt_unlisted') + '</div>';
         }
     }
 
@@ -759,28 +763,28 @@ function openModal(prompt) {
     ExploreState.modalLandingUrl = landingUrl || '';
 
     modalContent.innerHTML = `
-        <button class="modal-close-btn" data-modal-action="close" title="Close"><i class="fas fa-times"></i></button>
-        <button class="modal-fav-btn ${modalFavClass}" data-modal-action="favorite" data-favorite-prompt-id="${escapeAttr(String(prompt.id))}" title="${prompt.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
+        <button class="modal-close-btn" data-modal-action="close" title="${mh('explore.close')}"><i class="fas fa-times"></i></button>
+        <button class="modal-fav-btn ${modalFavClass}" data-modal-action="favorite" data-favorite-prompt-id="${escapeAttr(String(prompt.id))}" title="${prompt.is_favorite ? mh('explore.remove_favorite') : mh('explore.add_favorite')}">
             <i class="${modalFavIcon} fa-star"></i>
         </button>
         <div class="modal-header-section">
             ${avatarHtml}
             <div class="modal-info">
                 <h2 class="modal-prompt-name">${escapeHtml(prompt.name)}</h2>
-                <div class="modal-creator">by <span>@${escapeHtml(creatorName)}</span></div>
+                <div class="modal-creator">${mh('explore.by_creator', {name: '@' + creatorName})}</div>
             </div>
         </div>
         ${visibilityNotice}
         <div class="modal-description">${escapeHtml(description)}</div>
         <div class="modal-tags">${tagsHtml}</div>
         ${(prompt.purchase_price > 0 && !prompt.user_has_access && !prompt.is_mine)
-            ? `<div class="modal-price-info"><i class="fas fa-crown"></i> One-time access &middot; $${Number(prompt.purchase_price).toFixed(2)}</div>`
+            ? `<div class="modal-price-info"><i class="fas fa-crown"></i> ${mh('explore.one_time', {price: AurvekI18n.formatCurrency(prompt.purchase_price)})}</div>`
             : ''}
         ${getPromptCTA(prompt)}
         <div class="modal-secondary-actions">
             ${landingBtn}
             <button class="modal-secondary-btn" data-modal-action="share">
-                <i class="fas fa-share-alt"></i> Share
+                <i class="fas fa-share-alt"></i> ${mh('explore.share')}
             </button>
         </div>
     `;
@@ -792,16 +796,16 @@ function openModal(prompt) {
 function getPromptCTA(prompt) {
     if (prompt.user_has_access || prompt.is_mine) {
         return `<button class="modal-cta" data-modal-action="chat">
-            <i class="fas fa-comments"></i> Chat Now
+            <i class="fas fa-comments"></i> ${mh('explore.chat_now')}
         </button>`;
     }
     if (prompt.purchase_price > 0) {
         return `<button class="modal-cta modal-cta-vip" data-modal-action="purchase-prompt">
-            <i class="fas fa-crown"></i> Unlock VIP Access
+            <i class="fas fa-crown"></i> ${mh('explore.unlock_vip')}
         </button>`;
     }
     return `<button class="modal-cta" data-modal-action="chat">
-        <i class="fas fa-comments"></i> Chat Now
+        <i class="fas fa-comments"></i> ${mh('explore.chat_now')}
     </button>`;
 }
 
@@ -826,7 +830,7 @@ async function purchasePrompt(promptId) {
         }
     } catch (err) {
         console.error('Purchase failed:', err);
-        alert('Purchase failed. Please try again.');
+        alert(mt('explore.purchase_retry'));
     }
 }
 
@@ -844,9 +848,9 @@ function openPackModal(pack) {
         : `<div class="pack-modal-cover-placeholder"><span>${escapeHtml(pack.name ? pack.name.charAt(0).toUpperCase() : '?')}</span></div>`;
 
     const description = pack.description || '';
-    const creator = pack.created_by_username || 'Unknown';
+    const creator = pack.created_by_username || mt('explore.unknown');
     const itemCount = pack.item_count || 0;
-    const priceLabel = pack.is_paid ? `$${Number(pack.price).toFixed(2)}` : 'FREE';
+    const priceLabel = pack.is_paid ? AurvekI18n.formatCurrency(pack.price) : mt('store.free');
     const slug = pack.slug || '';
     const publicId = pack.public_id || '';
 
@@ -861,15 +865,15 @@ function openPackModal(pack) {
 
     const landingUrl = publicId && slug ? `/pack/${encodeURIComponent(publicId)}/${encodeURIComponent(slug)}/` : null;
     const landingBtn = landingUrl
-        ? `<a href="${escapeAttr(landingUrl)}" target="_blank" class="modal-secondary-btn"><i class="fas fa-external-link-alt"></i> View Landing</a>`
+        ? `<a href="${escapeAttr(landingUrl)}" target="_blank" class="modal-secondary-btn"><i class="fas fa-external-link-alt"></i> ${mh('explore.view_landing')}</a>`
         : '';
 
     let packVisibilityNotice = '';
     if (ExploreState.activeFilter === 'mine') {
         if (pack.status === 'draft') {
-            packVisibilityNotice = '<div class="visibility-notice"><i class="fas fa-pencil-alt"></i> This pack is a draft — not yet published</div>';
+            packVisibilityNotice = '<div class="visibility-notice"><i class="fas fa-pencil-alt"></i> ' + mh('explore.pack_draft') + '</div>';
         } else if (!pack.is_public) {
-            packVisibilityNotice = '<div class="visibility-notice"><i class="fas fa-lock"></i> This pack is private — only you can see it</div>';
+            packVisibilityNotice = '<div class="visibility-notice"><i class="fas fa-lock"></i> ' + mh('explore.pack_private') + '</div>';
         }
     }
 
@@ -878,13 +882,13 @@ function openPackModal(pack) {
     ExploreState.modalLandingUrl = landingUrl || '';
 
     modalContent.innerHTML = `
-        <button class="modal-close-btn" data-modal-action="close" title="Close"><i class="fas fa-times"></i></button>
+        <button class="modal-close-btn" data-modal-action="close" title="${mh('explore.close')}"><i class="fas fa-times"></i></button>
         <div class="pack-modal-header">
             ${coverHtml}
             <div class="modal-info">
                 <h2 class="modal-prompt-name">${escapeHtml(pack.name)}</h2>
-                <div class="modal-creator">by <span>@${escapeHtml(creator)}</span> &mdash; ${itemCount} prompt${itemCount !== 1 ? 's' : ''}</div>
-                <div class="pack-modal-price">${priceLabel}</div>
+                <div class="modal-creator">${mh('explore.by_creator', {name: '@' + creator})} &mdash; ${mh('explore.prompt_count', {count: itemCount, number: AurvekI18n.formatNumber(itemCount)})}</div>
+                <div class="pack-modal-price">${escapeHtml(priceLabel)}</div>
             </div>
         </div>
         ${packVisibilityNotice}
@@ -895,19 +899,19 @@ function openPackModal(pack) {
         </div>
         ${!pack.is_paid && pack.id ? `
         <button class="modal-cta" style="width:100%;cursor:pointer" data-modal-action="claim-pack">
-            <i class="fas fa-rocket"></i> Get This Pack - FREE
+            <i class="fas fa-rocket"></i> ${mh('explore.get_pack_price', {price: mt('store.free')})}
         </button>` : pack.is_paid && pack.id ? `
         <button class="modal-cta" style="width:100%;cursor:pointer" id="packPurchaseBtn" data-modal-action="purchase-pack">
-            <i class="fas fa-shopping-cart"></i> Get This Pack - ${priceLabel}
+            <i class="fas fa-shopping-cart"></i> ${mh('explore.get_pack_price', {price: priceLabel})}
         </button>
         <div id="packPurchaseError" class="modal-error" style="display:none;color:#f04747;padding:0.5rem 0;text-align:center;font-size:0.9rem;"></div>` : landingUrl ? `
         <a href="${escapeAttr(landingUrl)}" target="_blank" class="modal-cta" style="text-decoration:none;text-align:center;display:block">
-            <i class="fas fa-rocket"></i> Get This Pack
+            <i class="fas fa-rocket"></i> ${mh('explore.get_pack')}
         </a>` : ''}
         <div class="modal-secondary-actions">
             ${landingBtn}
             <button class="modal-secondary-btn" data-modal-action="share">
-                <i class="fas fa-share-alt"></i> Share
+                <i class="fas fa-share-alt"></i> ${mh('explore.share')}
             </button>
         </div>
     `;
@@ -936,7 +940,7 @@ async function loadPackModalItems(packId) {
             return;
         }
 
-        let html = '<h3 class="pack-modal-prompts-title">Included:</h3>';
+        let html = '<h3 class="pack-modal-prompts-title">' + mh('explore.included') + '</h3>';
         items.forEach(item => {
             const initial = item.prompt_name ? item.prompt_name.charAt(0).toUpperCase() : '?';
             const desc = item.prompt_description ? escapeHtml(item.prompt_description.substring(0, 60)) : '';
@@ -1011,7 +1015,7 @@ async function chatWithPrompt(promptId, promptName) {
 
         if (!res.ok) {
             const err = await res.json();
-            NotificationModal.error('Error', err.detail || 'Failed to select prompt');
+            NotificationModal.error(mt('explore.error'), err.detail || mt('explore.select_failed'));
             return;
         }
 
@@ -1019,7 +1023,7 @@ async function chatWithPrompt(promptId, promptName) {
         window.location.href = '/chat?autostart=1';
     } catch (err) {
         console.error('Failed to select prompt:', err);
-        NotificationModal.error('Error', 'Connection error. Please try again.');
+        NotificationModal.error(mt('explore.error'), mt('explore.connection_error'));
     }
 }
 
@@ -1031,20 +1035,20 @@ async function claimFreePack(packId, landingUrl) {
             if (landingUrl) {
                 window.location.href = landingUrl;
             } else {
-                NotificationModal.warning('Login Required', 'Please log in to claim this pack.');
+                NotificationModal.warning(mt('explore.login_required'), mt('explore.login_claim'));
             }
             return;
         }
         if (!res.ok) {
             const err = await res.json();
-            NotificationModal.error('Error', err.detail || 'Failed to claim pack');
+            NotificationModal.error(mt('explore.error'), err.detail || mt('explore.claim_failed'));
             return;
         }
         const data = await res.json();
         window.location.href = data.redirect || '/chat';
     } catch (err) {
         console.error('Failed to claim pack:', err);
-        NotificationModal.error('Error', 'Connection error. Please try again.');
+        NotificationModal.error(mt('explore.error'), mt('explore.connection_error'));
     }
 }
 
@@ -1058,7 +1062,7 @@ async function purchasePack(packId, landingUrl) {
     if (btn) {
         originalBtnHtml = btn.innerHTML;
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ' + mh('explore.processing');
     }
 
     try {
@@ -1070,10 +1074,14 @@ async function purchasePack(packId, landingUrl) {
 
         if (res.status === 401) {
             // Not logged in: redirect to landing page for registration
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalBtnHtml;
+            }
             if (landingUrl) {
                 window.location.href = landingUrl;
             } else {
-                NotificationModal.warning('Login Required', 'Please log in to purchase this pack.');
+                NotificationModal.warning(mt('explore.login_required'), mt('explore.login_purchase'));
             }
             return;
         }
@@ -1098,12 +1106,12 @@ async function purchasePack(packId, landingUrl) {
             btn.disabled = false;
             btn.innerHTML = originalBtnHtml;
         }
-        const msg = data.detail || data.message || 'Purchase failed.';
+        const msg = data.detail || data.message || mt('explore.purchase_failed');
         if (errEl) {
             errEl.textContent = msg;
             errEl.style.display = 'block';
         } else {
-            NotificationModal.error('Error', msg);
+            NotificationModal.error(mt('explore.error'), msg);
         }
     } catch (err) {
         // Re-enable button on error so user can retry
@@ -1113,17 +1121,17 @@ async function purchasePack(packId, landingUrl) {
         }
         console.error('Failed to purchase pack:', err);
         if (errEl) {
-            errEl.textContent = 'Connection error. Please try again.';
+            errEl.textContent = mt('explore.connection_error');
             errEl.style.display = 'block';
         } else {
-            NotificationModal.error('Error', 'Connection error. Please try again.');
+            NotificationModal.error(mt('explore.error'), mt('explore.connection_error'));
         }
     }
 }
 
 async function sharePrompt(name, landingUrl) {
     const shareUrl = landingUrl || window.location.href;
-    const shareText = `Check out "${name}" on Aurvek AI!`;
+    const shareText = mt('explore.share_text', {name});
 
     if (navigator.share) {
         try {
@@ -1135,11 +1143,11 @@ async function sharePrompt(name, landingUrl) {
         // Fallback: copy to clipboard
         try {
             await navigator.clipboard.writeText(shareUrl);
-            NotificationModal.toast('Link copied to clipboard!', 'success');
+            NotificationModal.toast(mt('explore.link_copied'), 'success');
         } catch (e) {
             // Double fallback: show URL in a modal so user can select and copy
             const safeUrl = shareUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            NotificationModal.info('Share Link', `<input class="form-control" value="${safeUrl}" readonly>`, { allowHtml: true });
+            NotificationModal.info(mt('explore.share_link'), `<input class="form-control" aria-label="${mh('explore.share_link')}" value="${safeUrl}" readonly>`, { allowHtml: true });
         }
     }
 }
@@ -1155,7 +1163,7 @@ async function toggleExploreFavorite(promptId, btnEl) {
 
     btnEl.classList.toggle('is-favorite');
     icon.className = isFav ? 'far fa-star' : 'fas fa-star';
-    btnEl.title = isFav ? 'Add to favorites' : 'Remove from favorites';
+    btnEl.title = isFav ? mt('explore.add_favorite') : mt('explore.remove_favorite');
 
     try {
         const res = await fetch(`/api/home/favorites/${promptId}`, { method: 'POST' });
@@ -1173,11 +1181,11 @@ async function toggleExploreFavorite(promptId, btnEl) {
                 if (data.is_favorite) {
                     btn.classList.add('is-favorite');
                     ico.className = 'fas fa-star';
-                    btn.title = 'Remove from favorites';
+                    btn.title = mt('explore.remove_favorite');
                 } else {
                     btn.classList.remove('is-favorite');
                     ico.className = 'far fa-star';
-                    btn.title = 'Add to favorites';
+                    btn.title = mt('explore.add_favorite');
                 }
             }
         });
@@ -1189,7 +1197,7 @@ async function toggleExploreFavorite(promptId, btnEl) {
         // Revert optimistic update
         btnEl.classList.toggle('is-favorite');
         icon.className = isFav ? 'fas fa-star' : 'far fa-star';
-        btnEl.title = isFav ? 'Remove from favorites' : 'Add to favorites';
+        btnEl.title = isFav ? mt('explore.remove_favorite') : mt('explore.add_favorite');
     }
 }
 
@@ -1296,7 +1304,7 @@ function updatePreviewBar(item, type) {
     const ctaBtn = document.getElementById('previewCtaBtn');
 
     if (nameEl) nameEl.textContent = item.name || '';
-    if (creatorEl) creatorEl.textContent = '@' + (item.creator_name || item.created_by_username || 'Unknown');
+    if (creatorEl) creatorEl.textContent = mt('explore.by_creator', {name: '@' + (item.creator_name || item.created_by_username || mt('explore.unknown'))});
     ExploreState.previewItem = item;
     ExploreState.previewType = type;
 
@@ -1304,18 +1312,18 @@ function updatePreviewBar(item, type) {
     if (ctaBtn) {
         if (type === 'prompt') {
             if (item.user_has_access || item.is_mine) {
-                ctaBtn.textContent = 'Chat Now';
+                ctaBtn.textContent = mt('explore.chat_now');
             } else if (item.purchase_price > 0) {
-                ctaBtn.textContent = 'Unlock VIP Access';
+                ctaBtn.textContent = mt('explore.unlock_vip');
             } else {
-                ctaBtn.textContent = 'Chat Now';
+                ctaBtn.textContent = mt('explore.chat_now');
             }
         } else {
             // Pack
             if (item.is_paid) {
-                ctaBtn.textContent = 'Buy $' + Number(item.price).toFixed(2);
+                ctaBtn.textContent = mt('explore.buy_price', {price: AurvekI18n.formatCurrency(item.price)});
             } else {
-                ctaBtn.textContent = 'Get Free';
+                ctaBtn.textContent = mt('explore.get_free');
             }
         }
     }
@@ -1329,7 +1337,7 @@ function updatePreviewNavigation() {
 
     if (counter) {
         counter.textContent = items.length > 1
-            ? `${ExploreState.iframeCurrentIndex + 1} / ${items.length}`
+            ? mt('explore.counter', {current: AurvekI18n.formatNumber(ExploreState.iframeCurrentIndex + 1), total: AurvekI18n.formatNumber(items.length)})
             : '';
     }
 

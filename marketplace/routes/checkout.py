@@ -31,11 +31,14 @@ from common import (
 )
 from database import get_db_connection
 from log_config import logger
+from i18n import get_translator
+from marketplace.services.checkout_localization import discount_error_message, purchase_session_state
 from marketplace.config import require_checkout_enabled
 from marketplace.services.acquisition import apply_landing_config_to_user
 from marketplace.services.entitlements import (
     grant_prompt_entitlement,
     user_has_prompt_access as user_has_prompt_entitlement_access,
+    user_has_pack_access as user_has_pack_entitlement_access,
 )
 from mobile.client import ios_purchase_blocked, ios_purchase_disabled_response
 from models import User
@@ -52,7 +55,8 @@ async def prompt_purchase_bridge(
     current_user: User = Depends(get_current_user),
 ):
     """Move an isolated landing visitor onto the trusted checkout origin."""
-    require_checkout_enabled()
+    translator = get_translator(request, current_user)
+    require_checkout_enabled(translator)
     purchase_path = f"/purchase/prompt/{int(prompt_id)}"
     if current_user is None:
         return RedirectResponse(
@@ -71,7 +75,7 @@ async def prompt_purchase_bridge(
         )
         prompt = await cursor.fetchone()
         if not prompt or not prompt[1] or float(prompt[1]) <= 0:
-            raise HTTPException(status_code=404, detail="Prompt not available for purchase")
+            raise HTTPException(status_code=404, detail=translator.t("marketplace.checkout.prompt_unavailable"))
         if await user_has_prompt_entitlement_access(
             conn,
             user_id=current_user.id,
@@ -97,18 +101,21 @@ async def pack_purchase_success_page(
     current_user: dict = Depends(get_current_user)
 ):
     """Success page shown after completing a pack purchase via Stripe."""
-    require_checkout_enabled()
+    translator = get_translator(request, current_user)
+    require_checkout_enabled(translator)
 
     if not current_user:
         return RedirectResponse(url="/login", status_code=302)
 
-    pack_name = "Pack"
+    pack_name = translator.t("marketplace.purchase.pack")
     pack_id = None
     pack_cover_image = None
     pack_creator = None
     pack_landing_url = None
     prompt_count = 0
     payment_amount = None
+    purchase_state = "unverified"
+    access_granted = False
 
     if session_id and STRIPE_SECRET_KEY:
         try:
@@ -116,8 +123,10 @@ async def pack_purchase_success_page(
                 stripe.checkout.Session.retrieve,
                 session_id,
             )
-            if session and session.metadata.get('user_id', session.metadata.get('buyer_user_id')) == str(current_user.id):
-                payment_amount = float(session.metadata.get('final_amount', 0))
+            purchase_state = purchase_session_state(session, current_user.id, "pack")
+            if purchase_state != "unverified":
+                if purchase_state == "paid":
+                    payment_amount = float(session.metadata.get('final_amount', 0))
                 pid = session.metadata.get('pack_id')
                 if pid:
                     pack_id = int(pid)
@@ -141,11 +150,17 @@ async def pack_purchase_success_page(
                             prompt_count = pack_row[5]
                             pack_cover_image = pack_row[3]
                             pack_landing_url = f"/pack/{pack_row[2]}/{pack_row[1]}/"
+                            if purchase_state == "paid":
+                                access_granted = await user_has_pack_entitlement_access(
+                                    conn, user_id=current_user.id, pack_id=pack_id,
+                                )
         except Exception as e:
             logger.error(f"Error retrieving pack purchase session: {e}")
 
     context = await get_template_context(request, current_user)
     context.update({
+        "purchase_state": purchase_state,
+        "access_granted": access_granted,
         "pack_name": pack_name,
         "pack_id": pack_id,
         "pack_cover_image": pack_cover_image,
@@ -161,13 +176,14 @@ async def pack_purchase_success_page(
 @router.post("/api/prompts/{prompt_id}/purchase")
 async def api_purchase_prompt(prompt_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Create a Stripe Checkout Session to purchase an individual prompt."""
-    require_checkout_enabled()
+    translator = get_translator(request, current_user)
+    require_checkout_enabled(translator)
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=translator.t("marketplace.checkout.not_authenticated"))
 
     if ios_purchase_blocked(request):
-        return ios_purchase_disabled_response()
+        return ios_purchase_disabled_response(message=translator.t("marketplace.checkout.ios_unavailable"))
 
     try:
         body = await request.json()
@@ -185,22 +201,22 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
         )
         prompt_row = await cursor.fetchone()
         if not prompt_row:
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=translator.t("marketplace.checkout.prompt_not_found"))
 
         prompt_name, is_public, purchase_price, creator_user_id, public_id, prompt_description, landing_reg_config = prompt_row
 
         if not is_public:
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail=translator.t("marketplace.checkout.prompt_not_found"))
 
         if purchase_price is None or purchase_price == 0:
-            raise HTTPException(status_code=400, detail="This prompt is not available for individual purchase")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.prompt_not_individual"))
 
         # Self-purchase prevention
         if creator_user_id == current_user.id:
-            raise HTTPException(status_code=400, detail="You cannot purchase your own prompt")
+            raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.prompt_self_purchase"))
 
         if await user_has_prompt_entitlement_access(cursor, user_id=current_user.id, prompt_id=prompt_id):
-            return JSONResponse({"message": "You already have access to this prompt", "redirect": "/chat"})
+            return JSONResponse({"message": translator.t("marketplace.checkout.prompt_owned"), "redirect": "/chat"})
 
     original_price = float(purchase_price)
     final_amount = original_price
@@ -211,7 +227,7 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
         try:
             discount = await validate_discount_code(discount_code, original_price)
         except DiscountError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(status_code=exc.status_code, detail=discount_error_message(exc, translator)) from exc
         discount_value = discount.discount_value
         final_amount = discount.final_amount
 
@@ -219,7 +235,7 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
     if 0 < final_amount < 0.50:
         raise HTTPException(
             status_code=400,
-            detail=f"Final price after discount (${final_amount:.2f}) is below the minimum processing amount ($0.50). The discount must either cover the full price or leave at least $0.50."
+            detail=translator.t("marketplace.checkout.minimum_amount", amount=translator.format_currency(final_amount), minimum=translator.format_currency(0.50))
         )
 
     # Generate slug for cancel URL
@@ -234,9 +250,9 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
                     try:
                         discount = await validate_discount_code(discount_code, original_price, conn=conn)
                     except DiscountError as exc:
-                        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+                        raise HTTPException(status_code=exc.status_code, detail=discount_error_message(exc, translator)) from exc
                     if discount.final_amount != 0:
-                        raise HTTPException(status_code=400, detail="Discount does not fully cover this payment")
+                        raise HTTPException(status_code=400, detail=translator.t("marketplace.checkout.discount_incomplete"))
 
                 # Record purchase
                 purchase_cursor = await conn.execute(
@@ -322,14 +338,14 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
 
         logger.info(f"Free prompt purchase (100% discount): user={current_user.id}, prompt={prompt_id}, code={discount_code}")
         return JSONResponse({
-            "message": "Prompt access granted with discount",
+            "message": translator.t("marketplace.checkout.prompt_discount_granted"),
             "redirect": "/chat",
             "free_purchase": True
         })
 
     # Stripe checkout for paid purchases
     if not STRIPE_SECRET_KEY:
-        raise HTTPException(status_code=503, detail="Payment service is not configured")
+        raise HTTPException(status_code=503, detail=translator.t("marketplace.checkout.not_configured"))
 
     base_url = str(request.base_url).rstrip('/')
     discount_claimed = False
@@ -340,19 +356,19 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
             try:
                 discount = await claim_discount_usage_for_checkout(discount_code, original_price)
             except DiscountError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+                raise HTTPException(status_code=exc.status_code, detail=discount_error_message(exc, translator)) from exc
             discount_claimed = True
             discount_value = discount.discount_value
             final_amount = discount.final_amount
             if final_amount == 0:
                 raise HTTPException(
                     status_code=400,
-                    detail="Discount now fully covers this purchase. Please retry to claim it without Stripe.",
+                    detail=translator.t("marketplace.checkout.discount_now_full"),
                 )
             if 0 < final_amount < 0.50:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Final price after discount (${final_amount:.2f}) is below the minimum processing amount ($0.50). The discount must either cover the full price or leave at least $0.50."
+                    detail=translator.t("marketplace.checkout.minimum_amount", amount=translator.format_currency(final_amount), minimum=translator.format_currency(0.50))
                 )
 
         session = await asyncio.to_thread(
@@ -363,13 +379,14 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
                     'currency': 'usd',
                     'unit_amount': int(final_amount * 100),
                     'product_data': {
-                        'name': prompt_name or "AI Prompt",
-                        'description': ((prompt_description or "AI prompt")[:500]),
+                        'name': prompt_name or translator.t("marketplace.purchase.ai_prompt"),
+                        'description': ((prompt_description or translator.t("marketplace.purchase.ai_prompt"))[:500]),
                     },
                 },
                 'quantity': 1,
             }],
             mode='payment',
+            locale=translator.language,
             success_url=f"{base_url}/prompt-purchase-success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{base_url}/p/{public_id}/{prompt_slug}/?cancelled=true",
             metadata={
@@ -401,7 +418,7 @@ async def api_purchase_prompt(prompt_id: int, request: Request, current_user: Us
                 user_id=current_user.id,
             )
         logger.error(f"Stripe session creation failed for prompt purchase: {e}")
-        raise HTTPException(status_code=500, detail="Payment processing error")
+        raise HTTPException(status_code=500, detail=translator.t("marketplace.checkout.processing_error"))
 
 
 @router.get("/prompt-purchase-success", response_class=HTMLResponse)
@@ -411,17 +428,20 @@ async def prompt_purchase_success_page(
     current_user: dict = Depends(get_current_user)
 ):
     """Success page shown after completing a prompt purchase via Stripe."""
-    require_checkout_enabled()
+    translator = get_translator(request, current_user)
+    require_checkout_enabled(translator)
 
     if not current_user:
         return RedirectResponse(url="/login", status_code=302)
 
-    prompt_name = "Prompt"
+    prompt_name = translator.t("marketplace.purchase.prompt")
     prompt_id = None
     prompt_image_url = None
     prompt_creator = None
     prompt_landing_url = None
     payment_amount = None
+    purchase_state = "unverified"
+    access_granted = False
 
     if session_id and STRIPE_SECRET_KEY:
         try:
@@ -429,8 +449,10 @@ async def prompt_purchase_success_page(
                 stripe.checkout.Session.retrieve,
                 session_id,
             )
-            if session and session.metadata.get('buyer_user_id') == str(current_user.id):
-                payment_amount = float(session.metadata.get('final_amount', 0))
+            purchase_state = purchase_session_state(session, current_user.id, "prompt")
+            if purchase_state != "unverified":
+                if purchase_state == "paid":
+                    payment_amount = float(session.metadata.get('final_amount', 0))
                 pid = session.metadata.get('prompt_id')
                 if pid:
                     prompt_id = int(pid)
@@ -450,6 +472,10 @@ async def prompt_purchase_success_page(
                             prompt_creator = row[3]
                             slug = slugify(row[0]) if row[0] else ""
                             prompt_landing_url = f"/p/{row[1]}/{slug}/" if row[1] else None
+                            if purchase_state == "paid":
+                                access_granted = await user_has_prompt_entitlement_access(
+                                    conn, user_id=current_user.id, prompt_id=prompt_id,
+                                )
                             if row[2]:  # image
                                 current_time = datetime.now(timezone.utc)
                                 new_expiration = current_time + timedelta(hours=AVATAR_TOKEN_EXPIRE_HOURS)
@@ -461,6 +487,8 @@ async def prompt_purchase_success_page(
 
     context = await get_template_context(request, current_user)
     context.update({
+        "purchase_state": purchase_state,
+        "access_granted": access_granted,
         "prompt_name": prompt_name,
         "prompt_id": prompt_id,
         "prompt_image_url": prompt_image_url,

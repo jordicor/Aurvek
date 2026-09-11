@@ -1,12 +1,13 @@
 {% extends 'base.html' %}
+{% set i18n_domains = ['admin_users'] %}
 
-{% block title %}Users Management - AURVEK{% endblock %}
+{% block title %}{{ t('admin_users.users_management_aurvek') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Users Management{% endblock %}
+{% block page_title %}{{ t('admin_users.users_management') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
@@ -16,7 +17,7 @@
 {% block content %}
 <!-- Magic Link Container -->
 <div id="magicLinkContainer" class="section-container magic-link-section mb-4" style="display: none;">
-    <div class="section-title"><i class="fas fa-magic me-2"></i><span id="usernameMagicLink">Magic Link</span></div>
+    <div class="section-title"><i class="fas fa-magic me-2"></i><span id="usernameMagicLink">{{ t('admin_users.magic_link_2') }}</span></div>
     <div class="flex-row">
         <div class="flex-column">
             <div class="input-group">
@@ -25,14 +26,14 @@
                 </span>
                 <input type="text" class="form-control" id="magicLink" readonly>
                 <button class="btn btn-success" type="button" id="actionButton">
-                    <i class="fas fa-copy me-1"></i> Copy
+                    <i class="fas fa-copy me-1"></i> {{ t('admin_users.copy') }}
                 </button>
-                <button class="btn btn-secondary" type="button" onclick="closeMagicLink()">
+                <button class="btn btn-secondary" type="button" onclick="closeMagicLink()" aria-label="{{ t('admin_users.flow.close') }}">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             <div id="copyMessage" class="mt-2 text-success" style="display: none;">
-                <i class="fas fa-check-circle me-1"></i> Magic link copied to clipboard!
+                <i class="fas fa-check-circle me-1"></i> {{ t('admin_users.magic_link_copied_to_clipboard') }}
             </div>
         </div>
     </div>
@@ -45,28 +46,28 @@
         <div class="modal-content" style="border: 2px solid var(--warning, #ffc107);">
             <div class="modal-header" style="background: var(--warning, #ffc107); color: #000;">
                 <h6 class="modal-title fw-bold">
-                    <i class="fas fa-bolt me-2"></i>Ultra Admin+
+                    <i class="fas fa-bolt me-2"></i>{{ t('admin_users.ultra_admin') }}
                 </h6>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('admin_users.flow.close') }}"></button>
             </div>
             <div class="modal-body text-center">
                 <!-- Step 1: Request code -->
                 <div id="ultraAdminStep1">
-                    <p class="mb-3" style="font-size: 0.9rem;">A verification code will be sent to your email.</p>
+                    <p class="mb-3" style="font-size: 0.9rem;">{{ t('admin_users.a_verification_code_will_be_sent_to_your_email') }}</p>
                     <button class="btn btn-warning w-100" onclick="requestUltraAdminCode()">
-                        <i class="fas fa-paper-plane me-1"></i> Send Code
+                        <i class="fas fa-paper-plane me-1"></i> {{ t('admin_users.send_code') }}
                     </button>
                 </div>
                 <!-- Step 2: Enter code -->
                 <div id="ultraAdminStep2" style="display: none;">
-                    <p class="mb-2" style="font-size: 0.9rem;">Code sent to <strong id="ultraAdminEmailHint"></strong></p>
+                    <p class="mb-2" style="font-size: 0.9rem;"><strong id="ultraAdminEmailHint"></strong></p>
                     <input type="text" class="form-control form-control-lg text-center mb-3"
                            id="ultraAdminCodeInput" maxlength="6" pattern="[0-9]{6}"
                            placeholder="000000" autocomplete="off"
                            style="letter-spacing: 8px; font-weight: bold;"
                            onkeydown="if(event.key==='Enter') verifyUltraAdminCode()">
                     <button class="btn btn-warning w-100" onclick="verifyUltraAdminCode()">
-                        <i class="fas fa-check me-1"></i> Verify
+                        <i class="fas fa-check me-1"></i> {{ t('admin_users.verify') }}
                     </button>
                 </div>
             </div>
@@ -78,87 +79,87 @@
 <!-- Stats Row -->
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-users"></i> <strong id="statTotal">{{ users|length }}</strong> Total
+        <i class="fas fa-users"></i> <strong id="statTotal">{{ users|length }}</strong> {{ t('admin_users.total') }}
     </span>
     <span class="stat-badge stat-active">
-        <i class="fas fa-check-circle"></i> <strong id="statActive">{{ users|selectattr('is_expired', 'eq', 'Active')|list|length }}</strong> Active
+        <i class="fas fa-check-circle"></i> <strong id="statActive">{{ users|selectattr('is_expired', 'eq', 'Active')|list|length }}</strong> {{ t('admin_users.active') }}
     </span>
     <span class="stat-badge stat-expired">
-        <i class="fas fa-times-circle"></i> <strong id="statExpired">{{ users|selectattr('is_expired', 'eq', 'Expired')|list|length }}</strong> Expired
+        <i class="fas fa-times-circle"></i> <strong id="statExpired">{{ users|selectattr('is_expired', 'eq', 'Expired')|list|length }}</strong> {{ t('admin_users.expired') }}
     </span>
     <span class="stat-badge stat-password">
-        <i class="fas fa-key"></i> <strong id="statPassword">{{ users|selectattr('is_expired', 'eq', 'N/A')|list|length }}</strong> Password
+        <i class="fas fa-key"></i> <strong id="statPassword">{{ users|selectattr('is_expired', 'eq', 'N/A')|list|length }}</strong> {{ t('admin_users.password') }}
     </span>
     <span class="stat-badge stat-disabled">
-        <i class="fas fa-user-slash"></i> <strong id="statDisabled">{{ users|selectattr('is_enabled', 'eq', false)|list|length }}</strong> Disabled
+        <i class="fas fa-user-slash"></i> <strong id="statDisabled">{{ users|selectattr('is_enabled', 'eq', false)|list|length }}</strong> {{ t('admin_users.disabled') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-unlink"></i> <strong id="statNoLink">{{ users|selectattr('is_expired', 'eq', 'No Link')|list|length }}</strong> No Link
+        <i class="fas fa-unlink"></i> <strong id="statNoLink">{{ users|selectattr('is_expired', 'eq', 'No Link')|list|length }}</strong> {{ t('admin_users.no_link') }}
     </span>
     <span class="stat-badge" id="statFilteredContainer" style="display: none;">
-        <i class="fas fa-filter"></i> <strong id="statFiltered">0</strong> Shown
+        <i class="fas fa-filter"></i> <strong id="statFiltered">0</strong> {{ t('admin_users.shown') }}
     </span>
 </div>
 
 <!-- Filters Section -->
 <div class="section-container filters-section">
     <div class="section-title">
-        <i class="fas fa-filter me-2"></i>Filters
+        <i class="fas fa-filter me-2"></i>{{ t('admin_users.filters') }}
         <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" onclick="resetFilters()">
-            <i class="fas fa-undo me-1"></i>Reset
+            <i class="fas fa-undo me-1"></i>{{ t('admin_users.reset') }}
         </button>
     </div>
     <div class="flex-row">
         <div class="flex-column">
-            <label class="form-label">Search</label>
-            <input type="text" class="form-control" id="filterSearch" placeholder="Username or phone...">
+            <label class="form-label">{{ t('admin_users.search') }}</label>
+            <input type="text" class="form-control" id="filterSearch" placeholder="{{ t('admin_users.username_or_phone') }}">
         </div>
         <div class="flex-column">
-            <label class="form-label">Status</label>
+            <label class="form-label">{{ t('admin_users.status') }}</label>
             <select class="form-select" id="filterStatus">
-                <option value="">All Status</option>
-                <option value="active">Active</option>
-                <option value="expired">Expired</option>
-                <option value="password">Password Only</option>
-                <option value="no_link">No Link</option>
+                <option value="">{{ t('admin_users.all_status') }}</option>
+                <option value="active">{{ t('admin_users.active') }}</option>
+                <option value="expired">{{ t('admin_users.expired') }}</option>
+                <option value="password">{{ t('admin_users.password_only') }}</option>
+                <option value="no_link">{{ t('admin_users.no_link') }}</option>
             </select>
         </div>
         <div class="flex-column">
-            <label class="form-label">Account</label>
+            <label class="form-label">{{ t('admin_users.account') }}</label>
             <select class="form-select" id="filterAccount">
-                <option value="">All Accounts</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
+                <option value="">{{ t('admin_users.all_accounts') }}</option>
+                <option value="enabled">{{ t('admin_users.enabled') }}</option>
+                <option value="disabled">{{ t('admin_users.disabled') }}</option>
             </select>
         </div>
         <div class="flex-column">
-            <label class="form-label">Prompt</label>
+            <label class="form-label">{{ t('admin_users.prompt') }}</label>
             <select class="form-select" id="filterPrompt">
-                <option value="">All Prompts</option>
+                <option value="">{{ t('admin_users.all_prompts') }}</option>
             </select>
         </div>
         <div class="flex-column">
-            <label class="form-label">LLM</label>
+            <label class="form-label">{{ t('admin_users.llm') }}</label>
             <select class="form-select" id="filterLLM">
-                <option value="">All LLMs</option>
+                <option value="">{{ t('admin_users.all_llms') }}</option>
             </select>
         </div>
         <div class="flex-column">
-            <label class="form-label">Balance</label>
+            <label class="form-label">{{ t('admin_users.balance') }}</label>
             <select class="form-select" id="filterBalance">
-                <option value="">Any Balance</option>
-                <option value="positive">Has Balance ($>0)</option>
-                <option value="zero">Zero ($0)</option>
-                <option value="negative">Negative ($<0)</option>
+                <option value="">{{ t('admin_users.any_balance') }}</option>
+                <option value="positive">{{ t('admin_users.has_balance_0') }}</option>
+                <option value="zero">{{ t('admin_users.zero_0') }}</option>
+                <option value="negative">{{ t('admin_users.negative_0') }}</option>
             </select>
         </div>
         <div class="flex-column">
-            <label class="form-label">Role</label>
+            <label class="form-label">{{ t('admin_users.role') }}</label>
             <select class="form-select" id="filterRole">
-                <option value="">All Roles</option>
-                <option value="admin">Admin</option>
-                <option value="user">User</option>
-                <option value="customer">Customer</option>
+                <option value="">{{ t('admin_users.all_roles') }}</option>
+                <option value="admin">{{ t('admin_users.admin_2') }}</option>
+                <option value="user">{{ t('admin_users.user') }}</option>
+                <option value="customer">{{ t('admin_users.customer') }}</option>
             </select>
         </div>
     </div>
@@ -167,14 +168,14 @@
 <!-- Users Table Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-users"></i> All Users
+        <i class="fas fa-users"></i> {{ t('admin_users.all_users') }}
     </div>
     <form action="/admin/delete-users" method="post" id="usersForm">
         <!-- Toolbar: Select All + Actions -->
         <div class="table-toolbar">
             <div class="toolbar-left">
-                <input type="checkbox" id="selectAll" class="form-check-input" title="Select All">
-                <label for="selectAll" class="form-check-label">Select all</label>
+                <input type="checkbox" id="selectAll" class="form-check-input" title="{{ t('admin_users.select_all') }}">
+                <label for="selectAll" class="form-check-label">{{ t('admin_users.select_all_2') }}</label>
             </div>
             <div class="toolbar-right">
                 {% if is_admin %}
@@ -182,23 +183,23 @@
                         data-elevated="{{ 'true' if ultra_admin_elevated else 'false' }}"
                         data-ttl="{{ ultra_admin_ttl }}"
                         onclick="openUltraAdminModal()"
-                        title="Ultra Admin+: Elevate privileges">
+                        title="{{ t('admin_users.ultra_admin_elevate_privileges') }}">
                     <i class="fas fa-bolt me-1"></i>
-                    <span id="ultraAdminLabel">Ultra Admin+</span>
+                    <span id="ultraAdminLabel">{{ t('admin_users.ultra_admin') }}</span>
                 </button>
                 {% endif %}
                 <a href="/create-user" class="btn btn-success">
-                    <i class="fas fa-user-plus me-1"></i> Create User
+                    <i class="fas fa-user-plus me-1"></i> {{ t('admin_users.create_user') }}
                 </a>
                 {% if is_admin %}
                 <button type="submit" class="btn btn-outline-danger" id="deleteBtn" disabled>
-                    <i class="fas fa-trash me-1"></i> Delete (<span id="selectedCount">0</span>)
+                    <i class="fas fa-trash me-1"></i> <span id="selectedCount">{{ t('admin_users.flow.delete_label', number=format_number(0)) }}</span>
                 </button>
                 <button type="button" class="btn btn-outline-warning" id="disableBtn" disabled onclick="setSelectedUsersActivation(false)">
-                    <i class="fas fa-user-slash me-1"></i> Disable (<span class="selected-count">0</span>)
+                    <i class="fas fa-user-slash me-1"></i> <span id="disableSelectedLabel">{{ t('admin_users.flow.disable_label', number=format_number(0)) }}</span>
                 </button>
                 <button type="button" class="btn btn-outline-success" id="enableBtn" disabled onclick="setSelectedUsersActivation(true)">
-                    <i class="fas fa-user-check me-1"></i> Enable (<span class="selected-count">0</span>)
+                    <i class="fas fa-user-check me-1"></i> <span id="enableSelectedLabel">{{ t('admin_users.flow.enable_label', number=format_number(0)) }}</span>
                 </button>
                 {% endif %}
             </div>
@@ -210,18 +211,18 @@
                 <thead>
                     <tr>
                         <th class="th-checkbox"></th>
-                        <th data-sort="username" class="sortable sort-asc">User</th>
-                        <th data-sort="role" class="sortable">Role</th>
-                        <th data-sort="account" class="sortable">Account</th>
-                        <th data-sort="phone" class="sortable">Phone</th>
-                        <th data-sort="status" class="sortable">Auth</th>
-                        <th data-sort="prompt" class="sortable">Prompt</th>
-                        <th data-sort="llm" class="sortable">LLM</th>
-                        <th data-sort="tokens" class="sortable">Tokens</th>
-                        <th data-sort="cost" class="sortable">Cost</th>
-                        <th data-sort="balance" class="sortable">Balance</th>
-                        <th data-sort="chats" class="sortable"><i class="fas fa-comments" title="Chats"></i></th>
-                        <th class="th-actions">Actions</th>
+                        <th data-sort="username" class="sortable sort-asc">{{ t('admin_users.user') }}</th>
+                        <th data-sort="role" class="sortable">{{ t('admin_users.role') }}</th>
+                        <th data-sort="account" class="sortable">{{ t('admin_users.account') }}</th>
+                        <th data-sort="phone" class="sortable">{{ t('admin_users.phone') }}</th>
+                        <th data-sort="status" class="sortable">{{ t('admin_users.auth') }}</th>
+                        <th data-sort="prompt" class="sortable">{{ t('admin_users.prompt') }}</th>
+                        <th data-sort="llm" class="sortable">{{ t('admin_users.llm') }}</th>
+                        <th data-sort="tokens" class="sortable">{{ t('admin_users.tokens') }}</th>
+                        <th data-sort="cost" class="sortable">{{ t('admin_users.cost') }}</th>
+                        <th data-sort="balance" class="sortable">{{ t('admin_users.balance') }}</th>
+                        <th data-sort="chats" class="sortable"><i class="fas fa-comments" title="{{ t('admin_users.chats') }}"></i></th>
+                        <th class="th-actions">{{ t('admin_users.actions') }}</th>
                     </tr>
                 </thead>
                 <tbody id="usersTableBody">
@@ -244,14 +245,14 @@
                             <input type="checkbox" name="selected_users" value="{{ user.username }}" class="user-checkbox">
                         </td>
                         <td>
-                            <span class="username-link" onclick="showMagicLink('{{ user.magic_link or '' }}', '{{ user.username }}', {{ 'true' if user.is_expired == 'Expired' else 'false' }}, {{ 'true' if not user.magic_link and user.authentication_mode == 'password_only' else 'false' }})" title="Click to view magic link">
+                            <span class="username-link" onclick="showMagicLink('{{ user.magic_link or '' }}', '{{ user.username }}', {{ 'true' if user.is_expired == 'Expired' else 'false' }}, {{ 'true' if not user.magic_link and user.authentication_mode == 'password_only' else 'false' }})" title="{{ t('admin_users.click_to_view_magic_link') }}">
                                 <i class="fas fa-user me-1"></i>{{ user.username }}
                             </span>
                             {% if user.auth_provider in ('google', 'google_linked') %}
-                            <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="14" height="14" alt="Google" title="Google OAuth{% if user.auth_provider == 'google_linked' %} (linked){% endif %}" style="vertical-align: -1px; margin-left: 4px; opacity: 0.7;">
+                            <img src="{{ get_static_url('/static/img/providers/google.svg') }}" width="14" height="14" alt="{{ t('admin_users.google') }}" title="{{ t('admin_users.flow.google_linked' if user.auth_provider == 'google_linked' else 'admin_users.flow.google') }}" style="vertical-align: -1px; margin-left: 4px; opacity: 0.7;">
                             {% endif %}
                         </td>
-                        <td class="role-cell" title="{{ user.role|capitalize }}">
+                        <td class="role-cell" title="{{ t('admin_users.' + {'admin': 'admin_2', 'user': 'user', 'customer': 'customer'}.get(user.role, 'flow.unknown_role')) }}">
                             {% if user.role == 'admin' %}
                             <i class="fas fa-crown text-warning"></i>
                             {% elif user.role == 'user' %}
@@ -262,14 +263,14 @@
                         </td>
                         <td class="account-cell">
                             {% if user.is_enabled %}
-                            <span class="status-active" title="Account enabled"><i class="fas fa-user-check"></i></span>
+                            <span class="status-active" title="{{ t('admin_users.account_enabled') }}"><i class="fas fa-user-check"></i></span>
                             {% else %}
-                            <span class="status-disabled" title="Account disabled"><i class="fas fa-user-slash"></i></span>
+                            <span class="status-disabled" title="{{ t('admin_users.account_disabled') }}"><i class="fas fa-user-slash"></i></span>
                             {% endif %}
                         </td>
                         <td class="phone-cell">
                             {% if user.phone %}
-                            <span class="phone-icon" data-phone="{{ user.phone }}" title="Click to copy" onclick="copyPhone(this)">
+                            <span class="phone-icon" data-phone="{{ user.phone }}" title="{{ t('admin_users.click_to_copy') }}" onclick="copyPhone(this)">
                                 <i class="fas fa-phone"></i>
                             </span>
                             {% else %}
@@ -278,21 +279,21 @@
                         </td>
                         <td class="status-cell">
                             {% if user.is_expired == 'Expired' %}
-                            <span class="status-expired" title="Magic link expired"><i class="fas fa-times-circle"></i></span>
+                            <span class="status-expired" title="{{ t('admin_users.magic_link_expired') }}"><i class="fas fa-times-circle"></i></span>
                             {% elif user.is_expired == 'N/A' %}
-                            <span class="status-na" title="Password only"><i class="fas fa-shield-alt"></i></span>
+                            <span class="status-na" title="{{ t('admin_users.password_only_2') }}"><i class="fas fa-shield-alt"></i></span>
                             {% elif user.is_expired == 'No Link' %}
-                            <span class="status-na" title="No magic link"><i class="fas fa-unlink"></i></span>
+                            <span class="status-na" title="{{ t('admin_users.no_magic_link') }}"><i class="fas fa-unlink"></i></span>
                             {% else %}
-                            <span class="status-active" title="Magic link active"><i class="fas fa-check-circle"></i></span>
+                            <span class="status-active" title="{{ t('admin_users.magic_link_active') }}"><i class="fas fa-check-circle"></i></span>
                             {% endif %}
                         </td>
                         <td><span class="text-truncate d-inline-block" style="max-width: 120px;" title="{{ user.prompt_name }}">{{ user.prompt_name }}</span></td>
                         <td><span class="text-truncate d-inline-block" style="max-width: 100px;" title="{{ user.llm_model }}">{{ user.llm_model }}</span></td>
                         <td class="tokens-cell" title="{{ user.tokens }}">{{ user.tokens }}</td>
-                        <td title="${{ "%.4f"|format(user.total_cost|float) }}">${{ "%.2f"|format(user.total_cost|float) }}</td>
-                        <td>${{ "%.2f"|format(user.balance|float) }}</td>
-                        <td>{{ user.conversation_count }}</td>
+                        <td title="{{ format_currency(user.total_cost|float, 'USD', fraction_digits=4) }}">{{ format_currency(user.total_cost|float, 'USD') }}</td>
+                        <td>{{ format_currency(user.balance|float, 'USD') }}</td>
+                        <td>{{ format_number(user.conversation_count) }}</td>
                         <td class="actions-cell">
                             {% if is_admin %}
                             <button type="button"
@@ -300,11 +301,11 @@
                                     data-username="{{ user.username }}"
                                     data-enabled="{{ 'true' if user.is_enabled else 'false' }}"
                                     onclick="toggleUserActivation(this)"
-                                    title="{% if user.is_enabled %}Deactivate user{% else %}Activate user{% endif %}">
+                                    title="{{ t('admin_users.deactivate_user' if user.is_enabled else 'admin_users.activate_user') }}">
                                 <i class="fas {% if user.is_enabled %}fa-user-slash{% else %}fa-user-check{% endif %}"></i>
                             </button>
                             {% endif %}
-                            <a href="/edit-user/{{ user.username }}" class="btn btn-sm btn-outline-primary" title="Edit user">
+                            <a href="/edit-user/{{ user.username }}" class="btn btn-sm btn-outline-primary" title="{{ t('admin_users.edit_user_2') }}">
                                 <i class="fas fa-edit"></i>
                             </a>
                         </td>

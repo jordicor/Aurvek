@@ -53,10 +53,13 @@ def web_upload_quota_message(usage_bytes: int, quota_bytes: int) -> str:
     )
 
 
-def platform_reply_quota_message(usage_bytes: int, quota_bytes: int) -> str:
-    return (
-        f"Can't receive this file: your storage is full "
-        f"({format_gb(usage_bytes)} of {format_gb(quota_bytes)} used)."
+def platform_reply_quota_message(usage_bytes: int, quota_bytes: int, *, translator=None) -> str:
+    from chat.services.localization import chat_translator
+    translator = chat_translator(translator)
+    return translator.t(
+        "channel_notices.storage_full",
+        usage=translator.format_number(usage_bytes / _BYTES_PER_GB, 1, 1) + " GB",
+        quota=translator.format_number(quota_bytes / _BYTES_PER_GB, 1, 1) + " GB",
     )
 
 

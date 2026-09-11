@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ t('public_explore.explore_ai_chatbots_and_personalities_chat_with') }}">
+    <meta name="keywords" content="{{ t('public_explore.ai_chatbot_chat_with_ai_gpt_claude') }}">
+
+    <title>{{ t('public_explore.explore_aurvek_discover_ai_personalities') }}</title>
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="{{ t('public_explore.explore_aurvek_chat_with_ai_personalities') }}">
+    <meta property="og:description" content="{{ t('public_explore.discover_ai_assistants_for_writing_coding_coaching') }}">
+    <meta property="og:type" content="website">
+
+    <!-- Fonts - AURVEK Design System -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
+
+    <!-- Phosphor Icons -->
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/duotone/style.css">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/public-landing.css') }}">
+
+    <style>
+        /* Explore-specific styles - DISCOVERY palette */
+        .hero--explore {
+            background: linear-gradient(135deg, #0F172A 0%, #1E293B 40%, #334155 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero--explore::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                radial-gradient(circle at 20% 80%, rgba(249, 115, 22, 0.1) 0%, transparent 40%),
+                radial-gradient(circle at 80% 20%, rgba(251, 191, 36, 0.08) 0%, transparent 40%);
+            pointer-events: none;
+        }
+
+        .hero--explore .hero__badge {
+            background: rgba(249, 115, 22, 0.15);
+            border-color: rgba(249, 115, 22, 0.25);
+            color: #FBBF24;
+        }
+
+        .models-showcase {
+            display: flex;
+            justify-content: center;
+            gap: var(--space-lg);
+            flex-wrap: wrap;
+            margin: var(--space-2xl) 0;
+        }
+
+        .model-badge {
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            padding: var(--space-sm) var(--space-lg);
+            background: var(--aurvek-white);
+            border-radius: var(--radius-full);
+            box-shadow: var(--shadow-md);
+            font-weight: 500;
+        }
+
+        .model-badge__dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .model-badge__dot--openai { background: #10a37f; }
+        .model-badge__dot--anthropic { background: #d97757; }
+        .model-badge__dot--google { background: #4285f4; }
+        .model-badge__dot--xai { background: #1da1f2; }
+
+        .personalities-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: var(--space-lg);
+        }
+
+        .personality-card {
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-md);
+            overflow: hidden;
+            transition: all var(--transition-base);
+            text-decoration: none;
+            color: inherit;
+            display: block;
+        }
+
+        .personality-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-xl);
+        }
+
+        .personality-card__header {
+            padding: var(--space-xl);
+            text-align: center;
+            background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+        }
+
+        .personality-card__avatar {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto var(--space-md);
+            background: var(--gradient-primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+        }
+
+        .personality-card__name {
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin-bottom: var(--space-xs);
+        }
+
+        .personality-card__tagline {
+            color: var(--aurvek-gray-500);
+            font-size: 0.9375rem;
+        }
+
+        .personality-card__body {
+            padding: var(--space-lg);
+        }
+
+        .personality-card__description {
+            font-size: 0.875rem;
+            color: var(--aurvek-gray-600);
+            margin-bottom: var(--space-md);
+        }
+
+        .personality-card__meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--aurvek-gray-400);
+        }
+
+        .categories-section {
+            background: var(--aurvek-gray-100);
+        }
+
+        .categories-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: var(--space-md);
+        }
+
+        .category-card {
+            padding: var(--space-lg);
+            background: var(--aurvek-white);
+            border-radius: var(--radius-lg);
+            text-align: center;
+            transition: all var(--transition-base);
+            cursor: pointer;
+            border: 2px solid transparent;
+        }
+
+        .category-card:hover {
+            border-color: var(--aurvek-primary);
+            transform: translateY(-2px);
+        }
+
+        .category-card__icon {
+            font-size: 2rem;
+            margin-bottom: var(--space-sm);
+        }
+
+        .category-card__name {
+            font-weight: 600;
+            font-size: 0.9375rem;
+        }
+
+        .category-card__count {
+            font-size: 0.75rem;
+            color: var(--aurvek-gray-400);
+        }
+
+        .feature-highlight {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: var(--space-xl);
+            text-align: center;
+        }
+
+        @media (max-width: 900px) {
+            .feature-highlight {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 500px) {
+            .feature-highlight {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .feature-highlight__item {
+            padding: var(--space-xl);
+        }
+
+        .feature-highlight__icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto var(--space-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.75rem;
+            background: rgba(139, 92, 246, 0.1);
+            border-radius: var(--radius-xl);
+        }
+
+        .feature-highlight__title {
+            font-weight: 600;
+            margin-bottom: var(--space-xs);
+        }
+
+        .feature-highlight__text {
+            font-size: 0.875rem;
+            color: var(--aurvek-gray-500);
+        }
+
+        .pricing-explore {
+            max-width: 600px;
+            margin: 0 auto;
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            padding: var(--space-2xl);
+            box-shadow: var(--shadow-lg);
+            text-align: center;
+        }
+
+        .pricing-explore__title {
+            font-size: 1.5rem;
+            margin-bottom: var(--space-sm);
+        }
+
+        .pricing-explore__subtitle {
+            color: var(--aurvek-gray-500);
+            margin-bottom: var(--space-xl);
+        }
+
+        .pricing-explore__options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--space-md);
+            margin-bottom: var(--space-xl);
+        }
+
+        .pricing-option {
+            padding: var(--space-lg);
+            border: 2px solid var(--aurvek-gray-200);
+            border-radius: var(--radius-lg);
+            transition: all var(--transition-fast);
+            cursor: pointer;
+        }
+
+        .pricing-option:hover,
+        .pricing-option--selected {
+            border-color: var(--aurvek-primary);
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        .pricing-option__name {
+            font-weight: 600;
+            margin-bottom: var(--space-xs);
+        }
+
+        .pricing-option__price {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--aurvek-primary);
+        }
+
+        .pricing-option__note {
+            font-size: 0.75rem;
+            color: var(--aurvek-gray-400);
+        }
+
+        .byok-notice {
+            margin-top: var(--space-xl);
+            padding: var(--space-lg);
+            background: var(--aurvek-gray-100);
+            border-radius: var(--radius-lg);
+            font-size: 0.875rem;
+            color: var(--aurvek-gray-600);
+        }
+
+        .quick-start {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-xl);
+            text-align: center;
+        }
+
+        @media (max-width: 768px) {
+            .quick-start {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .quick-start__step {
+            position: relative;
+        }
+
+        .quick-start__number {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto var(--space-md);
+            background: var(--gradient-primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .quick-start__title {
+            font-weight: 600;
+            margin-bottom: var(--space-xs);
+        }
+
+        .quick-start__text {
+            font-size: 0.9375rem;
+            color: var(--aurvek-gray-500);
+        }
+
+        /* Phosphor Icons styling */
+        .personality-card__avatar i {
+            color: white;
+            font-size: inherit;
+        }
+
+        .category-card__icon i {
+            --ph-duotone-base: var(--aurvek-gray-300);
+            --ph-duotone-accent: #8b5cf6;
+        }
+
+        .feature-highlight__icon i {
+            --ph-duotone-base: rgba(139, 92, 246, 0.3);
+            --ph-duotone-accent: #8b5cf6;
+            font-size: inherit;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="container">
+            <div class="nav__inner">
+                <a href="index.html" class="nav__logo">
+                    <span class="nav__logo-icon">S</span>
+                    Aurvek
+                </a>
+
+                <ul class="nav__links">
+                    <li><a href="#personalities" class="nav__link">{{ t('public_explore.ai_personalities') }}</a></li>
+                    <li><a href="#categories" class="nav__link">{{ t('public_explore.categories') }}</a></li>
+                    <li><a href="#features" class="nav__link">{{ t('public_explore.features') }}</a></li>
+                    <li><a href="#pricing" class="nav__link">{{ t('public_explore.pricing') }}</a></li>
+                </ul>
+
+                <div class="nav__actions">
+                    <a href="/login" class="btn btn--secondary btn--small">{{ t('public_explore.log_in') }}</a>
+                    <a href="/register" class="btn btn--primary btn--small">{{ t('public_explore.start_chatting') }}</a>
+                </div>
+
+                <button class="nav__toggle" aria-label="{{ t('public_explore.toggle_menu') }}">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero hero--explore hero--dark">
+        <div class="container">
+            <div class="hero__content" data-animate style="text-align: center; max-width: 100%;">
+                <div class="hero__badge" style="margin: 0 auto var(--space-lg); background: rgba(249, 115, 22, 0.15); border-color: rgba(249, 115, 22, 0.3); color: #FBBF24;">{{ t('public_explore.multiple_ai_models_one_platform') }}</div>
+
+                <h1 class="hero__title">{{ t_html('public_explore.discover_your_perfect_ai_companion', tag_a="<span style=\"background: linear-gradient(135deg, #F97316, #FBBF24); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;\">"|safe, tag_b="</span>"|safe) }}</h1>
+
+                <p class="hero__subtitle" style="max-width: 700px; margin: 0 auto var(--space-xl);">{{ t('public_explore.chat_with_specialized_ai_personalities_for_writing') }}</p>
+
+                <div class="hero__actions" style="justify-content: center;">
+                    <a href="/register" class="btn btn--primary btn--large">{{ t('public_explore.start_exploring_free') }}</a>
+                    <a href="#personalities" class="btn btn--secondary btn--large" style="border-color: rgba(255,255,255,0.3); color: white;">{{ t('public_explore.browse_ai_personalities') }}</a>
+                </div>
+
+                <div class="models-showcase">
+                    <div class="model-badge">
+                        <span class="model-badge__dot model-badge__dot--openai"></span>
+                        GPT-4
+                    </div>
+                    <div class="model-badge">
+                        <span class="model-badge__dot model-badge__dot--anthropic"></span>
+                        Claude
+                    </div>
+                    <div class="model-badge">
+                        <span class="model-badge__dot model-badge__dot--google"></span>
+                        Gemini
+                    </div>
+                    <div class="model-badge">{{ t_html('public_explore.grok', tag_a="<span class=\"model-badge__dot model-badge__dot--xai\">"|safe, tag_b="</span>"|safe) }}</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Featured Personalities -->
+    <section id="personalities" class="section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_explore.featured_ai_personalities') }}</h2>
+                <p class="section__subtitle">{{ t('public_explore.specialized_assistants_crafted_for_specific_tasks_find') }}</p>
+            </div>
+
+            <div class="personalities-grid" data-animate>
+                <div class="personality-card">
+                    <div class="personality-card__header">
+                        <div class="personality-card__avatar"><i class="ph-duotone ph-pencil-simple"></i></div>
+                        <h3 class="personality-card__name">{{ t('public_explore.writer') }}</h3>
+                        <p class="personality-card__tagline">{{ t('public_explore.ai_writing_assistant') }}</p>
+                    </div>
+                    <div class="personality-card__body">
+                        <p class="personality-card__description">{{ t('public_explore.helps_with_blog_posts_essays_stories_and') }}</p>
+                        <div class="personality-card__meta">
+                            <span>{{ t('public_explore.by_aurvek') }}</span>
+                            <span>{{ t('public_explore.free') }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="personality-card">
+                    <div class="personality-card__header">
+                        <div class="personality-card__avatar" style="background: linear-gradient(135deg, #10b981, #059669);"><i class="ph-duotone ph-code"></i></div>
+                        <h3 class="personality-card__name">{{ t('public_explore.coder') }}</h3>
+                        <p class="personality-card__tagline">{{ t('public_explore.programming_helper') }}</p>
+                    </div>
+                    <div class="personality-card__body">
+                        <p class="personality-card__description">{{ t('public_explore.debug_code_explain_concepts_review_pull_requests') }}</p>
+                        <div class="personality-card__meta">
+                            <span>{{ t('public_explore.by_aurvek') }}</span>
+                            <span>{{ t('public_explore.free') }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="personality-card">
+                    <div class="personality-card__header">
+                        <div class="personality-card__avatar" style="background: linear-gradient(135deg, #f59e0b, #d97706);"><i class="ph-duotone ph-graduation-cap"></i></div>
+                        <h3 class="personality-card__name">{{ t('public_explore.tutor') }}</h3>
+                        <p class="personality-card__tagline">{{ t('public_explore.adaptive_learning') }}</p>
+                    </div>
+                    <div class="personality-card__body">
+                        <p class="personality-card__description">{{ t('public_explore.learn_anything_at_your_pace_from_math') }}</p>
+                        <div class="personality-card__meta">
+                            <span>{{ t('public_explore.by_aurvek') }}</span>
+                            <span>{{ t('public_explore.free') }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="personality-card">
+                    <div class="personality-card__header">
+                        <div class="personality-card__avatar" style="background: linear-gradient(135deg, #ec4899, #db2777);"><i class="ph-duotone ph-lightbulb"></i></div>
+                        <h3 class="personality-card__name">{{ t('public_explore.creative') }}</h3>
+                        <p class="personality-card__tagline">{{ t('public_explore.brainstorm_partner') }}</p>
+                    </div>
+                    <div class="personality-card__body">
+                        <p class="personality-card__description">{{ t('public_explore.stuck_on_ideas_creative_helps_you_brainstorm') }}</p>
+                        <div class="personality-card__meta">
+                            <span>{{ t('public_explore.by_aurvek') }}</span>
+                            <span>{{ t('public_explore.free') }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="personality-card">
+                    <div class="personality-card__header">
+                        <div class="personality-card__avatar" style="background: linear-gradient(135deg, #6366f1, #4f46e5);"><i class="ph-duotone ph-target"></i></div>
+                        <h3 class="personality-card__name">{{ t('public_explore.coach') }}</h3>
+                        <p class="personality-card__tagline">{{ t('public_explore.personal_development') }}</p>
+                    </div>
+                    <div class="personality-card__body">
+                        <p class="personality-card__description">{{ t('public_explore.set_goals_stay_accountable_and_grow_coach') }}</p>
+                        <div class="personality-card__meta">
+                            <span>{{ t('public_explore.by_aurvek') }}</span>
+                            <span>{{ t('public_explore.free') }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="personality-card">
+                    <div class="personality-card__header">
+                        <div class="personality-card__avatar" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);"><i class="ph-duotone ph-chats"></i></div>
+                        <h3 class="personality-card__name">{{ t('public_explore.cole') }}</h3>
+                        <p class="personality-card__tagline">{{ t('public_explore.your_ai_friend') }}</p>
+                    </div>
+                    <div class="personality-card__body">
+                        <p class="personality-card__description">{{ t('public_explore.year_old_freelance_designer_who_s_always') }}</p>
+                        <div class="personality-card__meta">
+                            <span>{{ t('public_explore.by_aurvek') }}</span>
+                            <span>{{ t('public_explore.free') }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center mt-3">
+                <a href="/register" class="btn btn--primary btn--large">{{ t('public_explore.explore_all_personalities') }}</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Categories -->
+    <section id="categories" class="section categories-section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_explore.browse_by_category') }}</h2>
+                <p class="section__subtitle">{{ t('public_explore.find_ai_assistants_organized_by_what_they') }}</p>
+            </div>
+
+            <div class="categories-grid" data-animate>
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-note-pencil"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.writing') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-code"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.programming') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_2') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-chart-line-up"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.business') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_3') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-graduation-cap"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.education') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_4') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-paint-brush"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.creative') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_5') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-heart"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.wellness') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_6') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-game-controller"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.gaming') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_7') }}</div>
+                </div>
+
+                <div class="category-card">
+                    <div class="category-card__icon"><i class="ph-duotone ph-wrench"></i></div>
+                    <div class="category-card__name">{{ t('public_explore.utilities') }}</div>
+                    <div class="category-card__count">{{ t('public_explore.personalities_8') }}</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_explore.why_aurvek') }}</h2>
+                <p class="section__subtitle">{{ t('public_explore.more_than_just_another_chatbot') }}</p>
+            </div>
+
+            <div class="feature-highlight" data-animate>
+                <div class="feature-highlight__item">
+                    <div class="feature-highlight__icon"><i class="ph-duotone ph-cube"></i></div>
+                    <h3 class="feature-highlight__title">{{ t('public_explore.multi_model') }}</h3>
+                    <p class="feature-highlight__text">{{ t('public_explore.gpt_claude_gemini_grok_switch_models_anytime') }}</p>
+                </div>
+
+                <div class="feature-highlight__item">
+                    <div class="feature-highlight__icon"><i class="ph-duotone ph-microphone"></i></div>
+                    <h3 class="feature-highlight__title">{{ t('public_explore.voice_chat') }}</h3>
+                    <p class="feature-highlight__text">{{ t('public_explore.talk_to_ai_natural_voice_conversations_with') }}</p>
+                </div>
+
+                <div class="feature-highlight__item">
+                    <div class="feature-highlight__icon"><i class="ph-duotone ph-shield-check"></i></div>
+                    <h3 class="feature-highlight__title">{{ t('public_explore.private') }}</h3>
+                    <p class="feature-highlight__text">{{ t('public_explore.your_chats_stay_yours_secure_authentication') }}</p>
+                </div>
+
+                <div class="feature-highlight__item">
+                    <div class="feature-highlight__icon"><i class="ph-duotone ph-lightning"></i></div>
+                    <h3 class="feature-highlight__title">{{ t('public_explore.fast') }}</h3>
+                    <p class="feature-highlight__text">{{ t('public_explore.real_time_streaming_no_waiting_for_responses') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start -->
+    <section class="section section--gray">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_explore.start_in_seconds') }}</h2>
+            </div>
+
+            <div class="quick-start" data-animate>
+                <div class="quick-start__step">
+                    <div class="quick-start__number">1</div>
+                    <h3 class="quick-start__title">{{ t('public_explore.create_account') }}</h3>
+                    <p class="quick-start__text">{{ t('public_explore.sign_up_with_email_or_google_takes') }}</p>
+                </div>
+
+                <div class="quick-start__step">
+                    <div class="quick-start__number">2</div>
+                    <h3 class="quick-start__title">{{ t('public_explore.pick_a_personality') }}</h3>
+                    <p class="quick-start__text">{{ t('public_explore.browse_categories_or_search_for_what_you') }}</p>
+                </div>
+
+                <div class="quick-start__step">
+                    <div class="quick-start__number">3</div>
+                    <h3 class="quick-start__title">{{ t('public_explore.start_chatting') }}</h3>
+                    <p class="quick-start__text">{{ t('public_explore.type_or_talk_your_ai_is_ready') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing -->
+    <section id="pricing" class="section">
+        <div class="container">
+            <div class="pricing-explore" data-animate>
+                <h2 class="pricing-explore__title">{{ t('public_explore.simple_pay_as_you_go') }}</h2>
+                <p class="pricing-explore__subtitle">{{ t('public_explore.no_subscriptions_pay_only_for_what_you') }}</p>
+
+                <div class="pricing-explore__options">
+                    <div class="pricing-option">
+                        <div class="pricing-option__name">{{ t('public_explore.starter') }}</div>
+                        <div class="pricing-option__price">{{ format_currency(5, 'USD', 0) }}</div>
+                        <div class="pricing-option__note">{{ t('public_explore.messages') }}</div>
+                    </div>
+
+                    <div class="pricing-option pricing-option--selected">
+                        <div class="pricing-option__name">{{ t('public_explore.popular') }}</div>
+                        <div class="pricing-option__price">{{ format_currency(25, 'USD', 0) }}</div>
+                        <div class="pricing-option__note">{{ t('public_explore.messages_2') }}</div>
+                    </div>
+                </div>
+
+                <a href="/register" class="btn btn--primary btn--large" style="width: 100%;">{{ t('public_explore.get_started_free') }}</a>
+
+                <p style="margin-top: var(--space-md); font-size: 0.875rem; color: var(--aurvek-gray-500);">{{ t('public_explore.free_trial_included_no_credit_card_required') }}</p>
+
+                <div class="byok-notice">{{ t_html('public_explore.bring_your_own_keys_already_have_api', tag_a="<strong>"|safe, tag_b="</strong>"|safe) }}</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="cta" style="background: linear-gradient(135deg, #0F172A 0%, #334155 100%);">
+        <div class="container" data-animate>
+            <h2>{{ t('public_explore.ready_to_meet_your_ai') }}</h2>
+            <p>{{ t('public_explore.join_thousands_exploring_ai_personalities_on_aurvek') }}</p>
+            <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                <a href="/register" class="btn btn--primary btn--large">{{ t('public_explore.start_exploring_free') }}</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer__grid">
+                <div class="footer__brand">
+                    <div class="footer__logo">{{ t_html('public_explore.s_aurvek', tag_a="<span class=\"nav__logo-icon\">"|safe, tag_b="</span>"|safe) }}</div>
+                    <p class="footer__tagline">{{ t('public_explore.discover_ai_personalities_chat_with_the_future') }}</p>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_explore.explore') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#">{{ t('public_explore.all_personalities') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.categories') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.popular') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.new') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_explore.resources') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#">{{ t('public_explore.help_center') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.getting_started') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.byok_guide') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.status') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_explore.company') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="index.html">{{ t('public_explore.about_aurvek') }}</a></li>
+                        <li><a href="/for-creators">{{ t('public_explore.for_creators') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.blog') }}</a></li>
+                        <li><a href="#">{{ t('public_explore.contact') }}</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="footer__bottom">
+                <p>{{ t('public_explore.aurvek_all_rights_reserved') }}</p>
+                <div class="footer__legal">
+                    <a href="#">{{ t('public_explore.privacy_policy') }}</a>
+                    <a href="#">{{ t('public_explore.terms_of_service') }}</a>
+                    <a href="#">{{ t('public_explore.cookie_policy') }}</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    {% set i18n_domains = ['public_shell'] %}{% include 'includes/i18n.html' %}
+    <script src="{{ get_static_url('/static/js/public-landing.js') }}"></script>
+</body>
+</html>

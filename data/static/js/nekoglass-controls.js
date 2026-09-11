@@ -7,6 +7,14 @@ const NekoGlassControls = (() => {
     'use strict';
 
     const STORAGE_KEY = 'nekoglass-settings';
+    const displayOpacity = value => new Intl.NumberFormat(window.AurvekI18n.locale, {
+        minimumFractionDigits: 2, maximumFractionDigits: 2
+    }).format(value);
+    const t = (key, params) => window.AurvekI18n.t(`navigation.${key}`, params);
+    const escapeHtml = (value) => String(value)
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+    const presetLabel = (label) => t(`nekoglass.preset.${label.toLowerCase().replaceAll(' ', '_')}`);
 
     // Default settings
     const DEFAULTS = {
@@ -239,13 +247,13 @@ const NekoGlassControls = (() => {
             const parts = rgb.split(',').map(n => parseInt(n.trim(), 10));
             const r = parts[0], g = parts[1], b = parts[2];
             const bgStyle = `background: linear-gradient(135deg, rgba(${r},${g},${b},0.9), rgba(${Math.max(0, r - 20)},${Math.max(0, g - 20)},${Math.max(0, b - 20)},1))`;
-            return `<div class="preset-circle${i === activeIndex ? ' active' : ''}" data-index="${i}" style="${bgStyle}" title="${p.label}"></div>`;
+            return `<div class="preset-circle${i === activeIndex ? ' active' : ''}" data-index="${i}" style="${bgStyle}" title="${escapeHtml(presetLabel(p.label))}"></div>`;
         }).join('');
         // 7th circle: custom color picker
         const customStyle = (activeIndex === 6 && customColor)
             ? `background: ${customColor}`
             : '';
-        html += `<div class="preset-circle custom-picker${activeIndex === 6 ? ' active' : ''}" data-index="6" title="Custom" ${customStyle ? `style="${customStyle}"` : ''}>
+        html += `<div class="preset-circle custom-picker${activeIndex === 6 ? ' active' : ''}" data-index="6" title="${escapeHtml(t('nekoglass.custom'))}" ${customStyle ? `style="${customStyle}"` : ''}>
             <input type="color" class="custom-color-input" value="${customColor || '#888888'}">
         </div>`;
         return html;
@@ -253,13 +261,13 @@ const NekoGlassControls = (() => {
 
     function buildTextPills(presets, activeIndex, customColor) {
         let html = presets.map((p, i) =>
-            `<button class="text-pill${i === activeIndex ? ' active' : ''}" data-index="${i}">${p.label}</button>`
+            `<button class="text-pill${i === activeIndex ? ' active' : ''}" data-index="${i}">${escapeHtml(presetLabel(p.label))}</button>`
         ).join('');
         // 4th pill: custom color picker
         const swatchColor = (activeIndex === 3 && customColor) ? customColor : '#888';
         html += `<button class="text-pill custom-text-pill${activeIndex === 3 ? ' active' : ''}" data-index="3">
             <span class="custom-text-swatch" style="background: ${swatchColor}"></span>
-            Pick
+            ${escapeHtml(t('nekoglass.pick'))}
             <input type="color" class="custom-color-input" value="${customColor || '#888888'}">
         </button>`;
         return html;
@@ -267,19 +275,19 @@ const NekoGlassControls = (() => {
 
     function buildWidthPills() {
         return WIDTH_PRESETS.map(p =>
-            `<button class="width-pill${p.value === _settings.columnWidth ? ' active' : ''}" data-width="${p.value}">${p.label}</button>`
+            `<button class="width-pill${p.value === _settings.columnWidth ? ' active' : ''}" data-width="${p.value}">${escapeHtml(presetLabel(p.label))}</button>`
         ).join('');
     }
 
     function buildRoundnessPills() {
         return ROUNDNESS_PRESETS.map((p, i) =>
-            `<button class="width-pill${i === _settings.bubbleRoundness ? ' active' : ''}" data-index="${i}">${p.label}</button>`
+            `<button class="width-pill${i === _settings.bubbleRoundness ? ' active' : ''}" data-index="${i}">${escapeHtml(presetLabel(p.label))}</button>`
         ).join('');
     }
 
     function buildAccentCircles() {
         return ACCENT_PRESETS.map((a, i) =>
-            `<div class="preset-circle${i === _settings.accentIndex ? ' active' : ''}" data-index="${i}" style="background: linear-gradient(135deg, hsl(${a.h}, ${a.s}%, ${a.l}%), hsl(${a.h}, ${a.s}%, ${a.l - 10}%));" title="${a.label}"></div>`
+            `<div class="preset-circle${i === _settings.accentIndex ? ' active' : ''}" data-index="${i}" style="background: linear-gradient(135deg, hsl(${a.h}, ${a.s}%, ${a.l}%), hsl(${a.h}, ${a.s}%, ${a.l - 10}%));" title="${escapeHtml(presetLabel(a.label))}"></div>`
         ).join('');
     }
 
@@ -339,7 +347,7 @@ const NekoGlassControls = (() => {
         const container = document.createElement('div');
         container.className = 'neko-floating-buttons';
         container.innerHTML = `
-            <button class="neko-float-btn" id="neko-btn-glass-settings" title="Glass Settings">
+            <button class="neko-float-btn" id="neko-btn-glass-settings" title="${escapeHtml(t('nekoglass.settings'))}">
                 <i class="fas fa-palette"></i>
             </button>
         `;
@@ -359,31 +367,31 @@ const NekoGlassControls = (() => {
         const pageTextCustomSwatch = (_settings.pageTextIndex === 2 && _settings.pageTextCustom) ? _settings.pageTextCustom : '#888';
         const layoutContent = `
             <div class="control-group">
-                <div class="control-label">Column Width</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.column_width'))}</div>
                 <div class="width-pills" id="neko-width-pills">${buildWidthPills()}</div>
             </div>
             <div class="control-group" id="neko-pagetext-group">
-                <div class="control-label">Page Text</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.page_text'))}</div>
                 <div class="width-pills" id="neko-pagetext-pills">
                     ${PAGE_TEXT_PRESETS.map((p, i) =>
                         `<button class="text-pill${i === _settings.pageTextIndex ? ' active' : ''}" data-index="${i}">${p.label}</button>`
                     ).join('')}
                     <button class="text-pill custom-text-pill${_settings.pageTextIndex === 2 ? ' active' : ''}" data-index="2">
                         <span class="custom-text-swatch" style="background: ${pageTextCustomSwatch}"></span>
-                        Pick
+                        ${escapeHtml(t('nekoglass.pick'))}
                         <input type="color" class="custom-color-input" value="${_settings.pageTextCustom || '#888888'}">
                     </button>
                 </div>
             </div>
             <div class="control-group">
                 <div class="control-label">
-                    Font Size
+                    ${escapeHtml(t('nekoglass.font_size'))}
                     <span class="control-value" id="neko-fontsize-value">${_settings.fontSize}px</span>
                 </div>
                 <input type="range" class="control-slider" id="neko-fontsize-slider" min="11" max="20" value="${_settings.fontSize}" step="1">
             </div>
             <div class="control-group">
-                <div class="control-label">Bubble Roundness</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.bubble_roundness'))}</div>
                 <div class="width-pills" id="neko-roundness-pills">${buildRoundnessPills()}</div>
             </div>`;
 
@@ -391,40 +399,40 @@ const NekoGlassControls = (() => {
         const isCustomWp = _settings.wallpaperMode === 'custom';
         const glassContent = `
             <div class="control-group neko-wallpaper-control">
-                <div class="control-label">Wallpaper</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.wallpaper'))}</div>
                 <div class="wallpaper-actions">
                     <label class="wallpaper-upload-btn" id="neko-wallpaper-upload-label">
-                        <i class="fas fa-image"></i> ${isCustomWp ? 'Change' : 'Upload'}
+                        <i class="fas fa-image"></i> ${escapeHtml(isCustomWp ? t('nekoglass.change') : t('nekoglass.upload'))}
                         <input type="file" id="neko-wallpaper-input" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
                     </label>
                     <button class="wallpaper-reset-btn" id="neko-wallpaper-reset" ${isCustomWp ? '' : 'disabled'}>
-                        <i class="fas fa-undo"></i> Default
+                        <i class="fas fa-undo"></i> ${escapeHtml(t('nekoglass.default'))}
                     </button>
                 </div>
-                <div class="wallpaper-status" id="neko-wallpaper-status">${isCustomWp ? 'Custom wallpaper active' : ''}</div>
+                <div class="wallpaper-status" id="neko-wallpaper-status">${isCustomWp ? escapeHtml(t('nekoglass.wallpaper_active')) : ''}</div>
             </div>
             <div class="control-group">
-                <div class="control-label">Glass Tint</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.glass_tint'))}</div>
                 <div class="preset-circles" id="neko-glasstint-circles">${buildCirclePresets(GLASS_TINT_PRESETS, _settings.glassTintIndex, 'glasstint', _settings.glassTintCustom)}</div>
             </div>
             <div class="control-group">
                 <div class="control-label">
-                    Blur Intensity
+                    ${escapeHtml(t('nekoglass.blur_intensity'))}
                     <span class="control-value" id="neko-blur-value">${_settings.blurIntensity}px</span>
                 </div>
                 <input type="range" class="control-slider" id="neko-blur-slider" min="0" max="30" value="${_settings.blurIntensity}" step="1">
             </div>
             <div class="control-group">
                 <div class="control-label">
-                    Glass Opacity
-                    <span class="control-value" id="neko-opacity-value">${(_settings.glassOpacity / 100).toFixed(2)}</span>
+                    ${escapeHtml(t('nekoglass.glass_opacity'))}
+                    <span class="control-value" id="neko-opacity-value">${displayOpacity(_settings.glassOpacity / 100)}</span>
                 </div>
                 <input type="range" class="control-slider" id="neko-opacity-slider" min="0" max="25" value="${_settings.glassOpacity}" step="1">
             </div>
             <div class="control-group">
                 <div class="control-label">
-                    Wallpaper Dim
-                    <span class="control-value" id="neko-dim-value">${(_settings.wallpaperDim / 100).toFixed(2)}</span>
+                    ${escapeHtml(t('nekoglass.wallpaper_dim'))}
+                    <span class="control-value" id="neko-dim-value">${displayOpacity(_settings.wallpaperDim / 100)}</span>
                 </div>
                 <input type="range" class="control-slider" id="neko-dim-slider" min="0" max="50" value="${_settings.wallpaperDim}" step="1">
             </div>`;
@@ -432,43 +440,43 @@ const NekoGlassControls = (() => {
         // User messages section content
         const userMsgContent = `
             <div class="control-group">
-                <div class="control-label">Bubble Color</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.bubble_color'))}</div>
                 <div class="preset-circles" id="neko-userbubble-circles">${buildCirclePresets(USER_BUBBLE_PRESETS, _settings.userBubbleIndex, 'userbubble', _settings.userBubbleCustom)}</div>
             </div>
             <div class="control-group">
                 <div class="control-label">
-                    Bubble Opacity
-                    <span class="control-value" id="neko-useropacity-value">${(_settings.userBubbleOpacity / 100).toFixed(2)}</span>
+                    ${escapeHtml(t('nekoglass.bubble_opacity'))}
+                    <span class="control-value" id="neko-useropacity-value">${displayOpacity(_settings.userBubbleOpacity / 100)}</span>
                 </div>
                 <input type="range" class="control-slider" id="neko-useropacity-slider" min="5" max="60" value="${_settings.userBubbleOpacity}" step="1">
             </div>
             <div class="control-group">
-                <div class="control-label">Text Color</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.text_color'))}</div>
                 <div class="width-pills" id="neko-usertext-pills">${buildTextPills(USER_TEXT_PRESETS, _settings.userTextIndex, _settings.userTextCustom)}</div>
             </div>`;
 
         // Bot messages section content
         const botMsgContent = `
             <div class="control-group">
-                <div class="control-label">Bubble Color</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.bubble_color'))}</div>
                 <div class="preset-circles" id="neko-botbubble-circles">${buildCirclePresets(BOT_BUBBLE_PRESETS, _settings.botBubbleIndex, 'botbubble', _settings.botBubbleCustom)}</div>
             </div>
             <div class="control-group">
                 <div class="control-label">
-                    Bubble Opacity
-                    <span class="control-value" id="neko-botopacity-value">${(_settings.botBubbleOpacity / 100).toFixed(2)}</span>
+                    ${escapeHtml(t('nekoglass.bubble_opacity'))}
+                    <span class="control-value" id="neko-botopacity-value">${displayOpacity(_settings.botBubbleOpacity / 100)}</span>
                 </div>
                 <input type="range" class="control-slider" id="neko-botopacity-slider" min="5" max="60" value="${_settings.botBubbleOpacity}" step="1">
             </div>
             <div class="control-group">
-                <div class="control-label">Text Color</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.text_color'))}</div>
                 <div class="width-pills" id="neko-bottext-pills">${buildTextPills(BOT_TEXT_PRESETS, _settings.botTextIndex, _settings.botTextCustom)}</div>
             </div>`;
 
         // UI accent section content (affects buttons, sidebar highlights, active states)
         const accentContent = `
             <div class="control-group">
-                <div class="control-label">Interface Color</div>
+                <div class="control-label">${escapeHtml(t('nekoglass.interface_color'))}</div>
                 <div class="preset-circles" id="neko-accent-circles">${buildAccentCircles()}</div>
             </div>`;
 
@@ -476,22 +484,22 @@ const NekoGlassControls = (() => {
             <div class="controls-header">
                 <div class="controls-title">
                     <i class="fas fa-wand-magic-sparkles"></i>
-                    Glass Settings
+                    ${escapeHtml(t('nekoglass.settings'))}
                 </div>
             </div>
 
             <div class="controls-body">
-                ${buildSection('layout', 'fas fa-columns', 'Layout', layoutContent)}
-                ${buildSection('glass', 'fas fa-droplet', 'Glass Effect', glassContent)}
-                ${buildSection('user-msg', 'fas fa-comment', 'User Messages', userMsgContent)}
-                ${buildSection('bot-msg', 'fas fa-robot', 'Bot Messages', botMsgContent)}
-                ${buildSection('accent', 'fas fa-swatchbook', 'UI Accent', accentContent)}
+                ${buildSection('layout', 'fas fa-columns', escapeHtml(t('nekoglass.layout')), layoutContent)}
+                ${buildSection('glass', 'fas fa-droplet', escapeHtml(t('nekoglass.glass_effect')), glassContent)}
+                ${buildSection('user-msg', 'fas fa-comment', escapeHtml(t('nekoglass.user_messages')), userMsgContent)}
+                ${buildSection('bot-msg', 'fas fa-robot', escapeHtml(t('nekoglass.bot_messages')), botMsgContent)}
+                ${buildSection('accent', 'fas fa-swatchbook', escapeHtml(t('nekoglass.ui_accent')), accentContent)}
             </div>
 
             <div class="controls-footer">
                 <button class="reset-btn" id="neko-reset-btn">
                     <i class="fas fa-rotate-left"></i>
-                    Reset All
+                    ${escapeHtml(t('nekoglass.reset_all'))}
                 </button>
             </div>
         `;
@@ -628,7 +636,7 @@ const NekoGlassControls = (() => {
             _settings.glassOpacity = parseInt(opacitySlider.value, 10);
             const val = (_settings.glassOpacity / 100).toFixed(2);
             setCSSVar('--glass-opacity', val);
-            panel.querySelector('#neko-opacity-value').textContent = val;
+            panel.querySelector('#neko-opacity-value').textContent = displayOpacity(Number(val));
             saveSettings();
         });
 
@@ -638,7 +646,7 @@ const NekoGlassControls = (() => {
             _settings.wallpaperDim = parseInt(dimSlider.value, 10);
             const val = (_settings.wallpaperDim / 100).toFixed(2);
             setCSSVar('--wallpaper-dim', val);
-            panel.querySelector('#neko-dim-value').textContent = val;
+            panel.querySelector('#neko-dim-value').textContent = displayOpacity(Number(val));
             saveSettings();
         });
 
@@ -653,14 +661,14 @@ const NekoGlassControls = (() => {
             if (!file) return;
 
             if (file.size > 5 * 1024 * 1024) {
-                wpStatus.textContent = 'Too large (max 5 MB)';
+                wpStatus.textContent = t('nekoglass.error.too_large');
                 wpStatus.classList.add('error');
                 wpInput.value = '';
                 return;
             }
 
             // Client-side dimension check to avoid server timeouts on huge images
-            wpStatus.textContent = 'Checking image...';
+            wpStatus.textContent = t('nekoglass.checking_image');
             wpStatus.classList.remove('error');
             try {
                 await new Promise((resolve, reject) => {
@@ -671,8 +679,7 @@ const NekoGlassControls = (() => {
                         const pixels = img.width * img.height;
                         if (pixels > 50_000_000) {
                             reject(new Error(
-                                'Image resolution too high (' + img.width + 'x' + img.height +
-                                '). Max ~7000x7000 pixels'
+                                t('nekoglass.error.resolution', { width: img.width, height: img.height })
                             ));
                         } else {
                             resolve();
@@ -680,7 +687,7 @@ const NekoGlassControls = (() => {
                     };
                     img.onerror = () => {
                         URL.revokeObjectURL(url);
-                        reject(new Error('Cannot read image. Check the file is valid'));
+                        reject(new Error(t('nekoglass.error.cannot_read')));
                     };
                     img.src = url;
                 });
@@ -691,7 +698,7 @@ const NekoGlassControls = (() => {
                 return;
             }
 
-            wpStatus.textContent = 'Uploading...';
+            wpStatus.textContent = t('nekoglass.uploading');
 
             const formData = new FormData();
             formData.append('file', file);
@@ -708,13 +715,13 @@ const NekoGlassControls = (() => {
                     let msg = err.detail;
                     if (!msg) {
                         switch (res.status) {
-                            case 400: msg = 'Invalid image or unsupported format'; break;
-                            case 401: msg = 'Session expired. Please log in again'; break;
-                            case 413: msg = 'File too large (max 5 MB)'; break;
-                            case 524: msg = 'Upload timed out. Try a smaller image'; break;
+                            case 400: msg = t('nekoglass.error.invalid_image'); break;
+                            case 401: msg = t('nekoglass.error.session_expired'); break;
+                            case 413: msg = t('nekoglass.error.file_too_large'); break;
+                            case 524: msg = t('nekoglass.error.timeout'); break;
                             case 502:
-                            case 503: msg = 'Server temporarily unavailable. Try again'; break;
-                            default:  msg = 'Upload failed (error ' + res.status + ')';
+                            case 503: msg = t('nekoglass.error.server_unavailable'); break;
+                            default:  msg = t('nekoglass.error.upload_failed', { status: res.status });
                         }
                     }
                     throw new Error(msg);
@@ -727,11 +734,11 @@ const NekoGlassControls = (() => {
                 const wp = document.querySelector('.neko-wallpaper');
                 if (wp) wp.style.backgroundImage = `url('/api/nekoglass/wallpaper?_=${Date.now()}')`;
 
-                wpStatus.textContent = 'Custom wallpaper active';
+                wpStatus.textContent = t('nekoglass.wallpaper_active');
                 wpStatus.classList.remove('error');
                 wpResetBtn.disabled = false;
                 wpUploadLabel.childNodes.forEach(n => {
-                    if (n.nodeType === 3 && n.textContent.trim()) n.textContent = ' Change';
+                    if (n.nodeType === 3 && n.textContent.trim()) n.textContent = ` ${t('nekoglass.change')}`;
                 });
             } catch (e) {
                 wpStatus.textContent = e.message;
@@ -743,7 +750,7 @@ const NekoGlassControls = (() => {
         });
 
         wpResetBtn.addEventListener('click', async () => {
-            wpStatus.textContent = 'Resetting...';
+            wpStatus.textContent = t('nekoglass.resetting');
             wpStatus.classList.remove('error');
 
             try {
@@ -762,10 +769,10 @@ const NekoGlassControls = (() => {
                 wpStatus.textContent = '';
                 wpResetBtn.disabled = true;
                 wpUploadLabel.childNodes.forEach(n => {
-                    if (n.nodeType === 3 && n.textContent.trim()) n.textContent = ' Upload';
+                    if (n.nodeType === 3 && n.textContent.trim()) n.textContent = ` ${t('nekoglass.upload')}`;
                 });
             } catch (e) {
-                wpStatus.textContent = 'Reset failed';
+                wpStatus.textContent = t('nekoglass.error.reset_failed');
                 wpStatus.classList.add('error');
             }
         });
@@ -833,7 +840,7 @@ const NekoGlassControls = (() => {
             _settings.userBubbleOpacity = parseInt(userOpacitySlider.value, 10);
             const val = (_settings.userBubbleOpacity / 100).toFixed(2);
             setCSSVar('--user-bubble-opacity', val);
-            panel.querySelector('#neko-useropacity-value').textContent = val;
+            panel.querySelector('#neko-useropacity-value').textContent = displayOpacity(Number(val));
             saveSettings();
         });
 
@@ -899,7 +906,7 @@ const NekoGlassControls = (() => {
             _settings.botBubbleOpacity = parseInt(botOpacitySlider.value, 10);
             const val = (_settings.botBubbleOpacity / 100).toFixed(2);
             setCSSVar('--bot-bubble-opacity', val);
-            panel.querySelector('#neko-botopacity-value').textContent = val;
+            panel.querySelector('#neko-botopacity-value').textContent = displayOpacity(Number(val));
             saveSettings();
         });
 

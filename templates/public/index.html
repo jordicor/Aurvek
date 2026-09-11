@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ t('public_home.aurvek_is_the_ai_infrastructure_platform_enabling') }}">
+    <meta name="keywords" content="{{ t('public_home.ai_platform_ai_infrastructure_white_label_ai') }}">
+
+    <title>{{ t('public_home.aurvek_ai_infrastructure_platform') }}</title>
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="{{ t('public_home.aurvek_ai_infrastructure_platform') }}">
+    <meta property="og:description" content="{{ t('public_home.the_platform_powering_ai_experiences_for_creators') }}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://example.com">
+
+    <!-- Fonts - AURVEK Design System (Corporate variant) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
+
+    <!-- Phosphor Icons -->
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/duotone/style.css">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/public-landing.css') }}">
+
+    <style>
+        /* ============================================
+           Corporate Landing - Style Overrides
+           ============================================ */
+
+        :root {
+            /* Typography - AURVEK Corporate */
+            --font-sans: 'Satoshi', 'Inter', system-ui, sans-serif;
+            --font-display: 'Space Grotesk', var(--font-sans);
+            --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+
+            /* Colors - SLATE FORGE palette with Amber signature */
+            --corp-bg-dark: #0C1220;
+            --corp-bg-section: #FAFAF9;
+            --corp-accent: var(--aurvek-amber-600, #D97706);
+            --corp-accent-light: var(--aurvek-amber-500, #F59E0B);
+            --corp-text-muted: #71717A;
+        }
+
+        /* Hero - Corporate style */
+        .hero--corporate {
+            background: var(--corp-bg-dark);
+            min-height: 90vh;
+        }
+
+        .hero--corporate::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                radial-gradient(ellipse at 30% 20%, rgba(30, 64, 175, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 80%, rgba(30, 64, 175, 0.04) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        /* Subtle grid pattern */
+        .hero--corporate::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 60px 60px;
+            pointer-events: none;
+        }
+
+        .hero--corporate .hero__content {
+            max-width: 900px;
+        }
+
+        .hero--corporate .hero__title {
+            font-family: var(--font-display);
+            font-size: clamp(2.75rem, 5vw, 4.25rem);
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+        }
+
+        .hero--corporate .hero__subtitle {
+            font-size: 1.25rem;
+            line-height: 1.7;
+            color: var(--aurvek-gray-300);
+            max-width: 700px;
+        }
+
+        /* Platform intro text */
+        .platform-intro {
+            padding: var(--space-4xl) 0;
+            background: var(--aurvek-white);
+        }
+
+        .platform-intro__content {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .platform-intro__title {
+            font-family: var(--font-display);
+            font-size: clamp(1.75rem, 3vw, 2.25rem);
+            font-weight: 600;
+            color: var(--aurvek-black);
+            margin-bottom: var(--space-lg);
+        }
+
+        .platform-intro__text {
+            font-size: 1.125rem;
+            line-height: 1.8;
+            color: var(--aurvek-gray-700);
+        }
+
+        /* Solutions Grid - Corporate style */
+        .solutions-section {
+            background: var(--corp-bg-section);
+            padding: var(--space-4xl) 0;
+        }
+
+        .solutions-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: var(--space-lg);
+        }
+
+        @media (max-width: 768px) {
+            .solutions-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .solution-card {
+            display: block;
+            padding: var(--space-2xl);
+            background: var(--aurvek-white);
+            border: 1px solid var(--aurvek-gray-100);
+            border-radius: var(--radius-lg);
+            text-decoration: none;
+            transition: border-color var(--transition-base), box-shadow var(--transition-base);
+        }
+
+        .solution-card:hover {
+            border-color: var(--aurvek-gray-300);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+        }
+
+        .solution-card__label {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--corp-accent);
+            margin-bottom: var(--space-md);
+        }
+
+        .solution-card__title {
+            font-size: 1.375rem;
+            font-weight: 600;
+            color: var(--aurvek-black);
+            margin-bottom: var(--space-sm);
+        }
+
+        .solution-card__text {
+            font-size: 1rem;
+            color: var(--aurvek-gray-500);
+            line-height: 1.6;
+            margin-bottom: var(--space-lg);
+        }
+
+        .solution-card__link {
+            font-size: 0.9375rem;
+            font-weight: 500;
+            color: var(--corp-accent);
+        }
+
+        .solution-card:hover .solution-card__link {
+            color: var(--corp-accent-light);
+        }
+
+        /* Capabilities Section */
+        .capabilities-section {
+            padding: var(--space-4xl) 0;
+            background: var(--aurvek-white);
+        }
+
+        .capabilities-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-2xl) var(--space-xl);
+        }
+
+        @media (max-width: 1024px) {
+            .capabilities-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 600px) {
+            .capabilities-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .capability {
+            padding: var(--space-lg) 0;
+        }
+
+        .capability__title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--aurvek-black);
+            margin-bottom: var(--space-sm);
+        }
+
+        .capability__text {
+            font-size: 0.9375rem;
+            color: var(--aurvek-gray-500);
+            line-height: 1.6;
+            margin: 0;
+        }
+
+        /* Technology Section */
+        .technology-section {
+            padding: var(--space-4xl) 0;
+            background: var(--corp-bg-section);
+        }
+
+        .technology-section .section__header {
+            margin-bottom: var(--space-2xl);
+        }
+
+        .providers-list {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: var(--space-xl);
+        }
+
+        .provider {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--aurvek-gray-500);
+            padding: var(--space-md) var(--space-lg);
+            background: var(--aurvek-white);
+            border: 1px solid var(--aurvek-gray-100);
+            border-radius: var(--radius-md);
+        }
+
+        .providers-divider {
+            width: 1px;
+            height: 24px;
+            background: var(--aurvek-gray-200);
+        }
+
+        @media (max-width: 600px) {
+            .providers-divider {
+                display: none;
+            }
+            .providers-list {
+                gap: var(--space-md);
+            }
+        }
+
+        /* Final CTA - Soft, institutional */
+        .cta--institutional {
+            background: var(--corp-bg-dark);
+            padding: var(--space-4xl) 0;
+            text-align: center;
+        }
+
+        .cta--institutional h2 {
+            font-family: var(--font-display);
+            font-size: clamp(1.75rem, 3vw, 2.5rem);
+            font-weight: 600;
+            color: var(--aurvek-white);
+            margin-bottom: var(--space-md);
+        }
+
+        .cta--institutional p {
+            font-size: 1.125rem;
+            color: var(--aurvek-gray-300);
+            max-width: 500px;
+            margin: 0 auto var(--space-xl);
+        }
+
+        .cta--institutional .btn--outline {
+            background: transparent;
+            color: var(--aurvek-white);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: var(--space-md) var(--space-2xl);
+        }
+
+        .cta--institutional .btn--outline:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        /* Footer - More institutional */
+        .footer--corporate {
+            background: #050810;
+        }
+
+        .footer--corporate .footer__tagline {
+            color: var(--aurvek-gray-500);
+            line-height: 1.6;
+        }
+
+        /* Section titles - Corporate style */
+        .section__eyebrow {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: var(--corp-accent);
+            margin-bottom: var(--space-md);
+        }
+
+        .section__title--corporate {
+            font-family: var(--font-display);
+            font-size: clamp(1.75rem, 3vw, 2.5rem);
+            font-weight: 600;
+        }
+
+        /* Nav - Cleaner for corporate */
+        .nav--corporate {
+            background: rgba(8, 12, 20, 0.95);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .nav--corporate .nav__logo {
+            color: var(--aurvek-white);
+        }
+
+        .nav--corporate .nav__link {
+            color: var(--aurvek-gray-300);
+        }
+
+        .nav--corporate .nav__link:hover {
+            color: var(--aurvek-white);
+        }
+
+        .nav--corporate .btn--secondary {
+            border-color: rgba(255, 255, 255, 0.2);
+            color: var(--aurvek-white);
+        }
+
+        .nav--corporate .btn--secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .nav--corporate .btn--primary {
+            background: var(--aurvek-white);
+            color: var(--aurvek-black);
+        }
+
+        .nav--corporate .btn--primary:hover {
+            background: var(--aurvek-gray-100);
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Scrolled state */
+        .nav--corporate.nav--scrolled {
+            background: rgba(8, 12, 20, 0.98);
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        /* Hero actions - softer for institutional */
+        .hero--corporate .hero__actions {
+            gap: var(--space-md);
+        }
+
+        .hero--corporate .btn--ghost {
+            background: transparent;
+            color: var(--aurvek-gray-300);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        .hero--corporate .btn--ghost:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.25);
+            color: var(--aurvek-white);
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Hero with image layout */
+        .hero--corporate .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--space-3xl);
+            align-items: center;
+        }
+
+        .hero__visual {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+        }
+
+        .hero__image {
+            width: 100%;
+            max-width: 650px;
+            height: auto;
+            border-radius: var(--radius-lg);
+            opacity: 0.9;
+        }
+
+        @media (max-width: 1024px) {
+            .hero--corporate .container {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+
+            .hero__visual {
+                display: none;
+            }
+
+            .hero--corporate .hero__content {
+                max-width: 700px;
+                margin: 0 auto;
+            }
+
+            .hero--corporate .hero__actions {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav nav--corporate">
+        <div class="container">
+            <div class="nav__inner">
+                <a href="/" class="nav__logo">
+                    <span class="nav__logo-icon">S</span>
+                    Aurvek
+                </a>
+
+                <ul class="nav__links">
+                    <li><a href="#platform" class="nav__link">{{ t('public_home.platform') }}</a></li>
+                    <li><a href="#solutions" class="nav__link">{{ t('public_home.solutions') }}</a></li>
+                    <li><a href="#capabilities" class="nav__link">{{ t('public_home.capabilities') }}</a></li>
+                </ul>
+
+                <div class="nav__actions">
+                    <a href="/login" class="btn btn--secondary btn--small">{{ t('public_home.sign_in') }}</a>
+                    <a href="/register" class="btn btn--primary btn--small">{{ t('public_home.get_started') }}</a>
+                </div>
+
+                <button class="nav__toggle" aria-label="{{ t('public_home.toggle_menu') }}">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero hero--corporate hero--dark">
+        <div class="container">
+            <div class="hero__content" data-animate>
+                <h1 class="hero__title">{{ t_html('public_home.the_infrastructure_behindai_powered_experiences', tag_a="<br>"|safe) }}</h1>
+
+                <p class="hero__subtitle">{{ t('public_home.aurvek_provides_the_foundation_for_creators_agencies') }}</p>
+
+                <div class="hero__actions">
+                    <a href="#solutions" class="btn btn--primary btn--large">{{ t('public_home.explore_solutions') }}</a>
+                    <a href="#platform" class="btn btn--ghost btn--large">{{ t('public_home.platform_overview') }}</a>
+                </div>
+            </div>
+
+            <div class="hero__visual" data-animate>
+                <img
+                    src="/static/img/landing/corporate-hero-v2.png"
+                    alt="{{ t('public_home.ai_infrastructure_visualization') }}"
+                    class="hero__image"
+                    loading="eager"
+                >
+            </div>
+        </div>
+    </section>
+
+    <!-- Platform Introduction -->
+    <section id="platform" class="platform-intro">
+        <div class="container">
+            <div class="platform-intro__content" data-animate>
+                <h2 class="platform-intro__title">{{ t('public_home.a_unified_platform_for_the_ai_economy') }}</h2>
+                <p class="platform-intro__text">{{ t('public_home.aurvek_combines_prompt_aggregation_white_label_deployment') }}</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Solutions Section -->
+    <section id="solutions" class="solutions-section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <span class="section__eyebrow">{{ t('public_home.solutions') }}</span>
+                <h2 class="section__title section__title--corporate">{{ t('public_home.built_for_how_you_work') }}</h2>
+                <p class="section__subtitle">{{ t('public_home.one_platform_multiple_paths_find_the_solution') }}</p>
+            </div>
+
+            <div class="solutions-grid" data-animate>
+                <a href="/for-creators" class="solution-card">
+                    <span class="solution-card__label">{{ t('public_home.for_creators') }}</span>
+                    <h3 class="solution-card__title">{{ t('public_home.independent_publishers') }}</h3>
+                    <p class="solution-card__text">{{ t('public_home.transform_ai_expertise_into_products_create_prompts') }}</p>
+                    <span class="solution-card__link">{{ t('public_home.learn_more') }}</span>
+                </a>
+
+                <a href="/for-agencies" class="solution-card">
+                    <span class="solution-card__label">{{ t('public_home.for_agencies') }}</span>
+                    <h3 class="solution-card__title">{{ t('public_home.digital_agencies_consultancies') }}</h3>
+                    <p class="solution-card__text">{{ t('public_home.deploy_white_label_ai_services_under_your') }}</p>
+                    <span class="solution-card__link">{{ t('public_home.learn_more') }}</span>
+                </a>
+
+                <a href="/for-teams" class="solution-card">
+                    <span class="solution-card__label">{{ t('public_home.for_teams') }}</span>
+                    <h3 class="solution-card__title">{{ t('public_home.internal_deployments') }}</h3>
+                    <p class="solution-card__text">{{ t('public_home.roll_out_ai_tools_across_your_organization') }}</p>
+                    <span class="solution-card__link">{{ t('public_home.learn_more') }}</span>
+                </a>
+
+                <a href="explore-landing.html" class="solution-card">
+                    <span class="solution-card__label">{{ t('public_home.explore') }}</span>
+                    <h3 class="solution-card__title">{{ t('public_home.ai_catalog') }}</h3>
+                    <p class="solution-card__text">{{ t('public_home.discover_the_aurvek_prompt_ecosystem_chat_with') }}</p>
+                    <span class="solution-card__link">{{ t('public_home.browse_catalog') }}</span>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Platform Capabilities -->
+    <section id="capabilities" class="capabilities-section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <span class="section__eyebrow">{{ t('public_home.capabilities') }}</span>
+                <h2 class="section__title section__title--corporate">{{ t('public_home.platform_architecture') }}</h2>
+                <p class="section__subtitle">{{ t('public_home.enterprise_grade_infrastructure_designed_for_flexibility_and') }}</p>
+            </div>
+
+            <div class="capabilities-grid" data-animate>
+                <div class="capability">
+                    <h3 class="capability__title">{{ t('public_home.multi_provider_ai') }}</h3>
+                    <p class="capability__text">{{ t('public_home.unified_access_to_openai_anthropic_google_ai') }}</p>
+                </div>
+
+                <div class="capability">
+                    <h3 class="capability__title">{{ t('public_home.white_label_architecture') }}</h3>
+                    <p class="capability__text">{{ t('public_home.custom_domains_branding_themes_and_email_templates') }}</p>
+                </div>
+
+                <div class="capability">
+                    <h3 class="capability__title">{{ t('public_home.flexible_economics') }}</h3>
+                    <p class="capability__text">{{ t('public_home.per_message_pricing_subscriptions_or_free_tiers') }}</p>
+                </div>
+
+                <div class="capability">
+                    <h3 class="capability__title">{{ t('public_home.real_time_streaming') }}</h3>
+                    <p class="capability__text">{{ t('public_home.websocket_based_response_delivery_with_streaming_support') }}</p>
+                </div>
+
+                <div class="capability">
+                    <h3 class="capability__title">{{ t('public_home.voice_integration') }}</h3>
+                    <p class="capability__text">{{ t('public_home.production_ready_conversational_voice_ai_powered_by') }}</p>
+                </div>
+
+                <div class="capability">
+                    <h3 class="capability__title">{{ t('public_home.security_built_in') }}</h3>
+                    <p class="capability__text">{{ t('public_home.jwt_authentication_secure_password_storage_and_role') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Technology / Providers -->
+    <section class="technology-section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <span class="section__eyebrow">{{ t('public_home.technology') }}</span>
+                <h2 class="section__title section__title--corporate">{{ t('public_home.powered_by_industry_leaders') }}</h2>
+                <p class="section__subtitle">{{ t('public_home.integrated_with_the_providers_and_services_that') }}</p>
+            </div>
+
+            <div class="providers-list" data-animate>
+                <span class="provider">OpenAI</span>
+                <span class="provider">Anthropic</span>
+                <span class="provider">{{ t('public_home.google_ai') }}</span>
+                <span class="provider">xAI</span>
+                <span class="providers-divider"></span>
+                <span class="provider">ElevenLabs</span>
+                <span class="provider">Stripe</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta--institutional">
+        <div class="container" data-animate>
+            <h2>{{ t('public_home.find_the_right_solution') }}</h2>
+            <p>{{ t('public_home.explore_how_aurvek_can_support_your_ai') }}</p>
+            <a href="#solutions" class="btn btn--outline btn--large">{{ t('public_home.view_all_solutions') }}</a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer footer--corporate">
+        <div class="container">
+            <div class="footer__grid">
+                <div class="footer__brand">
+                    <div class="footer__logo">{{ t_html('public_home.s_aurvek', tag_a="<span class=\"nav__logo-icon\">"|safe, tag_b="</span>"|safe) }}</div>
+                    <p class="footer__tagline">{{ t('public_home.ai_infrastructure_for_creators_agencies_and_enterprises') }}</p>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_home.solutions') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="/for-creators">{{ t('public_home.for_creators') }}</a></li>
+                        <li><a href="/for-agencies">{{ t('public_home.for_agencies') }}</a></li>
+                        <li><a href="/for-teams">{{ t('public_home.for_teams') }}</a></li>
+                        <li><a href="explore-landing.html">{{ t('public_home.explore_ai') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_home.platform') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#">{{ t('public_home.documentation') }}</a></li>
+                        <li><a href="#">{{ t('public_home.api_reference') }}</a></li>
+                        <li><a href="#">{{ t('public_home.system_status') }}</a></li>
+                        <li><a href="#" id="infra-link">{{ t('public_home.infrastructure') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_home.company') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#">{{ t('public_home.about') }}</a></li>
+                        <li><a href="#">{{ t('public_home.contact') }}</a></li>
+                        <li><a href="#">{{ t('public_home.pricing') }}</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="footer__bottom">
+                <p>{{ t('public_home.aurvek_all_rights_reserved') }}</p>
+                <div class="footer__legal">
+                    <a href="/privacy">{{ t('public_home.privacy_policy') }}</a>
+                    <a href="/terms">{{ t('public_home.terms_of_service') }}</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    {% set i18n_domains = ['public_shell'] %}{% include 'includes/i18n.html' %}
+    <script src="{{ get_static_url('/static/js/public-landing.js') }}"></script>
+    <script>
+        // Set infrastructure link to fstcdn subdomain dynamically
+        (function() {
+            var link = document.getElementById('infra-link');
+            if (link) {
+                var host = window.location.host;
+                var parts = host.split('.');
+                var baseDomain = parts.length >= 2 ? parts.slice(-2).join('.') : host;
+                link.href = '//' + 'fstcdn.' + baseDomain + '/';
+            }
+        })();
+    </script>
+</body>
+</html>

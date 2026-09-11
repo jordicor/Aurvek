@@ -1,0 +1,12 @@
+{
+  "curation.access": "キュレーション設定にアクセスできるのはユーザーまたは管理者ロールのアカウントのみです",
+  "curation.update_access": "キュレーション設定を変更できるのはユーザーまたは管理者ロールのアカウントのみです",
+  "curation.load_failed": "キュレーション設定を読み込めませんでした。再試行してください。",
+  "curation.save_failed": "キュレーション設定を保存できませんでした。再試行してください。",
+  "curation.negative": "上乗せ額は負の値にできません",
+  "curation.maximum": "上乗せ額は100万トークンあたり{amount}を超えることはできません",
+  "curation.saved": "キュレーション設定を更新しました",
+  "curation.invalid": "上乗せ額が無効です",
+  "prompt.not_found": "プロンプトが見つかりません",
+  "access.denied": "アクセスが拒否されました"
+}

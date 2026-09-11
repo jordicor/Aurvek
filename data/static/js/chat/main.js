@@ -48,7 +48,7 @@ if (typeof window.enqueueConversationModelMutation !== 'function') {
 
 document.addEventListener('DOMContentLoaded', function() {
     // Restore conversation ID after theme change reload
-    const restoreConvId = localStorage.getItem('restoreConversationId');
+    const restoreConvId = window.AurvekEmbed ? null : localStorage.getItem('restoreConversationId');
     if (restoreConvId && typeof currentConversationId !== 'undefined') {
         currentConversationId = parseInt(restoreConvId, 10);
         localStorage.removeItem('restoreConversationId');
@@ -101,11 +101,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (llmDropdown) {
         let committedLlmDropdownValue = llmDropdown.value;
         llmDropdown.addEventListener('change', function(e) {
-            if (document.getElementById('send-button')?.innerText === 'Stop') {
+            if (document.getElementById('send-button')?.dataset.streaming === 'true') {
                 e.target.value = committedLlmDropdownValue;
                 NotificationModal.warning(
-                    'Message in progress',
-                    'Wait for the current message to finish before changing the AI model.'
+                    () => window.AurvekI18n.t('chat.message_progress_title'),
+                    () => window.AurvekI18n.t('chat.message_progress')
                 );
                 return;
             }
@@ -183,8 +183,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         e.target.value = committedLlmDropdownValue;
                         console.error('Error updating model selection:', error);
                         NotificationModal.error(
-                            'Model update failed',
-                            'The selected AI model was not saved. Please try again.'
+                            () => window.AurvekI18n.t('chat.model_update_failed'),
+                            () => window.AurvekI18n.t('chat.model_not_saved')
                         );
                     }
                     return;
@@ -266,6 +266,19 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         return data;
     }
+    let applicationFunding = null;
+    const nativeBalanceMessage = insufficientBalanceMessage?.innerHTML;
+    window.currentConversationApplicationFunding = function() {
+        const currentId = typeof currentConversationId !== 'undefined' ? currentConversationId : null;
+        return currentId != null && applicationFunding &&
+            String(applicationFunding.conversationId) === String(currentId)
+            ? applicationFunding.funding : null;
+    };
+    window.setApplicationConversationFunding = function(conversationId, funding) {
+        applicationFunding = {conversationId, funding};
+        if (typeof ApiKeyManager !== 'undefined') ApiKeyManager.updateUI();
+        else window.updateConversationBalanceAvailability();
+    };
     window.updateConversationBalanceAvailability = function(isPaidOverride = null) {
         if (!messageInputContainer || !insufficientBalanceMessage) return;
         if (typeof admin_view !== 'undefined' && admin_view) return;
@@ -301,8 +314,18 @@ document.addEventListener('DOMContentLoaded', function() {
         const hasOwnedCredential = hasByok || usesGptSub;
         const lacksPaidPromptBalance = hasOwnedCredential && isPaid && userBalance < 0.10;
         const lacksPlatformBalance = userBalance === 0 && !hasOwnedCredential;
+        const funding = window.currentConversationApplicationFunding();
+        const lacksBalance = funding !== null ? funding.available !== true
+            : (lacksPaidPromptBalance || lacksPlatformBalance);
+        if (window.AurvekEmbed) {
+            window.AurvekI18n.bindText(insufficientBalanceMessage, 'embed.balance');
+        } else if (funding !== null && lacksBalance) {
+            insufficientBalanceMessage.textContent = window.AurvekI18n.t('chat.application_unfunded');
+        } else {
+            insufficientBalanceMessage.innerHTML = nativeBalanceMessage;
+        }
 
-        if (lacksPaidPromptBalance || lacksPlatformBalance) {
+        if (lacksBalance) {
             messageInputContainer.style.display = 'none';
             insufficientBalanceMessage.style.display = 'block';
         } else {
@@ -409,6 +432,10 @@ document.addEventListener('DOMContentLoaded', function() {
         // Enable controls and hide loading indicator when all initial loads are complete
         enableInputControls();
         document.getElementById('loading-indicator').style.display = 'none';
+        if (window.AurvekEmbed) {
+            window.AurvekEmbed.chatReady();
+            return;
+        }
 
         // Auto-start new conversation if redirected from explore page
         const urlParams = new URLSearchParams(window.location.search);
@@ -468,7 +495,7 @@ document.addEventListener('DOMContentLoaded', function() {
         sendButton.classList.add('hidden');
     }
 
-    // New code for "New Chat" split button
+    // New chat split button
     var newChatMainBtn = document.getElementById('new-chat-main-btn');
 
     if (newChatMainBtn) {
@@ -502,7 +529,7 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
         // Prevent sending while AI is streaming
         const sendButton = document.getElementById('send-button');
-        if (sendButton.innerText === 'Stop') return;
+        if (sendButton.dataset.streaming === 'true') return;
         var messageText = document.getElementById('message-text').value;
         /*messageText = encodeForHTML(messageText);*/
         
@@ -530,7 +557,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('keydown', function(event) {
         if (event.key === 'Escape') {
             const sendButton = document.getElementById('send-button');
-            if (sendButton.innerText === 'Stop') {
+            if (sendButton.dataset.streaming === 'true') {
                 stopReceivingStream();
             } else {
                 const imagePreviews = document.getElementById('image-previews');
@@ -652,10 +679,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             if (compressedCount > 0) {
-                const saved = (totalSavedBytes / (1024 * 1024)).toFixed(1);
-                const msg = compressedCount === 1
-                    ? `Image compressed (saved ${saved} MB)`
-                    : `${compressedCount} images compressed (saved ${saved} MB)`;
+                const saved = new Intl.NumberFormat(window.AurvekI18n.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(totalSavedBytes / (1024 * 1024));
+                const msg = window.AurvekI18n.t('chat.compressed', { count: compressedCount, saved });
                 NotificationModal.toast(msg, 'info', 3000);
             }
         } finally {
@@ -674,13 +699,14 @@ document.addEventListener('DOMContentLoaded', function() {
 let attachedFiles = [];
 
 function checkSession(callback) {
-    fetch('/api/check-session')
+    fetch(window.AurvekEmbed?.sessionUrl || '/api/check-session')
         .then(response => {
             return response.json();
         })
         .then(data => {
             if (data.expired) {
-                window.location.href = '/login';
+                if (window.AurvekEmbed) window.AurvekEmbed.sessionExpired();
+                else window.location.href = '/login';
             } else {
                 callback();
             }
@@ -853,7 +879,7 @@ function initPullToRefresh() {
     // Create the pull-to-refresh indicator
     const ptrIndicator = document.createElement('div');
     ptrIndicator.id = 'ptr-indicator';
-    ptrIndicator.innerHTML = '<div class="ptr-spinner"></div><span class="ptr-text">Pull to refresh</span>';
+    ptrIndicator.innerHTML = `<div class="ptr-spinner"></div><span class="ptr-text">${escapeHTML(window.AurvekI18n.t('chat.pull_refresh'))}</span>`;
 
     // Inject styles
     const style = document.createElement('style');
@@ -942,7 +968,7 @@ function initPullToRefresh() {
 
             // Update text
             const text = ptrIndicator.querySelector('.ptr-text');
-            text.textContent = pullDistance >= THRESHOLD ? 'Release to refresh' : 'Pull to refresh';
+            text.textContent = pullDistance >= THRESHOLD ? window.AurvekI18n.t('chat.release_refresh') : window.AurvekI18n.t('chat.pull_refresh');
         }
     }, { passive: false });
 

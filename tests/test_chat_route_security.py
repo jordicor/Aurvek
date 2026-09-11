@@ -13,6 +13,10 @@ from chat.routes import media, voice_io
 class DummyRequest:
     headers = {"user-agent": "Chrome"}
 
+    def __init__(self):
+        self.state = SimpleNamespace()
+        self.cookies = {}
+
 
 class DummyUser:
     def __init__(self, user_id: int, *, admin: bool = False):
@@ -66,8 +70,9 @@ async def test_transcribe_web_bills_authenticated_owner(mock_db, monkeypatch):
 
     seen = {}
 
-    async def fake_transcribe(request, audio, user_id):
+    async def fake_transcribe(request, audio, user_id, *, ui_language):
         seen["user_id"] = user_id
+        seen["ui_language"] = ui_language
         return "hola"
 
     monkeypatch.setattr(voice_io, "transcribe", fake_transcribe)
@@ -80,7 +85,7 @@ async def test_transcribe_web_bills_authenticated_owner(mock_db, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert seen == {"user_id": 1}
+    assert seen == {"user_id": 1, "ui_language": "en"}
 
 
 @pytest.mark.asyncio
@@ -228,3 +233,37 @@ async def test_auth_file_requires_token_user_path_prefix(monkeypatch):
         )
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["pdf", "mp3"])
+async def test_export_worker_captures_requesting_admin_ui_language(mock_db, monkeypatch, kind):
+    from unittest.mock import AsyncMock, Mock
+
+    monkeypatch.setattr(voice_io, "get_db_connection", mock_db)
+    monkeypatch.setattr(voice_io, "require_conversation_access", AsyncMock(return_value=2))
+    monkeypatch.setattr(voice_io, "ensure_generation_headroom", AsyncMock())
+    monkeypatch.setattr(voice_io, "redis_client", SimpleNamespace(set=AsyncMock(return_value=True)))
+    task = SimpleNamespace(send=Mock())
+    monkeypatch.setattr(voice_io, f"generate_{kind}_task", task)
+    user = DummyUser(1, admin=True)
+    user.ui_language = "ja"
+    user.language = "es"
+    response = await getattr(voice_io, f"initiate_download_{kind}")(
+        conversation_id=12, request=DummyRequest(), current_user=user,
+    )
+    task.send.assert_called_once_with(conversation_id=12, user_id=1, is_admin=True, ui_language="ja")
+    assert voice_io.chat_text(user, f"{kind}_generation_started") in response.body.decode()
+    voice_io.ensure_generation_headroom.assert_awaited_once()
+    assert voice_io.ensure_generation_headroom.await_args.args[1] == 2
+
+
+@pytest.mark.parametrize("kind", ["pdf", "mp3"])
+def test_export_task_forwards_captured_language_without_request(kind, monkeypatch):
+    import tasks
+    from unittest.mock import AsyncMock
+
+    generator = AsyncMock()
+    monkeypatch.setattr(tasks, f"generate_and_save_{kind}", generator)
+    getattr(tasks, f"generate_{kind}_task").fn(12, 1, True, ui_language="fr")
+    generator.assert_awaited_once_with(12, 1, True, ui_language="fr")

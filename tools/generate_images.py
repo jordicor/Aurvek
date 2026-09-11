@@ -857,6 +857,7 @@ async def generate_image_task(
                 "type": "image_url",
                 "image_url": {
                     "url": image_link_base_256,
+                    "fullsize_url": image_link_base_fullsize,
                     "alt": revised_prompt
                 }
             }

@@ -85,7 +85,7 @@ function response(data, status = 200) {
     };
 }
 
-function createHarness({ rejectStart = false, availability = null } = {}) {
+function createHarness({ rejectStart = false, availability = null, language } = {}) {
     const ids = [
         'plus-voice-call',
         'voice-overlay',
@@ -146,6 +146,7 @@ function createHarness({ rejectStart = false, availability = null } = {}) {
                 prompt_text: 'Help the user',
                 agent_id: 'agent-main',
                 user_id: 7,
+                language,
                 context: ''
             });
         }
@@ -243,6 +244,7 @@ test('a call keeps its original conversation after navigating to another chat', 
         '101'
     );
     assert.equal(harness.sessionOptions.dynamicVariables.aurvek_user_id, '7');
+    assert.equal(harness.sessionOptions.dynamicVariables.language, 'English');
 
     harness.context.currentConversationId = 202;
     await harness.sessionOptions.onDisconnect();
@@ -264,6 +266,86 @@ test('a call keeps its original conversation after navigating to another chat', 
     );
     assert.equal(harness.refreshCount, 0);
     assert.equal(harness.loadMessagesCount, 0);
+});
+
+test('a browser voice call uses the language resolved by the backend', async () => {
+    const harness = createHarness({ language: 'Spanish' });
+
+    await harness.elements['plus-voice-call'].trigger('click');
+    await harness.elements['voice-start-stop'].trigger('click');
+
+    assert.equal(
+        harness.sessionOptions.dynamicVariables.language,
+        'Spanish'
+    );
+    assert.doesNotMatch(source, /dynamicVariables\.language\s*=\s*["']English["']/);
+});
+
+test('an SDK response-correction event is sent with the completion request', async () => {
+    const harness = createHarness();
+
+    await harness.elements['plus-voice-call'].trigger('click');
+    await harness.elements['voice-start-stop'].trigger('click');
+    harness.sessionOptions.onMessage({
+        source: 'ai',
+        message: 'I will explain the whole answer now',
+        event_id: 'agent-response-1'
+    });
+    harness.sessionOptions.onDebug({
+        type: 'agent_response_correction',
+        value: {
+            type: 'agent_response_correction',
+            event_id: 'correction-1',
+            agent_response_correction_event: {
+                original_agent_response: 'I will explain the whole answer now',
+                corrected_agent_response: 'I will explain',
+                time_in_call_secs: 4.25
+            }
+        }
+    });
+
+    await harness.elements['voice-start-stop'].trigger('click');
+
+    const completion = harness.requests.find(
+        request => request.url.endsWith('/elevenlabs/complete')
+    );
+    assert.deepEqual(JSON.parse(completion.options.body), {
+        session_id: 'provider-session-a',
+        client_corrections: [
+            {
+                event_id: 'correction-1',
+                original_message: 'I will explain the whole answer now',
+                corrected_message: 'I will explain',
+                time_in_call_secs: 4.25
+            }
+        ]
+    });
+});
+
+test('dedicated correction callbacks remain compatible with two string arguments', async () => {
+    const harness = createHarness();
+
+    await harness.elements['plus-voice-call'].trigger('click');
+    await harness.elements['voice-start-stop'].trigger('click');
+    harness.sessionOptions.onAgentResponseCorrection(
+        'The complete response that kept going',
+        'The complete response'
+    );
+    await harness.elements['voice-start-stop'].trigger('click');
+
+    const completion = harness.requests.find(
+        request => request.url.endsWith('/elevenlabs/complete')
+    );
+    assert.deepEqual(JSON.parse(completion.options.body), {
+        session_id: 'provider-session-a',
+        client_corrections: [
+            {
+                original_message: 'The complete response that kept going',
+                corrected_message: 'The complete response',
+                time_in_call_secs: null
+            }
+        ]
+    });
 });
 
 test('cached configuration is not reused after selecting another chat', async () => {

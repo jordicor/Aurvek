@@ -43,7 +43,7 @@ function connect(generation) {
 
             switch (message.action) {
                 case 'insufficient-balance':
-                    showInsufficientBalancePopup("this action");
+                    showInsufficientBalancePopup();
                     break;
                 case 'stopped':
                     handleStoppedMessage();
@@ -324,27 +324,35 @@ function resolveOriginalAudioUrl(url) {
     if (typeof url !== 'string' || !url.trim()) {
         throw new Error('Original audio URL is missing');
     }
+    if (window.AurvekEmbed) {
+        const scoped = window.AurvekEmbed.resourceUrl(url);
+        if (!scoped) throw new Error('Original audio is unavailable in this conversation');
+        return scoped;
+    }
     const resolved = new URL(url, window.location.origin);
     if (resolved.origin !== window.location.origin ||
             (resolved.protocol !== 'http:' && resolved.protocol !== 'https:')) {
         throw new Error('Original audio URL must use the current origin');
     }
-    if (!/^\/api\/attachments\/[^/]+\/content$/.test(resolved.pathname)) {
-        throw new Error('Original audio URL must use the attachment content endpoint');
+    const isAttachment = /^\/api\/attachments\/[^/]+\/content$/.test(resolved.pathname);
+    const isPhoneMessage = /^\/api\/phone-messages\/\d+\/audio$/.test(resolved.pathname);
+    const isWebRecording = /^\/api\/conversations\/\d+\/voice\/audio$/.test(resolved.pathname);
+    if (!isAttachment && !isPhoneMessage && !isWebRecording) {
+        throw new Error('Original audio URL must use an approved audio endpoint');
     }
     return resolved.href;
 }
 
 function markAudioPlaybackError(audioIcon, label) {
     if (!audioIcon) return;
-    const message = `${label} could not be played. Activate to retry.`;
+    const message = AurvekI18n.t('chat_widgets.audio.playback_failed', {label});
     audioIcon.classList.add('audio-playback-error');
     audioIcon.title = message;
     audioIcon.setAttribute('aria-label', message);
     audioIcon.setAttribute('aria-pressed', 'false');
 }
 
-function playOriginalAudio(url, audioIcon) {
+function playOriginalAudio(url, audioIcon, label = AurvekI18n.t('chat_widgets.audio.original')) {
     audioIcon?.classList.remove('audio-playback-error');
     let resolvedUrl;
     try {
@@ -352,7 +360,7 @@ function playOriginalAudio(url, audioIcon) {
     } catch (error) {
         console.error('Could not play original audio:', error);
         toggleIcons(audioIcon, 'stopped');
-        markAudioPlaybackError(audioIcon, 'Original voice note');
+        markAudioPlaybackError(audioIcon, label);
         return;
     }
 
@@ -372,7 +380,7 @@ function playOriginalAudio(url, audioIcon) {
     } catch (error) {
         console.error('Could not initialize original audio:', error);
         toggleIcons(audioIcon, 'stopped');
-        markAudioPlaybackError(audioIcon, 'Original voice note');
+        markAudioPlaybackError(audioIcon, label);
         return;
     }
 
@@ -409,7 +417,7 @@ function playOriginalAudio(url, audioIcon) {
             console.error('Error playing original audio');
         }
         finishCachedAudio(audio, null, generation, audioIcon);
-        if (wasCurrent) markAudioPlaybackError(audioIcon, 'Original voice note');
+        if (wasCurrent) markAudioPlaybackError(audioIcon, label);
     };
 
     const playPromise = audio.play();
@@ -420,9 +428,31 @@ function playOriginalAudio(url, audioIcon) {
                 console.error('Error playing original audio:', error);
             }
             finishCachedAudio(audio, null, generation, audioIcon);
-            if (wasCurrent) markAudioPlaybackError(audioIcon, 'Original voice note');
+            if (wasCurrent) markAudioPlaybackError(audioIcon, label);
         });
     }
+}
+
+function audioApplication(conversationId) {
+    const embed = window.AurvekEmbed?.config;
+    if (embed?.application && String(embed.conversation_id) === String(conversationId)) {
+        return {capabilities: embed.capabilities};
+    }
+    const current = window.applicationConversation;
+    return current && String(current.id) === String(conversationId) ? current.application : null;
+}
+
+async function fetchAudio(url, options, application) {
+    if (!application) return fetch(url, options);
+    const token = window.AurvekEmbed?.config.csrf_token
+        || document.querySelector('meta[name="aurvek-csrf-token"]')?.content;
+    if (!token || typeof window.secureFetch !== 'function') {
+        throw new Error(AurvekI18n.t('chat_widgets.error.security_unavailable'));
+    }
+    const response = await window.secureFetch(url, {...options,
+        headers: {...options.headers, 'X-GPTSub-CSRF': token}});
+    if (!response) throw new Error(AurvekI18n.t('common.session.expired_message'));
+    return response;
 }
 
 function textToSpeech(text, userId, conversationId, audioIcon, author) {
@@ -446,17 +476,26 @@ function textToSpeech(text, userId, conversationId, audioIcon, author) {
 
     const controller = new AbortController();
     ttsFetchController = controller;
-
-    fetch('/api/get-tts-audio', {
+    const application = audioApplication(finalConversationId);
+    const messageId = Number(audioIcon?.closest('.message')?.dataset.messageId);
+    if (application && (!application.capabilities.tts || !Number.isSafeInteger(messageId) || messageId <= 0)) {
+        isWaiting = false;
+        toggleIcons(audioIcon, 'stopped');
+        markAudioPlaybackError(audioIcon, AurvekI18n.t('chat_widgets.audio.read_aloud'));
+        return;
+    }
+    const endpoint = application ? `/api/conversations/${finalConversationId}/voice/tts` : '/api/get-tts-audio';
+    const payload = application ? {message_id: messageId} : {
+        text, conversationId: finalConversationId, author,
+    };
+    const slideId = Number(audioIcon?.closest('.message')?.querySelector('.multi-ai-slide.active')?.dataset.llmId);
+    if (application && Number.isSafeInteger(slideId) && slideId > 0) payload.llm_id = slideId;
+    fetchAudio(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            text: text,
-            conversationId: finalConversationId,
-            author: author,
-        }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
-    })
+    }, application)
     .then(response => {
         if (generation !== ttsGeneration) return null;
         if (response.ok && response.status !== 204) return response.blob();
@@ -503,7 +542,7 @@ function textToSpeech(text, userId, conversationId, audioIcon, author) {
         if (ttsFetchController === controller) ttsFetchController = null;
         if (controller.signal.aborted || generation !== ttsGeneration) return;
 
-        if (error.name === 'TTSCacheMiss') {
+        if (error.name === 'TTSCacheMiss' && !application) {
             start_tts(text, audioIcon, author, finalConversationId, generation);
             return;
         }
@@ -512,6 +551,7 @@ function textToSpeech(text, userId, conversationId, audioIcon, author) {
         isWaiting = false;
         isPlaying = false;
         toggleIcons(audioIcon, 'stopped');
+        markAudioPlaybackError(audioIcon, AurvekI18n.t('chat_widgets.audio.read_aloud'));
         if (Config.currentAudioIcon === audioIcon) Config.currentAudioIcon = null;
     });
 }
@@ -523,8 +563,8 @@ function toggleIcons(audioIcon, state) {
     const baseIcon = audioIcon.dataset.baseIcon || 'fa-volume-up';
     const isOriginal = audioIcon.dataset.audioSource === 'original';
     const playLabel = audioIcon.dataset.playLabel || (isOriginal
-        ? 'Play original voice note'
-        : 'Read aloud');
+        ? AurvekI18n.t('chat_widgets.audio.play_original')
+        : AurvekI18n.t('chat_widgets.audio.read_aloud'));
     let actionLabel = playLabel;
 
     switch (state) {
@@ -532,15 +572,15 @@ function toggleIcons(audioIcon, state) {
             audioIcon.classList.remove(baseIcon, 'fa-stop');
             audioIcon.classList.add('fa-hourglass-half');
             actionLabel = isOriginal
-                ? 'Loading original voice note. Activate to stop.'
-                : 'Preparing read aloud. Activate to stop.';
+                ? AurvekI18n.t('chat_widgets.audio.loading_original')
+                : AurvekI18n.t('chat_widgets.audio.preparing_read_aloud');
             break;
         case 'playing':
             audioIcon.classList.remove(baseIcon, 'fa-hourglass-half');
             audioIcon.classList.add('fa-stop');
             actionLabel = isOriginal
-                ? 'Stop original voice note'
-                : 'Stop reading aloud';
+                ? AurvekI18n.t('chat_widgets.audio.stop_original')
+                : AurvekI18n.t('chat_widgets.audio.stop_reading');
             break;
         case 'stopped':
             audioIcon.classList.remove('fa-stop', 'fa-hourglass-half');
@@ -564,6 +604,12 @@ let recordingGeneration = 0;
 let recordingStatus = 'idle';
 let recordingSession = null;
 
+function getAudioActivity() {
+    if (recordingStatus === 'processing' || isWaiting) return 'generating';
+    if (['starting', 'recording', 'stopping'].includes(recordingStatus) || isPlaying) return 'call';
+    return 'idle';
+}
+
 function releaseMediaStream(stream) {
     if (!stream || typeof stream.getTracks !== 'function') return;
     stream.getTracks().forEach(track => {
@@ -578,8 +624,8 @@ function recordingIsCurrent(session) {
 async function toggleAudioRecording() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         NotificationModal.error(
-            'Browser Not Supported',
-            'Your browser does not support audio recording.'
+            AurvekI18n.t('chat_widgets.audio.browser_unsupported_title'),
+            AurvekI18n.t('chat_widgets.audio.browser_unsupported')
         );
         return;
     }
@@ -600,7 +646,8 @@ async function startAudioRecording() {
         stream: null,
         chunks: [],
         action: null,
-        conversationId: null,
+        conversationId: currentConversationId,
+        controller: null,
         finalized: false,
     };
     recordingSession = session;
@@ -653,8 +700,8 @@ async function startAudioRecording() {
         Config.audioChunks = [];
         console.error('Error accessing microphone', error);
         NotificationModal.error(
-            'Microphone Access Denied',
-            'Could not access the microphone. Check the browser permission and device.'
+            AurvekI18n.t('chat_widgets.audio.microphone_denied_title'),
+            AurvekI18n.t('chat_widgets.audio.microphone_denied')
         );
     }
 }
@@ -664,11 +711,11 @@ function requestRecordingStop(action) {
     if (!session || !recordingIsCurrent(session)) return;
 
     session.action = action;
-    session.conversationId = currentConversationId;
     isCanceled = action === 'cancel';
     isRecording = false;
 
-    if (recordingStatus === 'starting') {
+    if (recordingStatus === 'starting' || (action === 'cancel' && recordingStatus === 'processing')) {
+        session.controller?.abort();
         if (session.recorder && session.recorder.state !== 'inactive') {
             try { session.recorder.stop(); } catch (error) { /* still starting */ }
         }
@@ -680,6 +727,7 @@ function requestRecordingStop(action) {
         Config.audioChunks = [];
         stopRecording();
         hideAudioRecordingControls();
+        removeLoadingIndicator();
         return;
     }
 
@@ -749,21 +797,25 @@ async function handleAudioStop(session) {
         const mimeType = session.recorder?.mimeType || 'audio/webm;codecs=opus';
         const audioBlob = new Blob(session.chunks, { type: mimeType });
         if (!audioBlob.size) {
-            throw new Error('The recording did not contain audio data.');
+            throw new Error(AurvekI18n.t('chat_widgets.audio.empty_recording'));
         }
 
         const duration = await getRecordingDuration(audioBlob);
+        if (!recordingIsCurrent(session) || session.action !== 'send'
+            || String(session.conversationId) !== String(currentConversationId)) return;
         const formData = new FormData();
         formData.append('audio', audioBlob);
         formData.append('conversation_id', session.conversationId);
         formData.append('duration', duration);
-        await sendFormData(formData);
+        session.controller = new AbortController();
+        await sendFormData(formData, session);
     } catch (error) {
         removeLoadingIndicator();
+        if (error?.name === 'AbortError' || !recordingIsCurrent(session) || session.action === 'cancel') return;
         console.error('Error processing audio recording:', error);
         NotificationModal.error(
-            'Audio Error',
-            'The audio recording could not be processed. Please try again.'
+            AurvekI18n.t('chat_widgets.audio.error_title'),
+            AurvekI18n.t('chat_widgets.audio.processing_failed')
         );
     } finally {
         releaseMediaStream(session.stream);
@@ -776,6 +828,7 @@ async function handleAudioStop(session) {
         }
 
         if (recordingIsCurrent(session)) {
+            removeLoadingIndicator();
             recordingSession = null;
             recordingStatus = 'idle';
             Config.mediaRecorder = null;
@@ -788,35 +841,45 @@ async function handleAudioStop(session) {
     }
 }
 
-async function sendFormData(formData) {
-    const response = await fetch('/api/transcribe-web', {
+async function sendFormData(formData, session = null) {
+    const application = audioApplication(formData.get('conversation_id'));
+    const endpoint = application
+        ? `/api/conversations/${formData.get('conversation_id')}/voice/transcribe`
+        : '/api/transcribe-web';
+    const response = await fetchAudio(endpoint, {
         method: 'POST',
         body: formData,
-    });
-    await handleResponse(response);
+        signal: session?.controller?.signal,
+    }, application);
+    await handleAudioResponse(response, Boolean(application), () => !session || (
+        recordingIsCurrent(session) && !session.controller?.signal.aborted
+        && String(session.conversationId) === String(currentConversationId)));
 }
 
-async function handleResponse(response) {
+async function handleAudioResponse(response, editable = false, isCurrent = () => true) {
+    if (!isCurrent()) return;
     removeLoadingIndicator();
-    switch (response.status) {
-        case 402:
-            showInsufficientBalancePopup("transcribe audio");
-            break;
-        case 204:
-            break;
-        case 500:
-            const data = await response.json();
-            NotificationModal.error('Server Error', data.error);
-            break;
-        default:
-            if (response.ok) {
-                const data = await response.json();
-                if (data["prompt"]) {
-                    document.getElementById('message-text').value = data["prompt"];
-                    document.getElementById('send-button').click();
-                }
-            }
-            break;
+    if (response.status === 402) {
+        showInsufficientBalancePopup();
+        return;
+    }
+    if (response.status === 204) return;
+    const data = await response.json().catch(() => ({}));
+    if (!isCurrent()) return;
+    if (!response.ok) {
+        const message = typeof data.detail === 'string' ? data.detail : data.error;
+        NotificationModal.error(
+            AurvekI18n.t('chat_widgets.audio.error_title'),
+            typeof message === 'string' && message ? message : AurvekI18n.t('chat_errors.provider_unavailable')
+        );
+        return;
+    }
+    if (data.prompt) {
+        const input = document.getElementById('message-text');
+        input.value = data.prompt;
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        if (editable) input.focus();
+        else document.getElementById('send-button').click();
     }
 }
 
@@ -859,6 +922,7 @@ function discardActiveRecording() {
     if (!session) return;
     session.finalized = true;
     session.action = 'cancel';
+    session.controller?.abort();
     if (session.recorder && session.recorder.state !== 'inactive') {
         try { session.recorder.stop(); } catch (error) { /* page is unloading */ }
     }

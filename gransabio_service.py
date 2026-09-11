@@ -224,7 +224,7 @@ def merge_gransabio_config(prompt_config: dict, admin_config: dict) -> dict:
     return merged
 
 
-def validate_merged_config(merged: dict) -> tuple[bool, str]:
+def validate_merged_config(merged: dict, translator=None) -> tuple[bool, str]:
     """Validate merged config before making HTTP calls.
 
     Rules (mirrors GranSabio's core/generation_routes.py ~line 250):
@@ -233,45 +233,67 @@ def validate_merged_config(merged: dict) -> tuple[bool, str]:
     - gran_sabio_model: required when qa_layers is non-empty OR gran_sabio_fallback=true
     - qa_layers: must be a list of dicts with required fields (name, description, criteria)
     """
+    def invalid(key: str, diagnostic: str, **values) -> tuple[bool, str]:
+        # UI callers localize actionable field errors; engine callers retain diagnostics.
+        if translator:
+            return False, translator.t(f"prompt_editor_errors.{key}", **values)
+        return False, diagnostic
+
     if not isinstance(merged, dict):
-        return False, "config must be a dict"
+        return invalid("gransabio_config_must_be_a_json_object", "config must be a dict")
 
     generator = merged.get("generator_model", "")
     if not generator:
-        return False, "generator_model is required"
+        return invalid("gransabio_generator_required", "generator_model is required")
 
     qa_layers = merged.get("qa_layers", [])
     if not isinstance(qa_layers, list):
-        return False, "qa_layers must be a list"
+        return invalid("gransabio_layers_list", "qa_layers must be a list")
 
     # Validate qa_layers structure
     for i, layer in enumerate(qa_layers):
         if not isinstance(layer, dict):
-            return False, f"qa_layers[{i}] must be a dict"
+            return invalid(
+                "gransabio_layer_object", f"qa_layers[{i}] must be a dict",
+                layer=translator.format_number(i + 1) if translator else i + 1,
+            )
         for required_field in ("name", "description", "criteria"):
             if not layer.get(required_field):
-                return False, f"qa_layers[{i}].{required_field} is required"
+                return invalid(
+                    f"gransabio_layer_{required_field}_required",
+                    f"qa_layers[{i}].{required_field} is required",
+                    layer=translator.format_number(i + 1) if translator else i + 1,
+                )
         min_score = layer.get("min_score")
         if min_score is not None:
             try:
                 s = float(min_score)
                 if not (0 <= s <= 10):
-                    return False, f"qa_layers[{i}].min_score must be 0-10"
+                    return invalid(
+                        "gransabio_layer_score_range", f"qa_layers[{i}].min_score must be 0-10",
+                        layer=translator.format_number(i + 1) if translator else i + 1,
+                    )
             except (TypeError, ValueError):
-                return False, f"qa_layers[{i}].min_score must be a number"
+                return invalid(
+                    "gransabio_layer_score_number", f"qa_layers[{i}].min_score must be a number",
+                    layer=translator.format_number(i + 1) if translator else i + 1,
+                )
 
     qa_models = merged.get("qa_models", [])
     if not isinstance(qa_models, list):
-        return False, "qa_models must be a list"
+        return invalid("gransabio_models_list", "qa_models must be a list")
 
     gran_sabio_model = merged.get("gran_sabio_model", "")
     gran_sabio_fallback = merged.get("gran_sabio_fallback", False)
 
     if qa_layers and not qa_models:
-        return False, "qa_models required when qa_layers is non-empty"
+        return invalid("gransabio_models_required", "qa_models required when qa_layers is non-empty")
 
     if (qa_layers or gran_sabio_fallback) and not gran_sabio_model:
-        return False, "gran_sabio_model required when qa_layers is non-empty or gran_sabio_fallback is enabled"
+        return invalid(
+            "gransabio_reviewer_required",
+            "gran_sabio_model required when qa_layers is non-empty or gran_sabio_fallback is enabled",
+        )
 
     return True, ""
 
@@ -1753,9 +1775,9 @@ async def _deliver_to_platform(platform: str, ctx: dict, text: str):
     await deliver_to_platform(platform, ctx, text)
 
 
-async def _send_platform_error(platform: str, ctx: dict, error_msg: str):
+async def _send_platform_error(platform: str, ctx: dict, error_code: str, *, translator=None):
     """Best-effort error delivery to external channel."""
-    await send_platform_error(platform, ctx, error_msg)
+    await send_platform_error(platform, ctx, error_code, translator=translator)
 
 
 async def _recover_external_stale_user_turn(
@@ -1914,6 +1936,8 @@ async def _process_gransabio_external_inner(
     prompt_id = None
     turn_persisted = False
     recovery_user_message = user_message
+    from chat.services.localization import chat_translator
+    tr = chat_translator()
 
     async def foreground_is_current(*, recover_inbound: bool = True) -> bool:
         if await foreground_coordinator.commit_guard_is_current(external_guard):
@@ -1933,10 +1957,10 @@ async def _process_gransabio_external_inner(
         )
         return False
 
-    async def guarded_platform_error(error_message: str) -> bool:
+    async def guarded_platform_error(error_code: str) -> bool:
         if not await foreground_is_current(recover_inbound=not turn_persisted):
             return False
-        await _send_platform_error(platform, platform_context, error_message)
+        await _send_platform_error(platform, platform_context, error_code, translator=tr)
         return True
 
     async def guarded_platform_delivery(text: str) -> bool:
@@ -1961,11 +1985,16 @@ async def _process_gransabio_external_inner(
                     return
                 user_id = result[0]
 
+        # Resolve the recipient once for both service notices and generation.
+        from auth import get_user_by_id
+        user_obj = await get_user_by_id(user_id)
+        tr = chat_translator(user_obj)
+
         # --- 1b. own_only guard (GranSabio uses server-side keys, no BYOK) ---
         from ai_runtime.context.assembly import check_own_only_gransabio
         own_only_err = await check_own_only_gransabio(user_id, conversation_id)
         if own_only_err:
-            await guarded_platform_error(own_only_err)
+            await guarded_platform_error("gransabio_own_keys")
             return
 
         # --- 2. Load prompt info ---
@@ -1985,7 +2014,7 @@ async def _process_gransabio_external_inner(
 
         if not prompt_row:
             logger.error("GranSabio external: no prompt info for conv=%d", conversation_id)
-            await guarded_platform_error("Conversation configuration not found.")
+            await guarded_platform_error("configuration_error")
             return
 
         (prompt_id, enable_moderation, gransabio_config_raw, gransabio_enabled,
@@ -2003,7 +2032,7 @@ async def _process_gransabio_external_inner(
         from ai_runtime.context.assembly import apply_rate_limit
         rate_ok, rate_err = await apply_rate_limit(user_id)
         if not rate_ok:
-            await guarded_platform_error(rate_err or "Rate limit exceeded.")
+            await guarded_platform_error("rate_limit_exceeded")
             return
 
         # --- 5. Input moderation ---
@@ -2012,7 +2041,7 @@ async def _process_gransabio_external_inner(
         if flagged:
             recovery_user_message = "[Blocked Message]"
             await guarded_platform_delivery(
-                "Sorry, but your message has been blocked for violating our usage policies.",
+                tr.t("chat_errors.moderation_blocked"),
             )
             return
 
@@ -2114,8 +2143,7 @@ async def _process_gransabio_external_inner(
                         and not takeover_billing.get("usage_accumulated")
                     ):
                         await guarded_platform_error(
-                            "Billing usage was not confirmed for the watchdog response. "
-                            "Content not delivered."
+                            "billing_unavailable"
                         )
                         return
                     # Resolve the actual watchdog LLM for proper DB attribution
@@ -2154,7 +2182,7 @@ async def _process_gransabio_external_inner(
                             return
                     else:
                         await guarded_platform_error(
-                            "Billing failed for watchdog response. Content not delivered."
+                            "billing_unavailable"
                         )
                         return
             finally:
@@ -2198,16 +2226,12 @@ async def _process_gransabio_external_inner(
         watchdog_hint_active = prompt_ctx["watchdog_hint_active"]
         watchdog_hint_eval_id = prompt_ctx["watchdog_hint_eval_id"]
 
-        # Load user object for generate_via_gransabio (needs current_user)
-        from auth import get_user_by_id
-        user_obj = await get_user_by_id(user_id)
-
         # --- 9. GranSabio generation ---
         # NOTE: stop_signals reset happens inside generate_via_gransabio() AFTER lock acquisition
         admin_config = await get_gransabio_config()
 
         if admin_config.get("gransabio_enabled") != "true":
-            await guarded_platform_error("GranSabio is currently disabled.")
+            await guarded_platform_error("gransabio_disabled")
             return
 
         # Parse prompt-level gransabio config
@@ -2218,7 +2242,7 @@ async def _process_gransabio_external_inner(
         except orjson.JSONDecodeError:
             logger.error("Invalid GranSabio config JSON for prompt %s", prompt_id)
             await guarded_platform_error(
-                "Invalid GranSabio configuration for this prompt. Contact admin.",
+                "configuration_error",
             )
             return
 
@@ -2264,7 +2288,16 @@ async def _process_gransabio_external_inner(
                             error = data.get("error", "")
                             if error:
                                 logger.error("GranSabio external generation error: %s", error)
-                                await guarded_platform_error(error)
+                                # The runtime's older SSE frames contain prose. Retain
+                                # known actionable failures without exposing diagnostics.
+                                legacy_codes = {
+                                    "Insufficient balance to start GranSabio pipeline.": "insufficient_balance",
+                                    "GranSabio billing is temporarily unavailable.": "billing_unavailable",
+                                    "Generation stopped by user.": "generation_stopped",
+                                }
+                                code = data.get("error_code") or data.get("code")
+                                legacy_code = legacy_codes.get(error) if isinstance(error, str) else None
+                                await guarded_platform_error(code or legacy_code or "provider_unavailable")
                                 return
                         except (orjson.JSONDecodeError, ValueError):
                             pass
@@ -2285,7 +2318,7 @@ async def _process_gransabio_external_inner(
                 platform, conversation_id,
             )
             await guarded_platform_error(
-                "Sorry, GranSabio could not generate a response. Please try again.",
+                "provider_unavailable",
             )
         else:
             logger.error(
@@ -2294,7 +2327,7 @@ async def _process_gransabio_external_inner(
                 conversation_id,
             )
             await guarded_platform_error(
-                "Sorry, GranSabio could not save the response. Please try again."
+                "persistence_error"
             )
 
     except StaleChannelTurnError:
@@ -2320,7 +2353,7 @@ async def _process_gransabio_external_inner(
         )
         # Best-effort, but still fenced, error delivery.
         await guarded_platform_error(
-            "Sorry, an error occurred while processing your message. Please try again."
+            "request_failed"
         )
 
 

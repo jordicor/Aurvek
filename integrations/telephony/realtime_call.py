@@ -27,7 +27,6 @@ from integrations.telephony.openai_realtime import (
     OpenAIRealtimeClient,
     OpenAIRealtimeError,
     OpenAIRealtimeOptions,
-    OpenAIRealtimeUsage,
     OpenAIResponseDoneEvent,
     OpenAISpeechEvent,
     OpenAITranscriptionUsage,
@@ -38,6 +37,8 @@ from integrations.telephony.realtime_bridge import (
     RealtimeDoneEvent,
     RealtimeErrorEvent,
     RealtimeStatusEvent,
+    RealtimeTextCheckpoint,
+    RealtimeTextAudioCheckpoints,
     RealtimeToolCallEvent,
     RealtimeTranscriptEvent,
     RealtimeUsage,
@@ -139,6 +140,7 @@ class RealtimeCallTurnHandle:
         self._finished = False
         self._status = "input_final"
         self._transcript_parts: list[str] = []
+        self._text_audio_checkpoints = RealtimeTextAudioCheckpoints()
         self._text_delta_keys: set[tuple[str, str, int]] = set()
         self._usage = RealtimeUsage()
         self._pending_calls: dict[str, RealtimeToolCallEvent] = {}
@@ -199,6 +201,19 @@ class RealtimeCallTurnHandle:
             if chunk is _END:
                 return
             yield chunk
+
+    def confirmed_text_prefix(self, played_ms: int) -> str:
+        """Return transcript text backed by a conservative audio checkpoint."""
+
+        return self._text_audio_checkpoints.confirmed_prefix(played_ms)
+
+    def confirmed_text_checkpoint(
+        self,
+        played_ms: int,
+    ) -> RealtimeTextCheckpoint | None:
+        """Return text plus its conservative native-audio frontier."""
+
+        return self._text_audio_checkpoints.confirmed_checkpoint(played_ms)
 
     async def continue_function_call(self, call_id: str, output: Any) -> None:
         await self._owner._continue_function_call(self, call_id, output)
@@ -320,7 +335,6 @@ class OpenAIRealtimeCallBridge:
         self._input_pcmu_bytes_sent = 0
         self._finalized_audio_end_ms: int | None = None
         self._history_seeded = False
-        self._base_history = ""
         self._events_claimed = False
         self._input_terminal = False
         self._closed = False
@@ -424,16 +438,31 @@ class OpenAIRealtimeCallBridge:
             if self._closed or not self._client.connected:
                 raise RuntimeError("Realtime call bridge is not connected")
             turn_instructions = str(instructions or "")
-            if not self._history_seeded:
-                self._base_history = _history_instructions(messages[:-1])
-            turn_instructions = _join_instructions(
-                turn_instructions, self._base_history
+            history_items = (
+                _history_items(messages[:-1])
+                if not self._history_seeded
+                else ()
             )
+            if len(turn_instructions) > MAX_INSTRUCTIONS_CHARS:
+                raise ValueError("Realtime call instructions are too large")
             handle._started = True
             handle._status = "in_progress"
             self._active_handle = handle
             response_submission_attempted = False
+            history_mutation_attempted = False
             try:
+                for role, content in reversed(history_items):
+                    # The live audio item already exists. Inserting the
+                    # canonical history at ``root`` in reverse order keeps the
+                    # original chronology and, critically, preserves user and
+                    # assistant roles instead of promoting their text into
+                    # privileged session instructions.
+                    history_mutation_attempted = True
+                    await self._client.create_conversation_item(
+                        content,
+                        role=role,
+                        previous_item_id="root",
+                    )
                 update: dict[str, Any] = {
                     "instructions": turn_instructions,
                     "tools": tools,
@@ -455,6 +484,8 @@ class OpenAIRealtimeCallBridge:
                 try:
                     if response_submission_attempted:
                         await self._invalidate_after_uncertain_submission()
+                    elif history_mutation_attempted:
+                        await self._invalidate_after_uncertain_history_seed()
                 finally:
                     await self._fail_handle(
                         handle,
@@ -502,7 +533,7 @@ class OpenAIRealtimeCallBridge:
             await self._client.send_function_output(call_id, output)
             handle._pending_calls.pop(call_id, None)
             self._begin_response_attempt(handle)
-            await self._client.create_response()
+            await self._client.create_response(tool_choice="none")
             self._arm_watchdog(handle)
         except BaseException:
             try:
@@ -548,16 +579,18 @@ class OpenAIRealtimeCallBridge:
         self._require_owned_handle(handle)
         if not isinstance(played_ms, int) or played_ms < 0:
             raise ValueError("played_ms must be a non-negative integer")
-        if (
-            not self._client.connected
-            or handle._current_output_item_id is None
-        ):
+        if not self._client.connected:
+            return
+        plan = handle._text_audio_checkpoints.truncation_for(played_ms)
+        if plan is None:
             return
         await self._client.truncate_item(
-            handle._current_output_item_id,
-            played_ms,
-            content_index=handle._current_content_index,
+            plan.item_id,
+            plan.played_ms,
+            content_index=plan.content_index,
         )
+        for item_id in plan.delete_item_ids:
+            await self._client.delete_item(item_id)
 
     async def _finish_pending_output(
         self, handle: RealtimeCallTurnHandle
@@ -589,6 +622,14 @@ class OpenAIRealtimeCallBridge:
                     self._note_progress(handle, attempt, event.response_id)
                     handle._current_output_item_id = event.item_id
                     handle._current_content_index = event.content_index
+                    if event.audio or event.is_final:
+                        handle._text_audio_checkpoints.note_audio(
+                            event.audio,
+                            response_id=event.response_id,
+                            item_id=event.item_id,
+                            content_index=event.content_index,
+                            is_final=event.is_final,
+                        )
                     if event.audio:
                         await handle._audio_queue.put(event.audio)
                 elif isinstance(event, OpenAIOutputTextEvent):
@@ -793,6 +834,14 @@ class OpenAIRealtimeCallBridge:
             text = event.text
         else:
             text = ""
+        handle._text_audio_checkpoints.note_text(
+            text,
+            channel=event.channel,
+            response_id=event.response_id,
+            item_id=event.item_id,
+            content_index=event.content_index,
+            is_final=event.is_final,
+        )
         if not text:
             return
         handle._transcript_parts.append(text)
@@ -937,6 +986,16 @@ class OpenAIRealtimeCallBridge:
         if self._consumer_error is None:
             self._consumer_error = OpenAIRealtimeError(
                 "OpenAI Realtime response submission outcome is uncertain"
+            )
+        try:
+            await self._client.close()
+        finally:
+            await self._finish_input_stream()
+
+    async def _invalidate_after_uncertain_history_seed(self) -> None:
+        if self._consumer_error is None:
+            self._consumer_error = OpenAIRealtimeError(
+                "OpenAI Realtime history seeding outcome is uncertain"
             )
         try:
             await self._client.close()
@@ -1199,12 +1258,14 @@ def _positive_timeout(value: Any, name: str) -> float:
     return float(value)
 
 
-def _history_instructions(messages: Sequence[Mapping[str, Any]]) -> str:
+def _history_items(
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[Literal["system", "user", "assistant"], str], ...]:
     if isinstance(messages, (str, bytes, bytearray)) or not isinstance(
         messages, Sequence
     ):
         raise ValueError("messages must be a sequence")
-    entries: list[str] = []
+    entries: list[tuple[Literal["system", "user", "assistant"], str]] = []
     characters = 0
     for message in reversed(messages[-MAX_HISTORY_ITEMS:]):
         if not isinstance(message, Mapping):
@@ -1215,19 +1276,13 @@ def _history_instructions(messages: Sequence[Mapping[str, Any]]) -> str:
         content = _message_text(message.get("content"))
         if not content:
             continue
-        entry = f"{role}: {content}"
-        additional = len(entry) + (1 if entries else 0)
+        additional = len(role) + len(content) + 2 + (1 if entries else 0)
         if characters + additional > MAX_HISTORY_CHARS:
             break
-        entries.append(entry)
+        entries.append((role, content))
         characters += additional
-    if not entries:
-        return ""
     entries.reverse()
-    return (
-        "Canonical conversation history before the current caller audio:\n"
-        + "\n".join(entries)
-    )
+    return tuple(entries)
 
 
 def _message_text(content: Any) -> str:
@@ -1247,13 +1302,6 @@ def _message_text(content: Any) -> str:
         if isinstance(text, str) and text:
             parts.append(text)
     return "\n".join(parts).strip()
-
-
-def _join_instructions(instructions: str, history: str) -> str:
-    result = "\n\n".join(part for part in (instructions.strip(), history) if part)
-    if len(result) > MAX_INSTRUCTIONS_CHARS:
-        raise ValueError("Realtime call instructions are too large")
-    return result
 
 
 __all__ = [

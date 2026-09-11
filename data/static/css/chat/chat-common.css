@@ -17,8 +17,64 @@
     min-width: 0;
 }
 
+button.chat-title-avatar {
+    flex-shrink: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+button.chat-title-avatar:disabled {
+    cursor: default;
+}
+
+button.chat-title-avatar .avatar,
+button.chat-title-avatar .avatar-img {
+    cursor: inherit;
+}
+
+button.chat-title-avatar:focus-visible {
+    outline: 2px solid var(--accent, var(--text-primary));
+    outline-offset: 3px;
+}
+
+@media (max-width: 767.98px) {
+    .chatbot-info > .btn-toggle-sidebar {
+        position: static;
+        flex-shrink: 0;
+        margin: 0 10px 0 0;
+    }
+}
+
+#promptInfoModal .prompt-info {
+    margin: 0;
+    padding: 0;
+    max-width: none;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    animation: none;
+}
+
+#promptInfoModal .prompt-text-section {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+    #promptInfoModal .prompt-info-container {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+}
+
 .chat-title-main-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     min-width: 0;
@@ -29,6 +85,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.incognito-chat-controls {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 6px;
+}
+
+.incognito-chat-controls[hidden],
+.incognito-chat-controls [hidden] {
+    display: none !important;
 }
 
 .incognito-chat-badge {
@@ -47,13 +115,14 @@
     line-height: 1;
 }
 
-.btn-close-incognito {
+.btn-close-incognito,
+.btn-save-incognito {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
-    width: 26px;
-    height: 26px;
+    min-width: 32px;
+    min-height: 32px;
     padding: 0;
     border: 1px solid var(--border-color, rgba(255, 255, 255, 0.16));
     border-radius: 6px;
@@ -62,9 +131,38 @@
     cursor: pointer;
 }
 
-.btn-close-incognito:hover {
+.btn-save-incognito {
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.btn-close-incognito:hover:not(:disabled),
+.btn-save-incognito:hover:not(:disabled) {
     color: var(--text-primary, #fff);
     background: var(--sidebar-btn-hover-bg, rgba(128, 128, 128, 0.25));
+}
+
+.btn-close-incognito:focus-visible,
+.btn-save-incognito:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+}
+
+.btn-close-incognito:disabled,
+.btn-save-incognito:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+@media (max-width: 768px) {
+    .btn-close-incognito,
+    .btn-save-incognito {
+        min-width: 40px;
+        min-height: 40px;
+    }
 }
 
 .new-chat-settings .dropdown-item i {
@@ -840,6 +938,31 @@ body > .chat-menu-content.menu-above {
     border-top: 1px solid rgba(245, 158, 11, 0.35);
     border-bottom: 1px solid rgba(245, 158, 11, 0.35);
     background: rgba(245, 158, 11, 0.12);
+}
+
+#model-unavailable-banner[hidden],
+#change-unavailable-model-btn[hidden] {
+    display: none !important;
+}
+
+#model-unavailable-banner {
+    flex-shrink: 0;
+    padding: 10px 14px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-top: 1px solid var(--border-color);
+}
+
+#model-unavailable-banner .api-keys-banner-content {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+#model-unavailable-text {
+    flex: 1 1 240px;
+    line-height: 1.4;
 }
 
 .provider-health-banner .api-keys-banner-content {
@@ -1873,6 +1996,24 @@ pre.code-block-collapsed {
     padding: 0;
 }
 
+/* Attachment cards have their own surface; keep message/link colors out. */
+#chat-messages-container :is(.chat-text-attachment, .chat-pdf-attachment),
+#chat-messages-container :is(.chat-text-attachment, .chat-pdf-attachment) > span:not(.text-badge, .pdf-badge) {
+    color: var(--text-primary) !important;
+}
+
+#chat-messages-container .text-badge {
+    color: var(--bg-tertiary) !important;
+}
+
+#chat-messages-container .pdf-badge {
+    color: #fff !important;
+}
+
+.pdf-preview-item .pdf-name {
+    color: var(--text-primary);
+}
+
 /* Text file attachment in chat messages */
 .chat-text-attachment {
     display: inline-flex;
@@ -1887,8 +2028,8 @@ pre.code-block-collapsed {
 }
 
 .text-badge {
-    background: var(--info);
-    color: #fff;
+    background: var(--text-primary);
+    color: var(--bg-tertiary);
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 0.75rem;
@@ -1910,8 +2051,8 @@ pre.code-block-collapsed {
 }
 
 .text-icon {
-    background: var(--info);
-    color: #fff;
+    background: var(--text-primary);
+    color: var(--bg-tertiary);
     padding: 2px 6px;
     border-radius: 3px;
     font-size: 0.7rem;

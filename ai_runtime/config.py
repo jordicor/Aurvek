@@ -3,6 +3,12 @@ from ai_runtime.dependencies import *
 # Caches and runtime provider settings
 model_token_cost_cache = {}
 NATIVE_SEARCH_PROVIDERS = {"Claude", "GPT", "xAI"}
+LIVE_VOICE_INPUT_ORIGINS = {"phone.live_call", "web.live_voice"}
+
+
+def limit_live_voice_output(max_tokens: int) -> int:
+    """Keep each spoken intervention's output and reservation bounded."""
+    return min(max_tokens, 1024)
 
 def safe_log_headers(headers: dict) -> dict:
     """Return a copy of headers with sensitive values masked."""

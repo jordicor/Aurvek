@@ -8,6 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from i18n import get_translator
+from log_config import logger
+
 import admin_audit
 from auth import get_current_user
 from captcha_service import get_captcha_config
@@ -57,6 +60,10 @@ class TelephonyConfigPayload(_Payload):
     telephony_silence_hangup_seconds: int = Field(ge=0, le=14_400)
     telephony_scheduler_jitter_seconds: int = Field(ge=1, le=60)
     telephony_max_concurrent_dispatches: int = Field(ge=1, le=100)
+
+
+class PhoneAudioRetentionPayload(_Payload):
+    enabled: bool
 
 
 class TelephonyNumberPayload(_Payload):
@@ -135,11 +142,12 @@ class AdminPaidTestCallPayload(_Payload):
     idempotency_key: Annotated[str, Field(min_length=8, max_length=128)]
 
 
-async def _require_admin(current_user: User | None) -> User:
+async def _require_admin(current_user: User | None, request: Request) -> User:
+    t = get_translator(request, current_user).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail=t("prompt_editor_errors.authentication_required"))
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("management_operations_errors.admin_required"))
     return current_user
 
 
@@ -154,7 +162,26 @@ def _greeting_list(payload: GlobalGreetingListPayload) -> AdminGreetingList:
     )
 
 
-def _error_response(exc: Exception) -> JSONResponse:
+def _error_detail(exc: Exception, request: Request, current_user: User | None) -> str:
+    t = get_translator(request, current_user).t
+    key = getattr(exc, "message_key", None)
+    if key:
+        return t(key)
+    logger.warning("[Telephony admin] %s: %s", type(exc).__name__, exc)
+    if isinstance(exc, TelephonyAdminMaterializedError):
+        kind = "materialized"
+    elif isinstance(exc, TelephonyAdminNotFound):
+        kind = "not_found"
+    elif isinstance(exc, TelephonyAdminConflict):
+        kind = "conflict"
+    elif isinstance(exc, TelephonyAdminUnavailable):
+        kind = "unavailable"
+    else:
+        kind = "invalid"
+    return t("admin_telephony.error." + kind)
+
+
+def _error_response(exc: Exception, request: Request, current_user: User | None) -> JSONResponse:
     if isinstance(exc, TelephonyAdminNotFound):
         status = 404
     elif isinstance(exc, TelephonyAdminConflict):
@@ -163,14 +190,14 @@ def _error_response(exc: Exception) -> JSONResponse:
         status = 503
     else:
         status = 400
-    return JSONResponse(status_code=status, content={"detail": str(exc)})
+    return JSONResponse(status_code=status, content={"detail": _error_detail(exc, request, current_user)})
 
 
 async def _validated_mutation(
     request: Request,
     current_user: User | None,
 ) -> User | JSONResponse:
-    user = await _require_admin(current_user)
+    user = await _require_admin(current_user, request)
     rejection = validate_mutation_request(request)
     return rejection if rejection is not None else user
 
@@ -197,13 +224,13 @@ def create_telephony_admin_router(
                     "google_oauth_available": bool(GOOGLE_CLIENT_ID),
                 },
             )
-        await _require_admin(current_user)
+        await _require_admin(current_user, request)
         try:
-            dashboard = await active_service.dashboard()
+            dashboard = await active_service.dashboard(ui_language=get_translator(request, current_user).language)
             error = request.query_params.get("error")
         except TelephonyAdminError as exc:
             dashboard = None
-            error = str(exc)
+            error = _error_detail(exc, request, current_user)
         context = await get_template_context(request, current_user)
         context.update(
             {
@@ -217,13 +244,15 @@ def create_telephony_admin_router(
 
     @router.get("/admin/telephony/status")
     async def telephony_status(
+        request: Request,
         current_user: User = Depends(get_current_user),
     ) -> dict[str, Any]:
-        await _require_admin(current_user)
-        return await active_service.dashboard()
+        await _require_admin(current_user, request)
+        return await active_service.dashboard(ui_language=get_translator(request, current_user).language)
 
     @router.get("/admin/telephony/operations", response_model=None)
     async def telephony_operations(
+        request: Request,
         resource: Literal["calls", "jobs"],
         status: Annotated[str | None, Query(max_length=40)] = None,
         line_id: Annotated[int | None, Query(gt=0)] = None,
@@ -234,7 +263,7 @@ def create_telephony_admin_router(
         offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
         current_user: User = Depends(get_current_user),
     ) -> Any:
-        await _require_admin(current_user)
+        await _require_admin(current_user, request)
         try:
             return await active_service.list_operations(
                 resource=resource,
@@ -247,30 +276,32 @@ def create_telephony_admin_router(
                 offset=offset,
             )
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
 
     @router.get("/admin/telephony/calls/{call_id}", response_model=None)
     async def telephony_call_detail(
+        request: Request,
         call_id: str,
         current_user: User = Depends(get_current_user),
     ) -> Any:
-        await _require_admin(current_user)
+        await _require_admin(current_user, request)
         try:
             return await active_service.call_detail(call_id)
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
 
     @router.get("/admin/telephony/calls/{call_id}/recording", response_model=None)
     async def telephony_call_recording(
+        request: Request,
         call_id: str,
         track: Literal["mixed", "participant", "assistant"] = "mixed",
         current_user: User = Depends(get_current_user),
     ) -> Any:
-        await _require_admin(current_user)
+        await _require_admin(current_user, request)
         try:
             path, media_type = await active_service.recording_file(call_id, track)
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         return FileResponse(
             path,
             media_type=media_type,
@@ -289,13 +320,41 @@ def create_telephony_admin_router(
         try:
             result = await active_service.save_config(payload.model_dump())
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_config_updated",
             request=request,
             target_resource_type="telephony_config",
             details="Native telephone configuration updated",
+        )
+        return {"status": "ok", "config": result}
+
+    @router.post("/admin/telephony/audio-retention", response_model=None)
+    async def save_phone_audio_retention(
+        request: Request,
+        payload: PhoneAudioRetentionPayload,
+        current_user: User = Depends(get_current_user),
+    ) -> Any:
+        checked = await _validated_mutation(request, current_user)
+        if isinstance(checked, JSONResponse):
+            return checked
+        try:
+            result = await active_service.save_config(
+                {"telephony_recording_default": payload.enabled}
+            )
+        except TelephonyAdminError as exc:
+            return _error_response(exc, request, current_user)
+        await admin_audit.log_admin_action(
+            checked.id,
+            "telephony_audio_retention_updated",
+            request=request,
+            target_resource_type="telephony_config",
+            details=(
+                "Default phone turn audio retention enabled"
+                if payload.enabled
+                else "Default phone turn audio retention disabled"
+            ),
         )
         return {"status": "ok", "config": result}
 
@@ -310,7 +369,7 @@ def create_telephony_admin_router(
         try:
             result = await active_service.sync_numbers()
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_numbers_synced",
@@ -336,7 +395,7 @@ def create_telephony_admin_router(
                 **payload.model_dump(),
             )
         except (TelephonyAdminError, TwilioCanonicalURLConfigurationError) as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_number_updated",
@@ -370,7 +429,7 @@ def create_telephony_admin_router(
                 notices=payload.notices,
             )
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_global_audio_activated",
@@ -393,7 +452,7 @@ def create_telephony_admin_router(
         try:
             result = await active_service.save_billing_rate(payload.model_dump())
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_billing_rate_updated",
@@ -428,7 +487,7 @@ def create_telephony_admin_router(
         if not retried:
             raise HTTPException(
                 status_code=409,
-                detail="Purge job state changed; refresh before retrying",
+                detail=get_translator(request, current_user).t("admin_telephony.error.purge_changed"),
             )
         await admin_audit.log_admin_action(
             checked.id,
@@ -455,7 +514,7 @@ def create_telephony_admin_router(
         try:
             result = await active_service.cancel_job(job_id)
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "phone_call_job_admin_canceled",
@@ -483,7 +542,7 @@ def create_telephony_admin_router(
                 fold=payload.fold,
             )
         except (TelephonyAdminError, ValueError) as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "phone_call_job_admin_rescheduled",
@@ -518,9 +577,9 @@ def create_telephony_admin_router(
                     f"durable_state={exc.materialized_state}"
                 ),
             )
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             (
@@ -580,9 +639,9 @@ def create_telephony_admin_router(
                     f"durable_state={exc.materialized_state}"
                 ),
             )
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_diagnostics_resynchronized",
@@ -607,7 +666,7 @@ def create_telephony_admin_router(
                 idempotency_key=payload.idempotency_key,
             )
         except TelephonyAdminError as exc:
-            return _error_response(exc)
+            return _error_response(exc, request, current_user)
         await admin_audit.log_admin_action(
             checked.id,
             "telephony_paid_test_call_created",
@@ -635,6 +694,7 @@ def register_global_audio_publisher(publisher: GlobalAudioPublisher) -> None:
 
 __all__ = [
     "GlobalAudioPayload",
+    "PhoneAudioRetentionPayload",
     "PhoneBillingRatePayload",
     "PhoneDataPurgeRetryPayload",
     "TelephonyConfigPayload",

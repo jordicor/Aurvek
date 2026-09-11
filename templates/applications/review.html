@@ -1,0 +1,61 @@
+{% set i18n_domains = ['application_review'] %}
+{% extends 'base_admin.html' %}
+{% block title %}{{ t('application_review.title') }} - {{ review_application.display_name }}{% endblock %}
+{% block page_title %}{{ t('application_review.title') }}{% endblock %}
+{% block styles %}<style>
+.review-message { border-left: 3px solid var(--accent); }
+.review-message.bot { border-color: var(--text-muted); }
+.review-message img, .review-message video { max-width: 100%; max-height: 480px; border-radius: 6px; }
+.review-message audio { width: 100%; }
+.review-text { overflow-wrap: anywhere; }
+</style>{% endblock %}
+{% block content %}
+<p class="text-muted">{{ review_application.display_name }} · {{ t('application_review.read_only') }}</p>
+{% if review_conversation %}
+<a class="btn btn-outline-secondary mb-3" href="/applications/manage/{{ review_application.app_id }}/review">{{ t('application_review.back') }}</a>
+<h2 class="h4">{{ review_conversation.chat_name or t('application_review.untitled') }}</h2>
+{% if review_next_id %}<a class="btn btn-outline-primary mb-3" href="?before_id={{ review_next_id }}">{{ t('application_review.older_messages') }}</a>{% endif %}
+{% for message in review_messages %}
+<article class="card review-message {{ message.type }} mb-3"><div class="card-body">
+<p class="small text-muted"><strong>{{ t('application_review.client') if message.type == 'user' else t('application_review.assistant') }}</strong> · <time data-review-date="{{ message.date }}">{{ message.date }}</time></p>
+{% for block in message.blocks %}
+{% if block.kind == 'text' %}<div class="review-text" data-review-markdown>{{ block.text }}</div>
+{% elif block.kind == 'image' %}<p><a href="{{ block.url }}" target="_blank" rel="noopener noreferrer"><img src="{{ block.url }}" alt="{{ block.name }}" loading="lazy"></a></p>
+{% elif block.kind == 'video' %}<p><video src="{{ block.url }}" controls preload="none"></video></p>
+{% elif block.kind == 'file' %}<p><a href="{{ block.url }}">{{ block.name }}</a></p>
+{% else %}<p class="text-muted">{{ t('application_review.unavailable') }}</p>{% endif %}
+{% endfor %}
+{% for audio in message.audio %}<p><audio src="{{ audio.url }}" controls preload="none" aria-label="{{ t('application_review.audio') }}"></audio></p>{% endfor %}
+</div></article>
+{% else %}<p>{{ t('application_review.empty_messages') }}</p>{% endfor %}
+{% else %}
+<a class="btn btn-outline-secondary mb-3" href="/applications/manage">{{ t('application_review.applications') }}</a>
+{% for conversation in review_conversations %}
+<div class="card mb-3"><div class="card-body d-flex justify-content-between align-items-center gap-3">
+<div><h2 class="h5 mb-1">{{ conversation.chat_name or t('application_review.untitled') }}</h2><small class="text-muted" data-review-date="{{ conversation.last_activity }}">{{ conversation.last_activity or '' }}</small></div>
+<a class="btn btn-outline-primary" href="/applications/manage/{{ review_application.app_id }}/review/{{ conversation.id }}">{{ t('application_review.open') }}</a>
+</div></div>
+{% else %}<p>{{ t('application_review.empty_conversations') }}</p>{% endfor %}
+{% if review_next_id %}<a class="btn btn-outline-primary" href="?before_id={{ review_next_id }}">{{ t('application_review.more') }}</a>{% endif %}
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+<script>
+document.querySelectorAll('[data-review-markdown]').forEach(function (element) {
+    element.innerHTML = DOMPurify.sanitize(marked.parse(element.textContent), {
+        FORBID_TAGS: ['img', 'video', 'audio', 'iframe', 'object', 'embed', 'form', 'input', 'button']
+    });
+    element.querySelectorAll('a').forEach(function (link) { link.rel = 'noopener noreferrer'; });
+});
+document.querySelectorAll('[data-review-date]').forEach(function (element) {
+    var value = element.dataset.reviewDate;
+    if (!value) return;
+    value = value.replace(' ', 'T');
+    if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) value += 'Z';
+    var date = new Date(value);
+    if (!Number.isNaN(date.getTime())) element.textContent = date.toLocaleString(AurvekI18n.locale);
+});
+</script>
+{% endblock %}

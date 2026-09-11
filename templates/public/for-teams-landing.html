@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="{{ ui_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="{{ t('public_teams.deploy_ai_tools_for_your_organization_budget') }}">
+    <meta name="keywords" content="{{ t('public_teams.enterprise_ai_team_ai_tools_business_ai') }}">
+
+    <title>{{ t('public_teams.aurvek_for_teams_ai_tools_for_your') }}</title>
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="{{ t('public_teams.aurvek_for_teams_enterprise_ai_platform') }}">
+    <meta property="og:description" content="{{ t('public_teams.deploy_ai_tools_for_your_organization_with') }}">
+    <meta property="og:type" content="website">
+
+    <!-- Fonts - AURVEK Design System -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
+
+    <!-- Phosphor Icons -->
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/duotone/style.css">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/public-landing.css') }}">
+
+    <style>
+        /* Teams-specific styles - OPERATIONS CENTER palette */
+        .hero--teams {
+            background: linear-gradient(135deg, #0A1929 0%, #102A43 50%, #1A3A5C 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero--teams::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background:
+                radial-gradient(ellipse at 30% 20%, rgba(217, 119, 6, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 80%, rgba(234, 179, 8, 0.06) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        .control-cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-xl);
+        }
+
+        @media (max-width: 900px) {
+            .control-cards {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .control-card {
+            padding: var(--space-2xl);
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-lg);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .control-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+        }
+
+        .control-card--budget::before {
+            background: linear-gradient(90deg, #10b981, #34d399);
+        }
+
+        .control-card--private::before {
+            background: linear-gradient(90deg, #6366f1, #818cf8);
+        }
+
+        .control-card--users::before {
+            background: linear-gradient(90deg, #f59e0b, #fbbf24);
+        }
+
+        .control-card__icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto var(--space-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            border-radius: var(--radius-xl);
+        }
+
+        .control-card--budget .control-card__icon {
+            background: rgba(16, 185, 129, 0.1);
+        }
+
+        .control-card--private .control-card__icon {
+            background: rgba(99, 102, 241, 0.1);
+        }
+
+        .control-card--users .control-card__icon {
+            background: rgba(245, 158, 11, 0.1);
+        }
+
+        .control-card__title {
+            font-size: 1.25rem;
+            margin-bottom: var(--space-sm);
+        }
+
+        .control-card__text {
+            color: var(--aurvek-gray-500);
+        }
+
+        .use-case-enterprise {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--space-xl);
+        }
+
+        @media (max-width: 768px) {
+            .use-case-enterprise {
+                grid-template-columns: minmax(0, 1fr);
+            }
+        }
+
+        .use-case-item > div:last-child { min-width: 0; overflow-wrap: anywhere; }
+
+        .use-case-item {
+            display: flex;
+            gap: var(--space-lg);
+            padding: var(--space-xl);
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-md);
+        }
+
+        .use-case-item__icon {
+            width: 56px;
+            height: 56px;
+            flex-shrink: 0;
+            background: var(--gradient-primary);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: white;
+        }
+
+        .use-case-item__title {
+            font-weight: 600;
+            margin-bottom: var(--space-xs);
+        }
+
+        .use-case-item__text {
+            color: var(--aurvek-gray-500);
+            font-size: 0.9375rem;
+        }
+
+        .security-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: var(--space-lg);
+        }
+
+        .security-item {
+            display: flex;
+            align-items: center;
+            gap: var(--space-md);
+            padding: var(--space-lg);
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: var(--radius-lg);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .security-item__icon {
+            width: 48px;
+            height: 48px;
+            flex-shrink: 0;
+            background: rgba(16, 185, 129, 0.2);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .security-item__text {
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 500;
+        }
+
+        .pricing-enterprise {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--space-xl);
+        }
+
+        @media (max-width: 768px) {
+            .pricing-enterprise {
+                grid-template-columns: minmax(0, 1fr);
+            }
+        }
+
+        .pricing-card-enterprise {
+            padding: var(--space-2xl);
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .pricing-card-enterprise--featured {
+            border: 2px solid var(--aurvek-primary);
+            position: relative;
+        }
+
+        .pricing-card-enterprise__badge {
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 4px 16px;
+            background: var(--gradient-primary);
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-radius: var(--radius-full);
+        }
+
+        .pricing-card-enterprise__title {
+            font-size: 1.5rem;
+            margin-bottom: var(--space-sm);
+        }
+
+        .pricing-card-enterprise__price {
+            font-size: clamp(1.75rem, 4vw, 2.5rem);
+            overflow-wrap: anywhere;
+            hyphens: auto;
+            font-weight: 800;
+            margin-bottom: var(--space-xs);
+        }
+
+        .pricing-card-enterprise__note {
+            color: var(--aurvek-gray-500);
+            font-size: 0.875rem;
+            margin-bottom: var(--space-xl);
+        }
+
+        .pricing-card-enterprise__list {
+            list-style: none;
+            margin-bottom: var(--space-xl);
+        }
+
+        .pricing-card-enterprise__list li {
+            padding: var(--space-sm) 0;
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            border-bottom: 1px solid var(--aurvek-gray-100);
+        }
+
+        .pricing-card-enterprise__list li:last-child {
+            border-bottom: none;
+        }
+
+        .dashboard-preview {
+            background: var(--aurvek-white);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-xl);
+            overflow: hidden;
+        }
+
+        .dashboard-preview__header {
+            padding: var(--space-lg);
+            background: var(--aurvek-gray-100);
+            border-bottom: 1px solid var(--aurvek-gray-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .dashboard-preview__title {
+            font-weight: 600;
+        }
+
+        .dashboard-preview__body {
+            padding: var(--space-xl);
+        }
+
+        .dashboard-preview__stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: var(--space-lg);
+            margin-bottom: var(--space-xl);
+        }
+
+        .dashboard-stat {
+            text-align: center;
+            padding: var(--space-lg);
+            background: var(--aurvek-gray-100);
+            border-radius: var(--radius-lg);
+        }
+
+        .dashboard-stat__value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--aurvek-primary);
+        }
+
+        .dashboard-stat__label {
+            font-size: 0.875rem;
+            color: var(--aurvek-gray-500);
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 600px) {
+            .dashboard-preview__stats { grid-template-columns: 1fr; }
+        }
+
+        .dashboard-preview__users {
+            border: 1px solid var(--aurvek-gray-200);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .dashboard-preview__users-header {
+            padding: var(--space-md) var(--space-lg);
+            background: var(--aurvek-gray-100);
+            font-weight: 600;
+            font-size: 0.875rem;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: var(--space-md);
+        }
+
+        .dashboard-preview__users-row {
+            padding: var(--space-md) var(--space-lg);
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: var(--space-md);
+            font-size: 0.875rem;
+            border-bottom: 1px solid var(--aurvek-gray-100);
+        }
+
+        .dashboard-preview__users-row:last-child {
+            border-bottom: none;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: var(--radius-full);
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .status-badge--active {
+            background: rgba(16, 185, 129, 0.1);
+            color: #059669;
+        }
+
+        .status-badge--limited {
+            background: rgba(245, 158, 11, 0.1);
+            color: #d97706;
+        }
+
+        /* Phosphor Icons styling */
+        .control-card__icon i,
+        .use-case-item__icon i,
+        .security-item__icon i {
+            font-size: inherit;
+        }
+
+        .control-card--budget .control-card__icon i {
+            --ph-duotone-base: rgba(16, 185, 129, 0.4);
+            --ph-duotone-accent: #10b981;
+        }
+
+        .control-card--private .control-card__icon i {
+            --ph-duotone-base: rgba(99, 102, 241, 0.4);
+            --ph-duotone-accent: #6366f1;
+        }
+
+        .control-card--users .control-card__icon i {
+            --ph-duotone-base: rgba(245, 158, 11, 0.4);
+            --ph-duotone-accent: #f59e0b;
+        }
+
+        .use-case-item__icon i {
+            color: white;
+        }
+
+        .security-item__icon i {
+            --ph-duotone-base: rgba(16, 185, 129, 0.4);
+            --ph-duotone-accent: #34d399;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="container">
+            <div class="nav__inner">
+                <a href="index.html" class="nav__logo">
+                    <span class="nav__logo-icon">S</span>
+                    Aurvek
+                </a>
+
+                <ul class="nav__links">
+                    <li><a href="#controls" class="nav__link">{{ t('public_teams.controls') }}</a></li>
+                    <li><a href="#use-cases" class="nav__link">{{ t('public_teams.use_cases') }}</a></li>
+                    <li><a href="#security" class="nav__link">{{ t('public_teams.security') }}</a></li>
+                    <li><a href="#pricing" class="nav__link">{{ t('public_teams.pricing') }}</a></li>
+                </ul>
+
+                <div class="nav__actions">
+                    <a href="/login" class="btn btn--secondary btn--small">{{ t('public_teams.log_in') }}</a>
+                    <a href="/register" class="btn btn--primary btn--small">{{ t('public_teams.start_free') }}</a>
+                </div>
+
+                <button class="nav__toggle" aria-label="{{ t('public_teams.toggle_menu') }}">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero hero--teams hero--dark">
+        <div class="container">
+            <div class="hero__content" data-animate>
+                <div class="hero__badge" style="background: rgba(217, 119, 6, 0.15); border-color: rgba(217, 119, 6, 0.3); color: #FBBF24;">{{ t('public_teams.for_businesses_organizations') }}</div>
+
+                <h1 class="hero__title">{{ t_html('public_teams.ai_tools_for_your_team', tag_a="<span style=\"-webkit-text-fill-color: #FBBF24;\">"|safe, tag_b="</span>"|safe) }}</h1>
+
+                <p class="hero__subtitle">{{ t('public_teams.deploy_ai_assistants_for_your_organization_you') }}</p>
+
+                <div class="hero__actions">
+                    <a href="/register" class="btn btn--primary btn--large">{{ t('public_teams.deploy_ai_for_your_team') }}</a>
+                    <a href="#controls" class="btn btn--secondary btn--large" style="border-color: rgba(255,255,255,0.3); color: white;">{{ t('public_teams.see_control_features') }}</a>
+                </div>
+
+                <!-- Social Proof -->
+                <div class="hero__social-proof" style="margin-top: var(--space-2xl); display: flex; align-items: center; gap: var(--space-xl); flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: var(--space-sm);">
+                        <span style="font-size: 1.5rem; font-weight: 700; color: var(--aurvek-amber-400);">4+</span>
+                        <span style="font-size: 0.875rem; color: var(--aurvek-gray-400);">{{ t('public_teams.ai_providers') }}</span>
+                    </div>
+                    <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.2);"></div>
+                    <div style="display: flex; align-items: center; gap: var(--space-sm);">
+                        <span style="font-size: 1.5rem; font-weight: 700; color: var(--aurvek-amber-400);">{{ t('public_teams.per_user') }}</span>
+                        <span style="font-size: 0.875rem; color: var(--aurvek-gray-400);">{{ t('public_teams.budget_limits') }}</span>
+                    </div>
+                    <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.2);"></div>
+                    <div style="display: flex; align-items: center; gap: var(--space-sm);">
+                        <span style="font-size: 1.5rem; font-weight: 700; color: var(--aurvek-amber-400);">BYOK</span>
+                        <span style="font-size: 0.875rem; color: var(--aurvek-gray-400);">{{ t('public_teams.supported') }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Control Features -->
+    <section id="controls" class="section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_teams.complete_control_over_ai_usage') }}</h2>
+                <p class="section__subtitle">{{ t('public_teams.your_team_gets_ai_superpowers_you_keep') }}</p>
+            </div>
+
+            <div class="control-cards" data-animate>
+                <div class="control-card control-card--budget">
+                    <div class="control-card__icon"><i class="ph-duotone ph-wallet"></i></div>
+                    <h3 class="control-card__title">{{ t('public_teams.budget_controls') }}</h3>
+                    <p class="control-card__text">{{ t('public_teams.set_spending_limits_per_user_per_department') }}</p>
+                </div>
+
+                <div class="control-card control-card--private">
+                    <div class="control-card__icon"><i class="ph-duotone ph-lock-key"></i></div>
+                    <h3 class="control-card__title">{{ t('public_teams.private_prompts') }}</h3>
+                    <p class="control-card__text">{{ t('public_teams.create_internal_ai_tools_that_only_your') }}</p>
+                </div>
+
+                <div class="control-card control-card--users">
+                    <div class="control-card__icon"><i class="ph-duotone ph-users-three"></i></div>
+                    <h3 class="control-card__title">{{ t('public_teams.user_management') }}</h3>
+                    <p class="control-card__text">{{ t('public_teams.add_team_members_assign_prompts_track_usage') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Dashboard Preview -->
+    <section class="section section--gray">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_teams.your_team_dashboard') }}</h2>
+                <p class="section__subtitle">{{ t('public_teams.monitor_usage_manage_budgets_and_control_access') }}</p>
+            </div>
+
+            <div class="dashboard-preview" data-animate>
+                <div class="dashboard-preview__header">
+                    <span class="dashboard-preview__title">{{ t('public_teams.team_usage_january') }}</span>
+                    <span style="color: var(--aurvek-gray-500); font-size: 0.875rem;">{{ t('public_teams.updated_min_ago') }}</span>
+                </div>
+                <div class="dashboard-preview__body">
+                    <div class="dashboard-preview__stats">
+                        <div class="dashboard-stat">
+                            <div class="dashboard-stat__value">12</div>
+                            <div class="dashboard-stat__label">{{ t('public_teams.active_users') }}</div>
+                        </div>
+                        <div class="dashboard-stat">
+                            <div class="dashboard-stat__value">{{ format_number(4328) }}</div>
+                            <div class="dashboard-stat__label">{{ t('public_teams.messages_this_month') }}</div>
+                        </div>
+                        <div class="dashboard-stat">
+                            <div class="dashboard-stat__value">{{ format_currency(127.40, 'USD', 2) }}</div>
+                            <div class="dashboard-stat__label">{{ t('public_teams.total_cost') }}</div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-preview__users">
+                        <div class="dashboard-preview__users-header">
+                            <span>{{ t('public_teams.user') }}</span>
+                            <span>{{ t('public_teams.messages') }}</span>
+                            <span>{{ t('public_teams.budget_used') }}</span>
+                            <span>{{ t('public_teams.status') }}</span>
+                        </div>
+                        <div class="dashboard-preview__users-row">
+                            <span>sarah@company.com</span>
+                            <span>892</span>
+                            <span>78%</span>
+                            <span><span class="status-badge status-badge--active">{{ t('public_teams.active') }}</span></span>
+                        </div>
+                        <div class="dashboard-preview__users-row">
+                            <span>mike@company.com</span>
+                            <span>654</span>
+                            <span>92%</span>
+                            <span><span class="status-badge status-badge--limited">{{ t('public_teams.near_limit') }}</span></span>
+                        </div>
+                        <div class="dashboard-preview__users-row">
+                            <span>lisa@company.com</span>
+                            <span>421</span>
+                            <span>45%</span>
+                            <span><span class="status-badge status-badge--active">{{ t('public_teams.active') }}</span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Use Cases -->
+    <section id="use-cases" class="section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_teams.how_teams_use_aurvek') }}</h2>
+                <p class="section__subtitle">{{ t('public_teams.from_customer_service_to_internal_knowledge_bases') }}</p>
+            </div>
+
+            <div class="use-case-enterprise" data-animate>
+                <div class="use-case-item">
+                    <div class="use-case-item__icon"><i class="ph-duotone ph-chat-circle"></i></div>
+                    <div>
+                        <h3 class="use-case-item__title">{{ t('public_teams.customer_support') }}</h3>
+                        <p class="use-case-item__text">{{ t('public_teams.train_ai_on_your_product_docs_and') }}</p>
+                    </div>
+                </div>
+
+                <div class="use-case-item">
+                    <div class="use-case-item__icon"><i class="ph-duotone ph-book-open"></i></div>
+                    <div>
+                        <h3 class="use-case-item__title">{{ t('public_teams.internal_knowledge_base') }}</h3>
+                        <p class="use-case-item__text">{{ t('public_teams.help_employees_find_policies_procedures_and_answers') }}</p>
+                    </div>
+                </div>
+
+                <div class="use-case-item">
+                    <div class="use-case-item__icon"><i class="ph-duotone ph-code"></i></div>
+                    <div>
+                        <h3 class="use-case-item__title">{{ t('public_teams.developer_assistants') }}</h3>
+                        <p class="use-case-item__text">{{ t('public_teams.code_review_bots_documentation_generators_debugging_helpers') }}</p>
+                    </div>
+                </div>
+
+                <div class="use-case-item">
+                    <div class="use-case-item__icon"><i class="ph-duotone ph-chart-line-up"></i></div>
+                    <div>
+                        <h3 class="use-case-item__title">{{ t('public_teams.sales_enablement') }}</h3>
+                        <p class="use-case-item__text">{{ t('public_teams.product_knowledge_bots_objection_handlers_proposal_drafters') }}</p>
+                    </div>
+                </div>
+
+                <div class="use-case-item">
+                    <div class="use-case-item__icon"><i class="ph-duotone ph-user-plus"></i></div>
+                    <div>
+                        <h3 class="use-case-item__title">{{ t('public_teams.employee_onboarding') }}</h3>
+                        <p class="use-case-item__text">{{ t('public_teams.ai_mentors_that_guide_new_hires_through') }}</p>
+                    </div>
+                </div>
+
+                <div class="use-case-item">
+                    <div class="use-case-item__icon"><i class="ph-duotone ph-article"></i></div>
+                    <div>
+                        <h3 class="use-case-item__title">{{ t('public_teams.content_operations') }}</h3>
+                        <p class="use-case-item__text">{{ t('public_teams.blog_drafters_social_media_assistants_email_writers') }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Security Section -->
+    <section id="security" class="section section--dark">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_teams.enterprise_grade_security') }}</h2>
+                <p class="section__subtitle" style="color: rgba(255,255,255,0.7);">{{ t('public_teams.your_data_stays_yours_always') }}</p>
+            </div>
+
+            <div class="security-grid" data-animate>
+                <div class="security-item">
+                    <div class="security-item__icon"><i class="ph-duotone ph-key"></i></div>
+                    <span class="security-item__text">{{ t('public_teams.secure_authentication_jwt') }}</span>
+                </div>
+
+                <div class="security-item">
+                    <div class="security-item__icon"><i class="ph-duotone ph-lock"></i></div>
+                    <span class="security-item__text">{{ t('public_teams.encrypted_password_storage') }}</span>
+                </div>
+
+                <div class="security-item">
+                    <div class="security-item__icon"><i class="ph-duotone ph-shield-check"></i></div>
+                    <span class="security-item__text">{{ t('public_teams.no_training_on_your_data') }}</span>
+                </div>
+
+                <div class="security-item">
+                    <div class="security-item__icon"><i class="ph-duotone ph-users-three"></i></div>
+                    <span class="security-item__text">{{ t('public_teams.role_based_access_control') }}</span>
+                </div>
+
+                <div class="security-item">
+                    <div class="security-item__icon"><i class="ph-duotone ph-gear"></i></div>
+                    <span class="security-item__text">{{ t('public_teams.api_key_management') }}</span>
+                </div>
+
+                <div class="security-item">
+                    <div class="security-item__icon"><i class="ph-duotone ph-clipboard-text"></i></div>
+                    <span class="security-item__text">{{ t('public_teams.usage_tracking_dashboard') }}</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing -->
+    <section id="pricing" class="section">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_teams.simple_team_pricing') }}</h2>
+                <p class="section__subtitle">{{ t('public_teams.pay_for_what_you_use_no_per') }}</p>
+            </div>
+
+            <div class="pricing-enterprise" data-animate>
+                <div class="pricing-card-enterprise">
+                    <h3 class="pricing-card-enterprise__title">{{ t('public_teams.team') }}</h3>
+                    <div class="pricing-card-enterprise__price">{{ t('public_teams.pay_as_you_go') }}</div>
+                    <p class="pricing-card-enterprise__note">{{ t('public_teams.no_monthly_minimum_pay_only_for_ai') }}</p>
+
+                    <ul class="pricing-card-enterprise__list">
+                        <li>{{ t_html('public_teams.up_to_team_members', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.budget_controls_per_user', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.private_prompts_2', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.usage_analytics', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.email_support', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                    </ul>
+
+                    <a href="/register" class="btn btn--primary" style="width: 100%;">{{ t('public_teams.start_free_trial') }}</a>
+                </div>
+
+                <div class="pricing-card-enterprise pricing-card-enterprise--featured">
+                    <span class="pricing-card-enterprise__badge">{{ t('public_teams.most_popular') }}</span>
+                    <h3 class="pricing-card-enterprise__title">{{ t('public_teams.enterprise') }}</h3>
+                    <div class="pricing-card-enterprise__price">{{ t('public_teams.custom') }}</div>
+                    <p class="pricing-card-enterprise__note">{{ t('public_teams.volume_discounts_dedicated_support_slas') }}</p>
+
+                    <ul class="pricing-card-enterprise__list">
+                        <li>{{ t_html('public_teams.unlimited_team_members', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.advanced_budget_controls', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.sso_saml_integration', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.dedicated_account_manager', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.custom_sla', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                        <li>{{ t_html('public_teams.on_premise_option_roadmap', tag_a="<span style=\"color: var(--aurvek-success);\">"|safe, tag_b="</span>"|safe) }}</li>
+                    </ul>
+
+                    <a href="mailto:enterprise@example.com" class="btn btn--dark" style="width: 100%;">{{ t('public_teams.contact_sales') }}</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section section--gray">
+        <div class="container">
+            <div class="section__header" data-animate>
+                <h2 class="section__title">{{ t('public_teams.team_faq') }}</h2>
+            </div>
+
+            <div class="objections-grid" data-animate>
+                <div class="objection">
+                    <p class="objection__question">{{ t('public_teams.how_do_budget_controls_work') }}</p>
+                    <p class="objection__answer">{{ t('public_teams.set_a_monthly_limit_per_user_e') }}</p>
+                </div>
+
+                <div class="objection">
+                    <p class="objection__question">{{ t('public_teams.can_employees_only_see_certain_prompts') }}</p>
+                    <p class="objection__answer">{{ t('public_teams.yes_you_assign_specific_prompts_to_each') }}</p>
+                </div>
+
+                <div class="objection">
+                    <p class="objection__question">{{ t('public_teams.is_our_data_used_to_train_ai') }}</p>
+                    <p class="objection__answer">{{ t('public_teams.never_your_conversations_stay_private_we_don') }}</p>
+                </div>
+
+                <div class="objection">
+                    <p class="objection__question">{{ t('public_teams.can_we_use_our_own_api_keys') }}</p>
+                    <p class="objection__answer">{{ t('public_teams.yes_byok_bring_your_own_keys_is') }}</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="cta" style="background: linear-gradient(135deg, #0A1929 0%, #1A3A5C 100%);">
+        <div class="container" data-animate>
+            <h2>{{ t('public_teams.ready_to_deploy_ai_for_your_team') }}</h2>
+            <p>{{ t('public_teams.start_with_a_free_trial_no_credit') }}</p>
+            <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                <a href="/register" class="btn btn--primary btn--large">{{ t('public_teams.start_free_trial') }}</a>
+                <a href="mailto:enterprise@example.com" class="btn btn--secondary btn--large" style="border-color: rgba(255,255,255,0.5); color: white;">{{ t('public_teams.contact_sales') }}</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer__grid">
+                <div class="footer__brand">
+                    <div class="footer__logo">{{ t_html('public_teams.s_aurvek', tag_a="<span class=\"nav__logo-icon\">"|safe, tag_b="</span>"|safe) }}</div>
+                    <p class="footer__tagline">{{ t('public_teams.ai_tools_for_teams_and_enterprises_controlled') }}</p>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_teams.for_teams') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#">{{ t('public_teams.getting_started') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.user_management') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.budget_controls') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.analytics') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_teams.resources') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="#">{{ t('public_teams.documentation') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.security_whitepaper') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.api_reference') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.status_page') }}</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="footer__title">{{ t('public_teams.company') }}</h4>
+                    <ul class="footer__links">
+                        <li><a href="index.html">{{ t('public_teams.about_aurvek') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.blog') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.contact') }}</a></li>
+                        <li><a href="#">{{ t('public_teams.careers') }}</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="footer__bottom">
+                <p>{{ t('public_teams.aurvek_all_rights_reserved') }}</p>
+                <div class="footer__legal">
+                    <a href="#">{{ t('public_teams.privacy_policy') }}</a>
+                    <a href="#">{{ t('public_teams.terms_of_service') }}</a>
+                    <a href="#">{{ t('public_teams.security') }}</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    {% set i18n_domains = ['public_shell'] %}{% include 'includes/i18n.html' %}
+    <script src="{{ get_static_url('/static/js/public-landing.js') }}"></script>
+</body>
+</html>

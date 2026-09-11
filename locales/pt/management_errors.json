@@ -1,0 +1,12 @@
+{
+  "curation.access": "Apenas contas do tipo Utilizador ou Administrador podem aceder às definições de curadoria",
+  "curation.update_access": "Apenas contas do tipo Utilizador ou Administrador podem alterar as definições de curadoria",
+  "curation.load_failed": "Não foi possível carregar as definições de curadoria. Tente novamente.",
+  "curation.save_failed": "Não foi possível guardar as definições de curadoria. Tente novamente.",
+  "curation.negative": "A margem adicional não pode ser negativa",
+  "curation.maximum": "A margem adicional não pode exceder {amount} por milhão de tokens",
+  "curation.saved": "Definições de curadoria atualizadas",
+  "curation.invalid": "Valor de margem adicional inválido",
+  "prompt.not_found": "Prompt não encontrado",
+  "access.denied": "Acesso negado"
+}

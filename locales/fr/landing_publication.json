@@ -1,0 +1,12 @@
+{
+  "hallucination": "Fonctionnalité non prise en charge annoncée par « {text} » à la ligne {line}. Contexte : ...{snippet}...",
+  "testimonial": "Témoignage ou note non vérifié à la ligne {line}. Seuls les exemples de conversation clairement présentés comme des démonstrations sont autorisés. Contexte : ...{snippet}...",
+  "free_claim": "Promesse d’accès sans conditions « {text} » à la ligne {line}. Précisez les conditions d’accès et les coûts d’utilisation. Contexte : ...{snippet}...",
+  "upload_disabled": "Invitation à importer des fichiers « {text} » à la ligne {line}, alors que les paramètres d’inscription indiquent allow_file_upload=false. Contexte : ...{snippet}...",
+  "web_disabled": "Recherche web annoncée par « {text} » à la ligne {line}, alors qu’elle est désactivée pour ce prompt. Contexte : ...{snippet}...",
+  "paid_price": "Ce prompt payant coûte {amount}, mais son prix exact ne figure pas sur la page. Le bouton d’accès doit indiquer le prix de déblocage.",
+  "paid_cta": "Ce prompt payant n’a aucun bouton d’inscription mentionnant l’achat, le déblocage ou le prix. Les visiteurs doivent savoir que l’accès est payant avant de cliquer.",
+  "free_purchase": "Ce prompt est accessible gratuitement, mais le texte « {text} » à la ligne {line} évoque un achat. Contexte : ...{snippet}...",
+  "structure": "La page suit une structure SaaS générique : navigation, section principale, grille de fonctionnalités, témoignages et pied de page. Utilisez le modèle créatif attribué.",
+  "unavailable": "La vérification de publication est indisponible. La page a été enregistrée, mais ne peut pas encore être publiée."
+}

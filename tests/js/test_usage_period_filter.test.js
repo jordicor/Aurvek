@@ -65,6 +65,7 @@ async function legacyUsageUrl(period) {
     const context = {
         URLSearchParams,
         NotificationModal: { error() {} },
+        AurvekI18n: { t: key => key },
         console: { error() {} },
         document: fakeDocument({ dateRange: { value: period } }),
         fetch: async url => {
@@ -89,6 +90,7 @@ function createAdminHarness(period, type = 'image') {
     const context = {
         URLSearchParams,
         NotificationModal: { error() {} },
+        AurvekI18n: { t: key => key },
         clearTimeout() {},
         console: { error() {} },
         document: fakeDocument({

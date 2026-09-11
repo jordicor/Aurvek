@@ -21,6 +21,7 @@ from integrations.telephony.foreground import (
     TurnForegroundDecision,
 )
 from integrations.telephony.repository import TelephonyRepository
+from integrations.telephony.tooling import CallSchedulePolicy
 
 
 CallStartCapabilityLoader = Callable[..., Awaitable[AiCallStartCapability | None]]
@@ -172,6 +173,10 @@ def _context_with_call_start_capability(
             **dict(context.provenance),
             "call_start_controller": capability.controller,
             "call_start_mode": capability.mode,
+            "call_schedule_policy": CallSchedulePolicy(
+                capability.mode,
+                prompt_id=capability.prompt_id,
+            ),
         },
     )
 

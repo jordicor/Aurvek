@@ -1,19 +1,19 @@
 {% extends 'base_admin.html' %}
 {% block title %}Telegram - AURVEK{% endblock %}
 {% block page_title %}Telegram{% endblock %}
-{% block page_subtitle %}<p class="page-subtitle">Manage Telegram integration and monitor usage</p>{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">{{ t('admin_channels.channel_subtitle', channel='Telegram') }}</p>{% endblock %}
 
 {% block alerts %}
 {% if message %}
 <div class="alert alert-success alert-dismissible fade show" role="alert">
     <i class="fas fa-check-circle me-2"></i>{{ message }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_channels.close') }}"></button>
 </div>
 {% endif %}
 {% if error %}
 <div class="alert alert-danger alert-dismissible fade show" role="alert">
     <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_channels.close') }}"></button>
 </div>
 {% endif %}
 {% endblock %}
@@ -22,23 +22,23 @@
 <div class="stats-row">
     <span class="stat-badge">
         {% if telegram_configured %}
-        <i class="fas fa-check-circle" style="color: var(--success)"></i> Bot <strong>Connected</strong>
+        <i class="fas fa-check-circle" style="color: var(--success)"></i> {{ t('admin_channels.bot') }} <strong>{{ t('admin_channels.connected') }}</strong>
         {% if bot_info %}(@{{ bot_info.username }}){% endif %}
         {% else %}
-        <i class="fas fa-times-circle" style="color: var(--danger)"></i> Bot <strong>Not Configured</strong>
+        <i class="fas fa-times-circle" style="color: var(--danger)"></i> {{ t('admin_channels.bot') }} <strong>{{ t('admin_channels.not_configured') }}</strong>
         {% endif %}
     </span>
     <span class="stat-badge">
-        <i class="fab fa-telegram"></i> <strong>{{ stats.messages_today }}</strong> Messages Today
+        <i class="fab fa-telegram"></i> <strong>{{ format_number(stats.messages_today) }}</strong> {{ t('admin_channels.messages_today') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-users"></i> <strong>{{ stats.active_users_today }}</strong> Active Users
+        <i class="fas fa-users"></i> <strong>{{ format_number(stats.active_users_today) }}</strong> {{ t('admin_channels.active_users') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-font"></i> <strong>{{ stats.text_count }}</strong> Text
+        <i class="fas fa-font"></i> <strong>{{ format_number(stats.text_count) }}</strong> {{ t('admin_channels.text') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-microphone"></i> <strong>{{ stats.voice_count }}</strong> Voice
+        <i class="fas fa-microphone"></i> <strong>{{ format_number(stats.voice_count) }}</strong> {{ t('admin_channels.voice') }}
     </span>
 </div>
 
@@ -46,31 +46,31 @@
 {% if webhook_info %}
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-link"></i> Webhook Configuration
+        <i class="fas fa-link"></i> {{ t('admin_channels.webhook_config') }}
     </div>
     {% if webhook_info.error %}
     <div class="alert alert-warning mb-0">
         <i class="fas fa-exclamation-triangle me-2"></i>
-        Could not check Telegram Bot webhook: {{ webhook_info.error }}
+        {{ webhook_info.error }}
     </div>
     {% else %}
     <div class="mb-3">
         <div class="d-flex align-items-center gap-2 mb-2">
             {% if webhook_info.match %}
-            <span class="badge bg-success"><i class="fas fa-check me-1"></i>OK</span>
+            <span class="badge bg-success"><i class="fas fa-check me-1"></i>{{ t('admin_channels.ok') }}</span>
             {% else %}
-            <span class="badge bg-danger"><i class="fas fa-times me-1"></i>Mismatch</span>
+            <span class="badge bg-danger"><i class="fas fa-times me-1"></i>{{ t('admin_channels.mismatch') }}</span>
             {% endif %}
-            <strong>Telegram Bot Webhook</strong>
+            <strong>{{ t('admin_channels.telegram_webhook') }}</strong>
         </div>
         <table class="table table-sm mb-0">
             <tbody>
                 <tr>
-                    <td class="text-muted" style="width: 140px;">Current URL</td>
-                    <td><code>{{ webhook_info.current_url or '(empty)' }}</code></td>
+                    <td class="text-muted" style="width: 140px;">{{ t('admin_channels.current_url') }}</td>
+                    <td><code>{{ webhook_info.current_url or t('admin_channels.empty') }}</code></td>
                 </tr>
                 <tr>
-                    <td class="text-muted">Expected URL</td>
+                    <td class="text-muted">{{ t('admin_channels.expected_url') }}</td>
                     <td><code>{{ expected_webhook_url }}</code></td>
                 </tr>
             </tbody>
@@ -80,7 +80,7 @@
             <input type="hidden" name="csrf_token" value="{{ admin_csrf_token }}">
             <input type="hidden" name="action" value="fix_webhook">
             <button type="submit" class="btn btn-warning btn-sm">
-                <i class="fas fa-wrench me-1"></i> Fix Webhook URL
+                <i class="fas fa-wrench me-1"></i> {{ t('admin_channels.fix_webhook') }}
             </button>
         </form>
         {% endif %}
@@ -92,37 +92,37 @@
 <!-- Configuration Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-cog"></i> Configuration
+        <i class="fas fa-cog"></i> {{ t('admin_channels.configuration') }}
     </div>
     <form method="post" action="/admin/telegram" data-form-guard>
         <input type="hidden" name="csrf_token" value="{{ admin_csrf_token }}">
         <input type="hidden" name="action" value="save_config">
         <div class="mb-3">
-            <label class="form-label" for="unknown_user_message">Unknown User Message</label>
-            <p class="text-muted small mb-1">Sent when a Telegram message comes from an unregistered chat ID.</p>
+            <label class="form-label" for="unknown_user_message">{{ t('admin_channels.unknown_user_message') }}</label>
+            <p class="text-muted small mb-1">{{ t('admin_channels.unknown_telegram_help') }}</p>
             <textarea class="form-control" id="unknown_user_message" name="unknown_user_message" rows="3">{{ unknown_user_message }}</textarea>
         </div>
         <div class="mb-3">
-            <label class="form-label" for="welcome_message">Welcome Message</label>
-            <p class="text-muted small mb-1">Sent when a user starts their first Telegram conversation. Supports <code>{username}</code> placeholder. Leave empty to disable.</p>
+            <label class="form-label" for="welcome_message">{{ t('admin_channels.welcome_message') }}</label>
+            <p class="text-muted small mb-1">{{ t('admin_channels.welcome_help', channel='Telegram', placeholder='{username}') }}</p>
             <textarea class="form-control" id="welcome_message" name="welcome_message" rows="3">{{ welcome_message }}</textarea>
         </div>
         <div class="mb-3">
             <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="require_phone_verification" name="require_phone_verification" value="1" {% if require_phone_verification %}checked{% endif %}>
-                <label class="form-check-label" for="require_phone_verification">Require phone verification for Telegram access</label>
+                <label class="form-check-label" for="require_phone_verification">{{ t('admin_channels.require_phone', channel='Telegram') }}</label>
             </div>
-            <p class="text-muted small mt-1">When enabled, only users who have verified their phone number via SMS can use Telegram.</p>
+            <p class="text-muted small mt-1">{{ t('admin_channels.require_phone_help', channel='Telegram') }}</p>
         </div>
         <div class="mb-3">
             <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="telegram_retain_voice_notes" name="telegram_retain_voice_notes" value="1" {% if telegram_retain_voice_notes %}checked{% endif %}>
-                <label class="form-check-label" for="telegram_retain_voice_notes">Store original Telegram voice-note audio</label>
+                <label class="form-check-label" for="telegram_retain_voice_notes">{{ t('admin_channels.retain_voice', channel='Telegram') }}</label>
             </div>
-            <p class="text-muted small mt-1">Disabled by default for privacy. When enabled, original audio is kept in private storage so its owner can replay or retranscribe it from the chat. Retranscription and an optional LLM comparison are billed to that user. This applies only to voice notes received after saving; existing audio is not changed.</p>
+            <p class="text-muted small mt-1">{{ t('admin_channels.retain_voice_help') }}</p>
         </div>
         <button type="submit" class="btn btn-primary">
-            <i class="fas fa-save me-1"></i> Save Configuration
+            <i class="fas fa-save me-1"></i> {{ t('admin_channels.save_configuration') }}
         </button>
     </form>
 </div>
@@ -130,17 +130,17 @@
 <!-- Active Users Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-users"></i> Active Telegram Users
+        <i class="fas fa-users"></i> {{ t('admin_channels.active_channel_users', channel='Telegram') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Username</th>
-                    <th>Chat ID</th>
-                    <th>Conversation</th>
-                    <th>Mode</th>
-                    <th>Last Message</th>
+                    <th>{{ t('admin_channels.username') }}</th>
+                    <th>{{ t('admin_channels.chat_id') }}</th>
+                    <th>{{ t('admin_channels.conversation') }}</th>
+                    <th>{{ t('admin_channels.mode') }}</th>
+                    <th>{{ t('admin_channels.last_message') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -148,21 +148,21 @@
                 <tr>
                     <td><strong>{{ user.username }}</strong></td>
                     <td><code>{{ user.chat_id_display }}</code></td>
-                    <td><code>#{{ user.conversation_id }}</code></td>
+                    <td><code>#{{ user.conversation_id if user.conversation_id != 'N/A' and user.conversation_id is not none else t('admin_channels.not_available') }}</code></td>
                     <td>
                         {% if user.answer_mode == 'voice' %}
-                        <span class="badge bg-info">Voice</span>
+                        <span class="badge bg-info">{{ t('admin_channels.voice') }}</span>
                         {% else %}
-                        <span class="badge bg-secondary">Text</span>
+                        <span class="badge bg-secondary">{{ t('admin_channels.text') }}</span>
                         {% endif %}
                     </td>
-                    <td>{{ user.last_message or 'Never' }}</td>
+                    <td>{{ user.last_message or t('admin_channels.never') }}</td>
                 </tr>
                 {% else %}
                 <tr>
                     <td colspan="5" class="text-center text-muted py-4">
                         <i class="fab fa-telegram fa-2x mb-2 d-block opacity-50"></i>
-                        No users have Telegram configured.
+                        {{ t('admin_channels.no_channel_users', channel='Telegram') }}
                     </td>
                 </tr>
                 {% endfor %}

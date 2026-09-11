@@ -1,11 +1,12 @@
 {% extends 'base.html' %}
+{% set i18n_domains = ['admin_operations'] %}
 
-{% block title %}Task Manager{% endblock %}
+{% block title %}{{ t('admin_operations.task_manager') }}{% endblock %}
 
-{% block page_title %}Task Manager{% endblock %}
+{% block page_title %}{{ t('admin_operations.task_manager') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
-{% block back_title %}Return to Home{% endblock %}
+{% block back_title %}{{ t('admin_operations.return_to_home') }}{% endblock %}
 
 {% block head_extra %}
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -14,93 +15,93 @@
 {% block toolbar %}{% endblock %}
 
 {% block content %}
-<h2>System Status</h2>
+<h2>{{ t('admin_operations.system_status') }}</h2>
 <ul>
-    <li>Redis Connection: {% if redis_connected %}Connected{% else %}Disconnected{% endif %}</li>
-    <li>Dramatiq Connection: {% if dramatiq_connected %}Connected{% else %}Disconnected{% endif %}</li>
+    <li>{{ t('admin_operations.redis_connection') }} {% if redis_connected %}{{ t('admin_operations.connected') }}{% else %}{{ t('admin_operations.disconnected') }}{% endif %}</li>
+    <li>{{ t('admin_operations.dramatiq_connection') }} {% if dramatiq_connected %}{{ t('admin_operations.connected') }}{% else %}{{ t('admin_operations.disconnected') }}{% endif %}</li>
 </ul>
 
-<h3>Dramatiq Queues</h3>
+<h3>{{ t('admin_operations.dramatiq_queues') }}</h3>
 <ul>
 {% for queue in dramatiq_queues %}
     <li>{{ queue }}</li>
 {% else %}
-    <li>No queues found</li>
+    <li>{{ t('admin_operations.no_queues_found') }}</li>
 {% endfor %}
 </ul>
 
-<h3>Redis Keys</h3>
+<h3>{{ t('admin_operations.redis_keys') }}</h3>
 <ul id="redis-keys-list">
 {% for key in redis_keys %}
     <li><a href="#" class="redis-key" data-key="{{ key }}">{{ key }}</a></li>
 {% else %}
-    <li>No Dramatiq-related keys found</li>
+    <li>{{ t('admin_operations.no_dramatiq_related_keys_found') }}</li>
 {% endfor %}
 </ul>
 
 <div id="key-info" class="mt-4" style="display: none;">
-    <h4>Key Information</h4>
+    <h4>{{ t('admin_operations.key_information') }}</h4>
     <pre id="key-data"></pre>
 </div>
 
-<h2>Pending Tasks</h2>
-<p>Number of pending tasks: {{ pending_tasks|length }}</p>
+<h2>{{ t('admin_operations.pending_tasks') }}</h2>
+<p>{{ t('admin_operations.tasks.pending', count=pending_tasks|length) }}</p>
 <ul class="list-group">
 {% for task in pending_tasks %}
     <li class="list-group-item">
         <pre>{{ task | tojson(indent=2) }}</pre>
-        <p>Retries: {{ task.options.retries }}/{{ task.options.max_retries }}</p>
-        <button class="btn btn-danger btn-sm float-end" onclick="deleteTask('{{ task.message_id }}', 'pending')">Delete</button>
+        <p>{{ t('admin_operations.tasks.retries', current=format_number(task.options.retries|default(0, true)), maximum=(format_number(task.options.max_retries) if task.options.max_retries is number else t('admin_operations.unknown'))) }}</p>
+        <button class="btn btn-danger btn-sm float-end" onclick="deleteTask('{{ task.message_id }}', 'pending')">{{ t('admin_operations.delete') }}</button>
     </li>
 {% else %}
-    <li class="list-group-item">No pending tasks</li>
+    <li class="list-group-item">{{ t('admin_operations.no_pending_tasks') }}</li>
 {% endfor %}
 </ul>
 
-<h2 class="mt-4">Active Tasks</h2>
-<p>Number of active tasks: {{ active_tasks|length }}</p>
+<h2 class="mt-4">{{ t('admin_operations.active_tasks') }}</h2>
+<p>{{ t('admin_operations.tasks.active', count=active_tasks|length) }}</p>
 <ul class="list-group">
 {% for task in active_tasks %}
     <li class="list-group-item">
         <pre>{{ task | tojson(indent=2) }}</pre>
-        <p>Retries: {{ task.options.retries }}/{{ task.options.max_retries }}</p>
+        <p>{{ t('admin_operations.tasks.retries', current=format_number(task.options.retries|default(0, true)), maximum=(format_number(task.options.max_retries) if task.options.max_retries is number else t('admin_operations.unknown'))) }}</p>
     </li>
 {% else %}
-    <li class="list-group-item">No active tasks</li>
+    <li class="list-group-item">{{ t('admin_operations.no_active_tasks') }}</li>
 {% endfor %}
 </ul>
 
-<h2 class="mt-4">Failed Tasks</h2>
-<p>Number of failed tasks: {{ failed_tasks|length }}</p>
+<h2 class="mt-4">{{ t('admin_operations.failed_tasks') }}</h2>
+<p>{{ t('admin_operations.tasks.failed', count=failed_tasks|length) }}</p>
 <ul class="list-group">
 {% for task in failed_tasks %}
     <li class="list-group-item">
         <pre>{{ task | tojson(indent=2) }}</pre>
-        <p>Retries: {{ task.options.retries }}/{{ task.options.max_retries }}</p>
-        <button class="btn btn-danger btn-sm float-end" onclick="deleteTask('{{ task.message_id }}', 'failed')">Delete</button>
-        <button class="btn btn-primary btn-sm float-end me-2" onclick="retryTask('{{ task.message_id }}')">Retry</button>
+        <p>{{ t('admin_operations.tasks.retries', current=format_number(task.options.retries|default(0, true)), maximum=(format_number(task.options.max_retries) if task.options.max_retries is number else t('admin_operations.unknown'))) }}</p>
+        <button class="btn btn-danger btn-sm float-end" onclick="deleteTask('{{ task.message_id }}', 'failed')">{{ t('admin_operations.delete') }}</button>
+        <button class="btn btn-primary btn-sm float-end me-2" onclick="retryTask('{{ task.message_id }}')">{{ t('admin_operations.retry') }}</button>
     </li>
 {% else %}
-    <li class="list-group-item">No failed tasks</li>
+    <li class="list-group-item">{{ t('admin_operations.no_failed_tasks') }}</li>
 {% endfor %}
 </ul>
 
-<h2 class="mt-4">Delayed Tasks</h2>
-<p>Number of delayed tasks: {{ delayed_tasks|length }}</p>
+<h2 class="mt-4">{{ t('admin_operations.delayed_tasks') }}</h2>
+<p>{{ t('admin_operations.tasks.delayed', count=delayed_tasks|length) }}</p>
 <ul class="list-group">
 {% for task in delayed_tasks %}
     <li class="list-group-item">
         <pre>{{ task | tojson(indent=2) }}</pre>
-        <p>Retries: {{ task.options.retries }}/{{ task.options.max_retries }}</p>
+        <p>{{ t('admin_operations.tasks.retries', current=format_number(task.options.retries|default(0, true)), maximum=(format_number(task.options.max_retries) if task.options.max_retries is number else t('admin_operations.unknown'))) }}</p>
     </li>
 {% else %}
-    <li class="list-group-item">No delayed tasks</li>
+    <li class="list-group-item">{{ t('admin_operations.no_delayed_tasks') }}</li>
 {% endfor %}
 </ul>
 
 <!-- Button to clear all Dramatiq tasks -->
 <div class="mt-5">
-    <button class="btn btn-warning" onclick="clearDramatiq()">Clear All Dramatiq Tasks</button>
+    <button class="btn btn-warning" onclick="clearDramatiq()">{{ t('admin_operations.clear_all_dramatiq_tasks') }}</button>
 </div>
 {% endblock %}
 
@@ -114,7 +115,7 @@
                 $('#key-data').text(JSON.stringify(data, null, 2));
                 $('#key-info').show();
             }).fail(function(jqXHR, textStatus, errorThrown) {
-                NotificationModal.error('Request Failed', 'Error: ' + errorThrown);
+                NotificationModal.error(AurvekI18n.t('admin_operations.request_failed'), AurvekI18n.t('common.error.generic'));
             });
         });
     });
@@ -135,12 +136,12 @@
                 location.reload();
             } else {
                 console.error("Error deleting task:", data.error);
-                NotificationModal.error('Delete Failed', 'Error deleting task: ' + data.error);
+                NotificationModal.error(AurvekI18n.t('admin_operations.delete_failed'), data.error || AurvekI18n.t('common.error.generic'));
             }
         })
         .catch(error => {
             console.error("Error in delete task request:", error);
-            NotificationModal.error('Request Error', 'Error in delete task request: ' + error);
+            NotificationModal.error(AurvekI18n.t('admin_operations.request_error'), AurvekI18n.t('common.error.generic'));
         });
     }
 
@@ -160,19 +161,19 @@
                 location.reload();
             } else {
                 console.error("Error retrying task:", data.error);
-                NotificationModal.error('Retry Failed', 'Error retrying task: ' + data.error);
+                NotificationModal.error(AurvekI18n.t('admin_operations.retry_failed'), data.error || AurvekI18n.t('common.error.generic'));
             }
         })
         .catch(error => {
             console.error("Error in retry task request:", error);
-            NotificationModal.error('Request Error', 'Error in retry task request: ' + error);
+            NotificationModal.error(AurvekI18n.t('admin_operations.request_error'), AurvekI18n.t('common.error.generic'));
         });
     }
 
     function clearDramatiq() {
         NotificationModal.confirm(
-            'Clear All Tasks',
-            'Are you sure you want to delete all Dramatiq tasks? This action cannot be undone.',
+            AurvekI18n.t('admin_operations.clear_all_tasks'),
+            AurvekI18n.t('admin_operations.are_you_sure_you_want_to_delete_all_dramatiq_tasks_this_action_cannot_be'),
             () => {
                 fetch('/admin/clear-dramatiq', {
                     method: 'POST',
@@ -180,20 +181,20 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        NotificationModal.success('Tasks Cleared', 'All Dramatiq tasks have been deleted.');
+                        NotificationModal.success(AurvekI18n.t('admin_operations.tasks_cleared'), AurvekI18n.t('admin_operations.all_dramatiq_tasks_have_been_deleted'));
                         location.reload();
                     } else {
                         console.error("Error clearing Dramatiq:", data.error);
-                        NotificationModal.error('Clear Failed', 'Error clearing Dramatiq: ' + data.error);
+                        NotificationModal.error(AurvekI18n.t('admin_operations.clear_failed'), data.error || AurvekI18n.t('common.error.generic'));
                     }
                 })
                 .catch(error => {
                     console.error("Error in cleanup request:", error);
-                    NotificationModal.error('Request Error', 'Error in cleanup request: ' + error);
+                    NotificationModal.error(AurvekI18n.t('admin_operations.request_error'), AurvekI18n.t('common.error.generic'));
                 });
             },
             null,
-            { type: 'error', confirmText: 'Delete All' }
+            { type: 'error', confirmText: AurvekI18n.t('admin_operations.delete_all') }
         );
     }
 </script>

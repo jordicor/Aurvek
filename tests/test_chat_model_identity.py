@@ -9,9 +9,11 @@ from fastapi.responses import JSONResponse
 
 from ai_runtime.channel_turns import ChannelContext
 from ai_runtime import messages as runtime_messages
+from ai_runtime.multi_ai import service as multi_ai_service
 from chat.routes import conversations as conversation_routes
 from chat.routes import messages as message_routes
 from chat.routes import pages
+from chat.services.conversations import create_conversation_core
 from integrations import platform_routes
 
 
@@ -41,14 +43,15 @@ async def _ensure_model_identity_schema(conn):
 
 
 @pytest.mark.asyncio
-async def test_conversation_details_preserve_exact_llm_identity(mock_db, monkeypatch):
+@pytest.mark.parametrize("enabled", [1, 0, None])
+async def test_conversation_details_preserve_exact_llm_identity(mock_db, monkeypatch, enabled):
     monkeypatch.setattr(pages, "get_db_connection", mock_db)
 
     async with mock_db() as conn:
         await _ensure_model_identity_schema(conn)
         await conn.execute(
-            "INSERT INTO LLM (id, machine, model) VALUES (?, ?, ?)",
-            (817, "GPTSub", "gpt-5.6-luna"),
+            "INSERT INTO LLM (id, machine, model, enabled) VALUES (?, ?, ?, ?)",
+            (817, "GPTSub", "gpt-5.6-luna", enabled),
         )
         await conn.execute(
             "INSERT INTO PROMPTS (id, name, prompt) VALUES (?, ?, ?)",
@@ -71,6 +74,26 @@ async def test_conversation_details_preserve_exact_llm_identity(mock_db, monkeyp
 
     assert payload["llm_id"] == 817
     assert payload["model"] == "gpt-5.6-luna"
+    assert payload["llm_enabled"] is (enabled != 0)
+
+
+@pytest.mark.asyncio
+async def test_new_chat_rejects_disabled_inherited_default(mock_db):
+    async with mock_db() as conn:
+        await _ensure_model_identity_schema(conn)
+        await conn.execute("ALTER TABLE USER_DETAILS ADD COLUMN llm_id INTEGER")
+        await conn.execute("ALTER TABLE USER_DETAILS ADD COLUMN current_prompt_id INTEGER")
+        await conn.execute(
+            "INSERT INTO USER_DETAILS (user_id, llm_id) VALUES (1, 605)"
+        )
+        await conn.execute(
+            "INSERT INTO LLM (id, machine, model, enabled) VALUES (605, 'Minimax', 'MiniMax-M2.5', 0)"
+        )
+        cursor = await conn.cursor()
+        with pytest.raises(ValueError, match="Choose an available model"):
+            await create_conversation_core(1, cursor, SimpleNamespace(id=1))
+        await cursor.execute("SELECT COUNT(*) FROM CONVERSATIONS")
+        assert (await cursor.fetchone())[0] == 0
 
 
 @pytest.mark.asyncio
@@ -116,6 +139,37 @@ async def test_only_if_empty_never_changes_chat_with_messages(mock_db, monkeypat
             (2193,),
         )
         assert (await cursor.fetchone())[0] == 605
+
+
+@pytest.mark.asyncio
+async def test_sequential_extension_cannot_be_cleared_to_bypass_level_restriction(mock_db, monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(conversation_routes, "get_db_connection", mock_db)
+    async with mock_db() as conn:
+        await conn.execute("ALTER TABLE CONVERSATIONS ADD COLUMN active_extension_id INTEGER")
+        await conn.execute("ALTER TABLE PROMPTS ADD COLUMN extensions_enabled INTEGER DEFAULT 1")
+        await conn.execute("ALTER TABLE PROMPTS ADD COLUMN extensions_free_selection INTEGER DEFAULT 0")
+        await conn.execute("""CREATE TABLE PROMPT_EXTENSIONS (
+            id INTEGER PRIMARY KEY, prompt_id INTEGER, name TEXT, slug TEXT,
+            description TEXT, display_order INTEGER)""")
+        await conn.execute("INSERT INTO PROMPTS(id,name) VALUES(19,'Levels')")
+        await conn.execute("INSERT INTO CONVERSATIONS(id,user_id,role_id,active_extension_id) VALUES(2193,1,19,1)")
+        await conn.executemany("INSERT INTO PROMPT_EXTENSIONS VALUES(?,19,?,?,NULL,?)", [
+            (1, 'First', 'first', 1), (2, 'Second', 'second', 2), (3, 'Third', 'third', 3),
+        ])
+        await conn.commit()
+
+    for extension_id in (None, 3):
+        with pytest.raises(HTTPException) as error:
+            await conversation_routes.update_conversation_extension(
+                2193, _JsonRequest({"extension_id": extension_id}), SimpleNamespace(id=1),
+            )
+        assert error.value.status_code == 400
+    response = await conversation_routes.update_conversation_extension(
+        2193, _JsonRequest({"extension_id": 2}), SimpleNamespace(id=1),
+    )
+    assert json.loads(response.body)["extension"]["id"] == 2
 
 
 @pytest.mark.asyncio
@@ -279,6 +333,11 @@ async def test_stale_external_conversation_id_cannot_expose_another_user(monkeyp
         def cursor(self):
             return _Cursor()
 
+        def execute(self, statement, _params=()):
+            cursor = _Cursor()
+            cursor.statement = statement
+            return cursor
+
     @asynccontextmanager
     async def _db_connection(*_args, **_kwargs):
         yield _Connection()
@@ -336,12 +395,24 @@ async def test_message_send_requires_exact_model_identity_for_non_phone_inferenc
             return self.names[key] if isinstance(key, str) else self.values[key]
 
     class Cursor:
+        def __init__(self, statement):
+            self.statement = statement
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def __await__(self):
+            return self.__aenter__().__await__()
+
         async def fetchone(self):
-            return IdentityRow()
+            return None if "sqlite_master" in self.statement else IdentityRow()
 
     class Connection:
-        async def execute(self, *_args, **_kwargs):
-            return Cursor()
+        def execute(self, statement, *_args, **_kwargs):
+            return Cursor(statement)
 
     @asynccontextmanager
     async def db_connection(*_args, **_kwargs):
@@ -379,7 +450,10 @@ async def test_message_send_requires_exact_model_identity_for_non_phone_inferenc
 
 
 @pytest.mark.asyncio
-async def test_message_send_rejects_model_changed_in_another_tab(mock_db, monkeypatch):
+@pytest.mark.parametrize("enabled,expected_llm_id", [(1, 817), (0, 605)])
+async def test_message_send_rejects_changed_or_disabled_model(
+    mock_db, monkeypatch, enabled, expected_llm_id
+):
     monkeypatch.setattr(message_routes, "get_db_connection", mock_db)
 
     async def capture_non_phone(**_kwargs):
@@ -401,8 +475,8 @@ async def test_message_send_rejects_model_changed_in_another_tab(mock_db, monkey
     async with mock_db() as conn:
         await _ensure_model_identity_schema(conn)
         await conn.execute(
-            "INSERT INTO LLM (id, machine, model) VALUES (?, ?, ?)",
-            (605, "GPT", "gpt-5.6-luna"),
+            "INSERT INTO LLM (id, machine, model, enabled) VALUES (?, ?, ?, ?)",
+            (605, "GPT", "gpt-5.6-luna", enabled),
         )
         await conn.execute(
             "INSERT INTO CONVERSATIONS (id, user_id, llm_id, locked) VALUES (?, ?, ?, ?)",
@@ -414,20 +488,27 @@ async def test_message_send_rejects_model_changed_in_another_tab(mock_db, monkey
         request=SimpleNamespace(),
         conversation_id=2193,
         current_user=SimpleNamespace(id=1),
-        expected_llm_id=817,
+        expected_llm_id=expected_llm_id,
         multi_ai_models=None,
         attachment_refs=None,
     )
     payload = json.loads(response.body)
 
     assert response.status_code == 409
-    assert payload == {
+    expected = {
         "success": False,
         "error_code": "conversation_model_changed",
         "message": "The AI model changed in another session. Review it and send again.",
         "llm_id": 605,
         "model": "gpt-5.6-luna",
     }
+    if not enabled:
+        expected.update(
+            error_code="model_unavailable",
+            message="This AI model is no longer available for new replies.",
+            llm_enabled=False,
+        )
+    assert payload == expected
 
 
 @pytest.mark.asyncio
@@ -448,12 +529,24 @@ async def test_phone_active_web_turn_skips_inference_credentials_and_reasoning_g
             return self.names[key] if isinstance(key, str) else self.values[key]
 
     class Cursor:
+        def __init__(self, statement):
+            self.statement = statement
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def __await__(self):
+            return self.__aenter__().__await__()
+
         async def fetchone(self):
-            return IdentityRow()
+            return None if "sqlite_master" in self.statement else IdentityRow()
 
     class Connection:
-        async def execute(self, *_args, **_kwargs):
-            return Cursor()
+        def execute(self, statement, *_args, **_kwargs):
+            return Cursor(statement)
 
     @asynccontextmanager
     async def db_connection(*_args, **_kwargs):
@@ -556,7 +649,10 @@ async def test_non_phone_turn_cannot_supply_runtime_model_override():
 
 
 @pytest.mark.asyncio
-async def test_runtime_model_cas_stops_before_provider_or_persistence(monkeypatch):
+@pytest.mark.parametrize("enabled,expected_llm_id", [(1, 817), (0, 605)])
+async def test_runtime_model_admission_stops_before_provider_or_persistence(
+    monkeypatch, enabled, expected_llm_id
+):
     row = (
         0,  # locked
         605,  # llm_id currently stored
@@ -575,9 +671,13 @@ async def test_runtime_model_cas_stops_before_provider_or_persistence(monkeypatc
         0,
         0,
         0,
+        enabled,
     )
 
     class _Cursor:
+        def __init__(self, statement):
+            self.statement = statement
+
         async def __aenter__(self):
             return self
 
@@ -585,11 +685,11 @@ async def test_runtime_model_cas_stops_before_provider_or_persistence(monkeypatc
             return False
 
         async def fetchone(self):
-            return row
+            return None if "sqlite_master" in self.statement else row
 
     class _Connection:
         def execute(self, _statement, _params=()):
-            return _Cursor()
+            return _Cursor(_statement)
 
     @asynccontextmanager
     async def _db_connection(*_args, **_kwargs):
@@ -620,12 +720,15 @@ async def test_runtime_model_cas_stops_before_provider_or_persistence(monkeypatc
         current_user=SimpleNamespace(id=1, can_send_files=True),
         text_plain="must not reach a provider",
         prevalidated=True,
-        expected_llm_id=817,
+        expected_llm_id=expected_llm_id,
+        files=[{"data": b"not persisted", "content_type": "text/plain", "filename": "test.txt"}],
     )
     payload = json.loads(response.body)
 
     assert response.status_code == 409
-    assert payload["error_code"] == "conversation_model_changed"
+    assert payload["error_code"] == (
+        "conversation_model_changed" if enabled else "model_unavailable"
+    )
     assert payload["llm_id"] == 605
 
     def inference_gate_must_not_run(*_args, **_kwargs):
@@ -654,3 +757,52 @@ async def test_runtime_model_cas_stops_before_provider_or_persistence(monkeypatc
 
     assert ingest_response.status_code == 400
     assert "subscription models currently support text messages only" in ingest_payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_multi_ai_rejects_disabled_selection_before_inference(monkeypatch):
+    class Cursor:
+        async def fetchone(self):
+            return (0, 605, 1, "Comparison", None, None, 0, 0, 0, None, 0, 0, 0)
+
+    class Connection:
+        async def execute(self, *_args):
+            return Cursor()
+
+    @asynccontextmanager
+    async def connection(*_args, **_kwargs):
+        yield Connection()
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def admit(_conn, **kwargs):
+        return kwargs["channel_context"]
+
+    async def disabled_model(llm_id):
+        return {"id": llm_id, "model": "Retired model", "enabled": False}
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("A disabled model must not reach inference or billing")
+
+    monkeypatch.setattr(multi_ai_service, "get_db_connection", connection)
+    monkeypatch.setattr(multi_ai_service, "ensure_conversation_privacy_schema", noop)
+    monkeypatch.setattr(multi_ai_service, "admit_application_turn", admit)
+    monkeypatch.setattr(multi_ai_service, "is_whatsapp_conversation", noop)
+    monkeypatch.setattr(multi_ai_service, "get_llm_info", disabled_model)
+    monkeypatch.setattr(multi_ai_service, "reserve_ai_usage", forbidden)
+    monkeypatch.setattr(multi_ai_service, "_run_single_ai", forbidden)
+
+    events = [
+        event async for event in multi_ai_service.process_multi_ai_message(
+            request=None,
+            conversation_id=2193,
+            current_user=SimpleNamespace(id=1),
+            user_message="Keep this draft",
+            model_ids=[605, 817],
+        )
+    ]
+    assert len(events) == 1
+    payload = json.loads(events[0].removeprefix("data: "))
+    assert payload["error_code"] == "multi_ai_model_unavailable"
+    assert "Choose another model" in payload["error"]

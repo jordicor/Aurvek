@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import uuid
+from help_schema import ensure_help_schema
 
 
 def _default_mem0_platform_id():
@@ -79,6 +80,7 @@ def init_db():
         with sqlite3.connect(db_path) as conn:
             with open(schema_path, 'r') as f:
                 conn.executescript(f.read())
+            ensure_help_schema(conn)
 
             # Seed SYSTEM_CONFIG with ranking defaults
             conn.execute("INSERT OR IGNORE INTO SYSTEM_CONFIG (key, value) VALUES ('ranking_mode', 'piggyback')")
@@ -147,6 +149,9 @@ def init_db():
 
             conn.commit()
 
+        from timezone_cities import build_timezone_city_catalog
+
+        build_timezone_city_catalog()
         print(f"Database {db_path} initialized successfully.")
     except sqlite3.Error as e:
         print(f"Database error: {e}")

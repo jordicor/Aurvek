@@ -18,9 +18,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal, Mapping, TypeVar
 
+from integrations.applications.models import ApplicationContext
+from integrations.applications.channel_models import ChannelAdmission
+
 
 ChannelName = Literal["web", "whatsapp", "telegram", "device", "phone"]
-PersistenceMode = Literal["immediate", "deferred", "ingest_only"]
+PersistenceMode = Literal["immediate", "deferred", "ingest_only", "delegation"]
 InputOrigin = Literal[
     "web.message",
     "web.live_voice",
@@ -33,6 +36,15 @@ InputOrigin = Literal[
     "phone.live_call",
 ]
 InputPerception = Literal["text", "transcript_only", "audio_native"]
+PhoneDirection = Literal["inbound", "outbound"]
+PhoneRequestSource = Literal[
+    "caller",
+    "user_ui",
+    "assistant_tool",
+    "external_api",
+    "unknown",
+]
+PhoneRequestTiming = Literal["immediate", "scheduled", "unknown"]
 _DEFAULT_INPUT_ORIGIN: dict[ChannelName, InputOrigin] = {
     "web": "web.message",
     "whatsapp": "whatsapp.message",
@@ -101,6 +113,14 @@ class TurnKey:
             raise ValueError("TurnKey requires non-empty call_id and turn_id")
 
 
+@dataclass(slots=True)
+class VoiceDelegationResult:
+    """A billed backend result; it is not a spoken conversation message."""
+
+    content: str | None = None
+    committed: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelContext:
     channel: ChannelName = "web"
@@ -117,14 +137,67 @@ class ChannelContext:
     provenance: Mapping[str, Any] = field(default_factory=dict, compare=False)
     input_origin: InputOrigin | None = None
     input_perception: InputPerception | None = None
+    phone_direction: PhoneDirection | None = None
+    phone_request_source: PhoneRequestSource | None = None
+    phone_request_timing: PhoneRequestTiming | None = None
+    application: ApplicationContext | None = None
+    application_channel: ChannelAdmission | None = None
+    delegation_result: VoiceDelegationResult | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.application is not None and not isinstance(self.application, ApplicationContext):
+            raise TypeError("application must be a resolved ApplicationContext")
         if self.channel not in {"web", "whatsapp", "telegram", "device", "phone"}:
             raise ValueError(f"Unsupported channel: {self.channel}")
-        if self.persistence not in {"immediate", "deferred", "ingest_only"}:
+        if self.persistence not in {"immediate", "deferred", "ingest_only", "delegation"}:
             raise ValueError(f"Unsupported persistence mode: {self.persistence}")
+        if self.persistence == "delegation":
+            if self.channel != "phone" or not isinstance(self.delegation_result, VoiceDelegationResult):
+                raise ValueError("Voice delegation requires a phone result sink")
+        elif self.delegation_result is not None:
+            raise ValueError("A delegation result requires delegation persistence")
         if self.persistence == "deferred" and self.turn_key is None:
             raise ValueError("Deferred channel turns require a TurnKey")
+
+        phone_metadata = (
+            self.phone_direction,
+            self.phone_request_source,
+            self.phone_request_timing,
+        )
+        supplied_phone_metadata = sum(value is not None for value in phone_metadata)
+        if supplied_phone_metadata and self.channel != "phone":
+            raise ValueError("Phone call metadata is valid only for phone channels")
+        if supplied_phone_metadata not in {0, len(phone_metadata)}:
+            raise ValueError("Phone call metadata must be provided together")
+        if supplied_phone_metadata:
+            if self.phone_direction not in {"inbound", "outbound"}:
+                raise ValueError("Unsupported phone direction")
+            if self.phone_request_source not in {
+                "caller",
+                "user_ui",
+                "assistant_tool",
+                "external_api",
+                "unknown",
+            }:
+                raise ValueError("Unsupported phone request source")
+            if self.phone_request_timing not in {
+                "immediate",
+                "scheduled",
+                "unknown",
+            }:
+                raise ValueError("Unsupported phone request timing")
+            if self.phone_direction == "inbound" and (
+                self.phone_request_source != "caller"
+                or self.phone_request_timing != "immediate"
+            ):
+                raise ValueError(
+                    "Inbound phone calls require caller and immediate metadata"
+                )
+            if (
+                self.phone_direction == "outbound"
+                and self.phone_request_source == "caller"
+            ):
+                raise ValueError("Outbound phone calls cannot use caller as source")
 
         provenance = dict(self.provenance)
         input_origin = self.input_origin or _DEFAULT_INPUT_ORIGIN[self.channel]
@@ -161,7 +234,12 @@ class ChannelContext:
 
     @property
     def bypass_gransabio(self) -> bool:
-        return self.channel == "phone" or self.persistence == "ingest_only"
+        return (
+            self.channel == "phone"
+            or self.persistence == "ingest_only"
+            or (self.application is not None
+                and not self.application.capabilities.get("gransabio", False))
+        )
 
     @property
     def ingest_only(self) -> bool:
@@ -269,6 +347,16 @@ class ChannelTurnHandle:
             and not self._commit_result.cancelled()
             and self._commit_result.exception() is None
         )
+
+    @property
+    def fully_confirmed(self) -> bool:
+        """Whether the entire reply was heard without an interruption."""
+        if (self._interrupt_requested or self._draft is None or not self._draft.content
+                or not self._confirmation.done() or self._confirmation.cancelled()
+                or self._confirmation.exception() is not None):
+            return False
+        confirmation = self._confirmation.result()
+        return confirmation.played_ms > 0 and confirmation.text_prefix == self._draft.content
 
     def bind_owner_task(self, task: asyncio.Task[Any] | None = None) -> None:
         owner = task or asyncio.current_task()

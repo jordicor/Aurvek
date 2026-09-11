@@ -122,7 +122,7 @@
 
     // Set current product name
     if (worldsData.current && currentName) {
-        currentName.textContent = worldsData.current.name || 'Home';
+        currentName.textContent = worldsData.current.name || window.AurvekI18n.t('public_shell.home');
     }
 
     // ── Back to Pack button ──

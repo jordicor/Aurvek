@@ -2492,7 +2492,7 @@ body {
 }
 
 .thinking-tokens-popup::before {
-    content: "[THINKING_TOKENS_CONFIG]";
+    content: "[" attr(data-label) "]";
     display: block;
     color: var(--terminal-btn-primary);
     font-size: 0.7rem;

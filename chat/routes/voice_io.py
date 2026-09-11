@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import aiohttp
 import httpx
 import jwt
 import orjson
@@ -19,7 +18,7 @@ from auth import (
     unauthenticated_response,
 )
 from captcha_service import get_captcha_config
-from clients import deepgram, stt_engine, stt_fallback_enabled
+from clients import stt_engine, stt_fallback_enabled
 from common import (
     GOOGLE_CLIENT_ID,
     READONLY_MODE,
@@ -31,16 +30,18 @@ from common import (
 )
 from database import get_db_connection
 from integrations.media import (
-    BillableSTTProviderError,
     finalize_failed_stt_attempt,
     reserve_stt_attempt,
     settle_stt_attempt,
+    transcribe_with_deepgram as transcribe_media_with_deepgram,
+    transcribe_with_elevenlabs as transcribe_media_with_elevenlabs,
 )
 from storage_quota import StorageQuotaExceededError, ensure_generation_headroom
 from log_config import logger
 from models import ConnectionManager, User
 from rediscfg import redis_client
 from tasks import generate_mp3_task, generate_pdf_task
+from i18n import Translator, get_translator
 from tools.tts import (
     get_file_path,
     get_tts_cache_digest,
@@ -50,11 +51,38 @@ from tools.tts import (
     resolve_playback_voice,
 )
 from tools.tts_config import get_tts_profile
-from tools.tts_load_balancer import get_elevenlabs_key
+from user_languages import load_user_preferred_languages
+
+from chat.services.localization import chat_text, chat_error
 
 router = APIRouter()
 manager = ConnectionManager()
 DEFAULT_STT_LANGUAGE = "es"
+
+
+class _LocalizedSTTError(HTTPException):
+    """An STT error whose detail is already safe for the native chat UI."""
+
+
+def _localized_stt_error(exc: HTTPException, translator, key: str) -> _LocalizedSTTError:
+    return _LocalizedSTTError(
+        status_code=exc.status_code,
+        detail=chat_text(translator, key),
+        headers=exc.headers,
+    )
+
+
+async def _load_primary_stt_language(user_id: int | None, application=None) -> str | None:
+    """Return the user's primary language, or None for provider autodetection."""
+    if user_id is None:
+        return None
+    async with get_db_connection(readonly=True) as conn:
+        if application is not None:
+            from integrations.applications.profile import load_profile
+            preferred_languages = (await load_profile(conn, application.app_id, application.subject)).preferred_languages
+        else:
+            preferred_languages = await load_user_preferred_languages(conn, user_id)
+    return preferred_languages[0] if preferred_languages else None
 
 
 async def require_conversation_access(conversation_id: int, current_user: User) -> int:
@@ -66,11 +94,27 @@ async def require_conversation_access(conversation_id: int, current_user: User) 
         row = await cursor.fetchone()
 
     if not row:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "conversation_not_found"))
 
     owner_id = int(row["user_id"])
     if owner_id != int(current_user.id) and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=chat_text(current_user, "access_denied"))
+    return owner_id
+
+
+async def require_native_export(conversation_id: int, current_user: User) -> int:
+    owner_id = await require_conversation_access(conversation_id, current_user)
+    # Application exports require a scoped POST with funding and private result
+    # delivery. Their legacy global GET routes cannot supply that context.
+    from integrations.applications.runtime import authorize_application_read
+    from integrations.embed.models import EmbedError
+    try:
+        async with get_db_connection(readonly=True) as conn:
+            application = await authorize_application_read(conn, conversation_id, owner_id)
+    except EmbedError as exc:
+        raise HTTPException(exc.status_code, exc.code) from exc
+    if application is not None:
+        raise HTTPException(403, "application_export_route_required")
     return owner_id
 
 
@@ -98,13 +142,13 @@ async def websocket_endpoint(websocket: WebSocket):
             except orjson.JSONDecodeError:
                 await manager.send_json(
                     websocket,
-                    {"action": "error", "error": "Invalid JSON payload"},
+                    {"action": "error", "error": chat_text(current_user, "invalid_json")},
                 )
                 continue
             if not isinstance(data, dict):
                 await manager.send_json(
                     websocket,
-                    {"action": "error", "error": "Invalid JSON payload"},
+                    {"action": "error", "error": chat_text(current_user, "invalid_json")},
                 )
                 continue
             action = data.get("action")
@@ -150,7 +194,7 @@ async def get_tts_audio_endpoint(request: Request, current_user: User = Depends(
     author = data.get("author", "bot")
 
     if conversation_id is None:
-        return JSONResponse(status_code=400, content={"error": "conversationId not provided"})
+        return JSONResponse(status_code=400, content={"error": chat_text(current_user, "conversation_id_required")})
 
     try:
         if author == "user":
@@ -173,7 +217,7 @@ async def get_tts_audio_endpoint(request: Request, current_user: User = Depends(
         return Response(status_code=204)
     except Exception as exc:
         logger.error("Error in get_tts_audio_endpoint: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Internal server error"})
+        return JSONResponse(status_code=500, content={"error": chat_text(current_user, "request_failed")})
 
 
 @router.get("/download-pdf/{conversation_id}")
@@ -197,9 +241,9 @@ async def initiate_download_pdf(
         is_user_admin = await current_user.is_admin
     except Exception as exc:
         logger.error("Error verifying if user is admin: %s", exc)
-        raise HTTPException(status_code=500, detail="Error verifying permissions.")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "permission_check_failed"))
 
-    owner_id = await require_conversation_access(conversation_id, current_user)
+    owner_id = await require_native_export(conversation_id, current_user)
 
     # Storage-quota soft pre-check: exports charge the conversation OWNER's
     # quota (an admin may export another user's conversation, but the file lands
@@ -208,19 +252,20 @@ async def initiate_download_pdf(
         async with get_db_connection(readonly=True) as conn:
             await ensure_generation_headroom(conn, owner_id)
     except StorageQuotaExceededError as exc:
-        raise HTTPException(status_code=413, detail=exc.message)
+        raise HTTPException(status_code=413, detail=chat_text(current_user, "storage_quota_exceeded"))
 
     lock_key = f"pdf_lock:{conversation_id}"
     try:
         lock_acquired = await redis_client.set(lock_key, "locked", nx=True, ex=300)
         if not lock_acquired:
-            return JSONResponse(content={"message": "PDF generation is already in progress or you recently generated one. Please try again in a few minutes."})
+            return JSONResponse(content={"message": chat_text(current_user, "pdf_generation_busy")})
 
-        generate_pdf_task.send(conversation_id=conversation_id, user_id=current_user.id, is_admin=is_user_admin)
-        return JSONResponse(content={"message": "PDF generation has started. Please check the media gallery later to download the PDF."})
+        generate_pdf_task.send(conversation_id=conversation_id, user_id=current_user.id, is_admin=is_user_admin,
+                               ui_language=get_translator(request, current_user).language)
+        return JSONResponse(content={"message": chat_text(current_user, "pdf_generation_started")})
     except Exception as exc:
         logger.error("Error trying to generate PDF for conversation_id %s: %s", conversation_id, exc)
-        raise HTTPException(status_code=500, detail="Internal server error.")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "request_failed"))
 
 
 @router.get("/download-mp3/{conversation_id}")
@@ -237,9 +282,9 @@ async def initiate_download_mp3(
         is_user_admin = await current_user.is_admin
     except Exception as exc:
         logger.error("Error verifying if user is admin: %s", exc)
-        raise HTTPException(status_code=500, detail="Error verifying permissions.")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "permission_check_failed"))
 
-    owner_id = await require_conversation_access(conversation_id, current_user)
+    owner_id = await require_native_export(conversation_id, current_user)
 
     # Storage-quota soft pre-check: exports charge the conversation OWNER's
     # quota (an admin may export another user's conversation, but the file lands
@@ -248,26 +293,29 @@ async def initiate_download_mp3(
         async with get_db_connection(readonly=True) as conn:
             await ensure_generation_headroom(conn, owner_id)
     except StorageQuotaExceededError as exc:
-        raise HTTPException(status_code=413, detail=exc.message)
+        raise HTTPException(status_code=413, detail=chat_text(current_user, "storage_quota_exceeded"))
 
     lock_key = f"mp3_lock:{conversation_id}:{current_user.id}"
     try:
         lock_acquired = await redis_client.set(lock_key, "locked", nx=True, ex=300)
         if not lock_acquired:
-            return JSONResponse(content={"message": "MP3 generation is already in progress or you recently generated one. Please try again in a few minutes."})
+            return JSONResponse(content={"message": chat_text(current_user, "mp3_generation_busy")})
 
-        generate_mp3_task.send(conversation_id=conversation_id, user_id=current_user.id, is_admin=is_user_admin)
+        generate_mp3_task.send(conversation_id=conversation_id, user_id=current_user.id, is_admin=is_user_admin,
+                               ui_language=get_translator(request, current_user).language)
         logger.info("MP3 generation task queued for conversation_id: %s", conversation_id)
-        return JSONResponse(content={"message": "MP3 generation has started. Please check the media gallery later to download the MP3."})
+        return JSONResponse(content={"message": chat_text(current_user, "mp3_generation_started")})
     except Exception as exc:
         logger.error("Error trying to generate MP3 for conversation_id %s: %s", conversation_id, exc)
-        raise HTTPException(status_code=500, detail="Internal server error.")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "request_failed"))
 
 
 @router.get("/serve-mp3/{conversation_id}")
 async def serve_mp3(conversation_id: int, current_user: User = Depends(get_current_user)):
     if current_user is None:
         return unauthenticated_response()
+
+    await require_native_export(conversation_id, current_user)
 
     try:
         from common import generate_user_hash, users_directory
@@ -276,14 +324,15 @@ async def serve_mp3(conversation_id: int, current_user: User = Depends(get_curre
         conv_str = f"{conversation_id:07d}"
         mp3_dir = Path(users_directory) / hash_prefix1 / hash_prefix2 / user_hash / "files" / conv_str[:3] / conv_str[3:] / "mp3"
         if not mp3_dir.exists():
-            return JSONResponse(content={"error": "MP3 not found"}, status_code=404)
+            return JSONResponse(content={"error": chat_text(current_user, "mp3_not_found")}, status_code=404)
         mp3_files = sorted(mp3_dir.glob("*.mp3"), key=lambda path: path.stat().st_mtime, reverse=True)
         if not mp3_files:
-            return JSONResponse(content={"error": "MP3 not found"}, status_code=404)
-        return FileResponse(mp3_files[0], media_type="audio/mpeg", filename=f"conversation_{conversation_id}.mp3")
+            return JSONResponse(content={"error": chat_text(current_user, "mp3_not_found")}, status_code=404)
+        return FileResponse(mp3_files[0], media_type="audio/mpeg", filename=Translator(getattr(current_user, "ui_language", None)).t(
+            "exports.conversation_filename", id=conversation_id) + ".mp3")
     except Exception as exc:
         logger.error("Error serving MP3: %s", exc)
-        return JSONResponse(content={"error": "An error occurred while serving the MP3"}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "audio_unavailable")}, status_code=500)
 
 
 def get_browser(user_agent: str):
@@ -299,68 +348,26 @@ def get_browser(user_agent: str):
     return "other"
 
 
-async def transcribe_with_elevenlabs(audio_content: bytes = None):
-    try:
-        eleven_key = get_elevenlabs_key()
-        if not eleven_key:
-            raise Exception("No ElevenLabs API key available")
-
-        url = "https://api.elevenlabs.io/v1/speech-to-text"
-        headers = {"xi-api-key": eleven_key}
-
-        async with aiohttp.ClientSession() as session:
-            if audio_content:
-                form_data = aiohttp.FormData()
-                form_data.add_field("model_id", "scribe_v2")
-                form_data.add_field("file", audio_content, filename="audio.webm", content_type="audio/webm")
-                async with session.post(url, headers=headers, data=form_data) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise Exception(f"ElevenLabs API error: {response.status} - {error_text}")
-                    try:
-                        result = await response.json()
-                        return result.get("text", "")
-                    except Exception as exc:
-                        raise BillableSTTProviderError(
-                            "ElevenLabs returned an unusable STT response"
-                        ) from exc
-            raise Exception("No audio content available")
-    except Exception as exc:
-        logger.error("Error transcribing with ElevenLabs: %s", str(exc))
-        raise
+async def transcribe_with_elevenlabs(
+    audio_content: bytes = None,
+    language_code: str | None = None,
+):
+    return await transcribe_media_with_elevenlabs(
+        audio_content=audio_content,
+        language_code=language_code,
+    )
 
 
-async def transcribe_with_deepgram(audio_content: bytes = None, user_agent: str = None):
-    try:
-        options = {
-            "model": "nova-2",
-            "smart_format": True,
-            "punctuate": True,
-            "language": DEFAULT_STT_LANGUAGE,
-        }
-        if audio_content:
-            result = await deepgram.listen.asyncprerecorded.v("1").transcribe_file(
-                {"buffer": audio_content},
-                options,
-                timeout=httpx.Timeout(300.0, connect=10.0),
-            )
-        else:
-            raise Exception("No audio content or media URL provided")
-
-        try:
-            data = result.to_dict()
-            if not data:
-                raise ValueError("No response from Deepgram")
-            return data["results"]["channels"][0]["alternatives"][0][
-                "transcript"
-            ]
-        except Exception as exc:
-            raise BillableSTTProviderError(
-                "Deepgram returned an unusable STT response"
-            ) from exc
-    except Exception as exc:
-        logger.error("Error transcribing with Deepgram: %s", str(exc))
-        raise
+async def transcribe_with_deepgram(
+    audio_content: bytes = None,
+    user_agent: str = None,
+    language_code: str | None = None,
+):
+    return await transcribe_media_with_deepgram(
+        audio_content=audio_content,
+        user_agent=user_agent,
+        language_code=language_code,
+    )
 
 
 def _decode_audio_duration(
@@ -377,7 +384,9 @@ def _decode_audio_duration(
     return decoded_audio.duration_seconds
 
 
-async def transcribe(request: Request, audio: UploadFile = File(None), user_id: int = None):
+async def transcribe(request: Request, audio: UploadFile = File(None), user_id: int = None, *, ui_language: str = "en"):
+    from i18n import Translator
+    translator = Translator(ui_language)
     try:
         audio_duration = 0
         content = None
@@ -400,7 +409,7 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
                 audio_format = "mp4"
                 codec = None
             else:
-                raise HTTPException(status_code=400, detail="Unsupported browser (for now)")
+                raise _LocalizedSTTError(status_code=400, detail=chat_text(translator, "browser_unsupported"))
             audio_duration = await asyncio.to_thread(
                 _decode_audio_duration,
                 content,
@@ -408,10 +417,10 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
                 codec=codec,
             )
         else:
-            raise HTTPException(status_code=400, detail="No audio or media URL provided")
+            raise _LocalizedSTTError(status_code=400, detail=chat_text(translator, "audio_required"))
 
         if audio_duration <= 0:
-            raise HTTPException(status_code=400, detail="No audio")
+            raise _LocalizedSTTError(status_code=400, detail=chat_text(translator, "audio_required"))
 
         duration_min = audio_duration / 60
         primary_engine = (
@@ -420,30 +429,42 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
             else "elevenlabs"
         )
         user_agent = request.headers.get("user-agent")
+        language_code = await _load_primary_stt_language(user_id, getattr(request.state, "application_context", None))
 
         async def transcribe_with_engine(engine: str):
             if engine == "elevenlabs":
-                return await transcribe_with_elevenlabs(audio_content=content)
+                return await transcribe_with_elevenlabs(
+                    audio_content=content,
+                    language_code=language_code,
+                )
             return await transcribe_with_deepgram(
                 audio_content=content,
                 user_agent=user_agent,
+                language_code=language_code,
             )
 
-        primary_reservation_id = await reserve_stt_attempt(
-            user_id=user_id,
-            engine=primary_engine,
-            configured_engine=primary_engine,
-            duration_min=duration_min,
-            context=primary_engine,
-        )
+        try:
+            primary_reservation_id = await reserve_stt_attempt(
+                user_id=user_id,
+                engine=primary_engine,
+                configured_engine=primary_engine,
+                duration_min=duration_min,
+                context=primary_engine,
+            )
+        except HTTPException as exc:
+            key = "insufficient_balance" if exc.status_code == 402 else "billing_unavailable"
+            raise _localized_stt_error(exc, translator, key) from exc
         try:
             prompt = await transcribe_with_engine(primary_engine)
         except BaseException as primary_error:
-            await finalize_failed_stt_attempt(
-                primary_reservation_id,
-                primary_error,
-                context=f"failed {primary_engine}",
-            )
+            try:
+                await finalize_failed_stt_attempt(
+                    primary_reservation_id,
+                    primary_error,
+                    context=f"failed {primary_engine}",
+                )
+            except HTTPException as exc:
+                raise _localized_stt_error(exc, translator, "billing_unavailable") from exc
             if (
                 not isinstance(primary_error, Exception)
                 or not stt_fallback_enabled
@@ -457,21 +478,28 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
                 primary_error,
             )
             fallback_engine = "elevenlabs"
-            fallback_reservation_id = await reserve_stt_attempt(
-                user_id=user_id,
-                engine=fallback_engine,
-                configured_engine=primary_engine,
-                duration_min=duration_min,
-                context=f"fallback {fallback_engine}",
-            )
+            try:
+                fallback_reservation_id = await reserve_stt_attempt(
+                    user_id=user_id,
+                    engine=fallback_engine,
+                    configured_engine=primary_engine,
+                    duration_min=duration_min,
+                    context=f"fallback {fallback_engine}",
+                )
+            except HTTPException as exc:
+                key = "insufficient_balance" if exc.status_code == 402 else "billing_unavailable"
+                raise _localized_stt_error(exc, translator, key) from exc
             try:
                 prompt = await transcribe_with_engine(fallback_engine)
             except BaseException as fallback_error:
-                await finalize_failed_stt_attempt(
-                    fallback_reservation_id,
-                    fallback_error,
-                    context=f"failed fallback {fallback_engine}",
-                )
+                try:
+                    await finalize_failed_stt_attempt(
+                        fallback_reservation_id,
+                        fallback_error,
+                        context=f"failed fallback {fallback_engine}",
+                    )
+                except HTTPException as exc:
+                    raise _localized_stt_error(exc, translator, "billing_unavailable") from exc
                 if not isinstance(fallback_error, Exception):
                     raise
                 logger.error(
@@ -481,25 +509,33 @@ async def transcribe(request: Request, audio: UploadFile = File(None), user_id: 
                 )
                 raise primary_error from fallback_error
 
-            await settle_stt_attempt(
-                fallback_reservation_id,
-                context=f"fallback {fallback_engine}",
-            )
+            try:
+                await settle_stt_attempt(
+                    fallback_reservation_id,
+                    context=f"fallback {fallback_engine}",
+                )
+            except HTTPException as exc:
+                raise _localized_stt_error(exc, translator, "billing_unavailable") from exc
             logger.info("Fallback to %s successful", fallback_engine)
             return prompt
 
-        await settle_stt_attempt(
-            primary_reservation_id,
-            context=primary_engine,
-        )
+        try:
+            await settle_stt_attempt(
+                primary_reservation_id,
+                context=primary_engine,
+            )
+        except HTTPException as exc:
+            raise _localized_stt_error(exc, translator, "billing_unavailable") from exc
         return prompt
-    except HTTPException:
+    except _LocalizedSTTError:
         raise
+    except HTTPException as exc:
+        raise _localized_stt_error(exc, translator, "provider_unavailable") from exc
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=f"HTTP error: {exc}")
+        raise HTTPException(status_code=exc.response.status_code, detail=chat_text(translator, "provider_unavailable"))
     except Exception as exc:
         logger.error("Error: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=chat_text(translator, "provider_unavailable"))
 
 
 @router.post("/api/transcribe-web")
@@ -515,42 +551,42 @@ async def transcribe_web(
     try:
         await require_conversation_access(int(conversation_id), current_user)
 
-        prompt = await transcribe(request, audio, current_user.id)
+        from chat.services.localization import chat_translator
+        prompt = await transcribe(request, audio, current_user.id, ui_language=chat_translator(current_user).language)
         return JSONResponse(content={"prompt": prompt}, status_code=200)
-    except HTTPException as exc:
-        if exc.detail == "User ID could not be determined":
-            logger.error("transcribe web: Could not determine user_id")
+    except HTTPException:
         raise
     except Exception as exc:
-        return JSONResponse(content={"error": str(exc)}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "provider_unavailable")}, status_code=500)
 
 
 @router.get("/get-audio/{path:path}")
 async def get_audio(path: str, token: str):
+    current_user = None
     try:
         payload = decode_jwt_cached(token, SECRET_KEY)
         username = payload.get("username")
         if not username:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail=chat_text(current_user, "token_invalid"))
 
         current_user = await get_user_by_username(username)
         if not current_user:
-            raise HTTPException(status_code=401, detail="Invalid token: user not found")
+            raise HTTPException(status_code=401, detail=chat_text(current_user, "token_invalid"))
 
         exp = payload.get("exp")
         if not exp:
-            raise HTTPException(status_code=401, detail="Token does not have expiration time")
+            raise HTTPException(status_code=401, detail=chat_text(current_user, "token_invalid"))
 
         cache_base = Path(cache_directory)
         validated_path = validate_path_within_directory(path, cache_base)
     except jwt.ExpiredSignatureError:
-        response = JSONResponse(status_code=401, content={"detail": "Token expired"})
+        response = JSONResponse(status_code=401, content={"detail": chat_text(current_user, "token_expired")})
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
     except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "token_invalid"))
 
     if validated_path.exists():
         current_time = datetime.now(timezone.utc)
@@ -558,7 +594,7 @@ async def get_audio(path: str, token: str):
         time_until_expiration = expiration_time - current_time
 
         if time_until_expiration.total_seconds() <= 0:
-            response = JSONResponse(status_code=401, content={"detail": "Token expired"})
+            response = JSONResponse(status_code=401, content={"detail": chat_text(current_user, "token_expired")})
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -570,11 +606,11 @@ async def get_audio(path: str, token: str):
         elif audio_path_str.endswith(".mp3"):
             media_type = "audio/mpeg"
         else:
-            raise HTTPException(status_code=415, detail="Unsupported media type")
+            raise HTTPException(status_code=415, detail=chat_text(current_user, "media_type_unsupported"))
 
         response = FileResponse(str(validated_path), media_type=media_type)
         response.headers["Cache-Control"] = f"public, max-age={int(time_until_expiration.total_seconds())}"
         response.headers["Expires"] = expiration_time.strftime("%a, %d %b %Y %H:%M:%S GMT")
         return response
 
-    raise HTTPException(status_code=404, detail="File not found")
+    raise HTTPException(status_code=404, detail=chat_text(current_user, "file_not_found"))

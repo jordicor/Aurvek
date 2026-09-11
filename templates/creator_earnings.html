@@ -1,6 +1,7 @@
+{% set i18n_domains = ['marketplace_earnings'] %}
 {% extends 'base.html' %}
 
-{% block title %}Creator Earnings - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace_earnings.creator_earnings_aurvek') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -28,7 +29,7 @@
         color: var(--text-secondary, #b9bbbe);
         margin-bottom: 0.25rem;
     }
-    /* Withdrawal button - theme aware */
+    /* {{ t('marketplace_earnings.withdraw') }}al button - theme aware */
     .stat-card .btn-light {
         background: var(--bg-tertiary, #202225);
         border-color: var(--border-color, #40444b);
@@ -105,12 +106,12 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Creator Earnings{% endblock %}
+{% block page_title %}{{ t('marketplace_earnings.creator_earnings') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block page_subtitle %}
-<p class="text-muted mb-0">Track your earnings from paid prompts. You earn 70% of markup when users use your prompts.</p>
+<p class="text-muted mb-0">{{ t('marketplace_earnings.track_your_earnings_from_paid_prompts_you_earn_70_of_markup_when_users_use_your_prompts') }}</p>
 {% endblock %}
 
 {% block content %}
@@ -120,14 +121,14 @@
         <div class="stat-card warning connect-card">
             <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
                 <div>
-                    <div class="label"><i class="fas fa-university me-1"></i>Bank Account</div>
+                    <div class="label"><i class="fas fa-university me-1"></i>{{ t('marketplace_earnings.earnings.bank') }}</div>
                     <div id="connectStatus" class="mt-2">
                         <span class="connect-status not-connected">
-                            <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+                            <i class="fas fa-spinner fa-spin me-1"></i> {{ t('marketplace_earnings.loading') }}
                         </span>
                     </div>
                     <div class="connect-info" id="connectInfo">
-                        Connect your bank account to receive automatic payouts.
+                        {{ t('marketplace_earnings.connect_your_bank_account_to_receive_automatic_payouts') }}
                     </div>
                 </div>
                 <div id="connectActions">
@@ -142,25 +143,25 @@
 <div class="row">
     <div class="col-md-4 mb-4">
         <div class="stat-card primary">
-            <div class="label"><i class="fas fa-coins me-1"></i>Total Earned (All Time)</div>
-            <div class="amount" id="totalEarned">$0.00</div>
+            <div class="label"><i class="fas fa-coins me-1"></i>{{ t('marketplace_earnings.earnings.total') }}</div>
+            <div class="amount" id="totalEarned">{{ format_currency(0) }}</div>
         </div>
     </div>
     <div class="col-md-4 mb-4">
         <div class="stat-card success">
-            <div class="label"><i class="fas fa-calendar-alt me-1"></i>This Month</div>
-            <div class="amount" id="thisMonth">$0.00</div>
+            <div class="label"><i class="fas fa-calendar-alt me-1"></i>{{ t('marketplace_earnings.earnings.month') }}</div>
+            <div class="amount" id="thisMonth">{{ format_currency(0) }}</div>
         </div>
     </div>
     <div class="col-md-4 mb-4">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-wallet me-1"></i>Available for Withdrawal</div>
-            <div class="amount" id="pendingEarnings">$0.00</div>
+            <div class="label"><i class="fas fa-wallet me-1"></i>{{ t('marketplace_earnings.earnings.available') }}</div>
+            <div class="amount" id="pendingEarnings">{{ format_currency(0) }}</div>
             <div class="mt-2">
                 <button class="btn btn-light btn-sm" id="withdrawBtn" onclick="requestPayout()" disabled>
-                    <i class="fas fa-money-bill-wave me-1"></i> Request Withdrawal
+                    <i class="fas fa-money-bill-wave me-1"></i> {{ t('marketplace_earnings.request_withdrawal') }}
                 </button>
-                <small class="d-block mt-1" id="withdrawNote">Minimum: $50</small>
+                <small class="d-block mt-1" id="withdrawNote">{{ t('marketplace_earnings.minimum', amount=format_currency(50)) }}</small>
             </div>
         </div>
     </div>
@@ -170,21 +171,21 @@
     <!-- Earnings by Prompt -->
     <div class="col-lg-8 mb-4">
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-list me-2"></i>Earnings by Prompt</div>
+            <div class="section-title"><i class="fas fa-list me-2"></i>{{ t('marketplace_earnings.earnings.by_prompt') }}</div>
             <div class="table-responsive">
                 <table class="table earnings-table">
                     <thead>
                         <tr>
-                            <th>Prompt</th>
-                            <th class="text-center">Users</th>
-                            <th class="text-end">Tokens</th>
-                            <th class="text-end">Earned</th>
+                            <th>{{ t('marketplace_earnings.prompt') }}</th>
+                            <th class="text-center">{{ t('marketplace_earnings.users') }}</th>
+                            <th class="text-end">{{ t('marketplace_earnings.tokens') }}</th>
+                            <th class="text-end">{{ t('marketplace_earnings.earned') }}</th>
                         </tr>
                     </thead>
                     <tbody id="promptEarningsTable">
                         <tr>
                             <td colspan="4" class="text-center text-muted py-4">
-                                <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+                                <i class="fas fa-spinner fa-spin me-2"></i>{{ t('marketplace_earnings.loading') }}
                             </td>
                         </tr>
                     </tbody>
@@ -196,10 +197,10 @@
     <!-- Recent Transactions -->
     <div class="col-lg-4 mb-4">
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-history me-2"></i>Recent Earnings</div>
+            <div class="section-title"><i class="fas fa-history me-2"></i>{{ t('marketplace_earnings.earnings.recent') }}</div>
             <div id="recentTransactions">
                 <div class="text-center text-muted py-4">
-                    <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+                    <i class="fas fa-spinner fa-spin me-2"></i>{{ t('marketplace_earnings.loading') }}
                 </div>
             </div>
         </div>
@@ -229,23 +230,23 @@
         const params = new URLSearchParams(window.location.search);
 
         if (params.get('success') === 'connected') {
-            NotificationModal.success('Bank Account Connected', 'Your bank account has been successfully connected. You can now receive payouts!');
+            NotificationModal.success(AurvekI18n.t('marketplace_earnings.bank_account_connected'), AurvekI18n.t('marketplace_earnings.your_bank_account_has_been_successfully_connected_you_can_now_receive_payouts'));
             // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
         } else if (params.get('warning') === 'pending_verification') {
-            NotificationModal.warning('Verification Pending', 'Your account setup is almost complete. Stripe is verifying your information.');
+            NotificationModal.warning(AurvekI18n.t('marketplace_earnings.verification_pending'), AurvekI18n.t('marketplace_earnings.your_account_setup_is_almost_complete_stripe_is_verifying_your_information'));
             window.history.replaceState({}, document.title, window.location.pathname);
         } else if (params.get('warning') === 'incomplete') {
-            NotificationModal.warning('Setup Incomplete', 'Please complete the bank account setup to receive payouts.');
+            NotificationModal.warning(AurvekI18n.t('marketplace_earnings.setup_incomplete'), AurvekI18n.t('marketplace_earnings.please_complete_the_bank_account_setup_to_receive_payouts'));
             window.history.replaceState({}, document.title, window.location.pathname);
         } else if (params.get('warning') === 'link_expired') {
-            NotificationModal.warning('Link Expired', 'Your onboarding link has expired. Please click "Connect Bank Account" to start again.');
+            NotificationModal.warning(AurvekI18n.t('marketplace_earnings.link_expired'), AurvekI18n.t('marketplace_earnings.your_onboarding_link_has_expired_please_click_connect_bank_account_to_start_again'));
             window.history.replaceState({}, document.title, window.location.pathname);
         } else if (params.get('error')) {
-            const errorMsg = params.get('error') === 'stripe_error' ? 'A Stripe error occurred. Please try again.' :
-                            params.get('error') === 'no_account' ? 'No account found. Please start the connection process again.' :
-                            'An error occurred. Please try again.';
-            NotificationModal.error('Error', errorMsg);
+            const errorMsg = params.get('error') === 'stripe_error' ? AurvekI18n.t('marketplace_earnings.a_stripe_error_occurred_please_try_again') :
+                            params.get('error') === 'no_account' ? AurvekI18n.t('marketplace_earnings.no_account_found_please_start_the_connection_process_again') :
+                            AurvekI18n.t('marketplace_earnings.an_error_occurred_please_try_again');
+            NotificationModal.error(AurvekI18n.t('marketplace_earnings.error'), errorMsg);
             window.history.replaceState({}, document.title, window.location.pathname);
         }
     }
@@ -257,7 +258,7 @@
 
         try {
             const response = await fetch('/api/connect/status');
-            if (!response.ok) throw new Error('Failed to load status');
+            if (!response.ok) throw new Error(AurvekI18n.t('marketplace_earnings.failed_to_load_status'));
             const data = await response.json();
 
             connectState = data;
@@ -266,48 +267,48 @@
                 // Fully connected and ready
                 statusDiv.innerHTML = `
                     <span class="connect-status connected">
-                        <i class="fas fa-check-circle me-1"></i> Connected & Ready
+                        <i class="fas fa-check-circle me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.connected_ready'))}
                     </span>
                 `;
-                infoDiv.textContent = 'Your bank account is connected. Payouts will be sent automatically when you request them.';
+                infoDiv.textContent = AurvekI18n.t('marketplace_earnings.your_bank_account_is_connected_payouts_will_be_sent_automatically_when_you_request_them');
                 actionsDiv.innerHTML = ''; // No action needed
             } else if (data.connected && data.onboarding_complete && !data.payouts_enabled) {
                 // Onboarding done but verification pending
                 statusDiv.innerHTML = `
                     <span class="connect-status pending">
-                        <i class="fas fa-clock me-1"></i> Verification Pending
+                        <i class="fas fa-clock me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.verification_pending'))}
                     </span>
                 `;
-                infoDiv.textContent = 'Stripe is verifying your information. This usually takes a few minutes.';
+                infoDiv.textContent = AurvekI18n.t('marketplace_earnings.stripe_is_verifying_your_information_this_usually_takes_a_few_minutes');
                 actionsDiv.innerHTML = `
                     <button class="btn btn-stripe btn-sm" onclick="startOnboarding()">
-                        <i class="fas fa-redo me-1"></i> Check Status
+                        <i class="fas fa-redo me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.check_status'))}
                     </button>
                 `;
             } else if (data.connected && !data.onboarding_complete) {
                 // Started but not completed
                 statusDiv.innerHTML = `
                     <span class="connect-status pending">
-                        <i class="fas fa-exclamation-circle me-1"></i> Setup Incomplete
+                        <i class="fas fa-exclamation-circle me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.setup_incomplete'))}
                     </span>
                 `;
-                infoDiv.textContent = 'Please complete your bank account setup to receive payouts.';
+                infoDiv.textContent = AurvekI18n.t('marketplace_earnings.please_complete_your_bank_account_setup_to_receive_payouts');
                 actionsDiv.innerHTML = `
                     <button class="btn btn-stripe btn-sm" onclick="startOnboarding()">
-                        <i class="fas fa-arrow-right me-1"></i> Complete Setup
+                        <i class="fas fa-arrow-right me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.complete_setup'))}
                     </button>
                 `;
             } else {
                 // Not connected at all
                 statusDiv.innerHTML = `
                     <span class="connect-status not-connected">
-                        <i class="fas fa-link-slash me-1"></i> Not Connected
+                        <i class="fas fa-link-slash me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.not_connected'))}
                     </span>
                 `;
-                infoDiv.textContent = 'Connect your bank account to receive automatic payouts when you request withdrawals.';
+                infoDiv.textContent = AurvekI18n.t('marketplace_earnings.connect_your_bank_account_to_receive_automatic_payouts_when_you_request_withdrawals');
                 actionsDiv.innerHTML = `
                     <button class="btn btn-stripe btn-sm" onclick="startOnboarding()">
-                        <i class="fab fa-stripe me-1"></i> Connect Bank Account
+                        <i class="fab fa-stripe me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.connect_bank_account'))}
                     </button>
                 `;
             }
@@ -319,12 +320,12 @@
             console.error('Error loading Connect status:', error);
             statusDiv.innerHTML = `
                 <span class="connect-status not-connected">
-                    <i class="fas fa-exclamation-triangle me-1"></i> Error loading status
+                    <i class="fas fa-exclamation-triangle me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.error_loading_status'))}
                 </span>
             `;
             actionsDiv.innerHTML = `
                 <button class="btn btn-light btn-sm" onclick="loadConnectStatus()">
-                    <i class="fas fa-redo me-1"></i> Retry
+                    <i class="fas fa-redo me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.retry'))}
                 </button>
             `;
         }
@@ -334,7 +335,7 @@
         const actionsDiv = document.getElementById('connectActions');
         actionsDiv.innerHTML = `
             <button class="btn btn-stripe btn-sm" disabled>
-                <i class="fas fa-spinner fa-spin me-1"></i> Connecting...
+                <i class="fas fa-spinner fa-spin me-1"></i> ${escapeHtml(AurvekI18n.t('marketplace_earnings.connecting'))}
             </button>
         `;
 
@@ -350,12 +351,12 @@
                 // Redirect to Stripe onboarding
                 window.location.href = data.url;
             } else {
-                NotificationModal.error('Connection Failed', data.message || 'Failed to start bank account connection.');
+                NotificationModal.error(AurvekI18n.t('marketplace_earnings.connection_failed'), data.message || AurvekI18n.t('marketplace_earnings.failed_to_start_bank_account_connection'));
                 loadConnectStatus(); // Reload to restore button
             }
         } catch (error) {
             console.error('Error starting onboarding:', error);
-            NotificationModal.error('Error', 'An error occurred. Please try again.');
+            NotificationModal.error(AurvekI18n.t('marketplace_earnings.error'), AurvekI18n.t('marketplace_earnings.an_error_occurred_please_try_again'));
             loadConnectStatus();
         }
     }
@@ -369,21 +370,21 @@
 
         if (!canPayout) {
             withdrawBtn.disabled = true;
-            withdrawNote.innerHTML = '<span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>Connect bank account first</span>';
+            withdrawNote.innerHTML = '<span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>' + escapeHtml(AurvekI18n.t('marketplace_earnings.connect_bank_account_first')) + '</span>';
         } else if (!hasMinimum) {
             withdrawBtn.disabled = true;
-            const remaining = (50 - pendingEarningsAmount).toFixed(2);
-            withdrawNote.textContent = `$${remaining} more to reach $50 minimum`;
+            const remaining = formatCurrency(50 - pendingEarningsAmount);
+            withdrawNote.textContent = AurvekI18n.t('marketplace_earnings.remaining', {remaining, minimum: formatCurrency(50)});
         } else {
             withdrawBtn.disabled = false;
-            withdrawNote.textContent = 'Click to withdraw to your bank account';
+            withdrawNote.textContent = AurvekI18n.t('marketplace_earnings.click_to_withdraw_to_your_bank_account');
         }
     }
 
     async function loadEarningsData() {
         try {
             const response = await fetch('/api/my-earnings');
-            if (!response.ok) throw new Error('Failed to load earnings data');
+            if (!response.ok) throw new Error(AurvekI18n.t('marketplace_earnings.failed_to_load_earnings_data'));
             const data = await response.json();
 
             // Update stats
@@ -405,12 +406,12 @@
                         <td>
                             <strong>${escapeHtml(p.prompt_name)}</strong>
                             ${p.is_paid && p.purchase_price > 0
-                                ? '<span class="badge bg-warning text-dark ms-1">VIP</span>'
+                                ? '<span class="badge bg-warning text-dark ms-1">' + escapeHtml(AurvekI18n.t('marketplace_earnings.tier.vip')) + '</span>'
                                 : p.is_paid
-                                    ? '<span class="badge bg-info text-dark ms-1">Premium</span>'
+                                    ? '<span class="badge bg-info text-dark ms-1">' + escapeHtml(AurvekI18n.t('marketplace_earnings.tier.premium')) + '</span>'
                                     : ''}
                         </td>
-                        <td class="text-center">${p.unique_users}</td>
+                        <td class="text-center">${AurvekI18n.formatNumber(p.unique_users)}</td>
                         <td class="text-end">${formatTokens(p.total_tokens)}</td>
                         <td class="text-end text-success fw-bold">${formatCurrency(p.total_earned)}</td>
                     </tr>
@@ -419,7 +420,7 @@
                 tableBody.innerHTML = `
                     <tr>
                         <td colspan="4" class="text-center text-muted py-4">
-                            <i class="fas fa-info-circle me-2"></i>No earnings yet. Create paid prompts to start earning!
+                            <i class="fas fa-info-circle me-2"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.no_earnings_yet_create_paid_prompts_to_start_earning'))}
                         </td>
                     </tr>
                 `;
@@ -440,7 +441,7 @@
             } else {
                 transDiv.innerHTML = `
                     <div class="text-center text-muted py-4">
-                        <i class="fas fa-info-circle me-2"></i>No recent transactions
+                        <i class="fas fa-info-circle me-2"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.no_recent_transactions'))}
                     </div>
                 `;
             }
@@ -450,7 +451,7 @@
             document.getElementById('promptEarningsTable').innerHTML = `
                 <tr>
                     <td colspan="4" class="text-center text-danger py-4">
-                        <i class="fas fa-exclamation-triangle me-2"></i>Error loading data
+                        <i class="fas fa-exclamation-triangle me-2"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.error_loading_data'))}
                     </td>
                 </tr>
             `;
@@ -460,17 +461,17 @@
     async function requestPayout() {
         // Double-check Connect status
         if (!connectState.payouts_enabled) {
-            NotificationModal.error('Bank Account Required', 'Please connect your bank account before requesting a withdrawal.');
+            NotificationModal.error(AurvekI18n.t('marketplace_earnings.bank_account_required'), AurvekI18n.t('marketplace_earnings.please_connect_your_bank_account_before_requesting_a_withdrawal'));
             return;
         }
 
         NotificationModal.confirm(
-            'Withdraw Earnings',
-            'Withdraw your pending earnings? The funds will be sent to your connected bank account and typically arrive within 2-3 business days.',
+            AurvekI18n.t('marketplace_earnings.withdraw_earnings'),
+            AurvekI18n.t('marketplace_earnings.withdraw_your_pending_earnings_the_funds_will_be_sent_to_your_connected_bank_account_and_t'),
             async () => {
                 const withdrawBtn = document.getElementById('withdrawBtn');
                 withdrawBtn.disabled = true;
-                withdrawBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Processing...';
+                withdrawBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> ' + escapeHtml(AurvekI18n.t('marketplace_earnings.processing')) + '';
 
                 try {
                     const response = await fetch('/api/creator/request-payout', {
@@ -481,41 +482,36 @@
                     const data = await response.json();
 
                     if (response.ok && data.success) {
-                        NotificationModal.success('Payout Sent!', data.message || 'Your payout has been sent to your bank account.');
+                        NotificationModal.success(AurvekI18n.t('marketplace_earnings.payout_sent'), data.message || AurvekI18n.t('marketplace_earnings.your_payout_has_been_sent_to_your_bank_account'));
                         loadEarningsData();
                     } else {
-                        NotificationModal.error('Payout Failed', data.message || 'Failed to process payout. Please try again.');
+                        NotificationModal.error(AurvekI18n.t('marketplace_earnings.payout_failed'), data.message || AurvekI18n.t('marketplace_earnings.failed_to_process_payout_please_try_again'));
                     }
                 } catch (error) {
                     console.error('Error requesting payout:', error);
-                    NotificationModal.error('Error', 'An error occurred. Please try again.');
+                    NotificationModal.error(AurvekI18n.t('marketplace_earnings.error'), AurvekI18n.t('marketplace_earnings.an_error_occurred_please_try_again'));
                 } finally {
-                    withdrawBtn.innerHTML = '<i class="fas fa-money-bill-wave me-1"></i> Request Withdrawal';
+                    withdrawBtn.innerHTML = '<i class="fas fa-money-bill-wave me-1"></i> ' + escapeHtml(AurvekI18n.t('marketplace_earnings.request_withdrawal')) + '';
                     updateWithdrawButton();
                 }
             },
             null,
-            { type: 'warning', confirmText: 'Withdraw' }
+            { type: 'warning', confirmText: AurvekI18n.t('marketplace_earnings.withdraw') }
         );
     }
 
     function formatCurrency(amount) {
-        return '$' + (parseFloat(amount) || 0).toFixed(2);
+        return AurvekI18n.formatCurrency(parseFloat(amount) || 0);
     }
 
     function formatTokens(tokens) {
         const num = parseInt(tokens) || 0;
-        if (num >= 1000000) {
-            return (num / 1000000).toFixed(1) + 'M';
-        } else if (num >= 1000) {
-            return (num / 1000).toFixed(1) + 'K';
-        }
-        return num.toString();
+        return AurvekI18n.formatNumber(num, {notation: 'compact', maximumFractionDigits: 1});
     }
 
     function formatDate(dateStr) {
         const date = new Date(dateStr);
-        return date.toLocaleDateString('en-US', {
+        return date.toLocaleDateString(AurvekI18n.locale, {
             month: 'short',
             day: 'numeric',
             hour: '2-digit',

@@ -1,6 +1,7 @@
+{% set i18n_domains = ['creator'] %}
 {% extends 'base.html' %}
 
-{% block title %}Curation Settings - AURVEK{% endblock %}
+{% block title %}{{ t('creator.curation.title') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -29,19 +30,19 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Curation Settings{% endblock %}
+{% block page_title %}{{ t('creator.curation.title') }}{% endblock %}
 
 {% block back_url %}/edit-profile{% endblock %}
 
-{% block back_title %}Back to Profile{% endblock %}
+{% block back_title %}{{ t('creator.curation.back_profile') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="text-muted mb-0">Configure your curation markup. When you include prompts from other creators in your offering, you earn a percentage on top.</p>
+<p class="text-muted mb-0">{{ t('creator.curation.subtitle') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <a href="/create-user" class="btn btn-outline-primary">
-    <i class="fas fa-user-plus me-1"></i> Create User
+    <i class="fas fa-user-plus me-1"></i> {{ t('creator.curation.create_user') }}
 </a>
 {% endblock %}
 
@@ -50,17 +51,17 @@
     <!-- Earnings Card -->
     <div class="col-md-4 mb-4">
         <div class="section-container h-100">
-            <div class="section-title"><i class="fas fa-wallet"></i> Pending Earnings</div>
-            <div class="earnings-amount" id="pendingEarnings">${{ "%.2f"|format(curation_data.pending_earnings) }}</div>
-            <p class="text-muted mb-0 mt-2">Minimum withdrawal: $50</p>
+            <div class="section-title"><i class="fas fa-wallet"></i> {{ t('creator.curation.pending') }}</div>
+            <div class="earnings-amount" id="pendingEarnings">{{ format_currency(curation_data.pending_earnings, 'USD') }}</div>
+            <p class="text-muted mb-0 mt-2">{{ t('creator.curation.minimum', amount=format_currency(50, 'USD')) }}</p>
             {% if curation_data.pending_earnings >= 50 %}
             <button class="btn btn-success btn-sm mt-3" onclick="requestPayout()">
-                <i class="fas fa-money-bill-wave me-1"></i> Request Withdrawal
+                <i class="fas fa-money-bill-wave me-1"></i> {{ t('creator.curation.withdraw') }}
             </button>
             {% else %}
             <small class="text-muted d-block mt-2">
                 <i class="fas fa-info-circle me-1"></i>
-                ${{ "%.2f"|format(50 - curation_data.pending_earnings) }} more to reach minimum
+                {{ t('creator.curation.remaining', amount=format_currency(50 - curation_data.pending_earnings, 'USD')) }}
             </small>
             {% endif %}
         </div>
@@ -69,50 +70,48 @@
     <!-- Markup Configuration -->
     <div class="col-md-8 mb-4">
         <div class="section-container h-100">
-            <div class="section-title"><i class="fas fa-percentage me-2"></i>Curation Markup Configuration</div>
+            <div class="section-title"><i class="fas fa-percentage me-2"></i>{{ t('creator.curation.configuration') }}</div>
             <p class="text-muted small">
-                Set your markup to earn commission when your users consume AI tokens.
-                The markup is added on top of the base price and you receive 70% of it (platform takes 30% commission).
+                {{ t('creator.curation.explanation') }}
             </p>
 
             <form id="markupForm" data-form-guard>
                 <div class="mb-3">
-                    <label for="markup" class="form-label">Your Markup ($ per million tokens)</label>
+                    <label for="markup" class="form-label">{{ t('creator.curation.markup_label') }}</label>
                     <div class="input-group">
                         <span class="input-group-text">$</span>
                         <input type="text" class="form-control" id="markup" name="markup"
                                value="{{ curation_data.referral_markup_per_mtokens }}" inputmode="decimal" pattern="[0-9]*\.?[0-9]*"
                                oninput="this.value = this.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'); updatePreview()">
-                        <span class="input-group-text">/ Mtokens</span>
+                        <span class="input-group-text">{{ t('creator.curation.token_unit') }}</span>
                     </div>
                     <small class="form-text text-muted">
-                        Set to 0 to disable markup (users pay base price only).
-                        Maximum: $100 per million tokens.
+                        {{ t('creator.curation.markup_help', amount=format_currency(100, 'USD')) }}
                     </small>
                 </div>
 
                 <!-- Earnings Preview -->
                 <div class="alert alert-info" id="earningsPreview">
-                    <h6><i class="fas fa-calculator me-2"></i>Earnings Preview</h6>
+                    <h6><i class="fas fa-calculator me-2"></i>{{ t('creator.curation.preview') }}</h6>
                     <div class="row">
                         <div class="col-sm-6">
-                            <small class="text-muted">Your markup:</small>
-                            <div id="previewMarkup">$0.00 / Mtokens</div>
+                            <small class="text-muted">{{ t('creator.curation.your_markup') }}</small>
+                            <div id="previewMarkup">{{ t('creator.curation.per_mtokens', amount=format_currency(0, 'USD')) }}</div>
                         </div>
                         <div class="col-sm-6">
-                            <small class="text-muted">You earn (70%):</small>
-                            <div id="previewEarning" class="text-success fw-bold">$0.00 / Mtokens</div>
+                            <small class="text-muted">{{ t('creator.curation.you_earn') }}</small>
+                            <div id="previewEarning" class="text-success fw-bold">{{ t('creator.curation.per_mtokens', amount=format_currency(0, 'USD')) }}</div>
                         </div>
                     </div>
                     <hr>
                     <small class="text-muted">
                         <i class="fas fa-info-circle me-1"></i>
-                        Example: If your user consumes 1 million tokens, you earn <span id="previewExample">$0.00</span>
+                        <span id="previewExample">{{ t('creator.curation.example', amount=format_currency(0, 'USD')) }}</span>
                     </small>
                 </div>
 
                 <button type="submit" class="btn btn-primary" id="saveBtn">
-                    <i class="fas fa-save me-1"></i> Save Markup Settings
+                    <i class="fas fa-save me-1"></i> {{ t('creator.curation.save') }}
                 </button>
             </form>
         </div>
@@ -121,15 +120,14 @@
 
 <!-- How it Works -->
 <div class="section-container mt-4">
-    <div class="section-title"><i class="fas fa-question-circle me-2"></i>How Curation Works</div>
+    <div class="section-title"><i class="fas fa-question-circle me-2"></i>{{ t('creator.curation.how') }}</div>
     <div class="row">
         <div class="col-md-4 mb-3">
             <div class="card h-100" style="background-color: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-color);">
                 <div class="card-body">
-                    <h5 class="card-title"><i class="fas fa-users text-primary me-2"></i>1. Create Users</h5>
+                    <h5 class="card-title"><i class="fas fa-users text-primary me-2"></i>{{ t('creator.curation.step1_title') }}</h5>
                     <p class="card-text small" style="color: var(--text-secondary);">
-                        Create users from your dashboard or landing page.
-                        Configure which categories of prompts they can access.
+                        {{ t('creator.curation.step1_body') }}
                     </p>
                 </div>
             </div>
@@ -137,10 +135,9 @@
         <div class="col-md-4 mb-3">
             <div class="card h-100" style="background-color: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-color);">
                 <div class="card-body">
-                    <h5 class="card-title"><i class="fas fa-coins text-warning me-2"></i>2. Users Pay</h5>
+                    <h5 class="card-title"><i class="fas fa-coins text-warning me-2"></i>{{ t('creator.curation.step2_title') }}</h5>
                     <p class="card-text small" style="color: var(--text-secondary);">
-                        Your users add balance to their accounts and use AI prompts.
-                        They pay the base price plus your markup.
+                        {{ t('creator.curation.step2_body') }}
                     </p>
                 </div>
             </div>
@@ -148,10 +145,9 @@
         <div class="col-md-4 mb-3">
             <div class="card h-100" style="background-color: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-color);">
                 <div class="card-body">
-                    <h5 class="card-title"><i class="fas fa-hand-holding-usd text-success me-2"></i>3. You Earn</h5>
+                    <h5 class="card-title"><i class="fas fa-hand-holding-usd text-success me-2"></i>{{ t('creator.curation.step3_title') }}</h5>
                     <p class="card-text small" style="color: var(--text-secondary);">
-                        You receive 70% of your markup on every token consumed.
-                        Request withdrawal when you reach the $50 minimum.
+                        {{ t('creator.curation.step3_body', amount=format_currency(50, 'USD')) }}
                     </p>
                 </div>
             </div>
@@ -166,9 +162,9 @@
         const markup = parseFloat(document.getElementById('markup').value) || 0;
         const earning = markup * 0.70;  // 70% to curator
 
-        document.getElementById('previewMarkup').textContent = `$${markup.toFixed(2)} / Mtokens`;
-        document.getElementById('previewEarning').textContent = `$${earning.toFixed(2)} / Mtokens`;
-        document.getElementById('previewExample').textContent = `$${earning.toFixed(2)}`;
+        document.getElementById('previewMarkup').textContent = AurvekI18n.t('creator.curation.per_mtokens', { amount: AurvekI18n.formatCurrency(markup) });
+        document.getElementById('previewEarning').textContent = AurvekI18n.t('creator.curation.per_mtokens', { amount: AurvekI18n.formatCurrency(earning) });
+        document.getElementById('previewExample').textContent = AurvekI18n.t('creator.curation.example', { amount: AurvekI18n.formatCurrency(earning) });
     }
 
     // Initial preview update
@@ -183,7 +179,7 @@
         const originalText = saveBtn.innerHTML;
 
         saveBtn.disabled = true;
-        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + AurvekI18n.t('creator.curation.saving');
 
         try {
             const response = await fetch('/api/user/curation-settings', {
@@ -200,7 +196,7 @@
 
             if (result.success) {
                 FormGuard.markClean(document.getElementById('markupForm'));
-                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> ' + AurvekI18n.t('creator.curation.saved');
                 saveBtn.classList.remove('btn-primary');
                 saveBtn.classList.add('btn-success');
 
@@ -211,20 +207,20 @@
                     saveBtn.disabled = false;
                 }, 2000);
             } else {
-                NotificationModal.error('Error', result.message || 'Error saving settings');
+                NotificationModal.error(AurvekI18n.t('creator.error.title'), result.message || AurvekI18n.t('creator.curation.save_error'));
                 saveBtn.innerHTML = originalText;
                 saveBtn.disabled = false;
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Error', 'An error occurred while saving settings');
+            NotificationModal.error(AurvekI18n.t('creator.error.title'), AurvekI18n.t('creator.curation.save_error'));
             saveBtn.innerHTML = originalText;
             saveBtn.disabled = false;
         }
     });
 
     function requestPayout() {
-        NotificationModal.info('Coming Soon', 'Payout request feature will be available in the Creator Earnings Dashboard. Coming soon!');
+        NotificationModal.info(AurvekI18n.t('creator.curation.coming_soon_title'), AurvekI18n.t('creator.curation.coming_soon'));
     }
 </script>
 {% endblock %}

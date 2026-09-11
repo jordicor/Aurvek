@@ -1,41 +1,42 @@
+{% set i18n_domains = ['admin_services'] %}
 {% extends 'base.html' %}
 
-{% block title %}Create Service - AURVEK{% endblock %}
+{% block title %}{{ t('admin_services.title.create') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Create New Service{% endblock %}
+{% block page_title %}{{ t('admin_services.title.create') }}{% endblock %}
 
 {% block back_url %}/admin/services{% endblock %}
 
-{% block back_title %}Back to Services{% endblock %}
+{% block back_title %}{{ t('admin_services.action.back') }}{% endblock %}
 
 {% block content %}
 <div class="section-container">
     <form action="/admin/services/new" method="post" data-form-guard>
         <div class="mb-3">
-            <label for="name" class="form-label">Service Name</label>
+            <label for="name" class="form-label">{{ t('admin_services.field.name') }}</label>
             <input type="text" class="form-control" id="name" name="name" required>
         </div>
         <div class="mb-3">
-            <label for="unit" class="form-label">Unit</label>
+            <label for="unit" class="form-label">{{ t('admin_services.field.unit') }}</label>
             <input type="text" class="form-control" id="unit" name="unit" required>
         </div>
         <div class="mb-3">
-            <label for="cost_per_unit" class="form-label">Cost per Unit</label>
+            <label for="cost_per_unit" class="form-label">{{ t('admin_services.field.cost_per_unit') }}</label>
             <input type="number" step="any" class="form-control" id="cost_per_unit" name="cost_per_unit" required>
         </div>
         <div class="mb-3">
-            <label for="type" class="form-label">Type</label>
+            <label for="type" class="form-label">{{ t('admin_services.field.type') }}</label>
             <select class="form-control" id="type" name="type" required>
                 {% for service_type in service_types %}
-                    <option value="{{ service_type }}">{{ service_type }}</option>
+                    <option value="{{ service_type }}">{{ t('admin_services.type.' ~ service_type|lower) if service_type in ['TTS', 'STT', 'Phone', 'Images', 'Video', 'Music'] else service_type }}</option>
                 {% endfor %}
             </select>
         </div>
-        <button type="submit" class="btn btn-primary">Create Service</button>
+        <button type="submit" class="btn btn-primary">{{ t('admin_services.action.create') }}</button>
     </form>
 </div>
 {% endblock %}

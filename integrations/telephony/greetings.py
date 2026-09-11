@@ -39,13 +39,9 @@ PHONE_CACHE_MP3_FORMAT = "mp3_44100_128"
 GLOBAL_TECHNICAL_NOTICE_KEYS = frozenset(
     {"inbound_unavailable", "unknown_caller"}
 )
-DEFAULT_GLOBAL_TECHNICAL_NOTICE_TEXT: Mapping[str, str] = MappingProxyType(
-    {
-        "inbound_unavailable": (
-            "I'm sorry, incoming calls are not available for this number."
-        ),
-    }
-)
+# Only an unconfigured admin draft gets platform copy. Published text remains
+# an immutable, reviewed literal; calls never substitute a translated fallback.
+DEFAULT_GLOBAL_TECHNICAL_NOTICE_KEYS = frozenset({"inbound_unavailable"})
 PROMPT_TECHNICAL_NOTICE_KEYS = frozenset(
     {
         "silence_check",
@@ -883,7 +879,7 @@ def _escape_like(value: str) -> str:
 
 __all__ = [
     "CachedPhoneAudio",
-    "DEFAULT_GLOBAL_TECHNICAL_NOTICE_TEXT",
+    "DEFAULT_GLOBAL_TECHNICAL_NOTICE_KEYS",
     "DEFAULT_PRIVATE_CACHE_ROOT",
     "END_CALL_NOTICE_KEYS",
     "GLOBAL_AUDIO_REVISION_CONFIG_KEY",

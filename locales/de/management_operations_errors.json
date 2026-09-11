@@ -1,0 +1,12 @@
+{
+  "admin_required": "Administratorzugriff erforderlich",
+  "invalid_llm": "Ungültige LLM-Auswahl",
+  "unsupported_key": "Nicht unterstützter Schlüsseltyp",
+  "task_not_found": "Aufgabe nicht in der Fehlerwarteschlange gefunden.",
+  "invalid_ip": "Geben Sie eine gültige IP-Adresse ein.",
+  "conversation_ids_required": "Wählen Sie mindestens eine Unterhaltung aus.",
+  "conversation_deleted": "Unterhaltung erfolgreich gelöscht.",
+  "conversation_folder_failed": "Unterhaltung aus der Datenbank gelöscht, aber der Ordner konnte nicht gelöscht werden.",
+  "conversations_folder_failed": "Einige Unterhaltungen wurden aus der Datenbank gelöscht, aber ihre Ordner konnten nicht gelöscht werden.",
+  "conversations_deleted": "Unterhaltungen erfolgreich gelöscht."
+}

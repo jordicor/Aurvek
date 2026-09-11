@@ -4,6 +4,7 @@ let chatFolders = [];
 let currentEditingFolderId = null;
 let currentMovingConversationId = null;
 let currentSelectedFolderId = null; // Track currently selected folder for new chat creation
+const folderText = (key, params) => AurvekI18n.t(`chat_widgets.folders.${key}`, params);
 
 function getActiveConversationFolderId() {
     const selected = window.selectedChat &&
@@ -70,7 +71,7 @@ function setupFoldersEventListeners() {
 // Show add folder modal
 function showAddFolderModal() {
     currentEditingFolderId = null;
-    document.getElementById('folderModalLabel').textContent = 'Add Folder';
+    document.getElementById('folderModalLabel').textContent = folderText('add');
     document.getElementById('folderName').value = '';
     document.getElementById('folderColor').value = '#3B82F6';
     
@@ -84,7 +85,7 @@ function showEditFolderModal(folderId) {
     if (!folder) return;
     
     currentEditingFolderId = folderId;
-    document.getElementById('folderModalLabel').textContent = 'Edit Folder';
+    document.getElementById('folderModalLabel').textContent = folderText('edit');
     document.getElementById('folderName').value = folder.name;
     document.getElementById('folderColor').value = folder.color;
     
@@ -98,7 +99,7 @@ const saveFolderHandler = withSession(async function() {
     const color = document.getElementById('folderColor').value;
     
     if (!name) {
-        NotificationModal.toast('Folder name is required', 'error');
+        NotificationModal.toast(folderText('name_required'), 'error');
         return;
     }
     
@@ -127,7 +128,7 @@ const saveFolderHandler = withSession(async function() {
         const result = await response.json();
         
         if (response.ok) {
-            NotificationModal.toast(result.message || 'Folder saved successfully', 'success');
+            NotificationModal.toast(result.message || folderText('saved'), 'success');
             await loadChatFolders();
             
             // Update existing chat menus
@@ -137,11 +138,11 @@ const saveFolderHandler = withSession(async function() {
             const modal = bootstrap.Modal.getInstance(document.getElementById('folderModal'));
             modal.hide();
         } else {
-            NotificationModal.toast(result.error || 'Failed to save folder', 'error');
+            NotificationModal.toast(result.error || folderText('save_failed'), 'error');
         }
     } catch (error) {
         console.error('Error saving folder:', error);
-        NotificationModal.toast('Failed to save folder', 'error');
+        NotificationModal.toast(folderText('save_failed'), 'error');
     }
 });
 
@@ -198,7 +199,7 @@ function appendFoldersLoadMoreButton(container) {
     const remaining = chatFolders.length - foldersDisplayedCount;
     const loadMoreBtn = document.createElement('button');
     loadMoreBtn.className = 'folders-load-more-btn';
-    loadMoreBtn.innerHTML = `Load more (${remaining}) <i class="fas fa-chevron-down"></i>`;
+    loadMoreBtn.textContent = folderText('load_more_count', {count: remaining});
     loadMoreBtn.onclick = loadMoreFolders;
     container.appendChild(loadMoreBtn);
 }
@@ -231,6 +232,7 @@ function createFolderElement(folder) {
     folderDiv.style.cursor = 'pointer';
     folderDiv.dataset.folderId = folder.id;
     folderDiv.dataset.folderExpanded = 'false';
+    folderDiv.dataset.i18nLabel = folderText('drop_here');
     
     // Folder content (left side)
     const folderContent = document.createElement('div');
@@ -241,13 +243,18 @@ function createFolderElement(folder) {
 
     // Chat count for tooltip
     const chatCount = folder.conversation_count || 0;
-    const chatCountText = chatCount === 1 ? '1 chat' : `${chatCount} chats`;
+    const chatCountText = folderText('chat_count', {count: chatCount});
 
-    folderContent.innerHTML = `
-        <i class="fas fa-chevron-right folder-chevron"></i>
-        <i class="fas ${iconClass} folder-icon me-2" style="color: ${folder.color}; font-size: 16px;"></i>
-        <span class="folder-name">${escapeHTML(folder.name)}</span>
-    `;
+    const chevron = document.createElement('i');
+    chevron.className = 'fas fa-chevron-right folder-chevron';
+    const icon = document.createElement('i');
+    icon.className = `fas ${iconClass} folder-icon me-2`;
+    icon.style.color = folder.color;
+    icon.style.fontSize = '16px';
+    const folderName = document.createElement('span');
+    folderName.className = 'folder-name';
+    folderName.textContent = folder.name;
+    folderContent.append(chevron, icon, folderName);
 
     // Set tooltip with chat count
     folderDiv.title = chatCountText;
@@ -261,10 +268,10 @@ function createFolderElement(folder) {
         </button>
         <ul class="dropdown-menu dropdown-menu-dark folder-dropdown-menu">
             <li><a class="dropdown-item" href="#" onclick="showEditFolderModal(${folder.id})">
-                <i class="fas fa-edit"></i> Edit
+                <i class="fas fa-edit"></i> ${folderText('edit')}
             </a></li>
             <li><a class="dropdown-item text-danger" href="#" onclick="deleteFolderHandler(${folder.id})">
-                <i class="fas fa-trash"></i> Delete
+                <i class="fas fa-trash"></i> ${folderText('delete')}
             </a></li>
         </ul>
     `;
@@ -379,7 +386,7 @@ async function updateFolderConversationCount(folderId) {
             }
         }
     } catch (error) {
-        if (error.message === 'Session expired') {
+        if (error.code === 'session_expired') {
             // Session validation was already handled by secureFetch, no need to log as error
         } else {
             console.error('Error updating folder conversation count:', error);
@@ -426,7 +433,7 @@ async function loadFolderChats(folderId, onComplete = null, cursorParams = null)
         if (isFirstPage && conversations.length === 0) {
             const emptyMsg = document.createElement('div');
             emptyMsg.className = 'folder-empty-msg';
-            emptyMsg.textContent = 'Empty folder';
+            emptyMsg.textContent = folderText('empty');
             container.appendChild(emptyMsg);
         } else {
             conversations.forEach(conversation => {
@@ -448,7 +455,7 @@ async function loadFolderChats(folderId, onComplete = null, cursorParams = null)
                 // Append "Load more" button
                 const loadMoreBtn = document.createElement('button');
                 loadMoreBtn.className = 'folder-load-more-btn';
-                loadMoreBtn.innerHTML = 'Load more <i class="fas fa-chevron-down"></i>';
+                loadMoreBtn.textContent = folderText('load_more');
                 loadMoreBtn.onclick = () => loadMoreFolderChats(folderId);
                 container.appendChild(loadMoreBtn);
             }
@@ -459,7 +466,7 @@ async function loadFolderChats(folderId, onComplete = null, cursorParams = null)
             onComplete();
         }
     } catch (error) {
-        if (error.message === 'Session expired') {
+        if (error.code === 'session_expired') {
             // Already handled by secureFetch
         } else {
             console.error('Error loading folder chats:', error);
@@ -581,19 +588,19 @@ function createChatMenuForFolder(conversation) {
     chatMenu.appendChild(chatMenuContent);
 
     // Rename option
-    const renameLink = createMenuLink('fa-edit', 'Rename', () => renameConversation(conversation.id));
+    const renameLink = createMenuLink('fa-edit', folderText('rename'), () => renameConversation(conversation.id));
     chatMenuContent.appendChild(renameLink);
 
     // Download MP3 option
-    const downloadAudioLink = createMenuLink('fa-music', 'Download MP3', () => downloadAudio(conversation.id));
+    const downloadAudioLink = createMenuLink('fa-music', folderText('download_mp3'), () => downloadAudio(conversation.id));
     chatMenuContent.appendChild(downloadAudioLink);
 
     // Download PDF option
-    const downloadPdfLink = createMenuLink('fa-download', 'Download PDF', () => downloadPDF(conversation.id));
+    const downloadPdfLink = createMenuLink('fa-download', folderText('download_pdf'), () => downloadPDF(conversation.id));
     chatMenuContent.appendChild(downloadPdfLink);
 
     // Delete option
-    const deleteLink = createMenuLink('fa-trash-alt', 'Delete', () => deleteConversation(conversation.id), 'text-danger');
+    const deleteLink = createMenuLink('fa-trash-alt', folderText('delete'), () => deleteConversation(conversation.id), 'text-danger');
     chatMenuContent.appendChild(deleteLink);
 
     // Add separator
@@ -620,7 +627,7 @@ function createChatMenuForFolder(conversation) {
 
     if (typeof conversationHasMessagingChannel !== 'function' ||
         !conversationHasMessagingChannel(conversation)) {
-        const externalAccessLink = createMenuLink('fa-plug', 'External access', () => openExternalAccessModal(conversation.id));
+        const externalAccessLink = createMenuLink('fa-plug', folderText('external_access'), () => openExternalAccessModal(conversation.id));
         chatMenuContent.appendChild(externalAccessLink);
     }
 
@@ -684,9 +691,9 @@ const deleteFolderHandler = withSession(function(folderId) {
     const folder = chatFolders.find(f => f.id === folderId);
     if (!folder) return;
 
-    const confirmMessage = `Are you sure you want to delete the folder "${folder.name}"? All chats in this folder will be moved to the main chat list.`;
+    const confirmMessage = folderText('delete_confirm', {name: folder.name});
 
-    NotificationModal.confirm('Delete Folder', confirmMessage, async () => {
+    NotificationModal.confirm(folderText('delete_title'), confirmMessage, async () => {
         try {
             const response = await secureFetch(`/api/chat-folders/${folderId}`, {
                 method: 'DELETE'
@@ -695,17 +702,17 @@ const deleteFolderHandler = withSession(function(folderId) {
             const result = await response.json();
 
             if (response.ok) {
-                NotificationModal.toast(result.message || 'Folder deleted successfully', 'success');
+                NotificationModal.toast(result.message || folderText('deleted'), 'success');
                 loadChatFolders();
                 loadConversations(false, false);
             } else {
-                NotificationModal.toast(result.error || 'Failed to delete folder', 'error');
+                NotificationModal.toast(result.error || folderText('delete_failed'), 'error');
             }
         } catch (error) {
             console.error('Error deleting folder:', error);
-            NotificationModal.toast('Failed to delete folder', 'error');
+            NotificationModal.toast(folderText('delete_failed'), 'error');
         }
-    }, null, { type: 'error', confirmText: 'Delete' });
+    }, null, { type: 'error', confirmText: folderText('delete') });
 });
 
 // Show move chat modal
@@ -748,7 +755,7 @@ const moveChatToFolder = withSession(async function(conversationId, folderId) {
         const result = await response.json();
         
         if (response.ok) {
-            NotificationModal.toast(result.message || 'Chat moved successfully', 'success');
+            NotificationModal.toast(result.message || folderText('chat_moved'), 'success');
 
             // Close modal
             const modal = bootstrap.Modal.getInstance(document.getElementById('moveChatModal'));
@@ -778,11 +785,11 @@ const moveChatToFolder = withSession(async function(conversationId, folderId) {
                 loadConversations(false, true);
             }
         } else {
-            NotificationModal.toast(result.error || 'Failed to move chat', 'error');
+            NotificationModal.toast(result.error || folderText('move_failed'), 'error');
         }
     } catch (error) {
         console.error('Error moving chat:', error);
-        NotificationModal.toast('Failed to move chat', 'error');
+        NotificationModal.toast(folderText('move_failed'), 'error');
     }
 });
 
@@ -861,7 +868,7 @@ function setupDragAndDrop() {
 function makeChatItemsDraggable() {
     // Function to add drag attributes to existing chat items
     const addDragToChats = () => {
-        const chatItems = document.querySelectorAll('[data-conversation-id]:not(.folder-chat-item)');
+        const chatItems = document.querySelectorAll('#sidebar .list-group-item[data-conversation-id]:not(.folder-chat-item)');
         chatItems.forEach(chatItem => {
             if (!chatItem.hasAttribute('draggable')) {
                 chatItem.setAttribute('draggable', 'true');
@@ -947,6 +954,7 @@ function setupDropZones(root = document) {
     const mainChatsContainer = document.getElementById('dynamic-chats-container');
     if (mainChatsContainer && !mainChatsContainer.hasAttribute('data-drop-zone-ready')) {
         mainChatsContainer.setAttribute('data-drop-zone-ready', 'true');
+        mainChatsContainer.dataset.i18nLabel = folderText('drop_main');
         mainChatsContainer.addEventListener('dragover', handleDragOver);
         mainChatsContainer.addEventListener('drop', (e) => handleDrop(e, null));
         mainChatsContainer.addEventListener('dragenter', (e) => {
@@ -1075,7 +1083,7 @@ const moveChatToFolderDragDrop = withSession(async function(conversationId, fold
         
         if (response.ok) {
             NotificationModal.toast(
-                folderId ? 'Chat moved to folder successfully' : 'Chat removed from folder successfully',
+                folderText(folderId ? 'moved_to_folder' : 'removed_from_folder'),
                 'success'
             );
 
@@ -1104,11 +1112,11 @@ const moveChatToFolderDragDrop = withSession(async function(conversationId, fold
                 loadConversations(false, true);
             }
         } else {
-            NotificationModal.toast(result.error || 'Failed to move chat', 'error');
+            NotificationModal.toast(result.error || folderText('move_failed'), 'error');
         }
     } catch (error) {
         console.error('Error moving chat:', error);
-        NotificationModal.toast('Failed to move chat', 'error');
+        NotificationModal.toast(folderText('move_failed'), 'error');
     }
 });
 
@@ -1161,7 +1169,7 @@ function addFolderOptionsToMenu(menuContent, conversationId, isInFolderContext =
     
     // Add "Move to Folder" submenu
     if (chatFolders.length > 0) {
-        const moveToFolderLink = createFolderMenuLink('fa-folder-open', 'Move to Folder', () => {
+        const moveToFolderLink = createFolderMenuLink('fa-folder-open', folderText('move_to'), () => {
             showMoveChatModal(conversationId);
         });
         folderSection.appendChild(moveToFolderLink);
@@ -1170,7 +1178,7 @@ function addFolderOptionsToMenu(menuContent, conversationId, isInFolderContext =
     // Add "Remove from Folder" option only if chat is in a folder
     const isInFolder = isInFolderContext || isConversationInFolder(conversationId);
     if (isInFolder) {
-        const removeFromFolderLink = createFolderMenuLink('fa-times', 'Remove from Folder', () => {
+        const removeFromFolderLink = createFolderMenuLink('fa-times', folderText('remove_from'), () => {
             moveChatToFolderDragDrop(conversationId, null);
         });
         folderSection.appendChild(removeFromFolderLink);
@@ -1237,7 +1245,7 @@ function createFolderMenuLink(iconClass, text, onClick, additionalClass = '') {
 
 // Update all existing chat menus with current folder options
 function updateAllChatMenus() {
-    const chatItems = document.querySelectorAll('[data-conversation-id]:not(.folder-chat-item)');
+    const chatItems = document.querySelectorAll('#sidebar .list-group-item[data-conversation-id]:not(.folder-chat-item)');
     chatItems.forEach(chatItem => {
         const menuContent = chatItem.querySelector('.chat-menu-content');
         if (menuContent) {
@@ -1288,7 +1296,7 @@ function updateNewChatButtonState() {
             if (!newChatBtn.getAttribute('data-original-text')) {
                 newChatBtn.setAttribute('data-original-text', originalText);
             }
-            newChatBtn.innerHTML = `<i class="fas fa-comment-alt"></i> New Chat in "${folder.name}"`;
+            newChatBtn.textContent = folderText('new_chat_in', {name: folder.name});
             newChatBtn.classList.add('btn-folder-selected');
         }
     } else {
@@ -1440,10 +1448,10 @@ function setupNewChatIntegration() {
 
             data = await response.json();
             if (!response.ok) {
-                throw new Error(data.detail || data.message || 'Conversation creation failed');
+                throw new Error(data.detail || data.message || folderText('creation_failed'));
             }
             if (!data || data.id === undefined || data.id === null) {
-                throw new Error('Conversation creation returned an invalid response');
+                throw new Error(folderText('creation_invalid'));
             }
         } catch (error) {
             // A POST may have reached the server even when the response failed.
@@ -1451,8 +1459,7 @@ function setupNewChatIntegration() {
             console.error('Error creating conversation:', error);
             if (typeof NotificationModal !== 'undefined') {
                 NotificationModal.error(
-                    'Chat Creation Failed',
-                    'The chat could not be created. Refresh the chat list before trying again.'
+                    folderText('creation_failed_title'), folderText('creation_failed_help')
                 );
             }
             return;

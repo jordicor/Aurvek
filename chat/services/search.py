@@ -57,7 +57,7 @@ SEARCH_SQL = """
 SELECT
   m.id AS message_id,
   m.conversation_id,
-  COALESCE(c.chat_name, 'Chat ' || m.conversation_id) AS chat_name,
+  c.chat_name,
   m.type,
   strftime('%Y-%m-%d %H:%M:%S', m.date) AS date,
   snippet(MESSAGES_FTS, 0, '<mark>', '</mark>', ' ... ', 18) AS snippet_html_raw,

@@ -6,6 +6,21 @@ let alterEgoModal;
 let phoneChallengeId = null;
 let challengePhoneNumber = null;
 let phoneChallengeApproved = false;
+let profileSaveInProgress = false;
+
+function profileText(key, params = {}) {
+    return window.AurvekI18n.t(`profile.${key}`, params);
+}
+
+function profileUiError(message) {
+    const error = new Error(message);
+    error.uiSafe = true;
+    return error;
+}
+
+function profileUiErrorMessage(error, fallbackKey) {
+    return error?.uiSafe ? error.message : profileText(fallbackKey);
+}
 
 function resetPhoneVerificationState() {
     phoneChallengeId = null;
@@ -27,13 +42,22 @@ function resetPhoneVerificationState() {
 document.addEventListener('DOMContentLoaded', function() {
     initAfterLoginPreference();
     initPhoneInput();
+    initTimezonePreference();
+    initLanguagePreferences();
     initializeAlterEgoState();
-    loadVoices();
-    loadAlterEgos(currentAlterEgoId);
+    loadVoices().then(function() {
+        FormGuard.markFieldsClean('#editProfileForm', ['sample_voice_id']);
+    });
+    loadAlterEgos(currentAlterEgoId).then(function() {
+        FormGuard.markFieldsClean('#editProfileForm', ['alter_ego_id']);
+    });
     setupEventListeners();
     initializeProfileHandlers();
 
-    alterEgoModal = new bootstrap.Modal(document.getElementById('alterEgoModal'));
+    const alterEgoModalElement = document.getElementById('alterEgoModal');
+    // Keep the fixed dialog outside theme containers with their own stacking context.
+    document.body.appendChild(alterEgoModalElement);
+    alterEgoModal = new bootstrap.Modal(alterEgoModalElement);
 
     var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
     var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
@@ -47,19 +71,348 @@ document.addEventListener('DOMContentLoaded', function() {
 
     initializeAlterEgoHandlers();
 
-    // FormGuard -- snapshot with excluded async-loaded fields
-    FormGuard.watch('#editProfileForm', {
-        exclude: ['sample_voice_id', 'alter_ego_id']
-    });
+    // The current password verifies a separate action; browser autofill is not a profile edit.
+    FormGuard.watch('#editProfileForm', { exclude: ['old_password'] });
 });
 
 // Initialize when DOM is ready
 
+function initTimezonePreference() {
+    const timezoneSelect = document.getElementById('timezoneName');
+    const useDeviceButton = document.getElementById('useDeviceTimezoneButton');
+    const status = document.getElementById('deviceTimezoneStatus');
+    if (!timezoneSelect || !useDeviceButton) return;
+
+    function selectTimezone(timezone) {
+        // Browser and city databases can use different IANA aliases from the server.
+        if (!Array.from(timezoneSelect.options).some(option => option.value === timezone)) {
+            timezoneSelect.add(new Option(timezone.replaceAll('_', ' ').replaceAll('/', ' / '), timezone));
+        }
+        timezoneSelect.value = timezone;
+        timezoneSelect.dispatchEvent(new Event('input', { bubbles: true }));
+        timezoneSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    timezoneSelect.addEventListener('change', function() {
+        if (status) status.textContent = '';
+    });
+
+    useDeviceButton.addEventListener('click', function() {
+        const deviceTimezone = Intl.DateTimeFormat(window.AurvekI18n.locale).resolvedOptions().timeZone;
+        if (!deviceTimezone) {
+            if (status) {
+                status.className = 'form-text d-block text-danger';
+                status.textContent = profileText('timezone.detect_failed');
+            }
+            return;
+        }
+
+        selectTimezone(deviceTimezone);
+        if (status) {
+            status.className = 'form-text d-block text-success';
+            status.textContent = profileText('timezone.detected', { timezone: deviceTimezone });
+        }
+    });
+
+    initTimezoneCitySearch(timezoneSelect, selectTimezone, status);
+}
+
+function initTimezoneCitySearch(timezoneSelect, selectTimezone, status) {
+    const panel = document.getElementById('timezoneCitySearch');
+    const input = document.getElementById('timezoneCityInput');
+    const searchButton = document.getElementById('timezoneCitySearchButton');
+    const searchStatus = document.getElementById('timezoneCityStatus');
+    const results = document.getElementById('timezoneCityResults');
+    if (!panel || !input || !searchButton || !searchStatus || !results) return;
+
+    let requestVersion = 0;
+
+    function resetSearch() {
+        requestVersion += 1;
+        searchButton.disabled = false;
+        searchStatus.textContent = '';
+        results.replaceChildren();
+        results.hidden = true;
+    }
+
+    function announce(key, isError = false, params = {}) {
+        searchStatus.className = `form-text d-block ${isError ? 'text-danger' : 'text-muted'}`;
+        searchStatus.textContent = profileText(`timezone.${key}`, params);
+    }
+
+    async function searchCities() {
+        if (searchButton.disabled) return;
+        resetSearch();
+        const query = input.value.trim();
+        if (query.length < 2) {
+            announce('city_search_short', true);
+            input.focus();
+            return;
+        }
+
+        const version = requestVersion;
+        searchButton.disabled = true;
+        announce('city_search_loading');
+        try {
+            const response = await secureFetch(`/api/profile/timezone-cities?q=${encodeURIComponent(query)}`);
+            if (!response || !response.ok) throw new Error('City search failed');
+            const data = await response.json();
+            // Editing the query or selecting a zone invalidates an earlier response.
+            if (version !== requestVersion) return;
+            if (!Array.isArray(data.results)) throw new Error('Invalid city search results');
+            data.results.forEach(function(city) {
+                const place = [city.city, city.region, city.country].filter(Boolean).join(' · ');
+                const row = document.createElement('li');
+                row.className = 'list-group-item d-flex align-items-start justify-content-between gap-2';
+                const description = document.createElement('div');
+                description.className = 'text-break';
+                const label = document.createElement('div');
+                label.className = 'fw-semibold';
+                label.textContent = place;
+                const zone = document.createElement('small');
+                zone.className = 'd-block text-muted';
+                zone.textContent = profileText('timezone.city_search_zone', { timezone: city.timezone });
+                description.append(label, zone);
+                const useButton = document.createElement('button');
+                useButton.type = 'button';
+                useButton.className = 'btn btn-sm btn-outline-primary flex-shrink-0';
+                useButton.textContent = profileText('timezone.city_search_use');
+                useButton.setAttribute('aria-label', `${useButton.textContent}: ${place}`);
+                useButton.addEventListener('click', function() {
+                    selectTimezone(city.timezone);
+                    if (status) {
+                        status.className = 'form-text d-block text-success';
+                        status.textContent = profileText('timezone.city_search_selected', {
+                            city: place, timezone: city.timezone,
+                        });
+                    }
+                    panel.open = false;
+                    timezoneSelect.focus();
+                });
+                row.append(description, useButton);
+                results.append(row);
+            });
+            results.hidden = data.results.length === 0;
+            if (data.results.length) {
+                announce('city_search_results', false, { count: data.results.length });
+            } else {
+                announce('city_search_empty');
+            }
+        } catch (error) {
+            if (version === requestVersion) announce('city_search_error', true);
+        } finally {
+            if (version === requestVersion) searchButton.disabled = false;
+        }
+    }
+
+    input.addEventListener('input', resetSearch);
+    timezoneSelect.addEventListener('change', resetSearch);
+    searchButton.addEventListener('click', searchCities);
+    input.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter' && !event.isComposing) {
+            event.preventDefault();
+            searchCities();
+        }
+    });
+}
+
+function initLanguagePreferences() {
+    const root = document.querySelector('[data-language-preferences]');
+    if (!root) return;
+
+    const primaryInput = root.querySelector('#primaryLanguageInput');
+    const secondaryInput = root.querySelector('#additionalLanguageInput');
+    const hiddenInput = root.querySelector('#preferredLanguagesJson');
+    const chips = root.querySelector('#additionalLanguageChips');
+    const showAdditionalButton = root.querySelector('#showAdditionalLanguageButton');
+    const controls = root.querySelector('#additionalLanguageControls');
+    const addButton = root.querySelector('#addAdditionalLanguageButton');
+    const status = root.querySelector('#languagePreferenceStatus');
+    const maxLanguages = Number.parseInt(root.dataset.maxLanguages || '6', 10);
+    const optionElements = Array.from(root.querySelectorAll('#userLanguageOptions option'));
+    const codeToLabel = new Map();
+    const valueToCode = new Map();
+
+    optionElements.forEach(function(option) {
+        const code = String(option.dataset.code || '').toLowerCase();
+        const label = String(option.value || '').trim();
+        if (!code || !label) return;
+        codeToLabel.set(code, label);
+        valueToCode.set(code, code);
+        valueToCode.set(label.toLowerCase(), code);
+        valueToCode.set(`${label.toLowerCase()} (${code})`, code);
+    });
+
+    let languages = [];
+    try {
+        const parsed = JSON.parse(hiddenInput.value || '[]');
+        if (Array.isArray(parsed)) {
+            languages = parsed
+                .map(function(code) { return String(code || '').toLowerCase(); })
+                .filter(function(code, index, values) {
+                    return codeToLabel.has(code) && values.indexOf(code) === index;
+                })
+                .slice(0, maxLanguages);
+        }
+    } catch (error) {
+        languages = [];
+    }
+
+    function languageCode(value) {
+        return valueToCode.get(String(value || '').trim().toLowerCase()) || null;
+    }
+
+    function announce(message, isError) {
+        status.textContent = message || '';
+        status.className = isError
+            ? 'form-text d-block text-danger'
+            : 'form-text d-block text-success';
+    }
+
+    function syncHiddenInput() {
+        const serialized = JSON.stringify(languages);
+        if (hiddenInput.value === serialized) return;
+        hiddenInput.value = serialized;
+        hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+        hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function renderLanguages() {
+        const primary = languages[0] || '';
+        primaryInput.value = primary ? codeToLabel.get(primary) : '';
+        chips.innerHTML = '';
+        languages.slice(1).forEach(function(code) {
+            const chip = document.createElement('span');
+            chip.className = 'badge rounded-pill text-bg-light border d-inline-flex align-items-center gap-1';
+
+            const label = document.createElement('span');
+            label.textContent = codeToLabel.get(code) || code;
+            chip.appendChild(label);
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'btn btn-sm p-0 border-0 bg-transparent text-secondary';
+            removeButton.dataset.removeLanguage = code;
+            removeButton.setAttribute('aria-label', profileText('language.remove', { language: label.textContent }));
+            removeButton.textContent = '\u00d7';
+            chip.appendChild(removeButton);
+            chips.appendChild(chip);
+        });
+        showAdditionalButton.disabled = !primary || languages.length >= maxLanguages;
+        if (!primary || languages.length >= maxLanguages) {
+            controls.hidden = true;
+        }
+        syncHiddenInput();
+    }
+
+    function applyPrimaryLanguage() {
+        const rawValue = primaryInput.value.trim();
+        if (!rawValue) {
+            languages = [];
+            announce(profileText('language.automatic'), false);
+            renderLanguages();
+            return;
+        }
+
+        const code = languageCode(rawValue);
+        if (!code) {
+            primaryInput.value = languages[0] ? codeToLabel.get(languages[0]) : '';
+            announce(profileText('language.choose_from_list'), true);
+            return;
+        }
+
+        const previousPrimary = languages[0];
+        if (code !== previousPrimary && languages.includes(code)) {
+            languages = [
+                code,
+                previousPrimary,
+                ...languages.slice(1).filter(function(item) { return item !== code; }),
+            ].filter(Boolean);
+        } else if (code !== previousPrimary) {
+            languages = [code, ...languages.slice(1)];
+        }
+        announce(profileText('language.primary_changed', { language: codeToLabel.get(code) }), false);
+        renderLanguages();
+    }
+
+    showAdditionalButton.addEventListener('click', function() {
+        if (!languages.length) {
+            announce(profileText('language.choose_primary_first'), true);
+            primaryInput.focus();
+            return;
+        }
+        controls.hidden = false;
+        secondaryInput.focus();
+    });
+
+    addButton.addEventListener('click', function() {
+        const code = languageCode(secondaryInput.value);
+        if (!code) {
+            announce(profileText('language.choose_from_list'), true);
+            return;
+        }
+        if (!languages.length) {
+            announce(profileText('language.choose_primary_first'), true);
+            primaryInput.focus();
+            return;
+        }
+        if (languages.includes(code)) {
+            announce(profileText('language.already_selected', { language: codeToLabel.get(code) }), true);
+            return;
+        }
+        if (languages.length >= maxLanguages) {
+            announce(profileText('language.maximum', { count: maxLanguages }), true);
+            return;
+        }
+        languages.push(code);
+        secondaryInput.value = '';
+        announce(profileText('language.added', { language: codeToLabel.get(code) }), false);
+        renderLanguages();
+        if (languages.length < maxLanguages) secondaryInput.focus();
+    });
+
+    secondaryInput.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            addButton.click();
+        }
+    });
+    primaryInput.addEventListener('change', applyPrimaryLanguage);
+    primaryInput.addEventListener('input', function() {
+        if (!primaryInput.value.trim()) applyPrimaryLanguage();
+    });
+    primaryInput.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            applyPrimaryLanguage();
+        }
+    });
+    chips.addEventListener('click', function(event) {
+        const removeButton = event.target.closest('[data-remove-language]');
+        if (!removeButton) return;
+        const code = removeButton.dataset.removeLanguage;
+        languages = languages.filter(function(item, index) {
+            return index === 0 || item !== code;
+        });
+        announce(profileText('language.removed', { language: codeToLabel.get(code) || code }), false);
+        renderLanguages();
+    });
+
+    renderLanguages();
+}
+
 function initPhoneInput() {
     const phoneInputField = document.getElementById('phone');
+    let editedDuringLoad = false;
+    function trackPhoneEdit() { editedDuringLoad = true; }
+    phoneInputField.addEventListener('input', trackPhoneEdit);
+    const regionNames = new Intl.DisplayNames([window.AurvekI18n.locale], { type: 'region' });
     phoneInputJS = window.intlTelInput(phoneInputField, {
         initialCountry: "auto",
         separateDialCode: true,
+        localizedCountries: Object.fromEntries(window.intlTelInputGlobals.getCountryData().map(
+            country => [country.iso2, regionNames.of(country.iso2.toUpperCase())]
+        )),
         utilsScript: "https://cdnjs.cloudflare.com/ajax/libs/intl-tel-input/17.0.13/js/utils.js",
         geoIpLookup: function(success, failure) {
             secureFetch('/api/get-ip-info')
@@ -69,14 +422,22 @@ function initPhoneInput() {
                     throw new Error('Failed to fetch IP info');
                 })
                 .then(function(ipinfo) {
-                    if (!ipinfo) return;
-                    success(ipinfo.country);
+                    success(ipinfo?.country || 'us');
                 })
                 .catch(function() {
                     success("us");
                 });
         },
     });
+    function finishPhoneInitialization() {
+        phoneInputField.removeEventListener('input', trackPhoneEdit);
+        // The phone widget formats saved numbers after its utilities load.
+        // Only that field becomes clean; an early user edit must stay protected.
+        if (!editedDuringLoad) {
+            FormGuard.markFieldsClean('#editProfileForm', ['phone_number']);
+        }
+    }
+    phoneInputJS.promise.then(finishPhoneInitialization, finishPhoneInitialization);
 }
 
 function initializeAlterEgoState() {
@@ -104,14 +465,18 @@ function toggleAlterEgoSelection() {
 
 function loadVoices() {
     const voiceSelect = document.getElementById('voice');
-    secureFetch('/api/voices')
+    return secureFetch('/api/voices')
         .then(response => {
             if (!response) return null;
             return response.json();
         })
         .then(voices => {
             if (!voices) return;
-            voiceSelect.innerHTML = '<option value="">Default Voice</option>';
+            voiceSelect.replaceChildren();
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = profileText('voice.default');
+            voiceSelect.appendChild(defaultOption);
             voices.forEach(voice => {
                 const option = document.createElement('option');
                 option.value = voice.id;
@@ -122,8 +487,6 @@ function loadVoices() {
                 voiceSelect.value = currentUserVoiceId;
             }
             addPlayButton();
-            // Re-snapshot form after voice hydration
-            FormGuard.markClean('#editProfileForm');
         })
         .catch(error => console.error('Error loading voices:', error));
 }
@@ -137,31 +500,22 @@ function addPlayButton() {
     categorySelect.id = 'sampleCategory';
     categorySelect.style.display = 'inline-block';
     categorySelect.style.width = 'auto';
+    categorySelect.style.maxWidth = '100%';
 
-    const categories = [
-        "Children and Basic Education",
-        "Finance and Business",
-        "Relaxation and Meditation",
-        "Casual Conversation",
-        "Drama and Emotional Narration",
-        "Storytelling",
-        "Advertising and Announcements",
-        "Science and Technology",
-        "Education and Advanced Training",
-        "Corporate Environments",
-        "Mystery and Suspense",
-        "Sports and Energy"
+    const categoryKeys = [
+        'children', 'finance', 'relaxation', 'casual', 'drama', 'storytelling',
+        'advertising', 'science', 'education', 'corporate', 'mystery', 'sports'
     ];
 
-    categories.forEach((category, index) => {
+    categoryKeys.forEach((categoryKey, index) => {
         const option = document.createElement('option');
         option.value = index;
-        option.textContent = category;
+        option.textContent = profileText(`voice.category.${categoryKey}`);
         categorySelect.appendChild(option);
     });
 
     const playButton = document.createElement('button');
-    playButton.textContent = '▶️ Play Sample';
+    playButton.textContent = profileText('voice.play_sample');
     playButton.className = 'btn btn-sm btn-outline-secondary play-voice';
     playButton.id = 'playVoiceButton';
     playButton.style.display = document.getElementById('voice').value ? 'inline-block' : 'none';
@@ -187,12 +541,12 @@ function playVoiceSample(voiceId, categoryId) {
         audioPlayer.currentTime = 0;
         audioPlayer = null;
         const playButton = document.getElementById('playVoiceButton');
-        playButton.textContent = '▶️ Play Sample';
+        playButton.textContent = profileText('voice.play_sample');
         return;
     }
 
     const playButton = document.getElementById('playVoiceButton');
-    playButton.textContent = '🔄 Loading...';
+    playButton.textContent = profileText('voice.loading');
     playButton.disabled = true;
 
     secureFetch(`/api/voice-sample/${voiceId}?category=${categoryId}`)
@@ -206,13 +560,13 @@ function playVoiceSample(voiceId, categoryId) {
             audioPlayer = new Audio(url);
 
             audioPlayer.onended = function() {
-                playButton.textContent = '▶️ Play Sample';
+                playButton.textContent = profileText('voice.play_sample');
                 playButton.disabled = false;
                 audioPlayer = null;
             };
 
             audioPlayer.play();
-            playButton.textContent = '⏹️ Stop Sample';
+            playButton.textContent = profileText('voice.stop_sample');
             playButton.disabled = false;
 
             playButton.onclick = function() {
@@ -220,13 +574,13 @@ function playVoiceSample(voiceId, categoryId) {
                     audioPlayer.pause();
                     audioPlayer.currentTime = 0;
                     audioPlayer = null;
-                    playButton.textContent = '▶️ Play Sample';
+                    playButton.textContent = profileText('voice.play_sample');
                 }
             };
         })
         .catch(error => {
             console.error('Error playing voice sample:', error);
-            playButton.textContent = '▶️ Play Sample';
+            playButton.textContent = profileText('voice.play_sample');
             playButton.disabled = false;
         });
 }
@@ -244,7 +598,7 @@ function setupEventListeners() {
     }
 
     const verifyCodeButton = document.createElement('button');
-    verifyCodeButton.textContent = 'Verify Code';
+    verifyCodeButton.textContent = profileText('phone.verify_code');
     verifyCodeButton.className = 'btn btn-primary mt-2';
     verifyCodeButton.style.display = 'none';
     verificationCodeContainer.appendChild(verifyCodeButton);
@@ -258,7 +612,7 @@ function setupEventListeners() {
         const phoneNumber = phoneInputJS.getNumber(intlTelInputUtils.numberFormat.E164);
         const code = verificationCodeInput.value;
         if (!phoneChallengeId || challengePhoneNumber !== phoneNumber) {
-            NotificationModal.error('Error', 'Request a new code for this phone number.');
+            NotificationModal.error(profileText('modal.error'), profileText('phone.request_new_code'));
             return;
         }
 
@@ -278,19 +632,19 @@ function setupEventListeners() {
             if (!response) return; // Session expired
             const result = await response.json();
             if (result.status === 'approved') {
-                NotificationModal.success('Success', 'Phone number verified successfully!');
+                NotificationModal.success(profileText('modal.success'), profileText('phone.verified'));
                 verifyCodeButton.style.display = 'none';
                 verificationCodeInput.disabled = true;
                 phoneInput.dataset.verified = 'true';
                 phoneChallengeApproved = true;
                 phoneVerificationIdInput.value = phoneChallengeId;
             } else {
-                NotificationModal.error('Error', result.detail || 'Verification failed. Please check the code and try again.');
+                NotificationModal.error(profileText('modal.error'), result.detail || profileText('phone.verification_failed'));
                 verificationCodeInput.value = '';
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Error', 'An error occurred while verifying the code. Please try again.');
+            NotificationModal.error(profileText('modal.error'), profileText('phone.verification_error'));
         }
     });
 
@@ -319,7 +673,7 @@ function setupEventListeners() {
             const checkResult = await checkResponse.json();
 
             if (checkResult.exists) {
-                NotificationModal.error('Error', 'This phone number is already in use. Please use a different number.');
+                NotificationModal.error(profileText('modal.error'), profileText('phone.in_use'));
                 return;
             }
 
@@ -344,16 +698,16 @@ function setupEventListeners() {
                     verificationCodeInput.value = '';
                     verificationCodeInput.disabled = false;
                     verificationCodeContainer.style.display = 'block';
-                    NotificationModal.success('Success', 'Verification code sent successfully!');
+                    NotificationModal.success(profileText('modal.success'), profileText('phone.code_sent'));
                 } else {
-                    NotificationModal.error('Error', `Unexpected status: ${result.status}`);
+                    NotificationModal.error(profileText('modal.error'), profileText('phone.unexpected_status', { status: result.status }));
                 }
             } else {
-                NotificationModal.error('Error', `Error sending verification code: ${result.detail}`);
+                NotificationModal.error(profileText('modal.error'), result.detail || profileText('phone.send_failed'));
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Error', 'An unexpected error occurred. Please try again.');
+            NotificationModal.error(profileText('modal.error'), profileText('error.unexpected'));
         }
     });
 
@@ -362,104 +716,131 @@ function setupEventListeners() {
 
 async function handleFormSubmit(event) {
     event.preventDefault();
-    const formData = new FormData(event.target);
-    
-    const fullPhoneNumber = getFullPhoneNumber();
-    formData.set('phone_number', fullPhoneNumber);
-
-    const phoneInput = document.getElementById('phone');
-    const phoneNeedsVerification = Boolean(fullPhoneNumber) && (
-        fullPhoneNumber !== originalPhoneNumber
-        || phoneInput.dataset.phoneVerified !== 'true'
-    );
-
-    if (phoneNeedsVerification) {
-        try {
-            const checkResponse = await secureFetch('/api/check-phone-number', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ phone: fullPhoneNumber }),
-            });
-            if (!checkResponse) return; // Session expired
-            const checkResult = await checkResponse.json();
-
-            if (checkResult.exists) {
-                NotificationModal.error('Error', 'This phone number is already in use. Please use a different number.');
-                return;
-            }
-
-            if (
-                phoneInput.dataset.verified !== 'true'
-                || !phoneChallengeApproved
-                || challengePhoneNumber !== fullPhoneNumber
-                || !phoneChallengeId
-            ) {
-                NotificationModal.error('Error', 'Please verify your new phone number before submitting.');
-                return;
-            }
-            formData.set('phone_verification_id', phoneChallengeId);
-        } catch (error) {
-            console.error('Error:', error);
-            NotificationModal.error('Error', 'An error occurred while checking the phone number.');
-            return;
+    if (profileSaveInProgress) return;
+    profileSaveInProgress = true;
+    const form = event.target;
+    // Edits remain drafts even if the user returns to the pre-save baseline.
+    let editedDuringSave = false;
+    const trackEdit = (editEvent) => {
+        if (editEvent.target.name !== 'old_password' && editEvent.target.id !== 'old-password') {
+            editedDuringSave = true;
         }
-    }
+    };
+    form.addEventListener('input', trackEdit);
+    form.addEventListener('change', trackEdit);
+    const acceptSavedProfile = () => {
+        if (editedDuringSave) FormGuard.markDirty(form);
+        else FormGuard.markClean(form);
+    };
+    try {
+        const formData = new FormData(event.target);
+        const afterLogin = document.querySelector('input[name="afterLogin"]:checked')?.value;
+        const webSearchMode = document.querySelector('input[name="wsEngine"]:checked')?.value;
+        const useAlterEgo = document.getElementById('useAlterEgo').checked;
+        const alterEgoId = document.getElementById('alterEgo').value;
+        formData.set('alter_ego_id', useAlterEgo && alterEgoId !== '0' ? alterEgoId : '0');
 
-    const useAlterEgo = document.getElementById('useAlterEgo').checked;
-    const alterEgoSelect = document.getElementById('alterEgo');
-    if (useAlterEgo && alterEgoSelect.value !== "0") {
-        formData.set('alter_ego_id', alterEgoSelect.value);
-    } else {
-        formData.set('alter_ego_id', "0");
-    }
+        const fullPhoneNumber = getFullPhoneNumber();
+        formData.set('phone_number', fullPhoneNumber);
 
-    secureFetch('/api/edit-profile', {
-        method: 'POST',
-        body: formData,
-        headers: {
-            'X-Requested-With': 'XMLHttpRequest'
-        }
-    })
-    .then(response => {
-        if (!response) return null;
-        return response.json();
-    })
-    .then(data => {
-        if (!data) return;
-        if (data.success) {
-            currentUserVoiceId = formData.get('sample_voice_id');
-            originalPhoneNumber = fullPhoneNumber;
-            if (phoneChallengeApproved && challengePhoneNumber === fullPhoneNumber) {
-                document.getElementById('phone').dataset.phoneVerified = 'true';
-            }
-            currentAlterEgoId = formData.get('alter_ego_id');
-            if (data.reauthenticate) {
-                FormGuard.markClean('#editProfileForm');
-                NotificationModal.success('Success', 'Phone number updated. Please sign in again.');
-                setTimeout(() => {
-                    window.location.href = '/login';
-                }, 1200);
-                return;
-            }
-            // Save after-login and web search preferences alongside profile
-            Promise.all([saveAfterLoginPreference(), saveWebSearchSettings()])
-                .then(function() {
-                    FormGuard.markClean('#editProfileForm');
-                    NotificationModal.success('Success', 'Profile updated successfully');
-                })
-                .catch(function(err) {
-                    NotificationModal.error('Error', 'Some preferences failed to save: ' + err.message);
+        const phoneInput = document.getElementById('phone');
+        const phoneNeedsVerification = Boolean(fullPhoneNumber)
+            && fullPhoneNumber !== originalPhoneNumber;
+
+        if (phoneNeedsVerification) {
+            try {
+                const checkResponse = await secureFetch('/api/check-phone-number', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ phone: fullPhoneNumber }),
                 });
-        } else {
-            NotificationModal.error('Error', 'Error updating profile: ' + data.message);
+                if (!checkResponse) return; // Session expired
+                const checkResult = await checkResponse.json();
+
+                if (checkResult.exists) {
+                    NotificationModal.error(profileText('modal.error'), profileText('phone.in_use'));
+                    return;
+                }
+
+                if (
+                    phoneInput.dataset.verified !== 'true'
+                    || !phoneChallengeApproved
+                    || challengePhoneNumber !== fullPhoneNumber
+                    || !phoneChallengeId
+                ) {
+                    NotificationModal.error(profileText('modal.error'), profileText('phone.verify_before_save'));
+                    return;
+                }
+                formData.set('phone_verification_id', phoneChallengeId);
+            } catch (error) {
+                console.error('Error:', error);
+                NotificationModal.error(profileText('modal.error'), profileText('phone.check_error'));
+                return;
+            }
         }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        NotificationModal.error('Error', 'An error occurred while updating the profile.');
-    });
+
+        await secureFetch('/api/edit-profile', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => {
+            if (!response) return null;
+            return response.json();
+        })
+        .then(async data => {
+            if (!data) return;
+            if (data.success) {
+                currentUserVoiceId = formData.get('sample_voice_id');
+                originalPhoneNumber = fullPhoneNumber;
+                if (phoneChallengeApproved && challengePhoneNumber === fullPhoneNumber) {
+                    document.getElementById('phone').dataset.phoneVerified = 'true';
+                }
+                currentAlterEgoId = formData.get('alter_ego_id');
+                if (data.reauthenticate) {
+                    acceptSavedProfile();
+                    NotificationModal.success(profileText('modal.success'), profileText('phone.updated_reauthenticate'));
+                    setTimeout(() => {
+                        FormGuard.navigate('/login');
+                    }, 1200);
+                    return;
+                }
+                // Keep this save active until both requests finish, including partial failures.
+                const results = await Promise.allSettled([
+                    saveAfterLoginPreference(afterLogin), saveWebSearchSettings(webSearchMode)
+                ]);
+                const failed = results.find(result => result.status === 'rejected');
+                if (failed) {
+                    NotificationModal.error(
+                        profileText('modal.error'),
+                        profileUiErrorMessage(failed.reason, 'error.preferences_save')
+                    );
+                    return;
+                }
+                acceptSavedProfile();
+                NotificationModal.success(profileText('modal.success'), data.message || profileText('saved'));
+                if (data.ui_language && data.ui_language !== window.AurvekI18n.language) {
+                    FormGuard.reloadIfClean();
+                }
+            } else {
+                NotificationModal.error(profileText('modal.error'), data.message || profileText('error.profile_update'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            NotificationModal.error(profileText('modal.error'), profileText('error.profile_update'));
+        });
+    } finally {
+        if (editedDuringSave) FormGuard.markDirty(form);
+        FormGuard.resumeAfterSubmit(form);
+        form.removeEventListener('input', trackEdit);
+        form.removeEventListener('change', trackEdit);
+        profileSaveInProgress = false;
+    }
 }
 
 function getFullPhoneNumber() {
@@ -467,8 +848,8 @@ function getFullPhoneNumber() {
 }
 
 // Functions related to alter-ego management
-function loadAlterEgos(currentAlterEgoId) {
-    secureFetch('/api/get-alter-egos', {
+function loadAlterEgos(currentAlterEgoId = document.getElementById('alterEgo').value) {
+    return secureFetch('/api/get-alter-egos', {
         method: 'GET',
         headers: {
             'Content-Type': 'application/json',
@@ -481,7 +862,11 @@ function loadAlterEgos(currentAlterEgoId) {
         if (!data) return;
         if (data.success) {
             const alterEgoSelect = document.getElementById('alterEgo');
-            alterEgoSelect.innerHTML = '<option value="0">Select an alter-ego</option>';
+            alterEgoSelect.replaceChildren();
+            const emptyOption = document.createElement('option');
+            emptyOption.value = '0';
+            emptyOption.textContent = profileText('alter_ego.select_placeholder');
+            alterEgoSelect.appendChild(emptyOption);
             data.alterEgos.forEach(alterEgo => {
                 let option = document.createElement('option');
                 option.value = alterEgo.id;
@@ -495,8 +880,6 @@ function loadAlterEgos(currentAlterEgoId) {
             } else {
                 document.getElementById('alterEgoDetails').innerHTML = '';
             }
-            // Re-snapshot form after alter-ego hydration
-            FormGuard.markClean('#editProfileForm');
         } else {
             console.error('Error loading alter-egos:', data.message);
         }
@@ -527,25 +910,27 @@ function showAlterEgoDetails(alterEgoId) {
         if (!data) return;
         if (data.success) {
             const profilePicture = data.alterEgo.profilePicture
-                ? `<img src="${data.alterEgo.profilePicture}" alt="Alter-Ego Profile Picture" style="width: 100px; height: 100px; object-fit: cover; border-radius: 50%;">`
-                : `<div style="width: 100px; height: 100px; background-color: #f0f0f0; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 2em;">${data.alterEgo.name.charAt(0).toUpperCase()}</div>`;
+                ? `<img src="${escapeHtml(data.alterEgo.profilePicture)}" alt="${escapeHtml(profileText('alter_ego.picture'))}" style="width: 100px; height: 100px; object-fit: cover; border-radius: 50%;">`
+                : `<div style="width: 100px; height: 100px; background-color: #f0f0f0; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 2em;">${escapeHtml(data.alterEgo.name.charAt(0).toUpperCase())}</div>`;
 
             alterEgoDetails.innerHTML = `
                 <div class="alter-ego-container">
                     <div class="alter-ego-header">
                         ${profilePicture}
                         <div>
-                            <h3>${data.alterEgo.name}</h3>
-                            <p>${data.alterEgo.description || 'No description available'}</p>
+                            <h3>${escapeHtml(data.alterEgo.name)}</h3>
+                            <p>${escapeHtml(data.alterEgo.description || profileText('alter_ego.no_description'))}</p>
                         </div>
                     </div>
                     <div class="btn-group">
-                        <button type="button" class="btn btn-primary" id="editAlterEgoButton">Edit</button>
-                        <button type="button" class="btn btn-danger" id="deleteAlterEgoButton">Delete</button>
+                        <button type="button" class="btn btn-primary" id="editAlterEgoButton"></button>
+                        <button type="button" class="btn btn-danger" id="deleteAlterEgoButton"></button>
                     </div>
                 </div>
             `;
 
+            document.getElementById('editAlterEgoButton').textContent = profileText('action.edit');
+            document.getElementById('deleteAlterEgoButton').textContent = profileText('action.delete');
             document.getElementById('editAlterEgoButton').addEventListener('click', function() {
                 editAlterEgo(alterEgoId);
             });
@@ -554,12 +939,18 @@ function showAlterEgoDetails(alterEgoId) {
             });
         } else {
             console.error('Error loading alter-ego details:', data);
-            alterEgoDetails.innerHTML = '<p>Error loading alter-ego details</p>';
+            alterEgoDetails.replaceChildren();
+            const message = document.createElement('p');
+            message.textContent = profileText('alter_ego.load_failed');
+            alterEgoDetails.appendChild(message);
         }
     })
     .catch(error => {
         console.error('Error fetching alter-ego details:', error);
-        alterEgoDetails.innerHTML = '<p>An error occurred while loading alter-ego details</p>';
+        alterEgoDetails.replaceChildren();
+        const message = document.createElement('p');
+        message.textContent = profileText('alter_ego.load_error');
+        alterEgoDetails.appendChild(message);
     });
 }
 
@@ -579,11 +970,13 @@ function editAlterEgo(alterEgoId) {
             document.getElementById('alterEgoId').value = alterEgoId;
             document.getElementById('alterEgoName').value = data.alterEgo.name;
             document.getElementById('alterEgoDescription').value = data.alterEgo.description || '';
+            document.getElementById('alterEgoProfilePicture').value = '';
+            document.getElementById('previewAlterEgoImage').removeAttribute('src');
 
             const alterEgoPictureContainer = document.getElementById('alterEgoPictureContainer');
             if (data.alterEgo.profilePicture) {
                 alterEgoPictureContainer.innerHTML = `
-                    <img src="${data.alterEgo.profilePicture}" alt="Alter-Ego Profile Picture" id="currentAlterEgoPicture">
+                    <img src="${escapeHtml(data.alterEgo.profilePicture)}" alt="${escapeHtml(profileText('alter_ego.picture'))}" id="currentAlterEgoPicture">
                     <div class="avatar-icons">
                         <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                         <span class="avatar-icon delete"><i class="fas fa-trash"></i></span>
@@ -592,7 +985,7 @@ function editAlterEgo(alterEgoId) {
             } else {
                 const initial = data.alterEgo.name.charAt(0).toUpperCase();
                 alterEgoPictureContainer.innerHTML = `
-                    <span class="avatar-initial" id="defaultAlterEgoInitial">${initial}</span>
+                    <span class="avatar-initial" id="defaultAlterEgoInitial">${escapeHtml(initial)}</span>
                     <div class="avatar-icons">
                         <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                     </div>
@@ -605,19 +998,19 @@ function editAlterEgo(alterEgoId) {
             alterEgoModal.show();
         } else {
             console.error('Error loading alter-ego details:', data);
-            NotificationModal.error('Error', 'Error loading alter-ego details for editing');
+            NotificationModal.error(profileText('modal.error'), profileText('alter_ego.edit_load_failed'));
         }
     })
     .catch(error => {
         console.error('Error fetching alter-ego details:', error);
-        NotificationModal.error('Error', 'An error occurred while loading alter-ego details');
+        NotificationModal.error(profileText('modal.error'), profileText('alter_ego.load_error'));
     });
 }
 
 function deleteAlterEgo(alterEgoId) {
     NotificationModal.confirm(
-        'Delete Alter Ego',
-        'Are you sure you want to delete this alter-ego?',
+        profileText('alter_ego.delete_title'),
+        profileText('alter_ego.delete_confirm'),
         () => {
             secureFetch(`/api/delete-alter-ego/${alterEgoId}`, {
                 method: 'DELETE',
@@ -631,34 +1024,37 @@ function deleteAlterEgo(alterEgoId) {
             .then(data => {
                 if (!data) return;
                 if (data.success) {
-                    NotificationModal.success('Success', 'Alter-ego deleted successfully');
-                    loadAlterEgos();
+                    NotificationModal.success(profileText('modal.success'), profileText('alter_ego.deleted'));
+                    loadAlterEgos('0');
                     const alterEgoDetails = document.getElementById('alterEgoDetails');
                     if (alterEgoDetails) {
                         alterEgoDetails.innerHTML = '';
                     }
                     const alterEgoSelect = document.getElementById('alterEgo');
                     if (alterEgoSelect) {
-                        alterEgoSelect.value = '';
+                        alterEgoSelect.value = '0';
                     }
                 } else {
-                    throw new Error(data.message || 'Error deleting alter-ego');
+                    throw profileUiError(data.message || profileText('alter_ego.delete_failed'));
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                NotificationModal.error('Error', 'An error occurred while deleting the alter-ego');
+                NotificationModal.error(
+                    profileText('modal.error'),
+                    profileUiErrorMessage(error, 'alter_ego.delete_failed')
+                );
             });
         },
         null,
-        { type: 'error', confirmText: 'Delete' }
+        { type: 'error', confirmText: profileText('action.delete') }
     );
 }
 
 function deleteAlterEgoPicture() {
     NotificationModal.confirm(
-        'Delete Alter Ego Picture',
-        'Are you sure you want to delete this alter-ego picture?',
+        profileText('alter_ego.delete_picture_title'),
+        profileText('alter_ego.delete_picture_confirm'),
         () => {
             const alterEgoId = document.getElementById('alterEgoId').value;
             if (alterEgoId) {
@@ -673,21 +1069,21 @@ function deleteAlterEgoPicture() {
                     if (!data) return;
                     if (data.success) {
                         updateAlterEgoPictureUI(alterEgoId);
-                        NotificationModal.success('Success', 'Alter-ego picture deleted successfully');
+                        NotificationModal.success(profileText('modal.success'), profileText('alter_ego.picture_deleted'));
                     } else {
-                        NotificationModal.error('Error', 'Error deleting alter-ego picture');
+                        NotificationModal.error(profileText('modal.error'), profileText('alter_ego.picture_delete_failed'));
                     }
                 })
                 .catch(error => {
                     console.error('Error deleting alter-ego picture:', error);
-                    NotificationModal.error('Error', 'An error occurred while deleting the alter-ego picture');
+                    NotificationModal.error(profileText('modal.error'), profileText('alter_ego.picture_delete_failed'));
                 });
             } else {
                 updateAlterEgoPictureUI();
             }
         },
         null,
-        { type: 'error', confirmText: 'Delete' }
+        { type: 'error', confirmText: profileText('action.delete') }
     );
 }
 
@@ -695,7 +1091,7 @@ function updateAlterEgoPictureUI(alterEgoId) {
     const alterEgoPictureContainer = document.getElementById('alterEgoPictureContainer');
     const alterEgoName = document.getElementById('alterEgoName').value;
     alterEgoPictureContainer.innerHTML = `
-        <span class="avatar-initial" id="defaultAlterEgoInitial">${alterEgoName.charAt(0).toUpperCase()}</span>
+        <span class="avatar-initial" id="defaultAlterEgoInitial">${escapeHtml(alterEgoName.charAt(0).toUpperCase())}</span>
         <div class="avatar-icons">
             <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
         </div>
@@ -704,14 +1100,14 @@ function updateAlterEgoPictureUI(alterEgoId) {
     if (alterEgoId) {
         const alterEgoDetails = document.getElementById('alterEgoDetails');
         if (alterEgoDetails) {
-            const profilePicture = `<div style="width: 100px; height: 100px; background-color: #f0f0f0; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 2em;">${alterEgoName.charAt(0).toUpperCase()}</div>`;
+            const profilePicture = `<div style="width: 100px; height: 100px; background-color: #f0f0f0; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 2em;">${escapeHtml(alterEgoName.charAt(0).toUpperCase())}</div>`;
             const headerElement = alterEgoDetails.querySelector('.alter-ego-header');
             if (headerElement) {
                 headerElement.innerHTML = `
                     ${profilePicture}
                     <div>
-                        <h3>${alterEgoName}</h3>
-                        <p>${document.getElementById('alterEgoDescription').value || 'No description available'}</p>
+                        <h3>${escapeHtml(alterEgoName)}</h3>
+                        <p>${escapeHtml(document.getElementById('alterEgoDescription').value || profileText('alter_ego.no_description'))}</p>
                     </div>
                 `;
             }
@@ -725,7 +1121,10 @@ function updateAlterEgoPictureUI(alterEgoId) {
 }
 
 function saveAlterEgo() {
-    const formData = new FormData(document.getElementById('alterEgoForm'));
+    const form = document.getElementById('alterEgoForm');
+    if (!form.reportValidity()) return;
+
+    const formData = new FormData(form);
     const alterEgoId = formData.get('id');
     const url = alterEgoId ? `/api/update-alter-ego/${alterEgoId}` : '/api/create-alter-ego';
     const method = alterEgoId ? 'PUT' : 'POST';
@@ -752,30 +1151,35 @@ function sendSaveRequest(url, method, formData) {
     .then(response => {
         if (!response) return null;
         if (!response.ok) {
-            return response.json().then(err => { throw err; });
+            return response.json().then(errorData => {
+                throw profileUiError(errorData.message || profileText('alter_ego.save_failed'));
+            });
         }
         return response.json();
     })
     .then(data => {
         if (!data) return;
         if (data.success) {
-            NotificationModal.success('Success', 'Alter-ego saved successfully');
+            NotificationModal.success(profileText('modal.success'), profileText('alter_ego.saved'));
             alterEgoModal.hide();
             loadAlterEgos();
         } else {
-            throw new Error(data.message || 'Error saving alter-ego');
+            throw profileUiError(data.message || profileText('alter_ego.save_failed'));
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        NotificationModal.error('Error', error.message || 'An error occurred while saving the alter-ego');
+        NotificationModal.error(
+            profileText('modal.error'),
+            profileUiErrorMessage(error, 'alter_ego.save_failed')
+        );
     });
 }
 
 function deleteProfilePicture() {
     NotificationModal.confirm(
-        'Delete Profile Picture',
-        'Are you sure you want to delete your profile picture?',
+        profileText('user.delete_picture_title'),
+        profileText('user.delete_picture_confirm'),
         () => {
             secureFetch('/api/delete-profile-picture', {
                 method: 'POST',
@@ -792,19 +1196,19 @@ function deleteProfilePicture() {
                 if (data.success) {
                     const profilePictureContainer = document.getElementById('profilePictureContainer');
                     profilePictureContainer.innerHTML = `
-                        <span class="avatar-initial" id="defaultProfileInitial">${document.getElementById('username').value.charAt(0).toUpperCase()}</span>
+                        <span class="avatar-initial" id="defaultProfileInitial">${escapeHtml(document.getElementById('username').value.charAt(0).toUpperCase())}</span>
                         <div class="avatar-icons">
                             <span class="avatar-icon edit"><i class="fas fa-pencil-alt"></i></span>
                         </div>
                     `;
-                    NotificationModal.success('Success', 'Profile picture deleted successfully');
+                    NotificationModal.success(profileText('modal.success'), profileText('user.picture_deleted'));
                 } else {
-                    NotificationModal.error('Error', 'Error deleting profile picture');
+                    NotificationModal.error(profileText('modal.error'), profileText('user.picture_delete_failed'));
                 }
             });
         },
         null,
-        { type: 'error', confirmText: 'Delete' }
+        { type: 'error', confirmText: profileText('action.delete') }
     );
 }
 
@@ -889,6 +1293,7 @@ function initializeAlterEgoHandlers() {
             document.getElementById('alterEgoName').value = '';
             document.getElementById('alterEgoDescription').value = '';
             if (alterEgoPictureInput) alterEgoPictureInput.value = '';
+            document.getElementById('previewAlterEgoImage').removeAttribute('src');
 
             alterEgoPictureContainer.innerHTML = `
                 <span class="avatar-initial" id="defaultAlterEgoInitial">P</span>
@@ -955,34 +1360,25 @@ function initializeAlterEgoHandlers() {
     }
 }
 
-// Add this line at the end of the DOMContentLoaded event listener
-document.getElementById('alterEgo').addEventListener('change', function() {
-    const selectedAlterEgoId = this.value;
-    if (selectedAlterEgoId && selectedAlterEgoId !== "0") {
-        showAlterEgoDetails(selectedAlterEgoId);
-    } else {
-        document.getElementById('alterEgoDetails').innerHTML = '';
-    }
-});
-
 document.getElementById('deleteAccountBtn').addEventListener('click', (e) => {
     e.preventDefault();
     let step = 1;
+    const deleteToken = 'DELETE';
 
-    NotificationModal.show('warning', 'Warning', `
-        <p class="text-danger"><strong>You are about to delete your account.</strong></p>
-        <p>This action will:</p>
+    NotificationModal.show('warning', profileText('modal.warning'), `
+        <p class="text-danger"><strong>${escapeHtml(profileText('delete_account.warning'))}</strong></p>
+        <p>${escapeHtml(profileText('delete_account.effects_intro'))}</p>
         <ul>
-            <li>Delete all your personal information</li>
-            <li>Remove all your prompts and configurations</li>
-            <li>Cancel any active subscriptions</li>
-            <li>This action cannot be undone</li>
+            <li>${escapeHtml(profileText('delete_account.effect_personal'))}</li>
+            <li>${escapeHtml(profileText('delete_account.effect_prompts'))}</li>
+            <li>${escapeHtml(profileText('delete_account.effect_subscriptions'))}</li>
+            <li>${escapeHtml(profileText('delete_account.effect_irreversible'))}</li>
         </ul>
-        <p>Are you sure you want to continue?</p>
+        <p>${escapeHtml(profileText('delete_account.continue_question'))}</p>
     `, {
         allowHtml: true,
-        confirmText: 'Continue',
-        cancelText: 'Cancel',
+        confirmText: profileText('action.continue'),
+        cancelText: profileText('action.cancel'),
         showCancel: true,
         hideOnConfirm: false,
         onConfirm: async (modal) => {
@@ -990,16 +1386,16 @@ document.getElementById('deleteAccountBtn').addEventListener('click', (e) => {
                 step = 2;
                 modal.update({
                     message: `
-                        <p class="text-danger"><strong>Final confirmation required</strong></p>
-                        <p>Please type "DELETE" below to confirm you want to permanently delete your account:</p>
-                        <input type="text" class="form-control" id="deleteConfirmInput" placeholder="Type DELETE">
+                        <p class="text-danger"><strong>${escapeHtml(profileText('delete_account.final_confirmation'))}</strong></p>
+                        <p>${escapeHtml(profileText('delete_account.type_confirmation', { token: deleteToken }))}</p>
+                        <input type="text" class="form-control" id="deleteConfirmInput" placeholder="${escapeHtml(profileText('delete_account.type_token', { token: deleteToken }))}">
                     `,
-                    confirmText: 'Delete Account',
+                    confirmText: profileText('delete_account.delete_action'),
                     allowHtml: true
                 });
             } else {
                 const confirmInput = document.getElementById('deleteConfirmInput');
-                if (confirmInput && confirmInput.value === 'DELETE') {
+                if (confirmInput && confirmInput.value === deleteToken) {
                     try {
                         const response = await secureFetch('/api/delete-account', {
                             method: 'POST',
@@ -1013,11 +1409,11 @@ document.getElementById('deleteAccountBtn').addEventListener('click', (e) => {
                             FormGuard.navigate('/logout', { bypass: true });
                         } else {
                             const data = await response.json();
-                            throw new Error(data.detail || 'Error deleting account');
+                            throw profileUiError(data.detail || profileText('delete_account.failed'));
                         }
                     } catch (error) {
                         modal.update({
-                            message: `<p class="text-danger">Error: ${escapeHtml(error.message)}</p>`,
+                            message: `<p class="text-danger">${escapeHtml(profileText('modal.error'))}: ${escapeHtml(profileUiErrorMessage(error, 'delete_account.failed'))}</p>`,
                             showConfirm: false,
                             allowHtml: true
                         });
@@ -1025,10 +1421,10 @@ document.getElementById('deleteAccountBtn').addEventListener('click', (e) => {
                 } else {
                     modal.update({
                         message: `
-                            <p class="text-danger"><strong>Final confirmation required</strong></p>
-                            <p>Please type "DELETE" below to confirm you want to permanently delete your account:</p>
-                            <input type="text" class="form-control" id="deleteConfirmInput" placeholder="Type DELETE">
-                            <p class="text-danger mt-2">Please type "DELETE" correctly to confirm.</p>
+                            <p class="text-danger"><strong>${escapeHtml(profileText('delete_account.final_confirmation'))}</strong></p>
+                            <p>${escapeHtml(profileText('delete_account.type_confirmation', { token: deleteToken }))}</p>
+                            <input type="text" class="form-control" id="deleteConfirmInput" placeholder="${escapeHtml(profileText('delete_account.type_token', { token: deleteToken }))}">
+                            <p class="text-danger mt-2">${escapeHtml(profileText('delete_account.type_correctly', { token: deleteToken }))}</p>
                         `,
                         allowHtml: true
                     });
@@ -1050,37 +1446,32 @@ function initAfterLoginPreference() {
     if (radio) radio.checked = true;
 }
 
-function saveAfterLoginPreference() {
-    const selectedRadio = document.querySelector('input[name="afterLogin"]:checked');
-    if (!selectedRadio) return Promise.resolve();
+function saveAfterLoginPreference(afterLogin) {
+    if (!afterLogin) return Promise.resolve();
 
     return secureFetch('/api/home/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ after_login: selectedRadio.value })
+        body: JSON.stringify({ after_login: afterLogin })
     })
     .then(response => {
-        if (!response) return null;
-        if (!response.ok) throw new Error('Failed to save login preference');
+        if (!response || !response.ok) throw profileUiError(profileText('error.after_login_save'));
         return response.json();
     });
 }
 
-function saveWebSearchSettings() {
-    const engineRadio = document.querySelector('input[name="wsEngine"]:checked');
-
-    if (!engineRadio) return Promise.resolve();
+function saveWebSearchSettings(webSearchMode) {
+    if (!webSearchMode) return Promise.resolve();
 
     return secureFetch('/api/user/web-search-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            web_search_mode: engineRadio.value
+            web_search_mode: webSearchMode
         })
     })
     .then(response => {
-        if (!response) return null;
-        if (!response.ok) throw new Error('Failed to save web search settings');
+        if (!response || !response.ok) throw profileUiError(profileText('error.web_search_save'));
         return response.json();
     });
 }

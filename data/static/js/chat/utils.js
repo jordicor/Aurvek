@@ -30,11 +30,11 @@ function startCountdown(targetElementId, durationInSeconds) {
         let minutes = Math.floor((timeleft % (1000 * 60 * 60)) / (1000 * 60));
         let seconds = Math.floor((timeleft % (1000 * 60)) / 1000);
         
-        document.getElementById(targetElementId).innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
+        document.getElementById(targetElementId).textContent = window.AurvekI18n.t('chat.countdown', { hours, minutes, seconds });
         
         if (timeleft < 0) {
             clearInterval(countdownFunction);
-            document.getElementById(targetElementId).innerHTML = "EXPIRED";
+            document.getElementById(targetElementId).textContent = window.AurvekI18n.t('chat.expired');
             localStorage.removeItem("countdownEndTime");
         }
     }, 1000);
@@ -74,8 +74,8 @@ function removeWaitingMessage() {
 
 function deleteConversation(conversationId) {
     NotificationModal.confirm(
-        'Confirm Deletion',
-        'Are you sure you want to delete this conversation?',
+        window.AurvekI18n.t('chat.delete_confirm_title'),
+        window.AurvekI18n.t('chat.delete_confirm'),
         withSession(() => {
             // Close dropdown menu before proceeding
             const conversationElement = document.querySelector(`[data-conversation-id="${conversationId}"]`);
@@ -118,21 +118,21 @@ function deleteConversation(conversationId) {
                 })
                 .catch(error => {
                     console.error('Error deleting the chat:', error);
-                    NotificationModal.error('Delete Error', 'An error occurred while deleting the chat. Please try again.');
+                    NotificationModal.error(window.AurvekI18n.t('chat.delete_error_title'), window.AurvekI18n.t('chat.delete_error'));
                 });
         }),
         null,
-        { type: 'error', confirmText: 'Delete' }
+        { type: 'error', confirmText: window.AurvekI18n.t('chat.delete') }
     );
 }
 
 function toggleLockConversation(conversationId, lock) {
     const action = lock ? 'lock' : 'unlock';
-    const actionCapitalized = lock ? 'Lock' : 'Unlock';
+    const actionCapitalized = lock ? window.AurvekI18n.t('chat.lock') : window.AurvekI18n.t('chat.unlock');
 
     NotificationModal.confirm(
-        `Confirm ${actionCapitalized}`,
-        `Are you sure you want to ${action} this conversation?`,
+        lock ? window.AurvekI18n.t('chat.lock_confirm_title') : window.AurvekI18n.t('chat.unlock_confirm_title'),
+        lock ? window.AurvekI18n.t('chat.lock_confirm') : window.AurvekI18n.t('chat.unlock_confirm'),
         withSession(() => {
             secureFetch(`/api/conversations/${conversationId}/lock`, {
                 method: 'POST',
@@ -159,7 +159,7 @@ function toggleLockConversation(conversationId, lock) {
                     if (nameSpan) {
                         const chatText = nameSpan.textContent.replace(/^\s*/, '');
                         if (lock) {
-                            nameSpan.innerHTML = `<i class="fas fa-comment-slash" title="This conversation is locked"></i> ${chatText}`;
+                            nameSpan.innerHTML = `<i class="fas fa-comment-slash" title="${escapeHTML(window.AurvekI18n.t('chat.locked'))}"></i> ${escapeHTML(chatText)}`;
                         } else {
                             // Remove lock icon
                             const lockIcon = nameSpan.querySelector('.fa-comment-slash');
@@ -177,25 +177,25 @@ function toggleLockConversation(conversationId, lock) {
                     if (lock) {
                         if (lockedBanner) lockedBanner.style.display = 'flex';
                         if (messageText) {
-                            messageText.placeholder = 'This conversation is locked';
+                            messageText.placeholder = window.AurvekI18n.t('chat.locked');
                             messageText.disabled = true;
                         }
                         document.querySelector('#form-message button[type="submit"]').disabled = true;
                     } else {
                         if (lockedBanner) lockedBanner.style.display = 'none';
                         if (messageText) {
-                            messageText.placeholder = 'Type a message...';
+                            messageText.placeholder = window.AurvekI18n.t('chat.type_message');
                             messageText.disabled = false;
                         }
                         document.querySelector('#form-message button[type="submit"]').disabled = false;
                     }
                 }
 
-                NotificationModal.success(`Conversation ${actionCapitalized}ed`, `The conversation has been ${action}ed successfully.`);
+                NotificationModal.success(lock ? window.AurvekI18n.t('chat.lock_success_title') : window.AurvekI18n.t('chat.unlock_success_title'), lock ? window.AurvekI18n.t('chat.lock_success') : window.AurvekI18n.t('chat.unlock_success'));
             })
             .catch(error => {
                 console.error(`Error ${action}ing the chat:`, error);
-                NotificationModal.error(`${actionCapitalized} Error`, `An error occurred while ${action}ing the chat. Please try again.`);
+                NotificationModal.error(lock ? window.AurvekI18n.t('chat.lock_error_title') : window.AurvekI18n.t('chat.unlock_error_title'), lock ? window.AurvekI18n.t('chat.lock_error') : window.AurvekI18n.t('chat.unlock_error'));
             });
         }),
         null,
@@ -234,11 +234,14 @@ function updateExternalSection() {
 }
 
 function downloadPDF(conversationId) {
+    if (String(window.applicationConversation?.id) === String(conversationId) || window.AurvekEmbed?.config.application) {
+        return window.AurvekChatActions.fromControl('export_pdf');
+    }
     NotificationModal.confirm(
-        'Download PDF',
-        'Do you want to download this conversation as PDF?',
+        window.AurvekI18n.t('chat.download_pdf'),
+        window.AurvekI18n.t('chat.download_pdf_confirm'),
         withSession((modal) => {
-            modal.update({ message: 'Processing...', showConfirm: false, showCancel: false });
+            modal.update({ message: window.AurvekI18n.t('chat.processing'), showConfirm: false, showCancel: false });
 
             secureFetch(`/download-pdf/${conversationId}`)
                 .then(response => {
@@ -248,26 +251,29 @@ function downloadPDF(conversationId) {
                     return response.json();
                 })
                 .then(data => {
-                    modal.update({ title: 'PDF Generation Started', message: data.message, showCancel: true, cancelText: 'Close' });
+                    modal.update({ title: window.AurvekI18n.t('chat.pdf_started'), message: data.message, showCancel: true, cancelText: window.AurvekI18n.t('chat.close') });
                 })
                 .catch(error => {
                     console.error('Error:', error);
-                    modal.update({ title: 'Error', message: 'An error occurred while starting PDF generation.', showCancel: true, cancelText: 'Close' });
+                    modal.update({ title: window.AurvekI18n.t('chat.error'), message: window.AurvekI18n.t('chat.pdf_start_error'), showCancel: true, cancelText: window.AurvekI18n.t('chat.close') });
                 });
         }),
         null,
-        { confirmText: 'Download', hideOnConfirm: false }
+        { confirmText: window.AurvekI18n.t('chat.download'), hideOnConfirm: false }
     );
 }
 
 
 
 function downloadAudio(conversationId) {
+    if (String(window.applicationConversation?.id) === String(conversationId) || window.AurvekEmbed?.config.application) {
+        return window.AurvekChatActions.fromControl('export_mp3');
+    }
     NotificationModal.confirm(
-        'Download MP3',
-        'Do you want to download this conversation as MP3?',
+        window.AurvekI18n.t('chat.download_mp3'),
+        window.AurvekI18n.t('chat.download_mp3_confirm'),
         withSession((modal) => {
-            modal.update({ message: 'Processing...', showConfirm: false, showCancel: false });
+            modal.update({ message: window.AurvekI18n.t('chat.processing'), showConfirm: false, showCancel: false });
 
             secureFetch(`/download-mp3/${conversationId}`)
                 .then(response => {
@@ -277,15 +283,15 @@ function downloadAudio(conversationId) {
                     return response.json();
                 })
                 .then(data => {
-                    modal.update({ title: 'MP3 Generation Started', message: data.message, showCancel: true, cancelText: 'Close' });
+                    modal.update({ title: window.AurvekI18n.t('chat.mp3_started'), message: data.message, showCancel: true, cancelText: window.AurvekI18n.t('chat.close') });
                 })
                 .catch(error => {
                     console.error('Error:', error);
-                    modal.update({ title: 'Error', message: 'An error occurred while starting MP3 generation.', showCancel: true, cancelText: 'Close' });
+                    modal.update({ title: window.AurvekI18n.t('chat.error'), message: window.AurvekI18n.t('chat.mp3_start_error'), showCancel: true, cancelText: window.AurvekI18n.t('chat.close') });
                 });
         }),
         null,
-        { confirmText: 'Download', hideOnConfirm: false }
+        { confirmText: window.AurvekI18n.t('chat.download'), hideOnConfirm: false }
     );
 }
 
@@ -311,20 +317,23 @@ function serveMp3(conversationId) {
         })
         .catch(error => {
             console.error('Error:', error);
-            NotificationModal.error('MP3 Unavailable', 'The MP3 file is not available yet or an error occurred.');
+            NotificationModal.error(window.AurvekI18n.t('chat.mp3_unavailable'), window.AurvekI18n.t('chat.mp3_unavailable_detail'));
         });
 }
 
 
-function toggleSendButton(state) {
+function toggleSendButton(streaming = false) {
     const sendButton = document.getElementById('send-button');
-    if (state === 'Stop') {
-        sendButton.innerText = 'Stop';
+    sendButton.dataset.streaming = String(streaming);
+    if (streaming) {
+        sendButton.innerText = window.AurvekI18n.t('chat.stop');
         sendButton.onclick = stopReceivingStream;
     } else {
-        sendButton.innerText = 'Send';
+        sendButton.innerText = window.AurvekI18n.t('chat.send');
         sendButton.onclick = handleSendButtonClick;
     }
+    window.AurvekEmbed?.syncSendControl(streaming);
+    window.updateIncognitoChatControls?.();
 }
 
 function handleSendButtonClick(event) {
@@ -353,9 +362,10 @@ function addLoadingIndicator(messageText = '') {
     loadingIndicator.classList.add('loading-indicator', 'temporary-message');
     loadingIndicator.innerHTML = `
         <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">Loading...</span>
+            <span class="visually-hidden">${escapeHTML(window.AurvekI18n.t('chat.loading'))}</span>
         </div>
     `;
+    window.AurvekI18n.bindText(loadingIndicator.querySelector('.visually-hidden'), 'chat.loading');
 
     const label = typeof messageText === 'string' ? messageText.trim() : '';
     if (label) {
@@ -380,12 +390,19 @@ function removeLoadingIndicator() {
     }
 }
 
-function showInsufficientBalancePopup(failedAction) {
-    NotificationModal.warning(
-        'Insufficient Balance!',
-        `Unable to perform ${escapeHtml(failedAction)} due to insufficient balance.<br>Reload your balance <a href="/">here</a>.`,
-        { allowHtml: true }
-    );
+function showInsufficientBalancePopup() {
+    if (window.AurvekEmbed) {
+        NotificationModal.warning(() => window.AurvekI18n.t('chat.balance_title'),
+            () => window.AurvekI18n.t('embed.balance'));
+        return;
+    }
+    const message = document.createElement('div');
+    message.append(document.createTextNode(window.AurvekI18n.t('chat.balance_message')), document.createElement('br'));
+    const link = document.createElement('a');
+    link.href = '/';
+    link.textContent = window.AurvekI18n.t('chat.balance_reload');
+    message.appendChild(link);
+    NotificationModal.warning(window.AurvekI18n.t('chat.balance_title'), message.innerHTML, { allowHtml: true });
 }
 
     //console.log("Initializing imageHandler");
@@ -435,7 +452,9 @@ function showInsufficientBalancePopup(failedAction) {
 			}
 
 			// Modify URL to get fullsize version
-			const fullsizeUrl = url.replace('_256.webp', '_fullsize.webp');
+			const fullsizeUrl = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(url)
+                : url.replace('_256.webp', '_fullsize.webp');
+            if (!fullsizeUrl) return;
 
 			// Hide current image
 			fullsizeImage.style.display = 'none';
@@ -443,7 +462,7 @@ function showInsufficientBalancePopup(failedAction) {
 			// Show loading indicator
 			const loadingIndicator = document.createElement('div');
 			loadingIndicator.className = 'loading-indicator';
-			loadingIndicator.innerHTML = '<div class="spinner-border text-light" role="status"><span class="visually-hidden">Loading...</span></div>';
+			loadingIndicator.innerHTML = `<div class="spinner-border text-light" role="status"><span class="visually-hidden">${escapeHTML(window.AurvekI18n.t('chat.loading'))}</span></div>`;
 			fullsizeContainer.appendChild(loadingIndicator);
 
 			// Show container
@@ -474,7 +493,7 @@ function showInsufficientBalancePopup(failedAction) {
 				deleteButton.style.display = 'none';
 			} else {
 				downloadButton.style.display = '';
-				deleteButton.style.display = '';
+				deleteButton.style.display = window.AurvekEmbed && !attachmentRef ? 'none' : '';
 			}
 
 			downloadButton.onclick = (e) => {
@@ -486,7 +505,7 @@ function showInsufficientBalancePopup(failedAction) {
 				if (messageId) {
 					this.deleteImage(messageId, attachmentRef);
 				} else {
-					NotificationModal.warning('Cannot Delete', 'This image cannot be deleted.');
+					NotificationModal.warning(window.AurvekI18n.t('chat.cannot_delete'), window.AurvekI18n.t('chat.image_cannot_delete'));
 				}
 			};
 		},
@@ -518,9 +537,13 @@ function showInsufficientBalancePopup(failedAction) {
         },
 
 		deleteImage: function(messageId, attachmentRef) {
+            if (window.AurvekEmbed?.config.application) {
+                if (attachmentRef) deleteApplicationAttachment(attachmentRef, () => this.closeFullsize());
+                return;
+            }
 			NotificationModal.confirm(
-				'Confirm Deletion',
-				'Are you sure you want to delete this image?',
+				window.AurvekI18n.t('chat.delete_confirm_title'),
+				window.AurvekI18n.t('chat.image_delete_confirm'),
 				() => {
 					const url = attachmentRef
 						? `/api/delete-image/${messageId}?attachment_ref=${encodeURIComponent(attachmentRef)}`
@@ -548,7 +571,7 @@ function showInsufficientBalancePopup(failedAction) {
 									messageContent.classList.add('message-content');
 
 									const deletedText = document.createElement('p');
-									deletedText.textContent = '[image deleted]';
+									deletedText.textContent = window.AurvekI18n.t('chat.image_deleted');
 
 									// Build message structure
 									messageContent.appendChild(deletedText);
@@ -566,7 +589,7 @@ function showInsufficientBalancePopup(failedAction) {
 					.catch(error => console.error('Error:', error));
 				},
 				null,
-				{ type: 'error', confirmText: 'Delete' }
+				{ type: 'error', confirmText: window.AurvekI18n.t('chat.delete') }
 			);
 		},
 		
@@ -609,3 +632,21 @@ function showInsufficientBalancePopup(failedAction) {
     observer.observe(targetNode, config);
 
     
+
+// The scoped attachment route removes only this file and rewrites its message.
+function deleteApplicationAttachment(attachmentRef, onDeleted) {
+    NotificationModal.confirm(
+        window.AurvekI18n.t('chat.delete_confirm_title'),
+        window.AurvekI18n.t('chat.delete'),
+        async () => {
+            try {
+                const response = await fetch(`/api/attachments/${encodeURIComponent(attachmentRef)}`, {method: 'DELETE'});
+                if (!response.ok) throw new Error('Attachment deletion failed');
+                onDeleted?.();
+                await refreshActiveConversation();
+            } catch (error) {
+                NotificationModal.error(window.AurvekI18n.t('chat.delete'), window.AurvekI18n.t('embed.error'));
+            }
+        }, null, {type: 'error', confirmText: window.AurvekI18n.t('chat.delete')}
+    );
+}

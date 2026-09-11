@@ -1,6 +1,7 @@
+{% set i18n_domains = ['marketplace_earnings'] %}
 {% extends 'base.html' %}
 
-{% block title %}Landing Page Analytics{% endblock %}
+{% block title %}{{ t('marketplace_earnings.landing_page_analytics') }}{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -77,15 +78,15 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Landing Page Analytics{% endblock %}
-{% block page_subtitle %}<p class="text-muted mb-0">Track visits and conversions for your landing pages.</p>{% endblock %}
+{% block page_title %}{{ t('marketplace_earnings.landing_page_analytics') }}{% endblock %}
+{% block page_subtitle %}<p class="text-muted mb-0">{{ t('marketplace_earnings.track_visits_and_conversions_for_your_landing_pages') }}</p>{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block page_actions %}
 <div class="text-muted">
-    <i class="fas fa-sync-alt me-1 refresh-btn" onclick="loadAnalytics()" style="cursor: pointer;" title="Refresh"></i>
-    Last 30 days
+    <i class="fas fa-sync-alt me-1 refresh-btn" onclick="loadAnalytics()" style="cursor: pointer;" title="{{ t('marketplace_earnings.refresh') }}"></i>
+    {{ t('marketplace_earnings.last_30_days') }}
 </div>
 {% endblock %}
 
@@ -94,30 +95,30 @@
 <div class="row">
     <div class="col-md-3 mb-4">
         <div class="stat-card primary">
-            <div class="label"><i class="fas fa-eye me-1"></i>Today</div>
+            <div class="label"><i class="fas fa-eye me-1"></i>{{ t('marketplace_earnings.analytics.today') }}</div>
             <div class="amount" id="todayVisitors">0</div>
-            <div class="sublabel">Unique visitors</div>
+            <div class="sublabel">{{ t('marketplace_earnings.analytics.unique') }}</div>
         </div>
     </div>
     <div class="col-md-3 mb-4">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-calendar-week me-1"></i>This Week</div>
+            <div class="label"><i class="fas fa-calendar-week me-1"></i>{{ t('marketplace_earnings.analytics.week') }}</div>
             <div class="amount" id="weekVisitors">0</div>
-            <div class="sublabel">Unique visitors</div>
+            <div class="sublabel">{{ t('marketplace_earnings.analytics.unique') }}</div>
         </div>
     </div>
     <div class="col-md-3 mb-4">
         <div class="stat-card success">
-            <div class="label"><i class="fas fa-calendar-alt me-1"></i>This Month</div>
+            <div class="label"><i class="fas fa-calendar-alt me-1"></i>{{ t('marketplace_earnings.earnings.month') }}</div>
             <div class="amount" id="monthVisitors">0</div>
-            <div class="sublabel">Unique visitors</div>
+            <div class="sublabel">{{ t('marketplace_earnings.analytics.unique') }}</div>
         </div>
     </div>
     <div class="col-md-3 mb-4">
         <div class="stat-card warning">
-            <div class="label"><i class="fas fa-user-plus me-1"></i>Conversions</div>
+            <div class="label"><i class="fas fa-user-plus me-1"></i>{{ t('marketplace_earnings.analytics.conversions') }}</div>
             <div class="amount" id="totalConversions">0</div>
-            <div class="sublabel">Registrations this month</div>
+            <div class="sublabel">{{ t('marketplace_earnings.registrations_this_month') }}</div>
         </div>
     </div>
 </div>
@@ -126,11 +127,11 @@
 <div class="analytics-tabs" style="display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 2px solid var(--border-color);">
     <button class="analytics-tab active" onclick="switchAnalyticsTab('prompts')" id="tabPrompts"
             style="padding: 10px 24px; background: none; border: none; border-bottom: 3px solid var(--accent); color: var(--text-primary); font-weight: 600; cursor: pointer; margin-bottom: -2px;">
-        Prompts
+        {{ t('marketplace_earnings.prompts') }}
     </button>
     <button class="analytics-tab" onclick="switchAnalyticsTab('packs')" id="tabPacks"
             style="padding: 10px 24px; background: none; border: none; border-bottom: 3px solid transparent; color: var(--text-muted); font-weight: 400; cursor: pointer; margin-bottom: -2px;">
-        Packs
+        {{ t('marketplace_earnings.packs') }}
     </button>
 </div>
 
@@ -140,10 +141,10 @@
         <!-- Visits Chart -->
         <div class="col-lg-8">
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-chart-bar me-2"></i>Daily Visits (Last 14 Days)</div>
+                <div class="section-title"><i class="fas fa-chart-bar me-2"></i>{{ t('marketplace_earnings.daily_visits_last_14_days') }}</div>
                 <div class="chart-container" id="visitsChart">
                     <div class="text-center text-muted py-5">
-                        <i class="fas fa-spinner fa-spin me-1"></i> Loading chart...
+                        <i class="fas fa-spinner fa-spin me-1"></i> {{ t('marketplace_earnings.loading_chart') }}
                     </div>
                 </div>
             </div>
@@ -152,10 +153,10 @@
         <!-- Top Referrers -->
         <div class="col-lg-4">
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-link me-2"></i>Top Referrers</div>
+                <div class="section-title"><i class="fas fa-link me-2"></i>{{ t('marketplace_earnings.top_referrers') }}</div>
                 <div id="referrersList">
                     <div class="text-center text-muted py-3">
-                        <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+                        <i class="fas fa-spinner fa-spin me-1"></i> {{ t('marketplace_earnings.loading') }}
                     </div>
                 </div>
             </div>
@@ -164,23 +165,23 @@
 
     <!-- Prompts Table -->
     <div class="section-container">
-        <div class="section-title"><i class="fas fa-file-alt me-2"></i>Analytics by Landing Page</div>
+        <div class="section-title"><i class="fas fa-file-alt me-2"></i>{{ t('marketplace_earnings.analytics_by_landing_page') }}</div>
         <div class="table-responsive">
             <table class="table">
                 <thead>
                     <tr>
-                        <th>Landing Page</th>
-                        <th class="text-center">Today</th>
-                        <th class="text-center">Week</th>
-                        <th class="text-center">Month</th>
-                        <th class="text-center">Conversions</th>
-                        <th class="text-center">Rate</th>
+                        <th>{{ t('marketplace_earnings.landing_page') }}</th>
+                        <th class="text-center">{{ t('marketplace_earnings.analytics.today') }}</th>
+                        <th class="text-center">{{ t('marketplace_earnings.week') }}</th>
+                        <th class="text-center">{{ t('marketplace_earnings.month') }}</th>
+                        <th class="text-center">{{ t('marketplace_earnings.analytics.conversions') }}</th>
+                        <th class="text-center">{{ t('marketplace_earnings.rate') }}</th>
                     </tr>
                 </thead>
                 <tbody id="promptsTableBody">
                     <tr>
                         <td colspan="6" class="text-center text-muted">
-                            <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+                            <i class="fas fa-spinner fa-spin me-1"></i> {{ t('marketplace_earnings.loading') }}
                         </td>
                     </tr>
                 </tbody>
@@ -188,7 +189,8 @@
         </div>
         <div id="noPromptsMessage" style="display: none;" class="text-center text-muted py-4">
             <i class="fas fa-info-circle me-1"></i>
-            No landing pages found. <a href="/prompts/new">Create your first prompt</a> to start tracking.
+            {% macro create_prompt_link() %}<a href="/prompts/new">{{ t('marketplace_earnings.create_first') }}</a>{% endmacro %}
+            {{ t_html('marketplace_earnings.empty_landings', link=create_prompt_link()) }}
         </div>
     </div>
 </div>
@@ -197,23 +199,23 @@
 <div id="packsAnalytics" style="display: none;">
     <div id="packsAnalyticsContent">
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-box-open me-2"></i>Analytics by Pack Landing Page</div>
+            <div class="section-title"><i class="fas fa-box-open me-2"></i>{{ t('marketplace_earnings.analytics_by_pack_landing_page') }}</div>
             <div class="table-responsive">
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Pack</th>
-                            <th class="text-center">Today</th>
-                            <th class="text-center">Week</th>
-                            <th class="text-center">Month</th>
-                            <th class="text-center">Conversions</th>
-                            <th class="text-center">Conv. Rate</th>
+                            <th>{{ t('marketplace_earnings.pack') }}</th>
+                            <th class="text-center">{{ t('marketplace_earnings.analytics.today') }}</th>
+                            <th class="text-center">{{ t('marketplace_earnings.week') }}</th>
+                            <th class="text-center">{{ t('marketplace_earnings.month') }}</th>
+                            <th class="text-center">{{ t('marketplace_earnings.analytics.conversions') }}</th>
+                            <th class="text-center">{{ t('marketplace_earnings.conv_rate') }}</th>
                         </tr>
                     </thead>
                     <tbody id="packsTableBody">
                         <tr>
                             <td colspan="6" class="text-center text-muted">
-                                <i class="fas fa-spinner fa-spin me-1"></i> Loading...
+                                <i class="fas fa-spinner fa-spin me-1"></i> {{ t('marketplace_earnings.loading') }}
                             </td>
                         </tr>
                     </tbody>
@@ -221,7 +223,7 @@
             </div>
             <div id="noPacksMessage" style="display: none;" class="text-center text-muted py-4">
                 <i class="fas fa-info-circle me-1"></i>
-                No pack landing page visits recorded yet.
+                {{ t('marketplace_earnings.no_pack_landing_page_visits_recorded_yet') }}
             </div>
         </div>
     </div>
@@ -232,8 +234,8 @@
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="fas fa-chart-line me-2"></i><span id="modalPromptName">Loading...</span></h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title"><i class="fas fa-chart-line me-2"></i><span id="modalPromptName">{{ t('marketplace_earnings.analytics.loading') }}</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('marketplace_earnings.close') }}"></button>
             </div>
             <div class="modal-body" id="modalContent">
                 <div class="text-center py-4">
@@ -249,8 +251,8 @@
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="fas fa-box-open me-2"></i><span id="modalPackName">Loading...</span></h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title"><i class="fas fa-box-open me-2"></i><span id="modalPackName">{{ t('marketplace_earnings.analytics.loading') }}</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('marketplace_earnings.close') }}"></button>
             </div>
             <div class="modal-body" id="packModalContent">
                 <div class="text-center py-4">
@@ -274,16 +276,16 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to load analytics');
+                throw new Error(data.error || AurvekI18n.t('marketplace_earnings.failed_to_load_analytics'));
             }
 
             analyticsData = data;
 
             // Update summary cards
-            document.getElementById('todayVisitors').textContent = data.summary.today_visitors;
-            document.getElementById('weekVisitors').textContent = data.summary.week_visitors;
-            document.getElementById('monthVisitors').textContent = data.summary.month_visitors;
-            document.getElementById('totalConversions').textContent = data.summary.total_conversions;
+            document.getElementById('todayVisitors').textContent = AurvekI18n.formatNumber(data.summary.today_visitors);
+            document.getElementById('weekVisitors').textContent = AurvekI18n.formatNumber(data.summary.week_visitors);
+            document.getElementById('monthVisitors').textContent = AurvekI18n.formatNumber(data.summary.month_visitors);
+            document.getElementById('totalConversions').textContent = AurvekI18n.formatNumber(data.summary.total_conversions);
 
             // Update prompts table
             updatePromptsTable(data.prompts);
@@ -298,7 +300,7 @@
             console.error('Error loading analytics:', error);
             document.getElementById('promptsTableBody').innerHTML = `
                 <tr><td colspan="6" class="text-center text-danger">
-                    <i class="fas fa-exclamation-triangle me-1"></i>Failed to load: ${error.message}
+                    <i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.failed_to_load_analytics'))}
                 </td></tr>`;
         }
     }
@@ -321,16 +323,16 @@
             return `
                 <tr class="prompt-row">
                     <td>
-                        <a href="#" class="prompt-link" onclick="showPromptDetail(${p.id}, ${JSON.stringify(p.name)}); return false;">
+                        <a href="#" class="prompt-link" onclick="showPromptDetail(${p.id}, ${escapeAttribute(JSON.stringify(p.name))}); return false;">
                             <i class="fas fa-file-alt me-1"></i>${escapeHtml(p.name)}
                         </a>
                     </td>
-                    <td class="text-center">${p.today_visitors}</td>
-                    <td class="text-center">${p.week_visitors}</td>
-                    <td class="text-center">${p.month_visitors}</td>
-                    <td class="text-center">${p.conversions}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(p.today_visitors)}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(p.week_visitors)}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(p.month_visitors)}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(p.conversions)}</td>
                     <td class="text-center">
-                        <span class="conversion-badge ${rateClass}">${p.conversion_rate}%</span>
+                        <span class="conversion-badge ${rateClass}">${AurvekI18n.formatNumber(p.conversion_rate / 100, {style: 'percent', maximumFractionDigits: 1})}</span>
                     </td>
                 </tr>`;
         }).join('');
@@ -340,7 +342,7 @@
         const container = document.getElementById('visitsChart');
 
         if (!dailyVisits || dailyVisits.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted py-5">No visit data yet</div>';
+            container.innerHTML = '<div class="text-center text-muted py-5">' + escapeHtml(AurvekI18n.t('marketplace_earnings.no_visit_data_yet')) + '</div>';
             return;
         }
 
@@ -350,11 +352,10 @@
 
         dailyVisits.forEach(d => {
             const height = (d.visits / maxVisits) * 150;
-            const date = new Date(d.date);
-            const label = `${date.getMonth()+1}/${date.getDate()}`;
+            const label = formatDay(d.date, {month: 'numeric', day: 'numeric'});
             html += `
                 <div style="flex: 1; text-align: center;">
-                    <div class="chart-bar" style="height: ${Math.max(height, 4)}px;" title="${d.visits} visits on ${d.date}"></div>
+                    <div class="chart-bar" style="height: ${Math.max(height, 4)}px;" title="${escapeAttribute(AurvekI18n.t('marketplace_earnings.visits_on', {count: d.visits, number: AurvekI18n.formatNumber(d.visits), date: formatDay(d.date)}))}"></div>
                     <div class="chart-label">${label}</div>
                 </div>`;
         });
@@ -367,7 +368,7 @@
         const container = document.getElementById('referrersList');
 
         if (!referrers || referrers.length === 0) {
-            container.innerHTML = '<div class="text-muted text-center py-3">No referrer data yet</div>';
+            container.innerHTML = '<div class="text-muted text-center py-3">' + escapeHtml(AurvekI18n.t('marketplace_earnings.no_referrer_data_yet')) + '</div>';
             return;
         }
 
@@ -378,8 +379,8 @@
             return `
                 <div class="mb-2">
                     <div class="d-flex justify-content-between mb-1">
-                        <small class="text-truncate" style="max-width: 200px;" title="${escapeHtml(r.referrer)}">${escapeHtml(r.referrer)}</small>
-                        <small class="text-muted">${r.count}</small>
+                        <small class="text-truncate" style="max-width: 200px;" title="${escapeAttribute(r.is_direct ? AurvekI18n.t('marketplace_earnings.direct') : r.referrer)}">${escapeHtml(r.is_direct ? AurvekI18n.t('marketplace_earnings.direct') : r.referrer)}</small>
+                        <small class="text-muted">${AurvekI18n.formatNumber(r.count)}</small>
                     </div>
                     <div class="referrer-bar" style="width: ${width}%;"></div>
                 </div>`;
@@ -398,7 +399,7 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to load details');
+                throw new Error(data.error || AurvekI18n.t('marketplace_earnings.failed_to_load_details'));
             }
 
             const rateClass = data.stats.conversion_rate >= 5 ? 'conversion-high' :
@@ -407,50 +408,50 @@
             let html = `
                 <div class="row mb-4">
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0">${data.stats.total_visits}</h3>
-                        <small class="text-muted">Total Visits</small>
+                        <h3 class="mb-0">${AurvekI18n.formatNumber(data.stats.total_visits)}</h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.total_visits'))}</small>
                     </div>
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0">${data.stats.unique_visitors}</h3>
-                        <small class="text-muted">Unique Visitors</small>
+                        <h3 class="mb-0">${AurvekI18n.formatNumber(data.stats.unique_visitors)}</h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.unique_visitors'))}</small>
                     </div>
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0">${data.stats.conversions}</h3>
-                        <small class="text-muted">Conversions</small>
+                        <h3 class="mb-0">${AurvekI18n.formatNumber(data.stats.conversions)}</h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.analytics.conversions'))}</small>
                     </div>
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0"><span class="conversion-badge ${rateClass}">${data.stats.conversion_rate}%</span></h3>
-                        <small class="text-muted">Conversion Rate</small>
+                        <h3 class="mb-0"><span class="conversion-badge ${rateClass}">${AurvekI18n.formatNumber(data.stats.conversion_rate / 100, {style: 'percent', maximumFractionDigits: 1})}</span></h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.conversion_rate'))}</small>
                     </div>
                 </div>
 
-                <h6><i class="fas fa-calendar me-1"></i>Daily Breakdown</h6>
+                <h6><i class="fas fa-calendar me-1"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.daily_breakdown'))}</h6>
                 <div class="table-responsive mb-4">
                     <table class="table table-sm">
-                        <thead><tr><th>Date</th><th class="text-center">Visits</th><th class="text-center">Visitors</th><th class="text-center">Conversions</th></tr></thead>
+                        <thead><tr><th>${escapeHtml(AurvekI18n.t('marketplace_earnings.date'))}</th><th class="text-center">${escapeHtml(AurvekI18n.t('marketplace_earnings.visits'))}</th><th class="text-center">${escapeHtml(AurvekI18n.t('marketplace_earnings.visitors'))}</th><th class="text-center">${escapeHtml(AurvekI18n.t('marketplace_earnings.analytics.conversions'))}</th></tr></thead>
                         <tbody>
                             ${data.daily.slice(0, 7).map(d => `
                                 <tr>
-                                    <td>${d.date}</td>
-                                    <td class="text-center">${d.visits}</td>
-                                    <td class="text-center">${d.visitors}</td>
-                                    <td class="text-center">${d.conversions}</td>
+                                    <td>${formatDay(d.date)}</td>
+                                    <td class="text-center">${AurvekI18n.formatNumber(d.visits)}</td>
+                                    <td class="text-center">${AurvekI18n.formatNumber(d.visitors)}</td>
+                                    <td class="text-center">${AurvekI18n.formatNumber(d.conversions)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
                     </table>
                 </div>
 
-                <h6><i class="fas fa-link me-1"></i>Top Referrers</h6>
+                <h6><i class="fas fa-link me-1"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.top_referrers'))}</h6>
                 <ul class="list-group">
                     ${data.referrers.length > 0 ?
                         data.referrers.slice(0, 5).map(r => `
                             <li class="list-group-item d-flex justify-content-between">
-                                <span class="text-truncate" style="max-width: 80%;">${escapeHtml(r.referrer)}</span>
-                                <span class="badge bg-primary">${r.count}</span>
+                                <span class="text-truncate" style="max-width: 80%;">${escapeHtml(r.is_direct ? AurvekI18n.t('marketplace_earnings.direct') : r.referrer)}</span>
+                                <span class="badge bg-primary">${AurvekI18n.formatNumber(r.count)}</span>
                             </li>
                         `).join('') :
-                        '<li class="list-group-item text-muted">No referrer data</li>'
+                        '<li class="list-group-item text-muted">' + escapeHtml(AurvekI18n.t('marketplace_earnings.no_referrer_data')) + '</li>'
                     }
                 </ul>
             `;
@@ -461,7 +462,7 @@
             document.getElementById('modalContent').innerHTML = `
                 <div class="alert alert-danger">
                     <i class="fas fa-exclamation-triangle me-1"></i>
-                    Failed to load details: ${error.message}
+                    ${escapeHtml(AurvekI18n.t('marketplace_earnings.failed_to_load_details'))}
                 </div>`;
         }
     }
@@ -470,6 +471,15 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    function escapeAttribute(text) {
+        return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function formatDay(value, options = {}) {
+        // Analytics DATE values are calendar days, not UTC instants.
+        return new Date(value + 'T00:00:00').toLocaleDateString(AurvekI18n.locale, options);
     }
 
     // --- Pack Analytics Tab ---
@@ -502,7 +512,7 @@
             // Load pack analytics on first switch
             if (!window._packAnalyticsLoaded) {
                 loadPackAnalytics();
-                window._packAnalyticsLoaded = true;
+
             }
         }
     }
@@ -511,17 +521,16 @@
         try {
             const response = await fetch('/api/user/pack-landing-analytics');
             if (!response.ok) {
-                document.getElementById('packsTableBody').innerHTML = '';
-                document.getElementById('noPacksMessage').style.display = 'block';
-                return;
+                throw new Error('pack_analytics_failed');
             }
             const data = await response.json();
             renderPackAnalytics(data);
+            window._packAnalyticsLoaded = true;
         } catch (error) {
             console.error('Error loading pack analytics:', error);
             document.getElementById('packsTableBody').innerHTML = `
                 <tr><td colspan="6" class="text-center text-danger">
-                    <i class="fas fa-exclamation-triangle me-1"></i>Failed to load pack analytics.
+                    <i class="fas fa-exclamation-triangle me-1"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.failed_to_load_pack_analytics'))}
                 </td></tr>`;
         }
     }
@@ -544,16 +553,16 @@
             return `
                 <tr class="prompt-row">
                     <td>
-                        <a href="#" class="prompt-link" onclick="showPackDetail(${pack.id}, ${JSON.stringify(pack.name)}); return false;">
+                        <a href="#" class="prompt-link" onclick="showPackDetail(${pack.id}, ${escapeAttribute(JSON.stringify(pack.name))}); return false;">
                             <i class="fas fa-box-open me-1"></i>${escapeHtml(pack.name)}
                         </a>
                     </td>
-                    <td class="text-center">${pack.today_visitors || 0}</td>
-                    <td class="text-center">${pack.week_visitors || 0}</td>
-                    <td class="text-center">${pack.month_visitors || 0}</td>
-                    <td class="text-center">${pack.conversions || 0}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(pack.today_visitors || 0)}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(pack.week_visitors || 0)}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(pack.month_visitors || 0)}</td>
+                    <td class="text-center">${AurvekI18n.formatNumber(pack.conversions || 0)}</td>
                     <td class="text-center">
-                        <span class="conversion-badge ${rateClass}">${(pack.conversion_rate || 0).toFixed(1)}%</span>
+                        <span class="conversion-badge ${rateClass}">${AurvekI18n.formatNumber((pack.conversion_rate || 0) / 100, {style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1})}</span>
                     </td>
                 </tr>`;
         }).join('');
@@ -571,7 +580,7 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to load pack details');
+                throw new Error(data.error || AurvekI18n.t('marketplace_earnings.failed_to_load_pack_details'));
             }
 
             const rateClass = data.stats.conversion_rate >= 5 ? 'conversion-high' :
@@ -580,50 +589,50 @@
             let html = `
                 <div class="row mb-4">
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0">${data.stats.total_visits}</h3>
-                        <small class="text-muted">Total Visits</small>
+                        <h3 class="mb-0">${AurvekI18n.formatNumber(data.stats.total_visits)}</h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.total_visits'))}</small>
                     </div>
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0">${data.stats.unique_visitors}</h3>
-                        <small class="text-muted">Unique Visitors</small>
+                        <h3 class="mb-0">${AurvekI18n.formatNumber(data.stats.unique_visitors)}</h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.unique_visitors'))}</small>
                     </div>
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0">${data.stats.conversions}</h3>
-                        <small class="text-muted">Conversions</small>
+                        <h3 class="mb-0">${AurvekI18n.formatNumber(data.stats.conversions)}</h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.analytics.conversions'))}</small>
                     </div>
                     <div class="col-md-3 text-center">
-                        <h3 class="mb-0"><span class="conversion-badge ${rateClass}">${data.stats.conversion_rate}%</span></h3>
-                        <small class="text-muted">Conversion Rate</small>
+                        <h3 class="mb-0"><span class="conversion-badge ${rateClass}">${AurvekI18n.formatNumber(data.stats.conversion_rate / 100, {style: 'percent', maximumFractionDigits: 1})}</span></h3>
+                        <small class="text-muted">${escapeHtml(AurvekI18n.t('marketplace_earnings.conversion_rate'))}</small>
                     </div>
                 </div>
 
-                <h6><i class="fas fa-calendar me-1"></i>Daily Breakdown</h6>
+                <h6><i class="fas fa-calendar me-1"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.daily_breakdown'))}</h6>
                 <div class="table-responsive mb-4">
                     <table class="table table-sm">
-                        <thead><tr><th>Date</th><th class="text-center">Visits</th><th class="text-center">Visitors</th><th class="text-center">Conversions</th></tr></thead>
+                        <thead><tr><th>${escapeHtml(AurvekI18n.t('marketplace_earnings.date'))}</th><th class="text-center">${escapeHtml(AurvekI18n.t('marketplace_earnings.visits'))}</th><th class="text-center">${escapeHtml(AurvekI18n.t('marketplace_earnings.visitors'))}</th><th class="text-center">${escapeHtml(AurvekI18n.t('marketplace_earnings.analytics.conversions'))}</th></tr></thead>
                         <tbody>
                             ${data.daily.slice(0, 7).map(d => `
                                 <tr>
-                                    <td>${d.date}</td>
-                                    <td class="text-center">${d.visits}</td>
-                                    <td class="text-center">${d.visitors}</td>
-                                    <td class="text-center">${d.conversions}</td>
+                                    <td>${formatDay(d.date)}</td>
+                                    <td class="text-center">${AurvekI18n.formatNumber(d.visits)}</td>
+                                    <td class="text-center">${AurvekI18n.formatNumber(d.visitors)}</td>
+                                    <td class="text-center">${AurvekI18n.formatNumber(d.conversions)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
                     </table>
                 </div>
 
-                <h6><i class="fas fa-link me-1"></i>Top Referrers</h6>
+                <h6><i class="fas fa-link me-1"></i>${escapeHtml(AurvekI18n.t('marketplace_earnings.top_referrers'))}</h6>
                 <ul class="list-group">
                     ${data.referrers.length > 0 ?
                         data.referrers.slice(0, 5).map(r => `
                             <li class="list-group-item d-flex justify-content-between">
-                                <span class="text-truncate" style="max-width: 80%;">${escapeHtml(r.referrer)}</span>
-                                <span class="badge bg-primary">${r.count}</span>
+                                <span class="text-truncate" style="max-width: 80%;">${escapeHtml(r.is_direct ? AurvekI18n.t('marketplace_earnings.direct') : r.referrer)}</span>
+                                <span class="badge bg-primary">${AurvekI18n.formatNumber(r.count)}</span>
                             </li>
                         `).join('') :
-                        '<li class="list-group-item text-muted">No referrer data</li>'
+                        '<li class="list-group-item text-muted">' + escapeHtml(AurvekI18n.t('marketplace_earnings.no_referrer_data')) + '</li>'
                     }
                 </ul>
             `;
@@ -634,7 +643,7 @@
             document.getElementById('packModalContent').innerHTML = `
                 <div class="alert alert-danger">
                     <i class="fas fa-exclamation-triangle me-1"></i>
-                    Failed to load pack details: ${error.message}
+                    ${escapeHtml(AurvekI18n.t('marketplace_earnings.failed_to_load_pack_details'))}
                 </div>`;
         }
     }

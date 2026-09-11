@@ -240,7 +240,7 @@ async def test_voice_websocket_reports_bad_json_and_always_disconnects(monkeypat
     await voice_io.websocket_endpoint(FakeWebSocket())
 
     assert fake_manager.sent == [
-        {"action": "error", "error": "Invalid JSON payload"}
+        {"action": "error", "error": "Invalid JSON"}
     ]
     assert fake_manager.disconnect_count == 1
 

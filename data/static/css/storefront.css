@@ -287,6 +287,10 @@
 }
 
 @media (max-width: 576px) {
+    .storefront-header {
+        margin-left: 0;
+        margin-right: 0;
+    }
     .storefront-hero {
         padding: 2rem 1rem 2rem;
     }

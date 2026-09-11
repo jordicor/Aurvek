@@ -9,10 +9,12 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.routing import APIRoute
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.background import BackgroundTask
 
 from auth import get_current_user
+from integrations.embed.models import EmbedError
 from integrations.telephony.repository import (
     TelephonyConflictError,
     TelephonyNotFoundError,
@@ -27,6 +29,11 @@ from integrations.telephony.purge import (
 from integrations.telephony.recording_storage import (
     PrivateRecordingPathError,
     resolve_private_recording_path,
+)
+from integrations.telephony.message_audio import (
+    PhoneMessageAudioRange,
+    open_pcmu_range_as_wav_chunks,
+    wav_content_length,
 )
 from integrations.telephony.schemas import CALL_TERMINAL_STATUSES, PhoneCallStatus
 from integrations.telephony.twilio_client import AsyncTwilioVoiceClient
@@ -117,6 +124,19 @@ class _TelephonyMutationRejected(Exception):
         self.response = response
 
 
+class _PhoneAPIError(HTTPException):
+    def __init__(self, *, status_code: int, detail: str, error_code: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.error_code = error_code
+
+
+def _phone_error_response(status_code: int, exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": str(exc), "error_code": str(exc.error_code)},
+    )
+
+
 async def _validate_user_telephony_request(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -140,6 +160,13 @@ class _UserTelephonyRoute(APIRoute):
                 return await original(request)
             except _TelephonyMutationRejected as exc:
                 return exc.response
+            except _PhoneAPIError as exc:
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail, "error_code": exc.error_code},
+                )
+            except EmbedError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
             except PhoneCountryBlockedError as exc:
                 raise HTTPException(status_code=403, detail=str(exc)) from exc
             except (PhoneNumberValidationUnavailable, PhoneUserUnavailableError) as exc:
@@ -153,8 +180,12 @@ class _UserTelephonyRoute(APIRoute):
                 TelephonyStateError,
                 PhoneUserServiceError,
             ) as exc:
+                if hasattr(exc, "error_code"):
+                    return _phone_error_response(409, exc)
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except ValueError as exc:
+                if hasattr(exc, "error_code"):
+                    return _phone_error_response(400, exc)
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return handled
@@ -372,13 +403,40 @@ async def _conversation_gate(
         conversation_id=conversation_id,
     )
     if state["is_incognito"]:
-        raise HTTPException(
+        raise _PhoneAPIError(
             status_code=403,
             detail="Phone access is unavailable in incognito conversations",
+            error_code="conversation_incognito",
         )
     if mutate and state["locked"]:
-        raise HTTPException(status_code=403, detail="Conversation is locked")
+        raise _PhoneAPIError(
+            status_code=403,
+            detail="Conversation is locked",
+            error_code="conversation_locked",
+        )
+    from integrations.applications.phone import phone_scope
+    from integrations.embed.models import EmbedError
+    async with repository.connection_factory(readonly=True) as connection:
+        try:
+            await phone_scope(connection, user_id, conversation_id)
+        except EmbedError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
     return state
+
+
+async def _visible_phone_rows(repository, user_id, rows):
+    from integrations.applications.phone import phone_scope
+    from integrations.embed.models import EmbedError
+    visible = []
+    async with repository.connection_factory(readonly=True) as connection:
+        for row in rows:
+            if row.get('conversation_id') is not None:
+                try:
+                    await phone_scope(connection, user_id, row['conversation_id'])
+                except EmbedError:
+                    continue
+            visible.append(row)
+    return visible
 
 
 async def _conversation_reductive_gate(
@@ -393,6 +451,144 @@ async def _conversation_reductive_gate(
         owner_user_id=user_id,
         conversation_id=conversation_id,
     )
+
+
+
+async def hangup_owned_call(repository, voice_client_factory, *, owner_user_id, call_id):
+    """Shared durable hangup control after native or application authorization."""
+    current = await repository.get_owned_call(owner_user_id=owner_user_id, call_id=call_id)
+    await _conversation_reductive_gate(
+        repository,
+        user_id=owner_user_id,
+        conversation_id=int(current["conversation_id"]),
+    )
+    call, claim = await repository.claim_owned_hangup_request(
+        owner_user_id=owner_user_id,
+        call_id=call_id,
+        retry_unresolved=True,
+    )
+    if not claim.claimed:
+        confirmed_terminal = (
+            call["status"] in {
+                status.value for status in CALL_TERMINAL_STATUSES
+            }
+            and call["status"] != PhoneCallStatus.UNRESOLVED.value
+        )
+        state = (
+            "already_terminal"
+            if confirmed_terminal
+            else "already_requested"
+        )
+        return {"requested": False, "state": state}
+    if claim.attempt_token is None:
+        raise TelephonyStateError("Phone hangup attempt is missing its fencing token")
+
+    async def recover_failed_result_persistence() -> str | None:
+        """Fence a post-REST persistence failure before it escapes."""
+
+        try:
+            unresolved = await repository.mark_owned_hangup_unresolved(
+                owner_user_id=owner_user_id,
+                call_id=call_id,
+                attempt_token=claim.attempt_token,
+            )
+        except Exception:
+            return None
+        if unresolved:
+            return None
+        try:
+            attempt_state = await repository.get_owned_hangup_attempt_state(
+                owner_user_id=owner_user_id,
+                call_id=call_id,
+            )
+            reconciled_call = await repository.get_owned_call(
+                owner_user_id=owner_user_id,
+                call_id=call_id,
+            )
+        except Exception:
+            return None
+        callback_confirmed = (
+            reconciled_call["status"] in {
+                status.value for status in CALL_TERMINAL_STATUSES
+            }
+            and reconciled_call["status"] != PhoneCallStatus.UNRESOLVED.value
+        )
+        if callback_confirmed and attempt_state == "confirmed":
+            return "callback_confirmed"
+        if attempt_state == "accepted":
+            return "provider_requested"
+        return None
+
+    from integrations.telephony.account_routing import client_for_call
+    async with repository.connection_factory(readonly=True) as connection:
+        client = await client_for_call(call, legacy_factory=voice_client_factory,
+            allow_inactive=True, connection=connection)
+    response_state = "provider_requested"
+    try:
+        provider_changed = await client.end_call_once(
+            str(call["provider_call_sid"])
+        )
+    except Exception as exc:
+        unresolved = await repository.mark_owned_hangup_unresolved(
+            owner_user_id=owner_user_id,
+            call_id=call_id,
+            attempt_token=claim.attempt_token,
+        )
+        if not unresolved:
+            reconciled = await repository.get_owned_call(
+                owner_user_id=owner_user_id,
+                call_id=call_id,
+            )
+            callback_confirmed = (
+                reconciled["status"] in {
+                    status.value for status in CALL_TERMINAL_STATUSES
+                }
+                and reconciled["status"] != PhoneCallStatus.UNRESOLVED.value
+            )
+            if callback_confirmed:
+                return {"requested": True, "state": "callback_confirmed"}
+        raise HTTPException(
+            status_code=502,
+            detail="Provider hangup request could not be confirmed",
+        ) from exc
+    else:
+        try:
+            if type(provider_changed) is not bool:
+                raise TelephonyStateError(
+                    "Provider hangup returned an invalid result"
+                )
+            if provider_changed:
+                persisted = await repository.mark_owned_hangup_accepted(
+                    owner_user_id=owner_user_id,
+                    call_id=call_id,
+                    attempt_token=claim.attempt_token,
+                )
+            else:
+                persisted = (
+                    await repository.reconcile_owned_hangup_provider_absent(
+                        owner_user_id=owner_user_id,
+                        call_id=call_id,
+                        attempt_token=claim.attempt_token,
+                    )
+                )
+                response_state = "provider_absent_reconciled"
+            if not persisted:
+                raise TelephonyStateError(
+                    "Provider hangup result lost its durable fence"
+                )
+        except asyncio.CancelledError:
+            await recover_failed_result_persistence()
+            raise
+        except Exception:
+            recovered_state = await recover_failed_result_persistence()
+            if recovered_state is None:
+                raise
+            response_state = recovered_state
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            await close()
+    return {"requested": True, "state": response_state}
 
 
 def create_user_telephony_router(
@@ -442,6 +638,7 @@ def create_user_telephony_router(
     ) -> dict[str, Any]:
         user = _require_user(current_user)
         rows = await repository.list_contacts(owner_user_id=user.id)
+        rows = await _visible_phone_rows(repository, user.id, rows)
         return {"contacts": [_contact_json(row) for row in rows]}
 
     @router.get("/api/telephony/numbers")
@@ -702,6 +899,8 @@ def create_user_telephony_router(
         jobs = await repository.list_owned_jobs(
             owner_user_id=user.id, limit=limit
         )
+        calls = await _visible_phone_rows(repository, user.id, calls)
+        jobs = await _visible_phone_rows(repository, user.id, jobs)
         return {
             "calls": [_history_call_json(row) for row in calls],
             "jobs": [_history_job_json(row) for row in jobs],
@@ -754,6 +953,48 @@ def create_user_telephony_router(
             media_type=media_type,
             filename=(f"phone-call-{call_id}-{track}{path.suffix}" if download else None),
             headers={"Cache-Control": "private, no-store, max-age=0"},
+        )
+
+    @router.get("/api/phone-messages/{message_id}/audio", response_model=None)
+    async def get_phone_message_audio(
+        message_id: int,
+        current_user: User = Depends(get_current_user),
+    ) -> Response:
+        user = _require_user(current_user)
+        audio = await active_purge.repository.get_owned_message_audio(
+            owner_user_id=user.id,
+            message_id=message_id,
+        )
+        await _conversation_gate(
+            repository,
+            user_id=user.id,
+            conversation_id=int(audio["conversation_id"]),
+            mutate=False,
+        )
+        path = resolve_private_recording_path(
+            str(audio["call_id"]),
+            str(audio["path"]),
+            root=active_purge.recording_root,
+        )
+        if path.is_symlink():
+            raise TelephonyNotFoundError("Phone message audio not found")
+        try:
+            audio_range = PhoneMessageAudioRange(
+                start_byte=int(audio["start_byte"]),
+                end_byte=int(audio["end_byte"]),
+            )
+            body = open_pcmu_range_as_wav_chunks(path, audio_range)
+        except (OSError, TypeError, ValueError):
+            raise TelephonyNotFoundError("Phone message audio not found")
+        return StreamingResponse(
+            body,
+            media_type="audio/wav",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "Content-Length": str(wav_content_length(audio_range)),
+                "X-Content-Type-Options": "nosniff",
+            },
+            background=BackgroundTask(body.close),
         )
 
     @router.delete("/api/phone-calls/{call_id}", status_code=202)
@@ -814,136 +1055,8 @@ def create_user_telephony_router(
         current_user: User = Depends(get_current_user),
     ) -> dict[str, Any]:
         user = _require_user(current_user)
-        current = await repository.get_owned_call(owner_user_id=user.id, call_id=call_id)
-        await _conversation_reductive_gate(
-            repository,
-            user_id=user.id,
-            conversation_id=int(current["conversation_id"]),
-        )
-        call, claim = await repository.claim_owned_hangup_request(
-            owner_user_id=user.id,
-            call_id=call_id,
-            retry_unresolved=True,
-        )
-        if not claim.claimed:
-            confirmed_terminal = (
-                call["status"] in {
-                    status.value for status in CALL_TERMINAL_STATUSES
-                }
-                and call["status"] != PhoneCallStatus.UNRESOLVED.value
-            )
-            state = (
-                "already_terminal"
-                if confirmed_terminal
-                else "already_requested"
-            )
-            return {"requested": False, "state": state}
-        if claim.attempt_token is None:
-            raise TelephonyStateError("Phone hangup attempt is missing its fencing token")
-
-        async def recover_failed_result_persistence() -> str | None:
-            """Fence a post-REST persistence failure before it escapes."""
-
-            try:
-                unresolved = await repository.mark_owned_hangup_unresolved(
-                    owner_user_id=user.id,
-                    call_id=call_id,
-                    attempt_token=claim.attempt_token,
-                )
-            except Exception:
-                return None
-            if unresolved:
-                return None
-            try:
-                attempt_state = await repository.get_owned_hangup_attempt_state(
-                    owner_user_id=user.id,
-                    call_id=call_id,
-                )
-                reconciled_call = await repository.get_owned_call(
-                    owner_user_id=user.id,
-                    call_id=call_id,
-                )
-            except Exception:
-                return None
-            callback_confirmed = (
-                reconciled_call["status"] in {
-                    status.value for status in CALL_TERMINAL_STATUSES
-                }
-                and reconciled_call["status"] != PhoneCallStatus.UNRESOLVED.value
-            )
-            if callback_confirmed and attempt_state == "confirmed":
-                return "callback_confirmed"
-            if attempt_state == "accepted":
-                return "provider_requested"
-            return None
-
-        client = voice_client_factory()
-        response_state = "provider_requested"
-        try:
-            provider_changed = await client.end_call_once(
-                str(call["provider_call_sid"])
-            )
-        except Exception as exc:
-            unresolved = await repository.mark_owned_hangup_unresolved(
-                owner_user_id=user.id,
-                call_id=call_id,
-                attempt_token=claim.attempt_token,
-            )
-            if not unresolved:
-                reconciled = await repository.get_owned_call(
-                    owner_user_id=user.id,
-                    call_id=call_id,
-                )
-                callback_confirmed = (
-                    reconciled["status"] in {
-                        status.value for status in CALL_TERMINAL_STATUSES
-                    }
-                    and reconciled["status"] != PhoneCallStatus.UNRESOLVED.value
-                )
-                if callback_confirmed:
-                    return {"requested": True, "state": "callback_confirmed"}
-            raise HTTPException(
-                status_code=502,
-                detail="Provider hangup request could not be confirmed",
-            ) from exc
-        else:
-            try:
-                if type(provider_changed) is not bool:
-                    raise TelephonyStateError(
-                        "Provider hangup returned an invalid result"
-                    )
-                if provider_changed:
-                    persisted = await repository.mark_owned_hangup_accepted(
-                        owner_user_id=user.id,
-                        call_id=call_id,
-                        attempt_token=claim.attempt_token,
-                    )
-                else:
-                    persisted = (
-                        await repository.reconcile_owned_hangup_provider_absent(
-                            owner_user_id=user.id,
-                            call_id=call_id,
-                            attempt_token=claim.attempt_token,
-                        )
-                    )
-                    response_state = "provider_absent_reconciled"
-                if not persisted:
-                    raise TelephonyStateError(
-                        "Provider hangup result lost its durable fence"
-                    )
-            except asyncio.CancelledError:
-                await recover_failed_result_persistence()
-                raise
-            except Exception:
-                recovered_state = await recover_failed_result_persistence()
-                if recovered_state is None:
-                    raise
-                response_state = recovered_state
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                await close()
-        return {"requested": True, "state": response_state}
+        return await hangup_owned_call(repository, voice_client_factory,
+            owner_user_id=user.id, call_id=call_id)
 
     @router.post("/api/phone-call-jobs/{job_id}/cancel")
     async def cancel_job(
@@ -960,12 +1073,20 @@ def create_user_telephony_router(
         if job["status"] == "canceled":
             return {"canceled": False, "state": "already_canceled"}
         if job["status"] != "scheduled":
-            raise TelephonyStateError("Only an unclaimed scheduled call can be canceled")
+            raise _PhoneAPIError(
+                status_code=409,
+                detail="Only an unclaimed scheduled call can be canceled",
+                error_code="scheduled_call_started",
+            )
         canceled = await active_service.outbound_service.cancel_call(
             owner_user_id=user.id, job_id=job_id
         )
         if not canceled:
-            raise TelephonyStateError("The scheduled call was claimed concurrently")
+            raise _PhoneAPIError(
+                status_code=409,
+                detail="The scheduled call was claimed concurrently",
+                error_code="scheduled_call_started",
+            )
         return {"canceled": True, "state": "canceled"}
 
     @router.post("/api/phone-call-jobs/{job_id}/reschedule")
@@ -983,7 +1104,11 @@ def create_user_telephony_router(
             mutate=True,
         )
         if job["status"] != "scheduled":
-            raise TelephonyStateError("Only an unclaimed scheduled call can be rescheduled")
+            raise _PhoneAPIError(
+                status_code=409,
+                detail="Only an unclaimed scheduled call can be rescheduled",
+                error_code="scheduled_call_started",
+            )
         from integrations.telephony.user_service import parse_local_schedule
 
         instant = parse_local_schedule(
@@ -996,7 +1121,11 @@ def create_user_telephony_router(
             timezone_name=payload.timezone_name,
         )
         if not updated:
-            raise TelephonyStateError("The scheduled call was claimed concurrently")
+            raise _PhoneAPIError(
+                status_code=409,
+                detail="The scheduled call was claimed concurrently",
+                error_code="scheduled_call_started",
+            )
         public = await repository.get_owned_job(owner_user_id=user.id, job_id=job_id)
         return {"rescheduled": True, "job": _job_json(public)}
 

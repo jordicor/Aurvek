@@ -678,8 +678,6 @@ class TelephonyRuntime:
 
     def _build_dispatcher(self, config: TelephonyConfig) -> OutboundCallDispatcher:
         client = self.provider_runtime.voice_client
-        if client is None:
-            raise RuntimeError("Twilio Voice client is unavailable")
         repository = TelephonyRepository()
 
         def twiml_url(token: str) -> str:
@@ -721,8 +719,10 @@ class TelephonyRuntime:
                 or await self._probe_operational_readiness() is not None
             ):
                 return False
-            if call is not None and not await self.provider_runtime.call_ready(call):
-                return False
+            if call is not None:
+                account_runtime = await self.provider_runtime.for_call(call, allow_inactive=False)
+                if not await account_runtime.call_ready(call):
+                    return False
         except Exception:
             return False
         return self._dispatch_owner_matches(dispatcher_id)
@@ -833,10 +833,8 @@ class TelephonyRuntime:
 
     async def _probe_prerequisites(self) -> str | None:
         active = self.provider_runtime
-        if not active.account_sid or active.signature_verifier() is None:
-            return "twilio_credentials_missing"
-        if active.voice_client is None:
-            return "twilio_client_unavailable"
+        global_account_ready = bool(active.account_sid and active.signature_verifier()
+                                    and active.voice_client is not None)
         try:
             if not await self._ffmpeg_probe():
                 return "ffmpeg_unavailable"
@@ -868,12 +866,21 @@ class TelephonyRuntime:
                 )
                 default_voices = int((await voice_cursor.fetchone())[0])
                 default_numbers = int((await number_cursor.fetchone())[0])
+                creator_cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='APPLICATION_TWILIO_INTEGRATIONS'")
+                creator_accounts = 0
+                if await creator_cursor.fetchone() is not None:
+                    cursor = await conn.execute('''SELECT COUNT(*) FROM APPLICATION_TWILIO_INTEGRATIONS i
+                        JOIN TELEPHONY_NUMBERS n ON n.integration_id=i.integration_id
+                        WHERE i.enabled=1 AND n.enabled=1 AND n.id=i.selected_number_id''')
+                    creator_accounts = int((await cursor.fetchone())[0])
                 billing = await phone_billing_readiness(conn)
         except Exception:
             return "telephony_database_unavailable"
         if default_voices != 1:
             return "default_voice_missing"
-        if default_numbers != 1:
+        if not global_account_ready and not creator_accounts:
+            return "twilio_credentials_missing"
+        if default_numbers != 1 and not creator_accounts:
             return "default_phone_number_missing"
         if not billing["ready"]:
             return "phone_billing_rates_missing"

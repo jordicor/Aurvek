@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="">
+<html lang="{{ ui_language }}" data-theme="">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}AURVEK{% endblock %}</title>
-    {% block meta_description %}<meta name="description" content="AI-powered prompt marketplace - Create, discover, and use AI assistants">{% endblock %}
+    {% block meta_description %}<meta name="description" content="{{ t('navigation.meta.description') }}">{% endblock %}
 
     <!-- Theme detection - sets data-theme for skeleton CSS -->
     <script>
@@ -45,6 +45,7 @@
     {% endif %}
 
     <!-- Extra head content (libraries, meta tags, etc.) -->
+    {% include 'includes/i18n.html' %}
     {% block head_extra %}{% endblock %}
 </head>
 <body>
@@ -80,7 +81,7 @@
     <div id="page-content" style="display: none;">
         {% if readonly_mode %}
         <div style="background: #f0ad4e; color: #000; text-align: center; padding: 8px; position: sticky; top: 0; z-index: 9999; font-weight: 500;">
-            Read-only mode — You can browse but cannot send messages or make changes. Normal service will resume shortly.
+            {{ t('navigation.readonly.notice') }}
         </div>
         {% endif %}
         {% block navbar %}{% include 'navbar.html' %}{% endblock %}
@@ -92,12 +93,12 @@
         {% block header %}
         <div class="page-header">
             {% block back_button %}
-            <a href="{% block back_url %}/{% endblock %}" class="btn-back" title="{% block back_title %}Back to Home{% endblock %}" data-bs-toggle="tooltip">
+            <a href="{% block back_url %}/{% endblock %}" class="btn-back" title="{% block back_title %}{{ t('navigation.action.back_to_home') }}{% endblock %}" data-bs-toggle="tooltip">
                 <i class="fas fa-arrow-left"></i>
             </a>
             {% endblock %}
             <div class="page-header-text">
-                <h1 class="page-title">{% block page_title %}Page Title{% endblock %}</h1>
+                <h1 class="page-title">{% block page_title %}{{ t('navigation.title.page') }}{% endblock %}</h1>
                 {% block page_subtitle %}{% endblock %}
             </div>
         </div>

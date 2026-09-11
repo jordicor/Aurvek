@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from uuid import uuid4
 
 from database import get_db_connection
+from integrations.telephony.call_context import active_call
 from integrations.telephony.callbacks import (
     NormalizedCallStatus,
     NormalizedRecordingStatus,
@@ -35,6 +36,10 @@ from integrations.telephony.repository import (
     mark_phone_hangup_accepted_in_transaction,
     mark_phone_hangup_unresolved_in_transaction,
     reconcile_phone_hangup_provider_absent_in_transaction,
+)
+from integrations.telephony.message_audio import (
+    PhoneMessageAudioRange,
+    persist_message_audio_range_in_transaction,
 )
 from integrations.telephony.schemas import (
     CALL_TERMINAL_STATUSES,
@@ -129,6 +134,8 @@ class TelephonyProviderRepository:
         provider_call_sid: str,
         caller_e164: str,
         called_e164: str,
+        account_sid: str | None = None,
+        application_admission=None,
     ) -> tuple[dict[str, Any], bool]:
         """Resolve a known caller, acquire foreground and create one call.
 
@@ -139,6 +146,15 @@ class TelephonyProviderRepository:
 
         sid = _require_sid(provider_call_sid, _CALL_SID, "CallSid")
         async with self._write() as conn:
+            from integrations.applications.phone import (
+                registered_receiver, prepare_inbound_binding, phone_scope, call_operation,
+            )
+            from integrations.embed.models import EmbedError
+            receiver = await registered_receiver(conn, called_e164, account_sid)
+            if receiver is not None and application_admission is None:
+                raise TelephonyNotFoundError('Application phone proof is required')
+            if application_admission is not None and (receiver is None or not account_sid):
+                raise TelephonyNotFoundError('Application phone receiver is unavailable')
             if await self._callback_tombstoned(conn, provider_call_sid=sid):
                 raise TelephonyConflictError("CallSid was permanently deleted")
             existing_cursor = await conn.execute(
@@ -153,6 +169,10 @@ class TelephonyProviderRepository:
                     or existing["to_e164"] != called_e164
                 ):
                     raise TelephonyConflictError("CallSid is already bound incompatibly")
+                try:
+                    await call_operation(conn, existing)
+                except EmbedError as exc:
+                    raise TelephonyConflictError(exc.code) from None
                 return existing, False
 
             number_cursor = await conn.execute(
@@ -194,6 +214,17 @@ class TelephonyProviderRepository:
                 (called_e164, caller_e164),
             )
             binding = _row(await binding_cursor.fetchone())
+            if application_admission is not None:
+                if application_admission.session_key != sid:
+                    raise TelephonyConflictError('Application phone session mismatch')
+                try:
+                    binding = await prepare_inbound_binding(conn, self._connection_factory,
+                        application_admission, caller_e164=caller_e164, called_e164=called_e164,
+                        account_sid=account_sid)
+                except EmbedError as exc:
+                    raise TelephonyConflictError(exc.code) from None
+            elif binding is not None and await phone_scope(conn, binding['owner_user_id'], binding['conversation_id']) is not None:
+                raise TelephonyNotFoundError('Application phone receiver is required')
             if binding is None:
                 if inbound_number is not None:
                     route_cursor = await conn.execute(
@@ -218,6 +249,20 @@ class TelephonyProviderRepository:
                 conn=conn,
             )
             snapshot_values = snapshot.as_dict()
+            from integrations.telephony.integrations import snapshot_for_number
+            provenance = await snapshot_for_number(conn, binding["inbound_number_id"],
+                app_id=application_admission.scope.app_id if application_admission else None)
+            if provenance:
+                if provenance['account_sid'] != account_sid:
+                    raise TelephonyConflictError('Application phone account mismatch')
+                snapshot_values['_twilio'] = provenance
+            if application_admission is not None:
+                from integrations.applications.billing import admit_application_billing_in_transaction
+                operation = await admit_application_billing_in_transaction(conn, application_admission.scope)
+                from integrations.applications.channel_models import ReceiverConfig
+                snapshot_values['_application'] = {
+                    'channel': application_admission.as_dict(), 'billing_operation_id': operation.operation_id,
+                    'phone_language': ReceiverConfig.model_validate_json(receiver['config_json']).phone_language}
             recording_enabled = bool(snapshot_values["recording_default"])
             if recording_enabled:
                 from integrations.telephony.purge_state import (
@@ -317,7 +362,13 @@ class TelephonyProviderRepository:
             return None
         async with self._connection_factory(readonly=True) as conn:
             cursor = await conn.execute(
-                "SELECT * FROM PHONE_CALLS WHERE dispatch_token=? AND deleted_at IS NULL",
+                """
+                SELECT c.*, j.origin AS job_origin,
+                       j.request_timing AS job_request_timing
+                FROM PHONE_CALLS AS c
+                LEFT JOIN PHONE_CALL_JOBS AS j ON j.id=c.job_id
+                WHERE c.dispatch_token=? AND c.deleted_at IS NULL
+                """,
                 (normalized,),
             )
             return _row(await cursor.fetchone())
@@ -430,7 +481,7 @@ class TelephonyProviderRepository:
                 call["provider_session_id"] = f"{stream_attempt}:{stream_sid}"
                 call["status"] = "in_progress"
                 call["answered_at"] = answered_at
-            return call
+            return active_call(call)
 
     async def renew_session_foreground(
         self,
@@ -482,7 +533,7 @@ class TelephonyProviderRepository:
             """,
             (
                 str(lease_until),
-                int(call["conversation_id"]),
+                int(active_call(call)["conversation_id"]),
                 str(call["id"]),
                 int(call["foreground_fencing_token"]),
                 str(call["foreground_lease_owner"]),
@@ -536,7 +587,7 @@ class TelephonyProviderRepository:
                     (str(dedupe_key),),
                 )
                 if await cursor.fetchone() is not None:
-                    return call
+                    return active_call(call)
             count = int(call["reconnect_count"])
             if count != stream_attempt:
                 return None
@@ -563,7 +614,7 @@ class TelephonyProviderRepository:
                     payload=payload or {},
                 )
                 if not inserted:
-                    return call
+                    return active_call(call)
             if count >= 2:
                 return None
             count += 1
@@ -579,7 +630,7 @@ class TelephonyProviderRepository:
             call["reconnect_count"] = count
             call["provider_stream_sid"] = None
             call["provider_session_id"] = None
-            return call
+            return active_call(call)
 
     async def record_stream_attempt_result(
         self,
@@ -656,7 +707,7 @@ class TelephonyProviderRepository:
                 FROM PHONE_CALL_EVENTS e
                 JOIN PHONE_CALLS c ON c.id=e.call_id
                 JOIN PHONE_CONVERSATION_FOREGROUND f
-                  ON f.conversation_id=c.conversation_id
+                  ON f.conversation_id=COALESCE(c.active_conversation_id,c.conversation_id)
                 WHERE e.call_id=? AND e.event_type='clock_milestone_delivered'
                   AND f.current_call_id=c.id AND f.epoch=? AND f.lease_owner=?
                   AND f.lease_until>=?
@@ -703,7 +754,7 @@ class TelephonyProviderRepository:
                 SELECT c.id
                 FROM PHONE_CALLS c
                 JOIN PHONE_CONVERSATION_FOREGROUND f
-                  ON f.conversation_id=c.conversation_id
+                  ON f.conversation_id=COALESCE(c.active_conversation_id,c.conversation_id)
                 WHERE c.id=? AND c.provider_call_sid=? AND c.deleted_at IS NULL
                   AND f.current_call_id=c.id AND f.epoch=? AND f.lease_owner=?
                   AND f.lease_until>=?
@@ -1331,15 +1382,37 @@ class TelephonyProviderRepository:
         mixed_path: str | None,
         duration_seconds: int,
         mix_error: str | None,
-    ) -> int:
+    ) -> int | None:
         async with self._write() as conn:
             cursor = await conn.execute(
-                "SELECT recording_enabled FROM PHONE_CALLS WHERE id=? AND deleted_at IS NULL",
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='PHONE_RECORDING_TOMBSTONES'"
+            )
+            tombstones_ready = await cursor.fetchone() is not None
+            tombstone_column = (
+                """
+                EXISTS(
+                    SELECT 1 FROM PHONE_RECORDING_TOMBSTONES t
+                    WHERE t.call_id_snapshot=c.id
+                )
+                """
+                if tombstones_ready
+                else "0"
+            )
+            cursor = await conn.execute(
+                f"""
+                SELECT c.recording_enabled,
+                       {tombstone_column} AS recording_deleted
+                FROM PHONE_CALLS c
+                WHERE c.id=? AND c.deleted_at IS NULL
+                """,
                 (call_id,),
             )
             row = await cursor.fetchone()
             if row is None:
                 raise TelephonyNotFoundError("Phone call not found")
+            if bool(row[1]):
+                return None
             if not bool(row[0]):
                 raise TelephonyStateError("Phone recording is not enabled")
             cursor = await conn.execute(
@@ -1417,7 +1490,7 @@ class TelephonyProviderRepository:
                 FROM PHONE_CALL_MESSAGE_LINKS l
                 JOIN PHONE_CALLS c ON c.id=l.call_id
                 JOIN PHONE_CONVERSATION_FOREGROUND f
-                  ON f.conversation_id=c.conversation_id
+                  ON f.conversation_id=COALESCE(c.active_conversation_id,c.conversation_id)
                 WHERE l.call_id=? AND l.participant='caller'
                   AND f.current_call_id=c.id AND f.epoch=? AND f.lease_owner=?
                   AND f.lease_until>=?
@@ -1531,6 +1604,7 @@ class TelephonyProviderRepository:
         interrupted: bool,
         fencing_token: int,
         lease_owner: str,
+        audio_range: PhoneMessageAudioRange | None = None,
     ) -> int | None:
         """Persist the audible greeting prefix as the first assistant turn."""
 
@@ -1545,7 +1619,7 @@ class TelephonyProviderRepository:
                 """
                 SELECT c.* FROM PHONE_CALLS c
                 JOIN PHONE_CONVERSATION_FOREGROUND f
-                  ON f.conversation_id=c.conversation_id
+                  ON f.conversation_id=COALESCE(c.active_conversation_id,c.conversation_id)
                 WHERE c.id=? AND c.foreground_fencing_token=?
                   AND c.foreground_lease_owner=?
                   AND f.current_call_id=c.id AND f.epoch=? AND f.lease_owner=?
@@ -1563,6 +1637,7 @@ class TelephonyProviderRepository:
             call = _row(await cursor.fetchone())
             if call is None:
                 raise TelephonyStateError("Phone greeting foreground fence is stale")
+            call = active_call(call)
             cursor = await conn.execute(
                 """
                 SELECT l.message_id,m.message,l.played_ms,l.confirmed_text,l.interrupted
@@ -1635,6 +1710,14 @@ class TelephonyProviderRepository:
                     ),
                     "assistant_message_id": message_id,
                 }
+            if audio_range is not None:
+                await persist_message_audio_range_in_transaction(
+                    conn,
+                    call_id=str(call_id),
+                    message_id=message_id,
+                    participant="assistant",
+                    audio_range=audio_range,
+                )
 
         # Memory providers may perform network I/O or open their own SQLite
         # connections. Never keep the phone write transaction open here.
@@ -1778,7 +1861,7 @@ class TelephonyProviderRepository:
         return await cursor.fetchone() is not None
 
     async def _release_foreground(self, conn: Any, call: Mapping[str, Any]) -> None:
-        conversation_id = int(call["conversation_id"])
+        conversation_id = int(active_call(call)["conversation_id"])
         call_id = str(call["id"])
         await conn.execute(
             """

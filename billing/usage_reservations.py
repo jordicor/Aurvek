@@ -23,6 +23,15 @@ from database import (
     is_lock_error,
 )
 from log_config import logger
+from integrations.applications.billing import (
+    attach_reservation, binding_contextmanager, check_sponsored_budget,
+    current_application_operation, reservation_operation,
+    revalidate_application_operation, sponsored_availability, verify_operation,
+)
+from integrations.applications.activity import (
+    begin_application_operation, check_application_generation_active,
+    end_application_operation,
+)
 
 
 class BillingReservationError(RuntimeError):
@@ -47,6 +56,8 @@ _USAGE_TOTAL_COLUMNS = {
     # SERVICE_USAGE row and aggregate total_cost, but must not guess whether a
     # Twilio/Deepgram/TTS component belongs in one of the legacy narrow totals.
     "phone": None,
+    # Hosted provider searches are fixed service usage, separately from tokens.
+    "web_search": None,
 }
 
 
@@ -244,10 +255,14 @@ _STALE_RESERVATION_PREDICATE = """
         OR (purpose = 'tts' AND (
             (provider_started_at IS NULL
              AND created_at < datetime('now', '-15 minutes'))
-            OR provider_started_at < datetime('now', '-15 minutes')
+            OR (provider_started_at < datetime('now', '-15 minutes')
+                AND provider_succeeded_at IS NOT NULL)
         ))
         OR (purpose = 'stt'
-            AND created_at < datetime('now', '-30 minutes'))
+            AND created_at < datetime('now', '-30 minutes')
+            AND (provider_started_at IS NULL OR provider_succeeded_at IS NOT NULL))
+        OR (purpose = 'web_search' AND provider_started_at IS NULL
+            AND created_at < datetime('now', '-15 minutes'))
         OR (purpose = 'ai'
             AND created_at < datetime('now', '-12 hours')
             AND (
@@ -279,6 +294,23 @@ class _AccountLease:
 class _StreamLeaseState:
     producer_started: bool = False
     consumer_active: bool = True
+
+
+class _ApplicationActivityLease:
+    """Keep an app turn live for exactly the existing billing lease lifetime."""
+    def __init__(self, lease, active):
+        self._lease = lease
+        self._active = active
+        self._released = False
+
+    async def release(self):
+        if self._released:
+            return
+        self._released = True
+        try:
+            await self._lease.release()
+        finally:
+            end_application_operation(self._active)
 
 
 class _BillingGuardedStreamingResponse(StreamingResponse):
@@ -337,6 +369,15 @@ async def _acquire_user_account_lease(
     owner: object,
 ) -> _AccountLease:
     """Lock the payer, retrying if team ownership changes while waiting."""
+    operation = current_application_operation(user_id)
+    if operation is not None:
+        lease = await _acquire_account_lease(operation.payer_user_id, owner)
+        try:
+            await revalidate_application_operation(operation)
+            return lease
+        except BaseException:
+            await lease.release()
+            raise
     for _ in range(3):
         availability = await get_user_billing_availability(int(user_id))
         lease = await _acquire_account_lease(
@@ -400,10 +441,23 @@ async def user_billing_guard(user_id: int):
             _billing_owner_context.reset(owner_token)
 
 
-async def serialize_user_billing_stream(user_id: int, stream):
+async def serialize_user_billing_stream(user_id: int, stream, *, application_operation=None):
+    operation = application_operation or current_application_operation(user_id)
+    active = begin_application_operation(operation)
+    try:
+        with binding_contextmanager(operation):
+            async for item in _serialize_user_billing_stream(user_id, stream):
+                yield item
+    finally:
+        end_application_operation(active)
+
+
+async def _serialize_user_billing_stream(user_id: int, stream):
     """Run an async provider stream to billing completion after disconnect."""
     state = _StreamLeaseState()
     queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+    operation = current_application_operation(user_id)
+    active = begin_application_operation(operation)
 
     async def publish(kind: str, payload=None) -> None:
         while state.consumer_active:
@@ -416,6 +470,9 @@ async def serialize_user_billing_stream(user_id: int, stream):
     async def produce() -> None:
         try:
             async with user_billing_guard(user_id):
+                from integrations.embed.activity import check_embed_generation_active
+                await check_embed_generation_active()
+                check_application_generation_active(operation)
                 async for item in stream:
                     if state.consumer_active:
                         await publish("item", item)
@@ -426,9 +483,13 @@ async def serialize_user_billing_stream(user_id: int, stream):
                 await publish("error", exc)
             elif not isinstance(exc, asyncio.CancelledError):
                 logger.exception("Detached billable stream failed")
+        finally:
+            end_application_operation(active)
 
     state.producer_started = True
     producer_task = asyncio.create_task(produce())
+    from integrations.embed.activity import retain_embed_producer
+    retain_embed_producer(producer_task)
     _detached_billing_producers.add(producer_task)
     producer_task.add_done_callback(_detached_billing_producers.discard)
     try:
@@ -444,26 +505,58 @@ async def serialize_user_billing_stream(user_id: int, stream):
         state.consumer_active = False
 
 
-async def serialize_user_billing_response(user_id: int, response_awaitable):
+async def serialize_user_billing_response(user_id: int, response_awaitable, *, application_operation=None):
+    operation = application_operation or current_application_operation(user_id)
+    try:
+        active = begin_application_operation(operation)
+    except BaseException:
+        if hasattr(response_awaitable, "close"):
+            response_awaitable.close()
+        raise
+    try:
+        with binding_contextmanager(operation):
+            return await _serialize_user_billing_response(user_id, response_awaitable)
+    finally:
+        end_application_operation(active)
+
+
+async def _serialize_user_billing_response(user_id: int, response_awaitable):
     """Run response preflight under the payer lock and hold it through streaming.
 
     ``process_save_message`` validates before returning its streaming response.
     The guard is therefore acquired before awaiting that coroutine and then
     associated with its body iterator until persistence, billing, or cancellation.
     """
+    operation = current_application_operation(user_id)
     owner = _billing_owner_context.get()
     owner_token = None
     if owner is None:
         owner = object()
         owner_token = _billing_owner_context.set(owner)
+    preflight_started = False
     try:
         lease = await _acquire_user_account_lease(int(user_id), owner)
         try:
+            if operation is not None:
+                lease = _ApplicationActivityLease(lease, begin_application_operation(operation))
+            from integrations.embed.activity import check_embed_generation_active
+            try:
+                await check_embed_generation_active()
+                check_application_generation_active(operation)
+            except BaseException:
+                # Preflight has not started; avoid an unawaited native coroutine
+                # when a queued embed request was revoked while awaiting its payer.
+                if hasattr(response_awaitable, "close"):
+                    response_awaitable.close()
+                raise
+            preflight_started = True
             response = await response_awaitable
         except BaseException:
             await lease.release()
             raise
     except BaseException:
+        if not preflight_started and hasattr(response_awaitable, 'close'):
+            response_awaitable.close()
         if owner_token is not None:
             _billing_owner_context.reset(owner_token)
         raise
@@ -508,7 +601,10 @@ async def serialize_user_billing_response(user_id: int, response_awaitable):
             finally:
                 await lease.release()
 
-        producer_task = asyncio.create_task(produce_and_bill())
+        with binding_contextmanager(operation):
+            producer_task = asyncio.create_task(produce_and_bill())
+        from integrations.embed.activity import retain_embed_producer
+        retain_embed_producer(producer_task)
         _detached_billing_producers.add(producer_task)
         producer_task.add_done_callback(_detached_billing_producers.discard)
         try:
@@ -532,6 +628,10 @@ async def get_user_billing_availability(user_id: int) -> dict:
     """Return payer balance constrained by the member's monthly limit."""
     await _maybe_reconcile_stale_usage_reservations()
     user_id = int(user_id)
+    operation = current_application_operation(user_id)
+    if operation is not None and operation.mode == 'sponsored':
+        async with get_db_connection(readonly=True) as conn:
+            return await sponsored_availability(conn, operation)
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(
             """
@@ -746,6 +846,7 @@ async def _reserve_usage_atomic(
     expected_payer_id: int | None,
 ) -> str:
     reservation_id = secrets.token_urlsafe(24)
+    operation = current_application_operation(user_id)
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     last_lock_error = None
 
@@ -771,7 +872,14 @@ async def _reserve_usage_atomic(
                 if not member:
                     raise BillingReservationError("Billing account is unavailable")
 
-                payer_id = int(member[0] or user_id)
+                if operation is not None:
+                    await verify_operation(conn, operation, user_id)
+                sponsored = operation is not None and operation.mode == 'sponsored'
+                payer_id = operation.payer_user_id if sponsored else int(member[0] or user_id)
+                if operation is not None and payer_id != operation.payer_user_id:
+                    raise BillingReservationError('Billing account changed after admission')
+                if sponsored:
+                    await check_sponsored_budget(conn, operation, amount)
                 if (
                     expected_payer_id is not None
                     and payer_id != expected_payer_id
@@ -780,7 +888,7 @@ async def _reserve_usage_atomic(
                         "Billing account changed; retry the request"
                     )
 
-                is_team_billed = member[0] is not None and payer_id != user_id
+                is_team_billed = not sponsored and member[0] is not None and payer_id != user_id
                 billing_limit_delta = 0.0
                 billing_refill_count_delta = 0
                 if is_team_billed:
@@ -886,6 +994,8 @@ async def _reserve_usage_atomic(
                         billing_refill_count_delta,
                     ),
                 )
+                if operation is not None:
+                    await attach_reservation(conn, reservation_id, operation)
                 await conn.commit()
                 return reservation_id
             except BillingReservationError:
@@ -925,6 +1035,13 @@ class AiReservationCredit:
     accumulated_input_tokens: int
     accumulated_output_tokens: int
     accumulated_api_cost: float | None
+    application_operation: object | None = None
+
+
+def application_settlement_kwargs(credit) -> dict:
+    if credit is not None and getattr(credit, 'application_operation', None) is not None:
+        return {'application_billing_reservation_id': credit.reservation_id}
+    return {}
 
 
 def _accumulated_components_api_cost(raw_components) -> float | None:
@@ -1343,6 +1460,14 @@ async def extend_ai_reservation(
                         "AI billing reservation is not active"
                     )
                 payer_id = int(reservation[0])
+                operation = await reservation_operation(conn, reservation_id)
+                sponsored = operation is not None and operation.mode == 'sponsored'
+                if operation is not None:
+                    await verify_operation(conn, operation, user_id)
+                    if payer_id != operation.payer_user_id:
+                        raise BillingReservationError('Application reservation payer mismatch')
+                if sponsored:
+                    await check_sponsored_budget(conn, operation, additional_amount)
 
                 member_cursor = await conn.execute(
                     """
@@ -1356,12 +1481,12 @@ async def extend_ai_reservation(
                     (user_id,),
                 )
                 member = await member_cursor.fetchone()
-                if member is None or int(member[0] or user_id) != payer_id:
+                if member is None or (not sponsored and int(member[0] or user_id) != payer_id):
                     raise BillingReservationError(
                         "Billing account changed during AI usage"
                     )
 
-                is_team_billed = member[0] is not None and payer_id != user_id
+                is_team_billed = not sponsored and member[0] is not None and payer_id != user_id
                 billing_limit_delta = 0.0
                 billing_refill_count_delta = 0
                 if is_team_billed:
@@ -1506,8 +1631,11 @@ async def _release_team_reservation_state(
     billing_month: str,
     billing_limit_delta: float,
     billing_refill_count_delta: int,
+    application_operation=None,
 ) -> None:
     """Undo the temporary team-spend and auto-refill effects of one hold."""
+    if application_operation is not None and application_operation.mode == 'sponsored':
+        return
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     if user_id != payer_id and billing_month == current_month:
         await conn.execute(
@@ -1592,6 +1720,11 @@ async def prepare_ai_reservation_settlement(
         raise BillingReservationError("AI billing reservation belongs to another user")
 
     payer_id = int(row[1])
+    operation = await reservation_operation(conn, reservation_id)
+    if operation is not None:
+        await verify_operation(conn, operation, user_id)
+        if payer_id != operation.payer_user_id:
+            raise BillingReservationError('Application reservation payer mismatch')
     maximum_amount = float(row[2])
     accumulated_api_cost = _accumulated_components_api_cost(row[10])
     result = await conn.execute(
@@ -1615,6 +1748,7 @@ async def prepare_ai_reservation_settlement(
         billing_month=str(row[3]),
         billing_limit_delta=float(row[8] or 0.0),
         billing_refill_count_delta=int(row[9] or 0),
+        application_operation=operation,
     )
 
     return AiReservationCredit(
@@ -1626,6 +1760,7 @@ async def prepare_ai_reservation_settlement(
         accumulated_input_tokens=max(0, int(row[6] or 0)),
         accumulated_output_tokens=max(0, int(row[7] or 0)),
         accumulated_api_cost=accumulated_api_cost,
+        application_operation=operation,
     )
 
 
@@ -1742,6 +1877,7 @@ async def settle_accumulated_ai_reservation_usage(
                     byok=bool(byok),
                     override_api_cost=credit.accumulated_api_cost,
                     billing_account_id_override=credit.billing_account_id,
+                    **application_settlement_kwargs(credit),
                 )
                 if not billing_ok:
                     raise BillingReservationError(
@@ -1865,6 +2001,7 @@ async def settle_ai_reservation_components(
                         byok=component["byok"],
                         override_api_cost=component["override_api_cost"],
                         billing_account_id_override=credit.billing_account_id,
+                        **application_settlement_kwargs(credit),
                     )
                     if not billing_ok:
                         raise BillingReservationError(
@@ -1902,7 +2039,7 @@ async def settle_ai_reservation_components(
     ) from last_lock_error
 
 
-async def _restore_reservation_credit(conn, row) -> None:
+async def _restore_reservation_credit(conn, row, reservation_id) -> None:
     """Restore a reservation row already transitioned to ``refunded``."""
     user_id = int(row[0])
     payer_id = int(row[1])
@@ -1910,6 +2047,7 @@ async def _restore_reservation_credit(conn, row) -> None:
     billing_month = str(row[3])
     billing_limit_delta = float(row[4] or 0.0)
     billing_refill_count_delta = int(row[5] or 0)
+    operation = await reservation_operation(conn, reservation_id)
     await conn.execute(
         """
         UPDATE USER_DETAILS
@@ -1926,6 +2064,7 @@ async def _restore_reservation_credit(conn, row) -> None:
         billing_month=billing_month,
         billing_limit_delta=billing_limit_delta,
         billing_refill_count_delta=billing_refill_count_delta,
+        application_operation=operation,
     )
 
 
@@ -1934,6 +2073,7 @@ async def claim_fixed_usage_provider(
     *,
     purpose: str,
     user_id: int,
+    transaction_guard=None,
 ) -> bool:
     """Atomically grant one worker permission to call a fixed-cost provider."""
     normalized_purpose = str(purpose or "").strip().lower()
@@ -1944,6 +2084,8 @@ async def claim_fixed_usage_provider(
         async with get_db_connection() as conn:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
+                if transaction_guard is not None:
+                    await transaction_guard(conn)
                 cursor = await conn.execute(
                     """
                     UPDATE BILLING_USAGE_RESERVATIONS
@@ -2000,7 +2142,7 @@ async def mark_fixed_usage_provider_succeeded(
                 clauses = [
                     "id = ?",
                     "status = 'active'",
-                    "purpose IN ('image', 'stt', 'tts', 'video', 'phone')",
+                    "purpose IN ('image', 'stt', 'tts', 'video', 'phone', 'web_search')",
                 ]
                 parameters: list[object] = [reservation_id]
                 if normalized_purpose is not None:
@@ -2158,6 +2300,7 @@ async def _reconcile_one_stale_reservation(reservation_id: str) -> bool:
                             byok=bool(component.get("byok")),
                             override_api_cost=component_override_api_cost,
                             billing_account_id_override=credit.billing_account_id,
+                            **application_settlement_kwargs(credit),
                         )
                         if not billed:
                             raise BillingReservationError(
@@ -2189,7 +2332,7 @@ async def _reconcile_one_stale_reservation(reservation_id: str) -> bool:
                     if refund_row is None:
                         await conn.rollback()
                         return False
-                    await _restore_reservation_credit(conn, refund_row)
+                    await _restore_reservation_credit(conn, refund_row, reservation_id)
 
                 await conn.commit()
                 return True
@@ -2223,6 +2366,13 @@ async def _reconcile_one_stale_reservation(reservation_id: str) -> bool:
 
 
 async def reconcile_stale_usage_reservations() -> int:
+    # Reconciliation may settle unrelated users and apps. Each reservation's
+    # durable attribution is authoritative, never the request that triggered it.
+    with binding_contextmanager(None):
+        return await _reconcile_stale_usage_reservations()
+
+
+async def _reconcile_stale_usage_reservations() -> int:
     """Settle/refund stale holds independently so one bad row is isolated."""
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(
@@ -2451,6 +2601,7 @@ async def settle_fixed_usage_amount_in_transaction(
             billing_month=str(row[7] or ""),
             billing_limit_delta=float(row[8] or 0.0),
             billing_refill_count_delta=int(row[9] or 0),
+            application_operation=await reservation_operation(conn, reservation_id),
         )
 
     await conn.execute(
@@ -2602,7 +2753,7 @@ async def refund_fixed_usage_in_transaction(
     )
     row = await cursor.fetchone()
     if row is not None:
-        await _restore_reservation_credit(conn, row)
+        await _restore_reservation_credit(conn, row, reservation_id)
         return True
     status_cursor = await conn.execute(
         "SELECT user_id,status FROM BILLING_USAGE_RESERVATIONS WHERE id=?",

@@ -16,6 +16,7 @@ from ai_runtime.memory.recording import _record_memory_turn_best_effort
 from ai_runtime.multi_ai.errors import MultiAiBillingError
 from ai_runtime.reasoning_tags import strip_tagged_thinking_prefix
 from billing.usage_reservations import (
+    application_settlement_kwargs,
     BillingReservationError,
     complete_ai_reservation_settlement,
     prepare_ai_reservation_settlement,
@@ -40,6 +41,17 @@ def persistence_error_payload() -> dict:
         "error": PERSISTENCE_ERROR_MESSAGE,
         "persistence_error": True,
     }
+
+
+def persistence_result_payload(user_message_id, bot_message_id) -> dict:
+    """Report durable messages or a successfully billed voice delegation."""
+    if user_message_id and bot_message_id:
+        return {"message_ids": {"user": user_message_id, "bot": bot_message_id}}
+    bound = current_channel_turn()
+    if (bound is not None and bound.context.persistence == "delegation"
+            and bound.context.delegation_result.committed):
+        return {"delegation_complete": True}
+    return persistence_error_payload()
 
 
 def strip_aurvek_action_blocks(content: str | None) -> str:
@@ -311,6 +323,7 @@ async def _save_content_to_db_immediate(
                             billing_account_id_override=(
                                 ai_credit.billing_account_id if ai_credit else None
                             ),
+                            **application_settlement_kwargs(ai_credit),
                         )
                         if not billing_ok:
                             await conn.rollback()
@@ -524,6 +537,24 @@ async def save_content_to_db(
         billing_only_accumulated_usage=billing_only_accumulated_usage,
         fixed_billing_reservation_id=fixed_billing_reservation_id,
     )
+
+    if bound is not None and bound.context.persistence == "delegation":
+        sink = bound.context.delegation_result
+        if sink.committed:
+            raise RuntimeError("Voice delegation was already settled")
+
+        def settled(_message_ids):
+            sink.content = str(content or "")
+            sink.committed = True
+
+        # Use the normal reservation settlement and foreground guard, while
+        # leaving MESSAGES to the native voice transcript owner.
+        return await _save_content_to_db_immediate(
+            content, input_tokens, output_tokens, total_tokens, conversation_id,
+            user_id, model, user_message=None, save_assistant_message=False,
+            channel_context=bound.context, on_database_commit=settled,
+            persistence_only=persistence_only, **common_kwargs,
+        )
 
     if bound is None or bound.context.persistence == "immediate":
         result = await _save_content_to_db_immediate(
@@ -769,9 +800,11 @@ async def save_multi_ai_to_db(
                             cursor,
                             prompt_id=prompt_id,
                             byok=llm_id in _byok_set,
+                            override_api_cost=(0.0 if llm_id in _byok_set else r.get("override_api_cost")),
                             billing_account_id_override=(
                                 ai_credit.billing_account_id if ai_credit else None
                             ),
+                            **application_settlement_kwargs(ai_credit),
                         )
                         if not bill_result:
                             raise MultiAiBillingError(

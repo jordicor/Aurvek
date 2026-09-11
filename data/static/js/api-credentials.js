@@ -3,6 +3,25 @@
  * Manages user API keys for AI providers with multiple storage modes
  */
 
+const apiCredentialText = (key, params = {}) => window.AurvekI18n.t(`profile.${key}`, params);
+
+function credentialError(message) {
+    const error = new Error(message);
+    error.uiSafe = true;
+    return error;
+}
+
+function credentialErrorMessage(error, fallbackKey) {
+    return error?.uiSafe ? error.message : apiCredentialText(fallbackKey);
+}
+
+function apiProviderLabel(provider) {
+    return {
+        openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google AI', xai: 'xAI',
+        minimax: 'MiniMax', kimi: 'Kimi', elevenlabs: 'ElevenLabs'
+    }[provider] || '';
+}
+
 class UserCredentialsManager {
     constructor() {
         this.STORAGE_KEY = 'aurvek_user_api_keys';
@@ -51,7 +70,7 @@ class UserCredentialsManager {
     getStorageForMode(mode) {
         if (mode === 'session') return sessionStorage;
         if (mode === 'persistent') return localStorage;
-        throw new Error(`Storage mode "${mode}" does not use browser storage.`);
+        throw credentialError(apiCredentialText('api.error.browser_storage_mode'));
     }
 
     /**
@@ -81,7 +100,7 @@ class UserCredentialsManager {
         try {
             data = JSON.parse(stored);
         } catch (error) {
-            throw new Error('Stored API keys could not be read. Clear the invalid browser data and try again.');
+            throw credentialError(apiCredentialText('api.error.invalid_browser_data'));
         }
 
         const keys = data && typeof data.keys === 'object' && !Array.isArray(data.keys)
@@ -93,7 +112,7 @@ class UserCredentialsManager {
     saveLocalKeysForMode(mode, keys) {
         const maskedProviders = this.getMaskedProviders(keys);
         if (maskedProviders.length > 0) {
-            throw new Error('Masked API keys cannot be stored as credentials. Re-enter the full keys first.');
+            throw credentialError(apiCredentialText('api.error.masked_cannot_store'));
         }
         this.getStorageForMode(mode).setItem(
             this.STORAGE_KEY,
@@ -159,7 +178,7 @@ class UserCredentialsManager {
      */
     async setStorageMode(mode) {
         if (!this.storageModes.includes(mode)) {
-            return { success: false, message: 'Invalid credential storage mode.' };
+            return { success: false, message: apiCredentialText('api.error.invalid_storage_mode') };
         }
 
         const oldMode = this.storageMode;
@@ -181,8 +200,10 @@ class UserCredentialsManager {
                     );
                     const reentry = this.collectReenteredKeys(requiredReentry);
                     if (reentry.missing.length > 0) {
-                        const error = new Error(
-                            `Re-enter the full API key for: ${reentry.missing.join(', ')} before changing storage mode.`
+                        const error = credentialError(
+                            apiCredentialText('api.error.reenter_before_change', {
+                                providers: reentry.missing.map(apiProviderLabel).filter(Boolean).join(', ')
+                            })
                         );
                         error.reentryRequired = true;
                         error.missingProviders = reentry.missing;
@@ -198,7 +219,7 @@ class UserCredentialsManager {
                     if (Object.keys(sourceData.keys).length > 0) {
                         const result = await this.saveAllToServer(sourceData.keys);
                         if (!result?.success) {
-                            throw new Error(result?.message || 'Could not save API keys on the server.');
+                            throw credentialError(result?.message || apiCredentialText('api.error.server_save'));
                         }
                     }
                     this.getStorageForMode(oldMode).removeItem(this.STORAGE_KEY);
@@ -211,13 +232,15 @@ class UserCredentialsManager {
                 // server-stored provider must be re-entered before going local.
                 const serverResult = await this.getAllFromServerResult();
                 if (!serverResult.success) {
-                    throw new Error(serverResult.message || 'Could not read server API key status.');
+                    throw credentialError(serverResult.message || apiCredentialText('api.error.server_read'));
                 }
 
                 const reentry = this.collectReenteredKeys(serverResult.keys);
                 if (reentry.missing.length > 0) {
-                    const error = new Error(
-                        `Re-enter the full API key for: ${reentry.missing.join(', ')} before switching to browser storage.`
+                    const error = credentialError(
+                        apiCredentialText('api.error.reenter_before_browser', {
+                            providers: reentry.missing.map(apiProviderLabel).filter(Boolean).join(', ')
+                        })
                     );
                     error.reentryRequired = true;
                     error.missingProviders = reentry.missing;
@@ -236,7 +259,7 @@ class UserCredentialsManager {
             this.storageMode = oldMode;
             return {
                 success: false,
-                message: error.message || 'Could not change credential storage mode.',
+                message: credentialErrorMessage(error, 'api.error.storage_change'),
                 reentryRequired: Boolean(error.reentryRequired),
                 missingProviders: error.missingProviders || [],
                 maskedProviders: error.maskedProviders || []
@@ -278,7 +301,7 @@ class UserCredentialsManager {
         if (normalizedKey && this.isMaskedKey(normalizedKey)) {
             return {
                 success: false,
-                message: 'Re-enter the full API key. Masked values cannot be saved.'
+                message: apiCredentialText('api.error.masked_cannot_save')
             };
         }
 
@@ -296,7 +319,7 @@ class UserCredentialsManager {
             this.saveLocalKeys(data.keys);
             return { success: true };
         } catch (error) {
-            return { success: false, message: error.message || 'Could not save the API key.' };
+            return { success: false, message: credentialErrorMessage(error, 'api.error.key_save') };
         }
     }
 
@@ -336,12 +359,12 @@ class UserCredentialsManager {
     async testKey(provider, key) {
         const normalizedKey = typeof key === 'string' ? key.trim() : '';
         if (!normalizedKey) {
-            return { success: false, message: 'Enter an API key to test.' };
+            return { success: false, message: apiCredentialText('api.error.enter_to_test') };
         }
         if (this.isMaskedKey(normalizedKey)) {
             return {
                 success: false,
-                message: 'Re-enter the full API key before testing it.',
+                message: apiCredentialText('api.error.reenter_before_test'),
                 masked: true
             };
         }
@@ -360,12 +383,12 @@ class UserCredentialsManager {
             if (!response.ok || !result?.success) {
                 return {
                     success: false,
-                    message: result?.message || `API key test failed (${response.status}).`
+                    message: result?.message || apiCredentialText('api.error.test_status', { status: response.status })
                 };
             }
             return result;
         } catch (error) {
-            return { success: false, message: error.message };
+            return { success: false, message: apiCredentialText('api.error.test_network') };
         }
     }
 
@@ -379,7 +402,7 @@ class UserCredentialsManager {
         if (key && this.isMaskedKey(key)) {
             return {
                 success: false,
-                message: 'Re-enter the full API key. Masked values cannot be saved.'
+                message: apiCredentialText('api.error.masked_cannot_save')
             };
         }
 
@@ -404,13 +427,13 @@ class UserCredentialsManager {
             if (!response.ok || !result?.success) {
                 return {
                     success: false,
-                    message: result?.message || `Could not save the API key (${response.status}).`
+                    message: result?.message || apiCredentialText('api.error.key_save_status', { status: response.status })
                 };
             }
 
             return result;
         } catch (error) {
-            return { success: false, message: error.message };
+            return { success: false, message: apiCredentialText('api.error.key_save') };
         }
     }
 
@@ -418,7 +441,10 @@ class UserCredentialsManager {
      * Show error when user is not allowed to configure keys
      */
     showNotAllowedError() {
-        NotificationModal.info('System Keys Only', 'Your account is configured to use system API keys only. You cannot configure your own keys.');
+        NotificationModal.info(
+            apiCredentialText('api.system_only_title'),
+            apiCredentialText('api.system_only_message')
+        );
     }
 
     /**
@@ -431,12 +457,12 @@ class UserCredentialsManager {
         if (maskedProviders.length > 0) {
             return {
                 success: false,
-                message: 'Masked API keys cannot be uploaded. Re-enter the full keys first.',
+                message: apiCredentialText('api.error.masked_cannot_upload'),
                 maskedProviders
             };
         }
         if (!keys || Object.keys(keys).length === 0) {
-            return { success: true, message: 'No API keys to migrate.' };
+            return { success: true, message: apiCredentialText('api.no_keys_to_migrate') };
         }
 
         try {
@@ -460,13 +486,13 @@ class UserCredentialsManager {
             if (!response.ok || !result?.success) {
                 return {
                     success: false,
-                    message: result?.message || `Could not save API keys (${response.status}).`
+                    message: result?.message || apiCredentialText('api.error.keys_save_status', { status: response.status })
                 };
             }
 
             return result;
         } catch (error) {
-            return { success: false, message: error.message };
+            return { success: false, message: apiCredentialText('api.error.keys_save') };
         }
     }
 
@@ -512,7 +538,7 @@ class UserCredentialsManager {
                 return {
                     success: false,
                     keys: {},
-                    message: data?.message || `Could not read server API keys (${response.status}).`
+                    message: data?.message || apiCredentialText('api.error.keys_read_status', { status: response.status })
                 };
             }
             const keys = data?.keys && typeof data.keys === 'object' && !Array.isArray(data.keys)
@@ -521,7 +547,7 @@ class UserCredentialsManager {
             return { success: true, keys };
         } catch (error) {
             console.error('Error getting keys from server:', error);
-            return { success: false, keys: {}, message: error.message };
+            return { success: false, keys: {}, message: apiCredentialText('api.error.server_read') };
         }
     }
 
@@ -548,13 +574,13 @@ class UserCredentialsManager {
                 if (!response.ok || !result?.success) {
                     return {
                         success: false,
-                        message: result?.message || `Could not delete the API key (${response.status}).`
+                        message: result?.message || apiCredentialText('api.error.key_delete_status', { status: response.status })
                     };
                 }
                 return result;
             } catch (error) {
                 console.error('Error deleting key from server:', error);
-                return { success: false, message: error.message };
+                return { success: false, message: apiCredentialText('api.error.key_delete') };
             }
         }
 
@@ -564,7 +590,7 @@ class UserCredentialsManager {
             this.saveLocalKeys(data.keys);
             return { success: true };
         } catch (error) {
-            return { success: false, message: error.message };
+            return { success: false, message: credentialErrorMessage(error, 'api.error.key_delete') };
         }
     }
 
@@ -619,7 +645,7 @@ class UserCredentialsManager {
                     // This value is display-only and must never be saved/tested.
                     input.dataset.hasServerKey = 'true';
                 }
-                this.updateStatus(provider, key ? 'saved' : '', key ? 'Key saved' : '');
+                this.updateStatus(provider, key ? 'saved' : '', key ? apiCredentialText('api.status.saved') : '');
             }
         }
         return { success: true };
@@ -640,9 +666,9 @@ class UserCredentialsManager {
         if (!infoText) return;
 
         const messages = {
-            session: 'Your keys are stored only for this browser session and will be cleared when you close the tab.',
-            persistent: 'Your keys are stored in this browser and will persist across sessions until manually deleted.',
-            server: 'Your keys are encrypted with AES-256 and stored on the server. They will be accessible from any device.'
+            session: apiCredentialText('api.session_info'),
+            persistent: apiCredentialText('api.persistent_info'),
+            server: apiCredentialText('api.server_info')
         };
 
         infoText.textContent = messages[this.storageMode] || messages.session;
@@ -663,19 +689,19 @@ class UserCredentialsManager {
         switch (status) {
             case 'success':
                 statusEl.innerHTML = '<i class="fas fa-check-circle text-success"></i>';
-                statusEl.title = message || 'Valid';
+                statusEl.title = message || apiCredentialText('api.status.valid');
                 break;
             case 'error':
                 statusEl.innerHTML = '<i class="fas fa-times-circle text-danger"></i>';
-                statusEl.title = message || 'Invalid';
+                statusEl.title = message || apiCredentialText('api.status.invalid');
                 break;
             case 'testing':
                 statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-                statusEl.title = 'Testing...';
+                statusEl.title = apiCredentialText('api.status.testing');
                 break;
             case 'saved':
                 statusEl.innerHTML = '<i class="fas fa-save text-info"></i>';
-                statusEl.title = message || 'Saved';
+                statusEl.title = message || apiCredentialText('api.status.saved');
                 break;
             default:
                 statusEl.innerHTML = '';
@@ -739,7 +765,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // migration work succeeds. Reflect that rollback in the UI.
                     manager.syncStorageModeUI();
                     NotificationModal.toast(
-                        result.message || 'Could not change storage mode',
+                        result.message || apiCredentialText('api.error.storage_change'),
                         result.reentryRequired ? 'warning' : 'error'
                     );
                     return;
@@ -748,16 +774,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 const loadResult = await manager.loadKeysToForm();
                 if (loadResult?.success === false) {
                     NotificationModal.toast(
-                        loadResult.message || 'Storage mode changed, but keys could not be refreshed',
+                        loadResult.message || apiCredentialText('api.storage_changed_refresh_failed'),
                         'warning'
                     );
                 } else {
-                    NotificationModal.toast('Storage mode changed', 'info');
+                    NotificationModal.toast(apiCredentialText('api.storage_changed'), 'info');
                 }
             } catch (error) {
                 manager.syncStorageModeUI();
                 NotificationModal.toast(
-                    error.message || 'Could not change storage mode',
+                    credentialErrorMessage(error, 'api.error.storage_change'),
                     'error'
                 );
             } finally {
@@ -778,10 +804,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 input.type = 'text';
                 icon.classList.remove('fa-eye');
                 icon.classList.add('fa-eye-slash');
+                btn.setAttribute('title', apiCredentialText('api.hide_key'));
+                btn.setAttribute('aria-label', apiCredentialText('api.hide_key'));
             } else {
                 input.type = 'password';
                 icon.classList.remove('fa-eye-slash');
                 icon.classList.add('fa-eye');
+                btn.setAttribute('title', apiCredentialText('api.show_key'));
+                btn.setAttribute('aria-label', apiCredentialText('api.show_key'));
             }
         });
     });
@@ -800,16 +830,17 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.test-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
             const provider = btn.dataset.provider;
+            const providerLabel = apiProviderLabel(provider);
             const input = document.getElementById(`key-${provider}`);
             const key = input.value.trim();
 
             if (!key) {
-                NotificationModal.toast(`Please enter a ${provider} API key first`, 'warning');
+                NotificationModal.toast(apiCredentialText('api.enter_provider_first', { provider: providerLabel }), 'warning');
                 return;
             }
             if (input.dataset.hasServerKey === 'true' || manager.isMaskedKey(key)) {
                 NotificationModal.toast(
-                    `Re-enter the full ${provider} API key before testing it`,
+                    apiCredentialText('api.reenter_provider_before_test', { provider: providerLabel }),
                     'warning'
                 );
                 return;
@@ -823,11 +854,11 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.disabled = false;
 
             if (result.success) {
-                manager.updateStatus(provider, 'success', 'API key is valid');
-                NotificationModal.toast(`${provider} API key is valid!`, 'success');
+                manager.updateStatus(provider, 'success', apiCredentialText('api.status.valid'));
+                NotificationModal.toast(apiCredentialText('api.provider_valid', { provider: providerLabel }), 'success');
             } else {
                 manager.updateStatus(provider, 'error', result.message);
-                NotificationModal.toast(`${provider} key invalid: ${result.message}`, 'error');
+                NotificationModal.toast(apiCredentialText('api.provider_invalid', { provider: providerLabel, message: result.message }), 'error');
             }
         });
     });
@@ -836,12 +867,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.clear-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
             const provider = btn.dataset.provider;
+            const providerLabel = apiProviderLabel(provider);
             const input = document.getElementById(`key-${provider}`);
 
             input.value = '';
             await manager.deleteKey(provider);
             manager.updateStatus(provider, '');
-            NotificationModal.toast(`${provider} key cleared`, 'info');
+            NotificationModal.toast(apiCredentialText('api.provider_cleared', { provider: providerLabel }), 'info');
         });
     });
 
@@ -849,7 +881,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('saveAllCredentials')?.addEventListener('click', async () => {
         const btn = document.getElementById('saveAllCredentials');
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+        btn.replaceChildren();
+        const savingIcon = document.createElement('i');
+        savingIcon.className = 'fas fa-spinner fa-spin';
+        btn.append(savingIcon, document.createTextNode(` ${apiCredentialText('status.saving')}`));
 
         let savedCount = 0;
         let failedCount = 0;
@@ -867,31 +902,34 @@ document.addEventListener('DOMContentLoaded', () => {
             if (key) {
                 const result = await manager.setKey(provider, key);
                 if (result?.success) {
-                    manager.updateStatus(provider, 'saved', 'Key saved');
+                    manager.updateStatus(provider, 'saved', apiCredentialText('api.status.saved'));
                     savedCount++;
                 } else {
-                    manager.updateStatus(provider, 'error', result?.message || 'Could not save key');
+                    manager.updateStatus(provider, 'error', result?.message || apiCredentialText('api.error.key_save'));
                     failedCount++;
                 }
             }
         }
 
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-save"></i> Save All';
+        btn.replaceChildren();
+        const saveIcon = document.createElement('i');
+        saveIcon.className = 'fas fa-save';
+        btn.append(saveIcon, document.createTextNode(` ${apiCredentialText('api.save_all')}`));
 
         if (failedCount > 0) {
             NotificationModal.toast(
-                `${failedCount} API key(s) could not be saved. Review the marked fields.`,
+                apiCredentialText('api.save_failed_count', { count: failedCount }),
                 'error'
             );
         } else if (savedCount > 0) {
             var credForm = document.getElementById('apiKeysForm');
             if (credForm) FormGuard.markClean(credForm);
-            NotificationModal.toast(`Saved ${savedCount} API key(s)`, 'success');
+            NotificationModal.toast(apiCredentialText('api.saved_count', { count: savedCount }), 'success');
         } else if (maskedCount > 0) {
-            NotificationModal.toast('Stored server masks were not saved. Re-enter a full key to replace it.', 'info');
+            NotificationModal.toast(apiCredentialText('api.masks_not_saved'), 'info');
         } else {
-            NotificationModal.toast('No new keys to save', 'info');
+            NotificationModal.toast(apiCredentialText('api.no_new_keys'), 'info');
         }
     });
 
@@ -899,7 +937,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('testAllCredentials')?.addEventListener('click', async () => {
         const btn = document.getElementById('testAllCredentials');
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
+        btn.replaceChildren();
+        const testingIcon = document.createElement('i');
+        testingIcon.className = 'fas fa-spinner fa-spin';
+        btn.append(testingIcon, document.createTextNode(` ${apiCredentialText('api.status.testing')}`));
 
         let validCount = 0;
         let testedCount = 0;
@@ -920,7 +961,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const result = await manager.testKey(provider, key);
 
                 if (result.success) {
-                    manager.updateStatus(provider, 'success', 'Valid');
+                    manager.updateStatus(provider, 'success', apiCredentialText('api.status.valid'));
                     validCount++;
                 } else {
                     manager.updateStatus(provider, 'error', result.message);
@@ -929,19 +970,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-vial"></i> Test All';
+        btn.replaceChildren();
+        const testIcon = document.createElement('i');
+        testIcon.className = 'fas fa-vial';
+        btn.append(testIcon, document.createTextNode(` ${apiCredentialText('api.test_all')}`));
 
         if (testedCount === 0) {
             NotificationModal.toast(
                 maskedCount > 0
-                    ? 'Re-enter a full API key before testing server-stored credentials'
-                    : 'No API keys to test',
+                    ? apiCredentialText('api.reenter_before_test_server')
+                    : apiCredentialText('api.no_keys_to_test'),
                 maskedCount > 0 ? 'warning' : 'info'
             );
         } else {
-            const skipped = maskedCount > 0 ? `; ${maskedCount} masked key(s) skipped` : '';
             NotificationModal.toast(
-                `${validCount}/${testedCount} keys are valid${skipped}`,
+                maskedCount > 0
+                    ? apiCredentialText('api.masked_skipped', {
+                        valid: validCount,
+                        tested: testedCount,
+                        count: maskedCount
+                    })
+                    : apiCredentialText('api.test_summary', {
+                        valid: validCount,
+                        tested: testedCount
+                    }),
                 validCount === testedCount && maskedCount === 0 ? 'success' : 'warning'
             );
         }
@@ -949,7 +1001,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Clear all credentials
     document.getElementById('clearAllCredentials')?.addEventListener('click', () => {
-        NotificationModal.confirm('Clear All Keys', 'Are you sure you want to clear all API keys? This cannot be undone.', async () => {
+        NotificationModal.confirm(apiCredentialText('api.clear_all'), apiCredentialText('api.clear_all_confirm'), async () => {
             await manager.clearAll();
 
             // Clear form inputs
@@ -964,8 +1016,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             var credForm = document.getElementById('apiKeysForm');
             if (credForm) FormGuard.markClean(credForm);
-            NotificationModal.toast('All API keys cleared', 'info');
-        }, null, { type: 'error', confirmText: 'Clear All' });
+            NotificationModal.toast(apiCredentialText('api.all_cleared'), 'info');
+        }, null, { type: 'error', confirmText: apiCredentialText('api.clear_all') });
     });
 
     // Initialize tooltips
@@ -978,7 +1030,5 @@ document.addEventListener('DOMContentLoaded', () => {
     var _fgCredContainer = document.getElementById('apiKeysForm');
     if (_fgCredContainer) {
         FormGuard.watchWithListeners(_fgCredContainer);
-        // Mark clean after async key loading completes
-        setTimeout(function() { FormGuard.markClean(_fgCredContainer); }, 500);
     }
 });

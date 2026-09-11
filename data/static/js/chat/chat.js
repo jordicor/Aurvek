@@ -11,6 +11,7 @@ let oldestLoadedActivity = null;
 let oldestLoadedId = null;
 let currentAbortController = null;
 let conversationViewGeneration = 0;
+let currentChatView = 'conversation';
 let activeMessageLoad = null;
 let activeBookmarksLoad = null;
 let conversationDetailsController = null;
@@ -23,6 +24,8 @@ const processedMessageIds = new Set();
 const reasoningSelections = new Map();
 let isCurrentConversationLocked = false;
 let currentConversationIncognito = false;
+let incognitoSavePromise = null;
+let incognitoClosePromise = null;
 let userStopped = false;
 let currentProviderHealth = null;
 let currentMemoryHealth = null;
@@ -83,7 +86,14 @@ function abortActiveBookmarksLoad() {
 }
 
 function beginConversationViewTransition() {
+    currentChatView = 'conversation';
     conversationViewGeneration += 1;
+    currentModelAvailability = null;
+    refreshModelAvailabilityBanner();
+    const promptAvatar = document.getElementById('chat-title-avatar');
+    if (promptAvatar) promptAvatar.disabled = true;
+    const promptModal = document.getElementById('promptInfoModal');
+    if (promptModal) bootstrap.Modal.getInstance(promptModal)?.hide();
     abortActiveMessageLoad();
     abortActiveBookmarksLoad();
     if (conversationDetailsController) {
@@ -125,11 +135,11 @@ function providerHealthShouldSurface(health) {
 
 function providerHealthFallbackMessage(health) {
     if (!health) return '';
-    const providerName = health.provider_name || 'the selected AI provider';
+    const providerName = health.provider_name || window.AurvekI18n.t('chat.provider_selected');
     if (health.source === 'official_status') {
-        return `${providerName} reports an API incident. This model may fail temporarily or respond more slowly.`;
+        return window.AurvekI18n.t('chat.provider_official', { provider: providerName });
     }
-    return `We are detecting recent connection errors with ${providerName}. This model may fail temporarily or take longer than usual.`;
+    return window.AurvekI18n.t('chat.provider_detected', { provider: providerName });
 }
 
 function setCurrentProviderHealth(health) {
@@ -148,7 +158,7 @@ function renderProviderHealthBanner() {
         return;
     }
 
-    textEl.textContent = currentProviderHealth.message || providerHealthFallbackMessage(currentProviderHealth);
+    textEl.textContent = providerHealthFallbackMessage(currentProviderHealth);
     banner.style.display = 'flex';
 }
 
@@ -166,6 +176,12 @@ function escapeProviderHealthHtml(value) {
 }
 
 function showProviderAwareError(title, message, source = null) {
+    if (window.AurvekEmbed) {
+        NotificationModal.error(() => window.AurvekI18n.t('chat.ai_error'),
+            () => embeddedErrorText(source));
+        window.AurvekEmbed.emit('error', { code: 'operation_failed' });
+        return;
+    }
     const health = source?.provider_health || source || currentProviderHealth;
     if (!providerHealthShouldSurface(health)) {
         NotificationModal.error(title, String(message || ''));
@@ -173,9 +189,39 @@ function showProviderAwareError(title, message, source = null) {
     }
 
     setCurrentProviderHealth(health);
-    const note = health.message || providerHealthFallbackMessage(health);
+    const note = providerHealthFallbackMessage(health);
     const html = `${escapeProviderHealthHtml(message || '')}<span class="provider-health-modal-note">${escapeProviderHealthHtml(note)}</span>`;
     NotificationModal.error(title, html, { allowHtml: true });
+}
+
+function embeddedErrorKey(payload) {
+    const code = payload?.error_code || payload?.code;
+    const hostKeys = { api_keys_required: 'embed.keys', insufficient_balance: 'embed.balance',
+        expected_llm_id_required: 'embed.error', conversation_model_changed: 'embed.error' };
+    if (Object.prototype.hasOwnProperty.call(hostKeys, code)) return hostKeys[code];
+    if (typeof code === 'string' && /^[a-z][a-z0-9_]*$/.test(code)) {
+        try {
+            window.AurvekI18n.render(`chat_errors.${code}`);
+            return `chat_errors.${code}`;
+        } catch (_) { /* Unknown codes have a safe product-facing fallback. */ }
+    }
+    return 'embed.error';
+}
+
+function embeddedErrorText(payload) {
+    return window.AurvekI18n.t(embeddedErrorKey(payload));
+}
+
+function accessibleCopyControl(element) {
+    window.AurvekI18n.bindAttribute(element, 'aria-label', 'chat.copy_text');
+    element.tabIndex = 0;
+    element.setAttribute('role', 'button');
+    element.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            element.click();
+        }
+    });
 }
 
 function memoryHealthShouldSurface(health) {
@@ -187,9 +233,9 @@ function memoryHealthShouldSurface(health) {
 function memoryHealthFallbackMessage(health) {
     if (!health) return '';
     if (health.status === 'unavailable') {
-        return 'Memory is temporarily unavailable. Replies may not use saved long-term memory.';
+        return window.AurvekI18n.t('chat.memory_unavailable');
     }
-    return 'Memory is temporarily degraded. Replies may not use saved long-term memory.';
+    return window.AurvekI18n.t('chat.memory_degraded');
 }
 
 function setCurrentMemoryHealth(health) {
@@ -208,11 +254,12 @@ function renderMemoryHealthBanner() {
         return;
     }
 
-    textEl.textContent = currentMemoryHealth.message || memoryHealthFallbackMessage(currentMemoryHealth);
+    textEl.textContent = memoryHealthFallbackMessage(currentMemoryHealth);
     banner.style.display = 'flex';
 }
 
 async function refreshMemoryHealthBanner() {
+    if (window.AurvekEmbed) return;
     try {
         const response = await secureFetch('/api/user/memory-status', { method: 'GET' });
         if (!response || !response.ok) return;
@@ -308,7 +355,8 @@ const ApiKeyManager = {
         // first use (after DOMContentLoaded) instead of caching permissive
         // defaults while those globals are still undefined.
         this.initializeFromPage();
-        return this.canSend || currentConversationUsesChatGptSubscription();
+        return window.currentConversationApplicationFunding?.()?.sponsored === true ||
+            this.canSend || currentConversationUsesChatGptSubscription();
     },
 
     /**
@@ -316,6 +364,7 @@ const ApiKeyManager = {
      * @returns {Promise<void>}
      */
     async refreshStatus() {
+        if (window.AurvekEmbed) return;
         try {
             const response = await fetch('/api/user/api-key-status');
             if (response.ok) {
@@ -361,14 +410,19 @@ const ApiKeyManager = {
      */
     handleApiKeyError(errorData) {
         if (errorData.error === 'api_keys_required' || errorData.action === 'configure_api_keys') {
+            if (window.AurvekEmbed) {
+                NotificationModal.warning(() => window.AurvekI18n.t('chat.api_keys_title'),
+                    () => window.AurvekI18n.t('embed.keys'));
+                return;
+            }
             NotificationModal.confirm(
-                'API Keys Required',
-                'You need to configure your API keys to use AI services. Would you like to go to the API credentials page?',
+                () => window.AurvekI18n.t('chat.api_keys_title'),
+                () => window.AurvekI18n.t('chat.api_keys_confirm'),
                 () => {
                     window.location.href = '/api-credentials';
                 },
                 null,
-                { confirmText: 'Configure', type: 'warning' }
+                { confirmText: window.AurvekI18n.t('chat.configure'), type: 'warning' }
             );
         }
     }
@@ -386,10 +440,10 @@ function applyCollapsibleUserMsg(divText, messageContent) {
 
             const toggleBtn = document.createElement('button');
             toggleBtn.className = 'user-msg-toggle';
-            toggleBtn.textContent = 'Show more';
+            window.AurvekI18n.bindText(toggleBtn, 'chat.more');
             toggleBtn.addEventListener('click', () => {
                 const isCollapsed = divText.classList.toggle('user-msg-collapsed');
-                toggleBtn.textContent = isCollapsed ? 'Show more' : 'Show less';
+                window.AurvekI18n.bindText(toggleBtn, isCollapsed ? 'chat.more' : 'chat.less');
                 if (isCollapsed) {
                     const msg = divText.closest('.message');
                     if (msg.getBoundingClientRect().top < 0) {
@@ -418,10 +472,10 @@ function applyCollapsibleCodeBlocks(container) {
 
                 const toggleBtn = document.createElement('button');
                 toggleBtn.className = 'code-block-toggle';
-                toggleBtn.textContent = 'Show more';
+                window.AurvekI18n.bindText(toggleBtn, 'chat.more');
                 toggleBtn.addEventListener('click', () => {
                     const isCollapsed = pre.classList.toggle('code-block-collapsed');
-                    toggleBtn.textContent = isCollapsed ? 'Show more' : 'Show less';
+                    window.AurvekI18n.bindText(toggleBtn, isCollapsed ? 'chat.more' : 'chat.less');
                     if (isCollapsed) {
                         const msg = block.closest('.message');
                         if (msg && msg.getBoundingClientRect().top < 0) {
@@ -487,7 +541,10 @@ function buildSourcesBlock(citations) {
 
     const header = document.createElement('div');
     header.className = 'sources-header';
-    header.innerHTML = '<i class="fas fa-chevron-right sources-chevron"></i> ' + count + ' source' + (count !== 1 ? 's' : '');
+    header.innerHTML = '<i class="fas fa-chevron-right sources-chevron"></i> ';
+    const sourcesLabel = document.createElement('span');
+    window.AurvekI18n.bindText(sourcesLabel, 'chat.sources', { count });
+    header.appendChild(sourcesLabel);
     header.addEventListener('click', function() {
         block.classList.toggle('expanded');
     });
@@ -500,8 +557,21 @@ function buildSourcesBlock(citations) {
 function renderMarkdownIntoElement(targetElement, markdownText) {
     const text = typeof markdownText === 'string' ? markdownText : String(markdownText || '');
     let processedHTML = DOMPurify.sanitize(marked.parse(text));
-    processedHTML = formatCodeBlocks(processedHTML);
-    targetElement.innerHTML = processedHTML;
+    if (window.AurvekEmbed) {
+        const template = document.createElement('template');
+        template.innerHTML = processedHTML;
+        template.content.querySelectorAll('img[src], video[src], source[src]').forEach(media => {
+            const url = window.AurvekEmbed.resourceUrl(media.getAttribute('src'));
+            if (url) media.setAttribute('src', url);
+            else media.remove();
+        });
+        template.content.querySelectorAll('a[href]').forEach(link => {
+            const url = window.AurvekEmbed.resourceUrl(link.getAttribute('href'));
+            if (url) link.setAttribute('href', url);
+        });
+        processedHTML = template.innerHTML;
+    }
+    formatCodeBlocks(processedHTML, targetElement);
 
     targetElement.querySelectorAll('pre code').forEach((el) => {
         hljs.highlightElement(el);
@@ -533,8 +603,8 @@ function createMultiAiCarousel(models = []) {
 
         return {
             llm_id: llmId,
-            machine: model?.machine || 'AI',
-            model: model?.model || `Model ${index + 1}`,
+            machine: model?.machine || window.AurvekI18n.t('chat.ai'),
+            model: model?.model || window.AurvekI18n.t('chat.model_index', { index: index + 1 }),
         };
     });
 
@@ -547,13 +617,14 @@ function createMultiAiCarousel(models = []) {
 
     const label = document.createElement('span');
     label.classList.add('multi-ai-label');
-    label.textContent = 'Multi-AI Compare';
+    window.AurvekI18n.bindText(label, 'chat.multi_compare');
 
     const nav = document.createElement('div');
     nav.classList.add('multi-ai-nav');
 
     const prevBtn = document.createElement('button');
     prevBtn.type = 'button';
+    window.AurvekI18n.bindAttribute(prevBtn, 'aria-label', 'chat.previous_model');
     prevBtn.classList.add('multi-ai-nav-btn', 'multi-ai-prev');
     prevBtn.innerHTML = '<i class="fas fa-chevron-left"></i>';
 
@@ -562,6 +633,7 @@ function createMultiAiCarousel(models = []) {
 
     const nextBtn = document.createElement('button');
     nextBtn.type = 'button';
+    window.AurvekI18n.bindAttribute(nextBtn, 'aria-label', 'chat.next_model');
     nextBtn.classList.add('multi-ai-nav-btn', 'multi-ai-next');
     nextBtn.innerHTML = '<i class="fas fa-chevron-right"></i>';
 
@@ -621,7 +693,7 @@ function createMultiAiCarousel(models = []) {
         const slide = getSlideState(llmId);
         if (!slide) return false;
 
-        const text = String(errorText || 'Unknown error');
+        const text = String(errorText || window.AurvekI18n.t('chat.unknown_error'));
         textsByLlmId.set(slide.llmId, text);
         slide.paragraph.innerHTML = '';
         const errorSpan = document.createElement('span');
@@ -640,7 +712,7 @@ function createMultiAiCarousel(models = []) {
     }
 
     function setGlobalError(errorText) {
-        const text = String(errorText || 'Unexpected error');
+        const text = String(errorText || window.AurvekI18n.t('chat.unexpected_error'));
         if (!globalErrorEl) {
             globalErrorEl = document.createElement('div');
             globalErrorEl.classList.add('multi-ai-global-error');
@@ -688,7 +760,7 @@ function createMultiAiCarousel(models = []) {
         const dot = document.createElement('button');
         dot.type = 'button';
         dot.classList.add('multi-ai-dot');
-        dot.setAttribute('aria-label', `View ${model.model}`);
+        window.AurvekI18n.bindAttribute(dot, 'aria-label', 'chat.view_model', { model: model.model });
         dot.addEventListener('click', () => setActiveSlide(index));
         indicator.appendChild(dot);
 
@@ -757,20 +829,20 @@ function normalizeMessageChannelProvenance(messageObj) {
     const audioUrl = audio?.available === true && typeof audio.url === 'string'
         ? audio.url.trim()
         : '';
-    const contentLabel = contentKind === 'audio'
-        ? 'Audio'
-        : (contentKind === 'voice_reply'
-            ? 'Voice reply'
-            : (contentKind === 'voice_note' || voiceNote ? 'Voice note' : ''));
+    const contentLabelKey = contentKind === 'audio' ? 'chat.audio'
+        : (contentKind === 'voice_reply' ? 'chat.voice_reply'
+            : (contentKind === 'voice_note' || voiceNote ? 'chat.voice_note' : null));
+    const contentLabel = contentLabelKey ? window.AurvekI18n.t(contentLabelKey) : '';
 
     return {
         channel,
         direction,
         contentKind,
         contentLabel,
+        contentLabelKey,
         originalAudio: audioUrl ? {
             url: audioUrl,
-            label: contentLabel || 'Audio',
+            label: contentLabel || window.AurvekI18n.t('chat.audio'),
         } : null,
     };
 }
@@ -785,17 +857,16 @@ function createMessageChannelBadge(provenance) {
         `message-channel-provenance-${provenance.channel}`
     );
 
-    let description = `${channelLabel} message`;
-    if (provenance.direction === 'inbound') {
-        description = `Received via ${channelLabel}`;
-    } else if (provenance.direction === 'outbound') {
-        description = `${channelLabel} reply`;
-    }
-    if (provenance.contentLabel) {
-        description += `. ${provenance.contentLabel}`;
-    }
-    badge.title = description;
-    badge.setAttribute('aria-label', description);
+    const description = () => {
+        const key = provenance.direction === 'inbound' ? 'chat.channel_received'
+            : (provenance.direction === 'outbound' ? 'chat.channel_reply' : 'chat.channel_message');
+        const base = window.AurvekI18n.t(key, { channel: channelLabel });
+        return provenance.contentLabelKey ? window.AurvekI18n.t('chat.channel_content', {
+            description: base, kind: window.AurvekI18n.t(provenance.contentLabelKey),
+        }) : base;
+    };
+    window.AurvekI18n.bindValue(badge, description, 'title');
+    window.AurvekI18n.bindValue(badge, description, 'aria-label');
 
     const channelIcon = document.createElement('i');
     getExternalPlatformIcon(provenance.channel).split(/\s+/).forEach(className => {
@@ -819,12 +890,59 @@ function createMessageChannelBadge(provenance) {
                 : 'fas fa-microphone');
         kindIcon.setAttribute('aria-hidden', 'true');
         const kindLabel = document.createElement('span');
-        kindLabel.textContent = provenance.contentLabel;
+        window.AurvekI18n.bindText(kindLabel, provenance.contentLabelKey);
         kind.append(kindIcon, kindLabel);
         badge.appendChild(kind);
     }
 
     return badge;
+}
+
+function getVoiceInterruptionPresentation(author, messageObj) {
+    const phone = messageObj?.phone_provenance;
+    const elevenLabsVoice = messageObj?.elevenlabs_voice;
+    const metadata = phone?.interrupted === true
+        ? phone
+        : (elevenLabsVoice?.interrupted === true ? elevenLabsVoice : null);
+    if (!metadata) return null;
+
+    const participant = String(metadata.participant || '').trim().toLowerCase();
+    const isAssistant = participant === 'assistant' || (!participant && author !== 'user');
+    return {
+        appendEllipsis: isAssistant,
+        label: isAssistant ? window.AurvekI18n.t('chat.interrupted') : window.AurvekI18n.t('chat.response_interrupted'),
+        source: metadata === phone ? 'phone' : 'voice'
+    };
+}
+
+function shouldAppendInterruptionEllipsis(text) {
+    const normalized = String(text || '').trimEnd();
+    return normalized.length > 0 && !/(?:\u2026|\.{3})$/.test(normalized);
+}
+
+function appendInterruptionEllipsis(container, text) {
+    if (!container || !shouldAppendInterruptionEllipsis(text)) return;
+
+    let target = container;
+    const lastBlock = container.lastElementChild;
+    if (lastBlock) {
+        const tagName = String(lastBlock.tagName || '').toLowerCase();
+        if (tagName === 'p' || tagName === 'blockquote') {
+            target = lastBlock;
+        } else if (tagName === 'ul' || tagName === 'ol') {
+            target = lastBlock.lastElementChild;
+        } else {
+            // Do not imply that a code block or attachment was truncated.
+            return;
+        }
+    }
+    if (!target) return;
+
+    const ellipsis = document.createElement('span');
+    ellipsis.className = 'message-interruption-ellipsis';
+    ellipsis.textContent = ' \u2026';
+    ellipsis.setAttribute('aria-hidden', 'true');
+    target.appendChild(ellipsis);
 }
 
 function addMessage(author, message, timestampInfo = null, isTemporary = false, messageObj = null, prepend = false, container = null, messageId = null, citations = null) {
@@ -849,14 +967,13 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         const phoneBadge = document.createElement('button');
         phoneBadge.type = 'button';
         phoneBadge.className = 'message-phone-provenance';
-        const phoneDescription = 'Spoken during a phone call';
-        phoneBadge.setAttribute('aria-label', `${phoneDescription}. View call details`);
-        phoneBadge.title = `${phoneDescription}. View call details`;
+        window.AurvekI18n.bindAttribute(phoneBadge, 'aria-label', 'chat.phone_details');
+        window.AurvekI18n.bindAttribute(phoneBadge, 'title', 'chat.phone_details');
         const phoneIcon = document.createElement('i');
         phoneIcon.className = 'fas fa-phone';
         phoneIcon.setAttribute('aria-hidden', 'true');
         const phoneLabel = document.createElement('span');
-        phoneLabel.textContent = 'Phone';
+        window.AurvekI18n.bindText(phoneLabel, 'chat.phone');
         phoneBadge.append(phoneIcon, phoneLabel);
         phoneBadge.addEventListener('click', () => {
             window.AurvekPhoneHistory?.showCall(String(phoneProvenance.phone_call_id));
@@ -874,6 +991,21 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         messageContent.appendChild(channelBadge);
     }
 
+    const interruptionPresentation = getVoiceInterruptionPresentation(author, messageObj);
+    if (interruptionPresentation) {
+        divMessage.dataset.messageInterrupted = 'true';
+        const interruptionBadge = document.createElement('span');
+        interruptionBadge.className = [
+            'message-interruption-state',
+            `message-interruption-state-${interruptionPresentation.source}`
+        ].join(' ');
+        window.AurvekI18n.bindText(interruptionBadge, interruptionPresentation.appendEllipsis
+            ? 'chat.interrupted' : 'chat.response_interrupted');
+        window.AurvekI18n.bindAttribute(interruptionBadge, 'title', interruptionPresentation.appendEllipsis
+            ? 'chat.interrupted_verified' : 'chat.interrupted_no_text');
+        messageContent.appendChild(interruptionBadge);
+    }
+
     if (isTemporary) {
         divMessage.classList.add('temporary-message');
     }
@@ -888,13 +1020,10 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
                 divText.classList.add('preserve-whitespace');
                 divText.textContent = messageText;
             } else {
-                let processedHTML = DOMPurify.sanitize(marked.parse(messageText));
-                processedHTML = formatCodeBlocks(processedHTML);
-                divText.innerHTML = processedHTML;
-
-                divText.querySelectorAll('pre code').forEach((el) => {
-                    hljs.highlightElement(el);
-                });
+                renderMarkdownIntoElement(divText, messageText);
+            }
+            if (interruptionPresentation?.appendEllipsis) {
+                appendInterruptionEllipsis(divText, messageText);
             }
             messageContent.appendChild(divText);
             if (author === 'user') applyCollapsibleUserMsg(divText, messageContent);
@@ -908,7 +1037,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
                 }
                 return {
                     llm_id: llmId,
-                    machine: response?.machine || 'AI',
+                    machine: response?.machine || window.AurvekI18n.t('chat.ai'),
                     model: response?.model || `Model ${index + 1}`,
                     content: String(response?.content || ''),
                     error: Boolean(response?.error),
@@ -934,7 +1063,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             messageText = normalizedResponses.find((r) => !r.error)?.content || normalizedResponses[0]?.content || '';
         } else if (messageObj.type === 'image_url') {
             var imgElement = document.createElement('img');
-            imgElement.src = messageObj.url;
+            imgElement.src = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(messageObj.url) : messageObj.url;
             imgElement.alt = messageObj.alt || '';
             imgElement.loading = 'lazy';
             imgElement.style.maxWidth = '256px';
@@ -950,7 +1079,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             messageContent.appendChild(imgElement);
         } else if (messageObj.type === 'video_url') {
             var videoElement = document.createElement('video');
-            videoElement.src = messageObj.url;
+            videoElement.src = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(messageObj.url) : messageObj.url;
             videoElement.controls = true;
             videoElement.style.maxWidth = '100%';
             videoElement.style.maxHeight = '480px';
@@ -960,7 +1089,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             
             // Add poster image if available
             if (messageObj.poster) {
-                videoElement.poster = messageObj.poster;
+                videoElement.poster = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(messageObj.poster) : messageObj.poster;
             }
             
             // Add accessibility attributes
@@ -972,7 +1101,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             messageContent.appendChild(videoElement);
         } else if (messageObj.type === 'document_url') {
             var pdfEl = document.createElement('a');
-            pdfEl.href = messageObj.url;
+            pdfEl.href = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(messageObj.url) : messageObj.url;
             pdfEl.target = '_blank';
             pdfEl.rel = 'noopener noreferrer';
             pdfEl.className = 'chat-pdf-attachment';
@@ -980,21 +1109,35 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             badge.className = 'pdf-badge';
             badge.textContent = 'PDF';
             var label = document.createElement('span');
-            label.textContent = ' ' + messageObj.filename + ' (' + messageObj.pages + ' pages)';
+            window.AurvekI18n.bindText(label, 'chat.pdf_pages', { filename: messageObj.filename, count: Number(messageObj.pages) });
             pdfEl.appendChild(badge);
             pdfEl.appendChild(label);
             messageContent.appendChild(pdfEl);
         } else if (messageObj && messageObj.type === 'text_file') {
-            var textAttachment = document.createElement('div');
+            var textAttachment = document.createElement(messageObj.url ? 'a' : 'div');
+            if (messageObj.url) {
+                textAttachment.href = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(messageObj.url) : messageObj.url;
+                textAttachment.target = '_blank';
+                textAttachment.rel = 'noopener noreferrer';
+            }
             textAttachment.className = 'chat-text-attachment';
             var badge = document.createElement('span');
             badge.className = 'text-badge';
             badge.textContent = 'TXT';
             var label = document.createElement('span');
-            label.textContent = messageObj.filename + ' (' + messageObj.lines + ' lines)';
+            window.AurvekI18n.bindText(label, 'chat.text_lines', { filename: messageObj.filename, count: Number(messageObj.lines) });
             textAttachment.appendChild(badge);
             textAttachment.appendChild(label);
             messageContent.appendChild(textAttachment);
+        }
+        if (window.AurvekEmbed?.config.application && messageObj.attachment_ref &&
+                ['document_url', 'text_file'].includes(messageObj.type)) {
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn btn-sm btn-outline-secondary ms-2';
+            window.AurvekI18n.bindText(remove, 'chat.delete');
+            remove.onclick = () => deleteApplicationAttachment(messageObj.attachment_ref);
+            messageContent.appendChild(remove);
         }
     } else {
         messageText = String(message);
@@ -1003,13 +1146,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             divText.classList.add('preserve-whitespace');
             divText.textContent = messageText;
         } else {
-            let processedHTML = DOMPurify.sanitize(marked.parse(messageText));
-            processedHTML = formatCodeBlocks(processedHTML);
-            divText.innerHTML = processedHTML;
-
-            divText.querySelectorAll('pre code').forEach((el) => {
-                hljs.highlightElement(el);
-            });
+            renderMarkdownIntoElement(divText, messageText);
         }
         messageContent.appendChild(divText);
         if (author === 'user') applyCollapsibleUserMsg(divText, messageContent);
@@ -1029,17 +1166,31 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         audioIcon.dataset.baseIcon = 'fa-volume-up';
         audioIcon.style.cursor = 'pointer';
         audioIcon.style.display = 'inline';
-        const originalAudio = channelProvenance?.originalAudio || null;
+        const retainedPhoneAudio = phoneProvenance?.audio &&
+            typeof phoneProvenance.audio === 'object' &&
+            phoneProvenance.audio.available === true &&
+            typeof phoneProvenance.audio.url === 'string' &&
+            phoneProvenance.audio.url.trim()
+            ? {
+                url: phoneProvenance.audio.url.trim(),
+                label: window.AurvekI18n.t('chat.audio')
+            }
+            : null;
+        const originalAudio = messageObj?.original_audio_url
+            ? {url: messageObj.original_audio_url, label: window.AurvekI18n.t('chat.audio')}
+            : retainedPhoneAudio || channelProvenance?.originalAudio || null;
         const audioActionLabel = originalAudio
-            ? `Play original ${originalAudio.label.toLowerCase()}`
-            : 'Read aloud';
-        audioIcon.title = audioActionLabel;
-        audioIcon.setAttribute('aria-label', audioActionLabel);
+            ? window.AurvekI18n.t('chat.play_original')
+            : window.AurvekI18n.t('chat.read_aloud');
+        const audioActionKey = originalAudio ? 'chat.play_original' : 'chat.read_aloud';
+        window.AurvekI18n.bindAttribute(audioIcon, 'title', audioActionKey);
+        window.AurvekI18n.bindAttribute(audioIcon, 'aria-label', audioActionKey);
         audioIcon.setAttribute('aria-pressed', 'false');
         audioIcon.setAttribute('role', 'button');
         audioIcon.tabIndex = 0;
         audioIcon.dataset.audioSource = originalAudio ? 'original' : 'tts';
         audioIcon.dataset.playLabel = audioActionLabel;
+        window.AurvekI18n.bindAttribute(audioIcon, 'data-play-label', audioActionKey);
 
         const resolveMessageText = () => {
             if (divMessage.classList.contains('multi-ai-message')) {
@@ -1052,7 +1203,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         audioIcon.dataset.id = currentConversationId;
         const activateAudio = function() {
             if (originalAudio) {
-                playOriginalAudio(originalAudio.url, audioIcon);
+                playOriginalAudio(originalAudio.url, audioIcon, originalAudio.label);
                 return;
             }
             textToSpeech(resolveMessageText(), user_id, currentConversationId, audioIcon, author);
@@ -1069,7 +1220,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         bookmarkIcon.classList.add('fas', 'fa-bookmark', 'bookmark-icon');
         bookmarkIcon.style.cursor = 'pointer';
         bookmarkIcon.style.display = 'none';
-        bookmarkIcon.title = 'Add to bookmarks';
+        window.AurvekI18n.bindAttribute(bookmarkIcon, 'title', 'chat.bookmark_add');
 
         if (messageObj && messageObj.is_bookmarked) {
             bookmarkIcon.classList.add('bookmarked');
@@ -1106,8 +1257,8 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
                 'voice-note-retranscription-action'
             );
             retranscriptionIcon.dataset.messageId = String(messageId);
-            retranscriptionIcon.title = 'Retranscribe original voice note';
-            retranscriptionIcon.setAttribute('aria-label', 'Retranscribe original voice note');
+            window.AurvekI18n.bindAttribute(retranscriptionIcon, 'title', 'chat.retranscribe');
+            window.AurvekI18n.bindAttribute(retranscriptionIcon, 'aria-label', 'chat.retranscribe');
             retranscriptionIcon.setAttribute('role', 'button');
             retranscriptionIcon.tabIndex = 0;
             const openRetranscription = () => {
@@ -1126,7 +1277,8 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         copyIcon.classList.add('fas', 'fa-copy', 'copy-icon');
         copyIcon.style.cursor = 'pointer';
         copyIcon.style.display = 'none';
-        copyIcon.title = 'Copy text';
+        window.AurvekI18n.bindAttribute(copyIcon, 'title', 'chat.copy_text');
+        accessibleCopyControl(copyIcon);
         copyIcon.onclick = function() {
             copyToClipboard(resolveMessageText(), copyIcon);
         };
@@ -1140,7 +1292,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             rollbackIcon.classList.add('fas', 'fa-level-up-alt', 'rollback-icon');
             rollbackIcon.style.cursor = 'pointer';
             rollbackIcon.style.display = 'none';
-            rollbackIcon.title = 'Start over from here';
+            window.AurvekI18n.bindAttribute(rollbackIcon, 'title', 'chat.rollback_here');
             if (messageId) {
                 rollbackIcon.setAttribute('data-message-id', messageId);
             }
@@ -1148,8 +1300,7 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
                 rollbackConversation(this.getAttribute('data-message-id'), currentConversationId);
             };
 
-            const chatTitle = document.querySelector('.chatbot-info h4').textContent;
-            if (chatTitle !== "My Bookmarks") {
+            if (!isMyBookmarksView()) {
                 iconContainer.appendChild(rollbackIcon);
             }
         }
@@ -1157,13 +1308,12 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         iconContainer.appendChild(copyIcon);
 
         // Branch icon - appears on all messages (user and bot), hidden in Bookmarks view
-        const chatTitleForBranch = document.querySelector('.chatbot-info h4').textContent;
-        if (chatTitleForBranch !== "My Bookmarks") {
+        if (!isMyBookmarksView()) {
             const branchIcon = document.createElement('i');
             branchIcon.classList.add('fas', 'fa-code-branch', 'branch-icon');
             branchIcon.style.cursor = 'pointer';
             branchIcon.style.display = 'none';
-            branchIcon.title = 'Branch from here';
+            window.AurvekI18n.bindAttribute(branchIcon, 'title', 'chat.branch_here');
             if (messageId) {
                 branchIcon.setAttribute('data-message-id', messageId);
             }
@@ -1173,16 +1323,16 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
             iconContainer.appendChild(branchIcon);
         }
 
-        // Add arrow icon if we are in "My Bookmarks"
+        // Add arrow icon in bookmarks view
         if (isMyBookmarksView() && conversationId) {
             const goToConversationIcon = document.createElement('i');
             goToConversationIcon.classList.add('fas', 'fa-arrow-right', 'go-to-conversation-icon');
             goToConversationIcon.style.cursor = 'pointer';
             goToConversationIcon.style.display = 'inline';
-            goToConversationIcon.title = 'Go to conversation';
+            window.AurvekI18n.bindAttribute(goToConversationIcon, 'title', 'chat.go_conversation');
 
             goToConversationIcon.onclick = function() {
-                continueConversation(conversationId, 'Chat', 'machine', false, messageId);
+                continueConversation(conversationId, window.AurvekI18n.t('chat.chat_id', { id: conversationId }), 'machine', false, messageId);
             };
 
             iconContainer.appendChild(goToConversationIcon);
@@ -1197,40 +1347,33 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         } else {
             // Assume timestampInfo is directly the date string from database
             if (typeof timestampInfo.timestamp.originalUtc === 'string') {
-                messageDate = new Date(timestampInfo.timestamp.originalUtc.replace(' ', 'T') + 'Z');
+                const timestamp = timestampInfo.timestamp.originalUtc.replace(' ', 'T');
+                messageDate = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(timestamp) ? timestamp : timestamp + 'Z');
             } else {
                 console.error('timestampInfo.timestamp.originalUtc is not a string:', timestampInfo.timestamp.originalUtc);
-                timeSpan.textContent = 'Invalid date';
+                window.AurvekI18n.bindText(timeSpan, 'chat.invalid_date');
             }
         }
 
 
         // Verify if date is valid
-        if (isNaN(messageDate.getTime())) {
+        if (!messageDate || isNaN(messageDate.getTime())) {
             console.error('Invalid date:', timestampInfo);
-            timeSpan.textContent = 'Invalid date';
+            window.AurvekI18n.bindText(timeSpan, 'chat.invalid_date');
         } else {
             // Convert UTC to local time
-            var localDate = new Date(messageDate.toLocaleString('en-US', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+            var localDate = messageDate;
     
             // Format the time in the user's local time zone
-            var formattedTime = localDate.toLocaleTimeString(undefined, {
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-            });
-            timeSpan.textContent = formattedTime;
+            window.AurvekI18n.bindValue(timeSpan, () => localDate.toLocaleTimeString(window.AurvekI18n.locale, {
+                hour: '2-digit', minute: '2-digit', hour12: false
+            }));
     
             // Format full date for title
-            var formattedDate = localDate.toLocaleString(undefined, {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-            });
-            timeSpan.title = formattedDate;
+            window.AurvekI18n.bindValue(timeSpan, () => localDate.toLocaleString(window.AurvekI18n.locale, {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', hour12: false
+            }), 'title');
     
         }
     
@@ -1292,8 +1435,8 @@ function rollbackConversation(messageId, conversationId) {
         return;
     }
     NotificationModal.confirm(
-        'Rollback Conversation',
-        'Are you sure you want to roll back the conversation to this point? All messages after this will be deleted.',
+        () => window.AurvekI18n.t('chat.rollback_title'),
+        () => window.AurvekI18n.t('chat.rollback_confirm'),
         () => {
             fetch(`/api/conversations/${conversationId}/rollback`, {
                 method: 'POST',
@@ -1333,16 +1476,16 @@ function rollbackConversation(messageId, conversationId) {
                         console.error('Message not found for rollback');
                     }
                 } else {
-                    NotificationModal.error('Rollback Failed', data.error || 'Could not roll back the conversation.');
+                    NotificationModal.error(() => window.AurvekI18n.t('chat.rollback_failed'), data.error || window.AurvekI18n.t('chat.rollback_error'));
                 }
             })
             .catch(error => {
                 console.error('Error rolling back conversation:', error);
-                NotificationModal.error('Rollback Failed', 'An unexpected error occurred. Please try again.');
+                NotificationModal.error(() => window.AurvekI18n.t('chat.rollback_failed'), () => window.AurvekI18n.t('chat.unexpected_retry'));
             });
         },
         null,
-        { confirmText: 'Roll Back', cancelText: 'Cancel' }
+        { confirmText: window.AurvekI18n.t('chat.rollback'), cancelText: window.AurvekI18n.t('chat.cancel') }
     );
 }
 
@@ -1353,8 +1496,8 @@ function branchConversation(messageId, conversationId) {
     }
 
     NotificationModal.confirm(
-        'Branch Conversation',
-        'Create a new conversation branching from this message? All messages up to this point will be copied.',
+        () => window.AurvekI18n.t('chat.branch_title'),
+        () => window.AurvekI18n.t('chat.branch_confirm'),
         () => {
             secureFetch(`/api/conversations/${conversationId}/branch`, {
                 method: 'POST',
@@ -1370,24 +1513,24 @@ function branchConversation(messageId, conversationId) {
                 if (data.id) {
                     addConversationElement(data, data.name, null, true);
                     continueConversation(data.id, data.name, data.machine, false, null, data);
-                    NotificationModal.success('Branch Created',
-                        `New conversation created with ${data.messages_copied} messages.`);
+                    NotificationModal.success(() => window.AurvekI18n.t('chat.branch_created'),
+                        () => window.AurvekI18n.t('chat.branch_count', { count: Number(data.messages_copied) }));
                 } else {
-                    NotificationModal.error('Branch Failed', data.detail || data.error || 'Could not branch conversation.');
+                    NotificationModal.error(() => window.AurvekI18n.t('chat.branch_failed'), data.detail || data.error || window.AurvekI18n.t('chat.branch_error'));
                 }
             })
             .catch(error => {
                 console.error('Error branching conversation:', error);
-                NotificationModal.error('Branch Failed', 'An unexpected error occurred.');
+                NotificationModal.error(() => window.AurvekI18n.t('chat.branch_failed'), () => window.AurvekI18n.t('chat.unexpected'));
             });
         },
         null,
-        { confirmText: 'Branch', cancelText: 'Cancel' }
+        { confirmText: window.AurvekI18n.t('chat.branch'), cancelText: window.AurvekI18n.t('chat.cancel') }
     );
 }
 
 
-function formatCodeBlocks(html) {
+function formatCodeBlocks(html, targetElement = null) {
     const template = document.createElement('template');
     template.innerHTML = html;
 
@@ -1425,8 +1568,8 @@ function formatCodeBlocks(html) {
         copyBtn.type = 'button';
         copyBtn.className = 'copy-button';
         copyBtn.setAttribute('onclick', 'copyCode(this)');
-        copyBtn.setAttribute('aria-label', 'Copy code');
-        copyBtn.title = 'Copy code';
+        window.AurvekI18n.bindAttribute(copyBtn, 'aria-label', 'chat.copy_code');
+        window.AurvekI18n.bindAttribute(copyBtn, 'title', 'chat.copy_code');
 
         const copyIcon = document.createElement('i');
         copyIcon.className = 'fas fa-copy';
@@ -1440,6 +1583,12 @@ function formatCodeBlocks(html) {
         wrapper.appendChild(pre);
     });
 
+    // Keep the exact controls we created: serializing and reparsing drops
+    // their bindings and would require rediscovering them in untrusted HTML.
+    if (targetElement) {
+        targetElement.replaceChildren(template.content);
+        return;
+    }
     return template.innerHTML;
 }
 
@@ -1468,25 +1617,77 @@ function copyToClipboard(text, icon) {
 }
 
 
+let currentModelAvailability = null;
+
+function isCurrentModelUnavailable() {
+    return Boolean(currentConversationId && currentModelAvailability?.enabled === false &&
+        currentModelAvailability.llmId === Number(window.modelSelector?.currentLlmId));
+}
+
+function canChangeUnavailableModel() {
+    const selector = window.modelSelector;
+    return Boolean(selector && (!window.AurvekEmbed || window.AurvekEmbed.config?.controls?.model_selection) && !selector.forcedLlmId &&
+        (window.availableModels || []).some(model =>
+            model.enabled !== false && model.enabled !== 0 &&
+            Number(model.id) !== Number(selector.currentLlmId) &&
+            (!selector.allowedLlms || selector.allowedLlms.includes(Number(model.id)))));
+}
+
+function getModelUnavailableMessage() {
+    return canChangeUnavailableModel()
+        ? window.AurvekI18n.t('chat.model_unavailable_choose')
+        : window.AurvekI18n.t('chat.model_unavailable_contact');
+}
+
+function refreshModelAvailabilityBanner() {
+    const banner = document.getElementById('model-unavailable-banner');
+    if (!banner) return;
+    banner.hidden = !isCurrentModelUnavailable();
+    if (banner.hidden) return;
+    window.AurvekI18n.bindValue(document.getElementById('model-unavailable-text'), getModelUnavailableMessage);
+    document.getElementById('change-unavailable-model-btn').hidden = !canChangeUnavailableModel();
+}
+
+function setCurrentModelAvailability(enabled, llmId) {
+    if (typeof enabled !== 'boolean') return;
+    currentModelAvailability = { llmId: Number(llmId), enabled };
+    const model = (window.availableModels || []).find(item => Number(item.id) === Number(llmId));
+    if (model && model.enabled !== enabled) {
+        model.enabled = enabled;
+        window.modelSelector?.populateModels(window.modelSelector.allowedLlms);
+    }
+    const newChatOption = document.querySelector(`#llmDropdown option[value="${Number(llmId)}"]`);
+    if (newChatOption) newChatOption.disabled = !enabled;
+    refreshModelAvailabilityBanner();
+}
+
+function showModelUnavailableNotice(extraMessage = '') {
+    NotificationModal.warning(() => window.AurvekI18n.t('chat.model_unavailable_title'),
+        () => getModelUnavailableMessage() + (typeof extraMessage === 'function' ? extraMessage() : extraMessage));
+}
+
 function showNoChatTemplate() {
     var chatWindow = document.getElementById('chat-window');
-    chatWindow.innerHTML = '<div class="no-chat-message">There is no selected chat or the chat has been deleted.</div>'; 
+    chatWindow.innerHTML = `<div class="no-chat-message">${escapeHTML(window.AurvekI18n.t('chat.no_chat'))}</div>`;
     document.getElementById('message-text').disabled = true;
     document.querySelector('#form-message button[type="submit"]').disabled = true;
 }
 
 function sendMessage(messageText, options = {}) {
+    if (incognitoSavePromise || incognitoClosePromise) {
+        return false;
+    }
     if (window.conversationModelIdentityUnknown) {
         NotificationModal.warning(
-            'Model identity needs refresh',
-            'Reload this conversation before sending so Aurvek can confirm the selected AI model.'
+            () => window.AurvekI18n.t('chat.model_refresh_title'),
+            () => window.AurvekI18n.t(window.AurvekEmbed ? 'embed.error' : 'chat.model_refresh')
         );
         return false;
     }
     if (window.conversationModelMutationPending) {
         NotificationModal.warning(
-            'Model update in progress',
-            'Wait for the selected AI model to finish updating before sending.'
+            () => window.AurvekI18n.t('chat.model_updating_title'),
+            () => window.AurvekI18n.t('chat.model_updating')
         );
         return false;
     }
@@ -1506,15 +1707,15 @@ function sendMessage(messageText, options = {}) {
     if (!Number.isInteger(expectedLlmId) || expectedLlmId <= 0) {
         window.conversationModelIdentityUnknown = true;
         NotificationModal.warning(
-            'Model identity needs refresh',
-            'Reload this conversation before sending so Aurvek can confirm the selected AI model.'
+            () => window.AurvekI18n.t('chat.model_refresh_title'),
+            () => window.AurvekI18n.t(window.AurvekEmbed ? 'embed.error' : 'chat.model_refresh')
         );
         return false;
     }
 
     // Block send while images are being compressed
     if (compressionInProgress > 0) {
-        NotificationModal.toast('Images are being compressed, please wait...', 'info', 2000);
+        NotificationModal.toast(window.AurvekI18n.t('chat.compressing'), 'info', 2000);
         return false;
     }
 
@@ -1558,7 +1759,7 @@ function sendMessage(messageText, options = {}) {
     //getLastMessageId(userMessageElement)
 
     const multiAiLoadingText = isMultiAiRequest
-        ? `Comparing ${selectedMultiAiModels.length} AI models...`
+        ? window.AurvekI18n.t('chat.comparing', { count: selectedMultiAiModels.length })
         : '';
 
     addLoadingIndicator(multiAiLoadingText);
@@ -1572,10 +1773,10 @@ function sendMessage(messageText, options = {}) {
     formData.append('is_compressed', 'true'); // Indicate that message is compressed
     
     const reasoningSelection = getCurrentReasoningSelection();
-    if (reasoningSelection?.mode) {
+    if ((!window.AurvekEmbed || window.AurvekEmbed.config?.controls?.reasoning) && reasoningSelection?.mode) {
         formData.append('reasoning_mode', reasoningSelection.mode);
     }
-    if (reasoningSelection?.mode === 'custom') {
+    if ((!window.AurvekEmbed || window.AurvekEmbed.config?.controls?.reasoning) && reasoningSelection?.mode === 'custom') {
         formData.append('reasoning_budget_tokens', String(reasoningSelection.budget_tokens));
     }
 
@@ -1593,7 +1794,7 @@ function sendMessage(messageText, options = {}) {
         if (outgoingFiles && outgoingFiles.length > 0) {
             NotificationModal.warning(
                 'Multi-AI',
-                'File attachments are not supported in Multi-AI Compare mode. Please disable Multi-AI or remove the attached files.'
+                window.AurvekI18n.t('chat.multi_files')
             );
             if (userMessageElement) userMessageElement.remove();
             removeLoadingIndicator();
@@ -1702,7 +1903,7 @@ function sendMessage(messageText, options = {}) {
         }
 
         removeLoadingIndicator();
-        toggleSendButton('Send');
+        toggleSendButton(false);
         document.getElementById('message-text').disabled = false;
         const submitBtn = document.querySelector('#form-message button[type="submit"]');
         if (submitBtn) submitBtn.disabled = false;
@@ -1712,7 +1913,7 @@ function sendMessage(messageText, options = {}) {
 
     function resetSendUiForActiveConversation() {
         removeLoadingIndicator();
-        toggleSendButton('Send');
+        toggleSendButton(false);
         const textInput = document.getElementById('message-text');
         const submitBtn = document.querySelector('#form-message button[type="submit"]');
         const canEnable = currentConversationId !== null && !isCurrentConversationLocked;
@@ -1740,7 +1941,7 @@ function sendMessage(messageText, options = {}) {
             return;
         }
         removeLoadingIndicator();
-        toggleSendButton('Send');
+        toggleSendButton(false);
         const submitBtn = document.querySelector('#form-message button[type="submit"]');
         if (submitBtn) submitBtn.disabled = false;
         const textInput = document.getElementById('message-text');
@@ -1753,14 +1954,14 @@ function sendMessage(messageText, options = {}) {
             removeRetryEcho(false);
             resetSendUiForActiveConversation();
             NotificationModal.warning(
-                'PDF too large',
-                'The PDF failed after you changed conversations. Return to the original conversation and resend a smaller page range.'
+                () => window.AurvekI18n.t('chat.pdf_large_title'),
+                () => window.AurvekI18n.t('chat.pdf_moved')
             );
             return;
         }
 
         removeLoadingIndicator();
-        toggleSendButton('Send');
+        toggleSendButton(false);
         const submitBtn = document.querySelector('#form-message button[type="submit"]');
         if (submitBtn) submitBtn.disabled = false;
         document.getElementById('message-text').disabled = false;
@@ -1769,8 +1970,8 @@ function sendMessage(messageText, options = {}) {
             removeRetryEcho();
             document.getElementById('message-text').value = messageText_raw;
             NotificationModal.warning(
-                'PDF too large',
-                'A PDF already in this conversation is too large for the selected AI model. Re-attach that PDF and send a smaller page range, or start a new conversation without it.'
+                () => window.AurvekI18n.t('chat.pdf_large_title'),
+                () => window.AurvekI18n.t('chat.pdf_existing_large')
             );
             return;
         }
@@ -1782,8 +1983,8 @@ function sendMessage(messageText, options = {}) {
                 document.getElementById('message-text').value = messageText_raw;
             }
             NotificationModal.warning(
-                'PDF too large',
-                'Page range retry supports one PDF attachment at a time. Re-attach one PDF and try again.'
+                () => window.AurvekI18n.t('chat.pdf_large_title'),
+                () => window.AurvekI18n.t('chat.pdf_one')
             );
             return;
         }
@@ -1798,20 +1999,20 @@ function sendMessage(messageText, options = {}) {
             ? escapeHtml(errorData.retry_filename || errorData.filename)
             : 'document.pdf';
         const retryHint = errorData.retry_hint
-            ? `<div class="pdf-range-provider-error">${escapeHtml(errorData.retry_hint)}</div>`
+            ? `<div class="pdf-range-provider-error">${escapeHtml(window.AurvekEmbed ? window.AurvekI18n.t('embed.error') : errorData.retry_hint)}</div>`
             : '';
         const contextPdfNote = parseInt(errorData.context_pdf_count || 0, 10) > 0
-            ? '<p>Previous PDFs in this conversation will be ignored for this retry.</p>'
+            ? `<p class="pdf-range-context-note">${escapeHTML(window.AurvekI18n.t('chat.pdf_previous_ignored'))}</p>`
             : '';
         const html = `
             <div class="pdf-range-retry">
-                <p>PDF too large for the selected AI model.</p>
-                <p><strong>${filename}</strong>${pages ? ` has ${pages} pages.` : ''}</p>
+                <p class="pdf-range-explanation">${escapeHTML(window.AurvekI18n.t('chat.pdf_large'))}</p>
+                <p class="pdf-range-file">${pages ? escapeHTML(window.AurvekI18n.t('chat.pdf_pages', { filename: errorData.retry_filename || errorData.filename || 'document.pdf', count: pages })) : filename}</p>
                 ${contextPdfNote}
                 <div class="pdf-range-inputs">
-                    <label for="pdf-range-start">From page</label>
+                    <label for="pdf-range-start">${escapeHTML(window.AurvekI18n.t('chat.from_page'))}</label>
                     <input id="pdf-range-start" class="form-control" type="number" min="1" max="${maxPage}" value="1">
-                    <label for="pdf-range-end">To page</label>
+                    <label for="pdf-range-end">${escapeHTML(window.AurvekI18n.t('chat.to_page'))}</label>
                     <input id="pdf-range-end" class="form-control" type="number" min="1" max="${maxPage}" value="${defaultEnd}">
                 </div>
                 <div id="pdf-range-error" class="pdf-range-error" style="display:none;"></div>
@@ -1821,7 +2022,7 @@ function sendMessage(messageText, options = {}) {
         let rangeActionTaken = false;
 
         NotificationModal.confirm(
-            'PDF too large',
+            () => window.AurvekI18n.t('chat.pdf_large_title'),
             html,
             (modal) => {
                 if (currentConversationId !== sendConversationId) {
@@ -1829,8 +2030,8 @@ function sendMessage(messageText, options = {}) {
                     modal.hide();
                     removeRetryEcho(false);
                     NotificationModal.warning(
-                        'Conversation changed',
-                        'Return to the original conversation and resend the PDF range from there.'
+                        () => window.AurvekI18n.t('chat.conversation_changed'),
+                        () => window.AurvekI18n.t('chat.pdf_return')
                     );
                     return;
                 }
@@ -1839,14 +2040,14 @@ function sendMessage(messageText, options = {}) {
                 const errorEl = document.getElementById('pdf-range-error');
                 if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > maxPage) {
                     if (errorEl) {
-                        errorEl.textContent = `Enter a valid range between 1 and ${maxPage}.`;
+                        window.AurvekI18n.bindValue(errorEl, () => window.AurvekI18n.t('chat.pdf_range_invalid', { max: new Intl.NumberFormat(window.AurvekI18n.locale).format(maxPage) }));
                         errorEl.style.display = 'block';
                     }
                     return;
                 }
                 if ((end - start + 1) > 1000) {
                     if (errorEl) {
-                        errorEl.textContent = 'Select at most 1000 pages.';
+                        window.AurvekI18n.bindText(errorEl, 'chat.pdf_max_pages');
                         errorEl.style.display = 'block';
                     }
                     return;
@@ -1873,8 +2074,8 @@ function sendMessage(messageText, options = {}) {
             },
             {
                 type: 'warning',
-                confirmText: 'Send range',
-                cancelText: 'Do not send',
+                confirmText: () => window.AurvekI18n.t('chat.send_range'),
+                cancelText: () => window.AurvekI18n.t('chat.dont_send'),
                 allowHtml: true,
                 hideOnConfirm: false
             }
@@ -1882,6 +2083,14 @@ function sendMessage(messageText, options = {}) {
 
         const modalEl = NotificationModal._modalElement;
         if (modalEl) {
+            window.AurvekI18n.bindText(modalEl.querySelector('.pdf-range-explanation'), 'chat.pdf_large');
+            window.AurvekI18n.bindText(modalEl.querySelector('.pdf-range-context-note'), 'chat.pdf_previous_ignored');
+            window.AurvekI18n.bindText(modalEl.querySelector('label[for="pdf-range-start"]'), 'chat.from_page');
+            window.AurvekI18n.bindText(modalEl.querySelector('label[for="pdf-range-end"]'), 'chat.to_page');
+            if (pages) window.AurvekI18n.bindText(modalEl.querySelector('.pdf-range-file'), 'chat.pdf_pages', {
+                filename: errorData.retry_filename || errorData.filename || 'document.pdf', count: pages,
+            });
+            if (window.AurvekEmbed) window.AurvekI18n.bindText(modalEl.querySelector('.pdf-range-provider-error'), 'embed.error');
             modalEl.addEventListener('hidden.bs.modal', () => {
                 if (rangeActionTaken || pdfRangeRetryStarted) return;
                 rangeActionTaken = true;
@@ -1895,9 +2104,9 @@ function sendMessage(messageText, options = {}) {
 
     controller = new AbortController();
     const signal = controller.signal;
-    const attachmentTimeoutMessage = 'The request timed out while Aurvek was processing the message. Uploaded files were not linked to a saved message; please try again or choose a smaller PDF range.';
+    const attachmentTimeoutMessage = window.AurvekI18n.t('chat.attachment_timeout');
 
-    toggleSendButton('Stop');
+    toggleSendButton(true);
 
     Promise.resolve()
     .then(() => {
@@ -1905,7 +2114,7 @@ function sendMessage(messageText, options = {}) {
             return [];
         }
         if (typeof uploadAttachmentsForMessage !== 'function') {
-            const error = new Error('Attachment upload is not available. Reload the page and try again.');
+            const error = new Error(window.AurvekI18n.t('chat.upload_unavailable'));
             error.uploadFailed = true;
             throw error;
         }
@@ -1930,7 +2139,7 @@ function sendMessage(messageText, options = {}) {
             }
         }
         if (hadOutgoingAttachments && !formData.has('attachment_refs')) {
-            const error = new Error('Attachment upload did not complete.');
+            const error = new Error(window.AurvekI18n.t('chat.upload_incomplete'));
             error.uploadFailed = true;
             throw error;
         }
@@ -1957,23 +2166,16 @@ function sendMessage(messageText, options = {}) {
         }
 
         const extractServerError = (resp) => {
-            if (!resp) return Promise.resolve('Request failed');
+            if (!resp) return Promise.resolve(window.AurvekI18n.t('chat.request_failed_generic'));
             if (resp.status === 524) {
                 return Promise.resolve(attachmentTimeoutMessage);
             }
             return resp.clone().json()
                 .then((body) => {
-                    if (!body || typeof body !== 'object') return `Request failed (${resp.status})`;
-                    return body.error || body.message || body.detail || `Request failed (${resp.status})`;
+                    if (!body || typeof body !== 'object') return window.AurvekI18n.t('chat.request_failed', { status: resp.status });
+                    return body.error || body.message || body.detail || window.AurvekI18n.t('chat.request_failed', { status: resp.status });
                 })
-                .catch(() => {
-                    return resp.text()
-                        .then((txt) => {
-                            const trimmed = typeof txt === 'string' ? txt.trim() : '';
-                            return trimmed || `Request failed (${resp.status})`;
-                        })
-                        .catch(() => `Request failed (${resp.status})`);
-                });
+                .catch(() => window.AurvekI18n.t('chat.request_failed', { status: resp.status }));
         };
 
         if (!response) {
@@ -1985,7 +2187,8 @@ function sendMessage(messageText, options = {}) {
             discardUploadedRefs();
             return response.json().then(data => {
                 if (data.redirect) {
-                    window.location.href = data.redirect;
+                    if (window.AurvekEmbed) window.AurvekEmbed.sessionExpired();
+                    else window.location.href = data.redirect;
                     return null;
                 }
             });
@@ -1997,7 +2200,7 @@ function sendMessage(messageText, options = {}) {
 
             // Try to parse response to distinguish app-level lock from external block (e.g. Cloudflare WAF)
             return response.clone().json().then(body => {
-                const isAppLock = body.message && body.message.toLowerCase().includes('locked');
+                const isAppLock = body.error_code === 'conversation_locked';
                 if (isAppLock) {
                     // Conversation is locked (e.g. watchdog force-lock)
                     isCurrentConversationLocked = true;
@@ -2005,20 +2208,21 @@ function sendMessage(messageText, options = {}) {
                     if (lockedBanner) lockedBanner.style.display = 'flex';
                     notifyConversationChannelControls();
                     const msgInput = document.getElementById('message-text');
-                    msgInput.placeholder = 'This conversation is locked';
+                    window.AurvekI18n.bindAttribute(msgInput, 'placeholder', 'chat.locked');
                     msgInput.disabled = true;
                     const submitBtn = document.querySelector('#form-message button[type="submit"]');
                     if (submitBtn) submitBtn.disabled = true;
                     refreshActiveConversation();
                 } else {
                     // JSON 403 but not a lock
-                    const msg = body?.error || body?.message || body?.detail || 'Request blocked';
-                    NotificationModal.error('Message blocked', String(msg));
+                    const msg = body?.error || body?.message || body?.detail || window.AurvekI18n.t('chat.request_blocked');
+                    NotificationModal.error(() => window.AurvekI18n.t('chat.blocked_title'),
+                        window.AurvekEmbed ? () => embeddedErrorText(body) : String(msg));
                 }
                 return null;
             }).catch(() => {
                 // Non-JSON 403 = external block (Cloudflare WAF, firewall, etc.) — NOT a conversation lock
-                NotificationModal.error('Message blocked', 'Request blocked by external security filter (403).');
+                NotificationModal.error(() => window.AurvekI18n.t('chat.blocked_title'), () => window.AurvekI18n.t('chat.security_blocked'));
                 console.warn('Message blocked by external security filter (403). The conversation is NOT locked.');
                 return null;
             });
@@ -2031,6 +2235,20 @@ function sendMessage(messageText, options = {}) {
                         pdfTooLargeError = body;
                         discardUploadedRefs();
                         showPdfRangeRetryModal(body);
+                        return null;
+                    }
+                    if (body?.error_code === 'model_unavailable') {
+                        discardUploadedRefs();
+                        removeRetryEcho();
+                        if (conversationIdsMatch(currentConversationId, sendConversationId)) {
+                            document.getElementById('message-text').value = messageText_raw;
+                            setCurrentModelAvailability(false, body.llm_id || expectedLlmId);
+                            showModelUnavailableNotice(() => hadOutgoingAttachments
+                                ? ' ' + window.AurvekI18n.t('chat.reattach') : '');
+                        } else {
+                            NotificationModal.warning(() => window.AurvekI18n.t('chat.model_unavailable_title'),
+                                () => window.AurvekI18n.t('chat.model_previous_unavailable'));
+                        }
                         return null;
                     }
                     if (body && (
@@ -2058,25 +2276,24 @@ function sendMessage(messageText, options = {}) {
                             );
                         }
                         NotificationModal.warning(
-                            'AI model changed',
-                            (body.message || 'Review the selected AI model and send again.') +
-                            (hadOutgoingAttachments
-                                ? ' Re-attach the files before sending again.'
-                                : '')
+                            () => window.AurvekI18n.t('chat.model_changed_title'),
+                            () => (window.AurvekEmbed ? embeddedErrorText(body)
+                                : (body.message || window.AurvekI18n.t('chat.model_review'))) +
+                                (hadOutgoingAttachments ? ' ' + window.AurvekI18n.t('chat.reattach') : '')
                         );
                         return null;
                     }
                     discardUploadedRefs();
                     cleanupFailedStream(userMessageElement, botMessageElement, true);
-                    const msg = body?.error || body?.message || body?.detail || `Request failed (${response.status})`;
-                    showProviderAwareError('Send failed', String(msg), body);
+                    const msg = body?.error || body?.message || body?.detail || window.AurvekI18n.t('chat.request_failed', { status: response.status });
+                    showProviderAwareError(window.AurvekI18n.t('chat.send_failed'), String(msg), body);
                     return null;
                 })
                 .catch(() => {
                     discardUploadedRefs();
                     cleanupFailedStream(userMessageElement, botMessageElement, true);
                     return extractServerError(response).then((msg) => {
-                        showProviderAwareError('Send failed', String(msg));
+                        showProviderAwareError(window.AurvekI18n.t('chat.send_failed'), String(msg));
                         return null;
                     });
                 });
@@ -2085,7 +2302,7 @@ function sendMessage(messageText, options = {}) {
         if (!response.body) {
             discardUploadedRefs();
             cleanupFailedStream(userMessageElement, botMessageElement, true);
-            showProviderAwareError('Send failed', 'No response stream received from server.');
+            showProviderAwareError(window.AurvekI18n.t('chat.send_failed'), window.AurvekI18n.t('chat.no_stream'));
             return null;
         }
 
@@ -2227,8 +2444,15 @@ function sendMessage(messageText, options = {}) {
         };
 
         const audioIcon = createIcon('fa-volume-up', 'inline', () => textToSpeech(getCurrentBotText(), user_id, sendConversationId, audioIcon, 'bot'));
+        audioIcon.classList.add('message-audio-action');
+        audioIcon.dataset.audioSource = 'tts';
+        audioIcon.setAttribute('role', 'button');
+        audioIcon.tabIndex = 0;
+        audioIcon.onkeydown = event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); audioIcon.click(); }
+        };
         audioIcon.dataset.baseIcon = 'fa-volume-up';
-        audioIcon.title = 'Read aloud';
+        window.AurvekI18n.bindAttribute(audioIcon, 'title', 'chat.read_aloud');
         const bookmarkIcon = createIcon('fa-bookmark', 'none', function() {
             const messageElement = this.closest('.message');
             const messageId = messageElement ? messageElement.dataset.messageId : null;
@@ -2238,13 +2462,14 @@ function sendMessage(messageText, options = {}) {
                 console.error('Could not find message ID to mark as favorite');
             }
         });
-        bookmarkIcon.title = 'Add to bookmarks';
+        window.AurvekI18n.bindAttribute(bookmarkIcon, 'title', 'chat.bookmark_add');
         const copyIcon = createIcon('fa-copy', 'none', () => copyToClipboard(getCurrentBotText(), copyIcon));
-        copyIcon.title = 'Copy text';
+        window.AurvekI18n.bindAttribute(copyIcon, 'title', 'chat.copy_text');
+        accessibleCopyControl(copyIcon);
         const branchIcon = createIcon('fa-code-branch', 'none', () => branchConversation(newMessageId, sendConversationId));
-        branchIcon.title = 'Branch from here';
+        window.AurvekI18n.bindAttribute(branchIcon, 'title', 'chat.branch_here');
         const rollbackIcon = createIcon('fa-level-up-alt', 'none', () => rollbackConversation(newMessageId, sendConversationId));
-        rollbackIcon.title = 'Start over from here';
+        window.AurvekI18n.bindAttribute(rollbackIcon, 'title', 'chat.rollback_here');
 
         iconContainer.appendChild(audioIcon);
         iconContainer.appendChild(bookmarkIcon);
@@ -2298,7 +2523,7 @@ function sendMessage(messageText, options = {}) {
                     refreshMemoryHealthBanner();
                     if (userStopped && !streamContentReceived) {
                         if (botMessageElement?.parentNode) botMessageElement.remove();
-                        toggleSendButton('Send');
+                        toggleSendButton(false);
                         return;
                     }
                     if (pdfTooLargeError && !pdfRangeRetryStarted) {
@@ -2310,7 +2535,7 @@ function sendMessage(messageText, options = {}) {
                         return;
                     }
                     if (persistenceErrorOccurred) {
-                        toggleSendButton('Send');
+                        toggleSendButton(false);
                         initializeNewImages(botMessageElement);
                         return;
                     }
@@ -2321,11 +2546,11 @@ function sendMessage(messageText, options = {}) {
                         cleanupFailedStream(userMessageElement, botMessageElement, true);
                         const hadAttachments = hadOutgoingAttachments;
                         if (hadAttachments) {
-                            NotificationModal.error('Empty response',
-                                'The AI returned an empty response. Files were uploaded but the response failed. Please re-attach your files and try again.');
+                            NotificationModal.error(() => window.AurvekI18n.t('chat.empty_response'),
+                                () => window.AurvekI18n.t('chat.empty_files'));
                         } else {
-                            NotificationModal.error('Empty response',
-                                'The AI returned an empty response. Your message has been restored. Please try again.');
+                            NotificationModal.error(() => window.AurvekI18n.t('chat.empty_response'),
+                                () => window.AurvekI18n.t('chat.empty_restored'));
                         }
                         return;
                     }
@@ -2334,7 +2559,7 @@ function sendMessage(messageText, options = {}) {
                         return;
                     }
                     streamSucceeded = true;
-                    toggleSendButton('Send');
+                    toggleSendButton(false);
                     initializeNewImages(botMessageElement);
                     if (updatedChatName) {
                         updateActiveChatName(updatedChatName);
@@ -2356,7 +2581,7 @@ function sendMessage(messageText, options = {}) {
                             refreshMemoryHealthBanner();
                             if (userStopped && !streamContentReceived) {
                                 if (botMessageElement?.parentNode) botMessageElement.remove();
-                                toggleSendButton('Send');
+                                toggleSendButton(false);
                                 return;
                             }
                             if (pdfTooLargeError && !pdfRangeRetryStarted) {
@@ -2368,7 +2593,7 @@ function sendMessage(messageText, options = {}) {
                                 return;
                             }
                             if (persistenceErrorOccurred) {
-                                toggleSendButton('Send');
+                                toggleSendButton(false);
                                 initializeNewImages(botMessageElement);
                                 return;
                             }
@@ -2379,11 +2604,11 @@ function sendMessage(messageText, options = {}) {
                                 cleanupFailedStream(userMessageElement, botMessageElement, true);
                                 const hadAttachments = hadOutgoingAttachments;
                                 if (hadAttachments) {
-                                    NotificationModal.error('Empty response',
-                                        'The AI returned an empty response. Files were uploaded but the response failed. Please re-attach your files and try again.');
+                                    NotificationModal.error(() => window.AurvekI18n.t('chat.empty_response'),
+                                        () => window.AurvekI18n.t('chat.empty_files'));
                                 } else {
-                                    NotificationModal.error('Empty response',
-                                        'The AI returned an empty response. Your message has been restored. Please try again.');
+                                    NotificationModal.error(() => window.AurvekI18n.t('chat.empty_response'),
+                                        () => window.AurvekI18n.t('chat.empty_restored'));
                                 }
                                 return;
                             }
@@ -2392,7 +2617,7 @@ function sendMessage(messageText, options = {}) {
                                 return;
                             }
                             streamSucceeded = true;
-                            toggleSendButton('Send');
+                            toggleSendButton(false);
                             initializeNewImages(botMessageElement);
                             return;
                         }
@@ -2429,7 +2654,7 @@ function sendMessage(messageText, options = {}) {
                                     const nameSpan = selectedChat.querySelector('.chat-name');
                                     if (nameSpan && !nameSpan.querySelector('.fa-comment-slash')) {
                                         const chatText = nameSpan.textContent;
-                                        nameSpan.innerHTML = `<i class="fas fa-comment-slash" title="This conversation is locked"></i> ${chatText}`;
+                                        nameSpan.innerHTML = `<i class="fas fa-comment-slash" title="${escapeHTML(window.AurvekI18n.t('chat.locked'))}"></i> ${escapeHTML(chatText)}`;
                                     }
                                 }
                                 // Show locked banner
@@ -2450,7 +2675,7 @@ function sendMessage(messageText, options = {}) {
                                         // Reuse existing block: reopen and add separator
                                         existing.open = true;
                                         const summary = existing.querySelector('summary');
-                                        if (summary) summary.textContent = 'Thinking...';
+                                        if (summary) window.AurvekI18n.bindText(summary, 'chat.thinking');
                                         const content = existing.querySelector('.thinking-content');
                                         if (content) content.textContent += '\n\n---\n\n';
                                     } else {
@@ -2458,7 +2683,7 @@ function sendMessage(messageText, options = {}) {
                                         details.className = 'thinking-block';
                                         details.open = true;
                                         const summary = document.createElement('summary');
-                                        summary.textContent = 'Thinking...';
+                                        window.AurvekI18n.bindText(summary, 'chat.thinking');
                                         const content = document.createElement('pre');
                                         content.className = 'thinking-content';
                                         details.appendChild(summary);
@@ -2478,7 +2703,7 @@ function sendMessage(messageText, options = {}) {
                                 if (thinkingBlock) {
                                     thinkingBlock.open = false;
                                     const summary = thinkingBlock.querySelector('summary');
-                                    if (summary) summary.textContent = 'Thought process (not saved)';
+                                    if (summary) window.AurvekI18n.bindText(summary, 'chat.thought_unsaved');
                                 }
                             } else if (parsedData.updated_chat_name) {
                                 updateActiveChatName(parsedData.updated_chat_name);
@@ -2493,7 +2718,7 @@ function sendMessage(messageText, options = {}) {
                                 if (parsedData.provider_health) {
                                     setCurrentProviderHealth(parsedData.provider_health);
                                 }
-                                multiAiCarousel._multiAiApi.setSlideError(parsedData.llm_id, parsedData.error || 'Unknown error');
+                                multiAiCarousel._multiAiApi.setSlideError(parsedData.llm_id, parsedData.error || window.AurvekI18n.t('chat.unknown_error'));
                                 scrollToBottomIfNeeded();
                             } else if (parsedData.terminal === 'queued_for_active_phone') {
                                 queuedForActivePhone = true;
@@ -2509,7 +2734,8 @@ function sendMessage(messageText, options = {}) {
                                     botMessageElement.remove();
                                 }
                             } else if (parsedData.persistence_error === true) {
-                                const warningText = parsedData.error || 'The response was generated but could not be saved. Copy it before retrying.';
+                                const warningText = window.AurvekEmbed ? embeddedErrorText(parsedData)
+                                    : parsedData.error || window.AurvekI18n.t('chat.response_copy');
                                 console.error('Response persistence error:', warningText);
                                 streamErrorOccurred = true;
                                 persistenceErrorOccurred = true;
@@ -2523,10 +2749,12 @@ function sendMessage(messageText, options = {}) {
                                     const warningEl = document.createElement('span');
                                     warningEl.className = 'message-persistence-warning text-warning d-block mt-2';
                                     warningEl.setAttribute('role', 'alert');
-                                    warningEl.textContent = warningText;
+                                    if (window.AurvekEmbed) window.AurvekI18n.bindText(warningEl, embeddedErrorKey(parsedData));
+                                    else warningEl.textContent = warningText;
                                     botMessageParagraph.appendChild(warningEl);
                                 }
-                                NotificationModal.warning('Response not saved', warningText);
+                                NotificationModal.warning(() => window.AurvekI18n.t('chat.unsaved_response'),
+                                    window.AurvekEmbed ? () => embeddedErrorText(parsedData) : warningText);
                                 scrollToBottomIfNeeded();
 	                            } else if (parsedData.error && !parsedData.multi_ai_error) {
 	                                console.error('SSE error:', parsedData.error);
@@ -2534,21 +2762,23 @@ function sendMessage(messageText, options = {}) {
 	                                if (parsedData.error_code === 'pdf_too_large' || parsedData.pdf_too_large === true) {
 	                                    pdfTooLargeError = parsedData;
 	                                    if (botMessageParagraph) {
-	                                        botMessageParagraph.textContent = parsedData.error;
+                                        if (window.AurvekEmbed) window.AurvekI18n.bindText(botMessageParagraph, embeddedErrorKey(parsedData));
+                                        else botMessageParagraph.textContent = parsedData.error;
 	                                    }
 	                                    continue;
 	                                }
                                     if (parsedData.provider_health) {
                                         setCurrentProviderHealth(parsedData.provider_health);
                                     }
-	                                showProviderAwareError('AI Error', parsedData.error, parsedData);
+	                                showProviderAwareError(window.AurvekI18n.t('chat.ai_error'), parsedData.error, parsedData);
 	                                if (multiAiCarousel?._multiAiApi) {
                                     multiAiCarousel._multiAiApi.setGlobalError(parsedData.error);
                                 } else if (botMessageParagraph) {
                                     botMessageParagraph.innerHTML = '';
                                     const errorEl = document.createElement('span');
                                     errorEl.classList.add('multi-ai-slide-error');
-                                    errorEl.textContent = parsedData.error;
+                                    if (window.AurvekEmbed) window.AurvekI18n.bindText(errorEl, embeddedErrorKey(parsedData));
+                                    else errorEl.textContent = parsedData.error;
                                     botMessageParagraph.appendChild(errorEl);
                                 }
                             } else if (parsedData.video_content && botMessageParagraph) {
@@ -2560,7 +2790,7 @@ function sendMessage(messageText, options = {}) {
                                         const videoObj = videoData[0].video_url;
                                         botMessageParagraph.innerHTML = '';
                                         const videoElement = document.createElement('video');
-                                        videoElement.src = videoObj.url;
+                                        videoElement.src = window.AurvekEmbed ? window.AurvekEmbed.resourceUrl(videoObj.url) : videoObj.url;
                                         videoElement.controls = true;
                                         videoElement.style.maxWidth = '100%';
                                         videoElement.style.maxHeight = '480px';
@@ -2579,10 +2809,13 @@ function sendMessage(messageText, options = {}) {
                                 }
                                 scrollToBottomIfNeeded();
                             } else if (parsedData.searching === true && botMessageParagraph) {
-                                // Show pulsing "Searching the web..." indicator while Perplexity searches
+                                // Show a pulsing search indicator while Perplexity searches
                                 const indicator = document.createElement('span');
                                 indicator.className = 'searching-indicator';
-                                indicator.innerHTML = '<i class="fas fa-search"></i> Searching the web...';
+                                indicator.innerHTML = '<i class="fas fa-search"></i> ';
+                                const searchLabel = document.createElement('span');
+                                window.AurvekI18n.bindText(searchLabel, 'chat.searching_web');
+                                indicator.appendChild(searchLabel);
                                 botMessageParagraph.innerHTML = '';
                                 botMessageParagraph.appendChild(indicator);
                                 scrollToBottomIfNeeded();
@@ -2626,6 +2859,22 @@ function sendMessage(messageText, options = {}) {
                                 streamCitations = parsedData.citations || [];
                             }
 
+                            if (parsedData.application_handoff) {
+                                const transfer = parsedData.application_handoff;
+                                if (window.AurvekApplication) {
+                                    window.AurvekApplication.runtimeHandoff(transfer);
+                                } else if (transfer.completed === true &&
+                                        Number(transfer.source_conversation_id) === Number(sendConversationId) &&
+                                        Number.isSafeInteger(transfer.conversation_id) && transfer.conversation_id > 0) {
+                                    window.location.assign(`/chat?conversation_id=${transfer.conversation_id}`);
+                                }
+                            } else if (parsedData.application_handoff_failed) {
+                                if (window.AurvekApplication) {
+                                    window.AurvekApplication.runtimeHandoffFailed(parsedData.application_handoff_failed);
+                                } else {
+                                    NotificationModal.warning(window.AurvekI18n.t('chat.transfer_failed'));
+                                }
+                            }
                             // Handle extension level change from server
                             if (parsedData.extension_changed && window.extensionSelector) {
                                 window.extensionSelector.updateFromSSE(
@@ -2645,7 +2894,7 @@ function sendMessage(messageText, options = {}) {
 
         // Add timestamp and icons to bot message
         let botTimestamp = new Date();
-        let localBotTimestamp = botTimestamp.toLocaleString(undefined, {
+        let localBotTimestamp = botTimestamp.toLocaleString(window.AurvekI18n.locale, {
             year: 'numeric',
             month: 'numeric',
             day: 'numeric',
@@ -2655,7 +2904,7 @@ function sendMessage(messageText, options = {}) {
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
         });
         
-        timeSpan.textContent = botTimestamp.toLocaleString(undefined, {
+        timeSpan.textContent = botTimestamp.toLocaleString(window.AurvekI18n.locale, {
             hour: '2-digit',
             minute: '2-digit',
             hour12: false
@@ -2675,10 +2924,10 @@ function sendMessage(messageText, options = {}) {
                 if (endConversation) {
                     document.getElementById('message-text').disabled = true;
                     document.getElementById('send-button').disabled = true;
-                    toggleSendButton('Send');
+                    toggleSendButton(false);
                     document.getElementById('send-button').onclick = null;
                 } else {
-                    toggleSendButton('Send');
+                    toggleSendButton(false);
                 }
 
                 // Update the bot message ID
@@ -2765,13 +3014,15 @@ function sendMessage(messageText, options = {}) {
                 userMessageElement.remove();
             }
             removeLoadingIndicator();
-            toggleSendButton('Send');
+            toggleSendButton(false);
             document.getElementById('message-text').disabled = false;
             const submitBtn = document.querySelector('#form-message button[type="submit"]');
             if (submitBtn) submitBtn.disabled = false;
             document.getElementById('message-text').focus();
             document.getElementById('message-text').style.height = 'auto';
-            NotificationModal.error('Upload failed', error.message || 'Attachment upload failed before the message was sent.');
+            NotificationModal.error(() => window.AurvekI18n.t('chat.upload_failed'),
+                window.AurvekEmbed ? () => window.AurvekI18n.t('chat.upload_before_send')
+                    : error.message || window.AurvekI18n.t('chat.upload_before_send'));
             return;
         }
 
@@ -2791,7 +3042,7 @@ function sendMessage(messageText, options = {}) {
                 });
             }
             removeLoadingIndicator();
-            toggleSendButton('Send');
+            toggleSendButton(false);
             document.getElementById('message-text').disabled = false;
             const submitBtn = document.querySelector('#form-message button[type="submit"]');
             if (submitBtn) submitBtn.disabled = false;
@@ -2803,24 +3054,24 @@ function sendMessage(messageText, options = {}) {
         if (streamContentReceived) {
             // Partial content received -- backend likely saved. Keep messages.
             removeLoadingIndicator();
-            toggleSendButton('Send');
+            toggleSendButton(false);
             document.getElementById('message-text').disabled = false;
             const submitBtn = document.querySelector('#form-message button[type="submit"]');
             if (submitBtn) submitBtn.disabled = false;
             document.getElementById('message-text').focus();
             document.getElementById('message-text').style.height = 'auto';
-            NotificationModal.warning('Stream interrupted',
-                'The response was interrupted. Partial content may have been saved. Reload to verify.');
+            NotificationModal.warning(() => window.AurvekI18n.t('chat.stream_interrupted'),
+                () => window.AurvekI18n.t('chat.stream_partial'));
         } else {
             discardUploadedRefs();
             cleanupFailedStream(userMessageElement, botMessageElement, true);
             const hadAttachments = hadOutgoingAttachments;
             if (hadAttachments) {
-                showProviderAwareError('Message failed',
+                showProviderAwareError(window.AurvekI18n.t('chat.message_failed'),
                     attachmentTimeoutMessage);
             } else {
-                showProviderAwareError('Message failed',
-                    'The message could not be sent. Your text has been restored. Please try again.');
+                showProviderAwareError(window.AurvekI18n.t('chat.message_failed'),
+                    window.AurvekI18n.t('chat.message_restored'));
             }
         }
     });
@@ -2900,7 +3151,7 @@ function createAvatar(author) {
         } else {
             var botInitial = (botname && botname.length > 0) ? botname.charAt(0).toUpperCase() : 'B';
             avatarContainer.textContent = botInitial;
-            avatarContainer.title = botname || 'Bot';
+            avatarContainer.title = botname || window.AurvekI18n.t('chat.bot');
         }
     }
 
@@ -2931,9 +3182,9 @@ function updateActiveChatName(newName) {
     const chatTitle = document.querySelector('.chatbot-info h4');
     if (chatTitle) {
         const dateOptions = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-        const formattedStartDate = new Date(startDate).toLocaleDateString(undefined, dateOptions);
+        const formattedStartDate = new Date(startDate).toLocaleDateString(window.AurvekI18n.locale, dateOptions);
         chatTitle.textContent = `${newName}`;
-        chatTitle.title = `Created: ${formattedStartDate}`;
+        window.AurvekI18n.bindAttribute(chatTitle, 'title', 'chat.created', { date: formattedStartDate });
     }
 }
 
@@ -2946,10 +3197,10 @@ function addConversationElement(conversation, chatName, currentConversationId, i
     }
     
     // Ensure we always have a valid name
-    chatName = chatName || `Chat ${conversation.id}`;
+    chatName = chatName || window.AurvekI18n.t('chat.chat_id', { id: conversation.id });
 
     // Check if element already exists for this conversation
-    const existingElement = document.querySelector(`[data-conversation-id="${conversation.id}"]`);
+    const existingElement = document.querySelector(`#sidebar [data-conversation-id="${conversation.id}"]`);
     if (existingElement) {
         // Preserve external state if it already existed
         if (!conversation.external_platform && existingElement.dataset.externalPlatform) {
@@ -3084,26 +3335,26 @@ function createChatMenu(conversation) {
     chatMenu.appendChild(chatMenuContent);
 
     // Rename option
-    const renameLink = createMenuLink('fa-edit', 'Rename', () => renameConversation(conversation.id));
+    const renameLink = createMenuLink('fa-edit', window.AurvekI18n.t('chat.rename'), () => renameConversation(conversation.id));
     chatMenuContent.appendChild(renameLink);
 
     // Download as MP3 option
-    const downloadAudioLink = createMenuLink('fa-music', 'Download MP3', () => downloadAudio(conversation.id));
+    const downloadAudioLink = createMenuLink('fa-music', window.AurvekI18n.t('chat.download_mp3'), () => downloadAudio(conversation.id));
     chatMenuContent.appendChild(downloadAudioLink);
 
     // Download as PDF option
-    const downloadPdfLink = createMenuLink('fa-download', 'Download PDF', () => downloadPDF(conversation.id));
+    const downloadPdfLink = createMenuLink('fa-download', window.AurvekI18n.t('chat.download_pdf'), () => downloadPDF(conversation.id));
     chatMenuContent.appendChild(downloadPdfLink);
 
     // Delete option
-    const deleteLink = createMenuLink('fa-trash-alt', 'Delete', () => deleteConversation(conversation.id), 'text-danger');
+    const deleteLink = createMenuLink('fa-trash-alt', window.AurvekI18n.t('chat.delete'), () => deleteConversation(conversation.id), 'text-danger');
     chatMenuContent.appendChild(deleteLink);
 
     // Lock/Unlock option (admin only)
     if (typeof isAdmin !== 'undefined' && isAdmin) {
         const isLocked = conversation.locked;
         const lockIcon = isLocked ? 'fa-lock-open' : 'fa-lock';
-        const lockText = isLocked ? 'Unlock' : 'Lock';
+        const lockText = isLocked ? window.AurvekI18n.t('chat.unlock') : window.AurvekI18n.t('chat.lock');
         const lockLink = createMenuLink(lockIcon, lockText, () => toggleLockConversation(conversation.id, !isLocked));
         chatMenuContent.appendChild(lockLink);
     }
@@ -3128,7 +3379,7 @@ function createChatMenu(conversation) {
     }
 
     if (!conversationHasMessagingChannel(conversation)) {
-        const externalAccessLink = createMenuLink('fa-plug', 'External access', () => openExternalAccessModal(conversation.id));
+        const externalAccessLink = createMenuLink('fa-plug', window.AurvekI18n.t('chat.external_access'), () => openExternalAccessModal(conversation.id));
         chatMenuContent.appendChild(externalAccessLink);
     }
 
@@ -3280,7 +3531,7 @@ function createMenuLink(iconClass, text, onClick, additionalClass = '') {
     link.href = '#';
     link.classList.add('menu-link');
     if (additionalClass) link.classList.add(additionalClass);
-    link.innerHTML = `<i class="fas ${iconClass}"></i> ${text}`;
+    link.innerHTML = `<i class="fas ${iconClass}"></i> ${escapeHTML(text)}`;
     link.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -3343,7 +3594,7 @@ function createConversationChannelBadges(conversation) {
             if (className) icon.classList.add(className);
         });
         const channelName = channel === 'phone'
-            ? 'Phone'
+            ? window.AurvekI18n.t('chat.phone')
             : channel.charAt(0).toUpperCase() + channel.slice(1);
         icon.title = channel === 'phone' && conversation.phone_binding?.display_name
             ? `${channelName}: ${conversation.phone_binding.display_name}`
@@ -3361,7 +3612,7 @@ function renderConversationName(nameElement, conversation, chatName) {
     if (conversation.locked) {
         const lockedIcon = document.createElement('i');
         lockedIcon.className = 'fas fa-comment-slash';
-        lockedIcon.title = 'This conversation is locked';
+        window.AurvekI18n.bindAttribute(lockedIcon, 'title', 'chat.locked');
         nameElement.appendChild(lockedIcon);
     }
     nameElement.appendChild(document.createTextNode(chatName));
@@ -3372,7 +3623,7 @@ async function openPhoneCallsForConversation(conversation, assignment = false) {
     if (!conversationIdsMatch(currentConversationId, conversation.id)) {
         await continueConversation(
             conversation.id,
-            conversation.chat_name || `Chat ${conversation.id}`,
+            conversation.chat_name || window.AurvekI18n.t('chat.chat_id', { id: conversation.id }),
             conversation.machine,
             false,
             null,
@@ -3391,13 +3642,13 @@ async function openPhoneCallsForConversation(conversation, assignment = false) {
 function createPhoneCallsMenuLink(conversation) {
     const assignedToPhone = conversationUsesPlatform(conversation, 'phone');
     const label = assignedToPhone
-        ? 'Manage phone calls'
-        : 'Use for phone calls';
+        ? window.AurvekI18n.t('chat.manage_phone')
+        : window.AurvekI18n.t('chat.use_phone');
     return createMenuLink('fa-phone', label, () => {
         closeAllChatMenus();
         void openPhoneCallsForConversation(conversation, !assignedToPhone).catch(error => {
             console.error('Could not open phone call controls:', error);
-            NotificationModal.error('Phone calls', 'Could not open phone call controls.');
+            NotificationModal.error(() => window.AurvekI18n.t('chat.phone_calls'), () => window.AurvekI18n.t('chat.phone_controls_error'));
         });
     });
 }
@@ -3428,8 +3679,8 @@ function createExternalDeviceBadge(conversation) {
     const badge = document.createElement('button');
     badge.type = 'button';
     badge.className = 'external-device-badge';
-    badge.title = bindings.tooltip || `${count} external device${count === 1 ? '' : 's'}`;
-    badge.setAttribute('aria-label', 'External access');
+    window.AurvekI18n.bindAttribute(badge, 'title', 'chat.external_count', { count });
+    window.AurvekI18n.bindAttribute(badge, 'aria-label', 'chat.external_access');
     badge.innerHTML = `<i class="fas fa-microchip"></i><span>${count}</span>`;
     badge.addEventListener('click', (event) => {
         event.preventDefault();
@@ -3544,13 +3795,13 @@ function ensureExternalAccessModal() {
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="externalAccessModalLabel">External access</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h5 class="modal-title" id="externalAccessModalLabel">${escapeHTML(window.AurvekI18n.t('chat.external_access'))}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="${escapeHTML(window.AurvekI18n.t('chat.close'))}"></button>
                 </div>
                 <div class="modal-body" id="externalAccessModalBody"></div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="externalAccessSaveBtn">Save</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${escapeHTML(window.AurvekI18n.t('chat.cancel'))}</button>
+                    <button type="button" class="btn btn-primary" id="externalAccessSaveBtn">${escapeHTML(window.AurvekI18n.t('chat.save'))}</button>
                 </div>
             </div>
         </div>
@@ -3592,14 +3843,14 @@ function createExternalAccessOption(kind, item) {
         metaParts.push(item.slug);
         metaParts.push(item.device_type);
         if (!item.enabled) {
-            metaParts.push('disabled');
+            metaParts.push(window.AurvekI18n.t('chat.disabled_label'));
         }
     } else {
         metaParts.push(item.slug);
-        metaParts.push(`${item.member_count || 0} member${item.member_count === 1 ? '' : 's'}`);
+        metaParts.push(window.AurvekI18n.t('chat.member_count', { count: Number(item.member_count || 0) }));
     }
     if (item.bound_conversation_id && !item.assigned && item.bound_conversation_name) {
-        metaParts.push(`currently: ${item.bound_conversation_name}`);
+        metaParts.push(window.AurvekI18n.t('chat.currently', { name: item.bound_conversation_name }));
     }
 
     const meta = document.createElement('span');
@@ -3634,7 +3885,7 @@ function renderExternalAccessModal(data) {
 
     if (data.external_platform) {
         const message = document.createElement('p');
-        message.textContent = 'External devices are not available on WhatsApp or Telegram conversations.';
+        window.AurvekI18n.bindText(message, 'chat.external_unsupported');
         body.appendChild(message);
         saveButton.style.display = 'none';
         return modal;
@@ -3646,10 +3897,10 @@ function renderExternalAccessModal(data) {
         const empty = document.createElement('div');
         empty.className = 'external-access-empty';
         const text = document.createElement('span');
-        text.textContent = 'No devices yet.';
+        window.AurvekI18n.bindText(text, 'chat.external_no_devices');
         const link = document.createElement('a');
         link.href = '/admin/devices';
-        link.textContent = 'Open Devices';
+        window.AurvekI18n.bindText(link, 'chat.open_devices');
         empty.appendChild(text);
         empty.appendChild(link);
         body.appendChild(empty);
@@ -3660,11 +3911,11 @@ function renderExternalAccessModal(data) {
     const summary = data.external_bindings || {};
     const summaryLine = document.createElement('p');
     summaryLine.className = 'external-access-meta';
-    summaryLine.textContent = `${summary.effective_count || 0} effective device${summary.effective_count === 1 ? '' : 's'}`;
+    window.AurvekI18n.bindText(summaryLine, 'chat.effective_count', { count: Number(summary.effective_count || 0) });
     body.appendChild(summaryLine);
 
-    appendExternalAccessSection(body, 'Devices', devices, 'device');
-    appendExternalAccessSection(body, 'Groups', groups, 'group');
+    appendExternalAccessSection(body, window.AurvekI18n.t('chat.devices'), devices, 'device');
+    appendExternalAccessSection(body, window.AurvekI18n.t('chat.groups'), groups, 'group');
     saveButton.style.display = '';
     return modal;
 }
@@ -3675,14 +3926,14 @@ const openExternalAccessModal = withSession(async function(conversationId) {
         if (!response) return;
         const data = await response.json();
         if (!response.ok || !data.success) {
-            NotificationModal.error('External Access', data.message || 'Could not load external access.');
+            NotificationModal.error(() => window.AurvekI18n.t('chat.external_access'), data.message || window.AurvekI18n.t('chat.external_load_error'));
             return;
         }
         const modal = renderExternalAccessModal(data);
         bootstrap.Modal.getOrCreateInstance(modal).show();
     } catch (error) {
         console.error('External access load failed:', error);
-        NotificationModal.error('External Access', 'Could not load external access.');
+        NotificationModal.error(() => window.AurvekI18n.t('chat.external_access'), () => window.AurvekI18n.t('chat.external_load_error'));
     }
 });
 
@@ -3707,15 +3958,15 @@ const saveExternalAccessBindings = withSession(async function() {
         if (!response) return;
         const data = await response.json();
         if (!response.ok || !data.success) {
-            NotificationModal.error('External Access', data.message || 'Could not save external access.');
+            NotificationModal.error(() => window.AurvekI18n.t('chat.external_access'), data.message || window.AurvekI18n.t('chat.external_save_error'));
             return;
         }
         updateConversationExternalBindings(conversationId, data);
         bootstrap.Modal.getOrCreateInstance(modal).hide();
-        NotificationModal.toast('External access updated', 'success');
+        NotificationModal.toast(window.AurvekI18n.t('chat.external_updated'), 'success');
     } catch (error) {
         console.error('External access save failed:', error);
-        NotificationModal.error('External Access', 'Could not save external access.');
+        NotificationModal.error(() => window.AurvekI18n.t('chat.external_access'), () => window.AurvekI18n.t('chat.external_save_error'));
     }
 });
 
@@ -3738,7 +3989,7 @@ function updateConversationExternalBindings(conversationId, data) {
         ).forEach(element => {
             const currentData = element._conversationData || {
                 id: parseInt(affectedId, 10),
-                chat_name: element.querySelector('.chat-name')?.textContent?.trim() || `Chat ${affectedId}`,
+                chat_name: element.querySelector('.chat-name')?.textContent?.trim() || window.AurvekI18n.t('chat.chat_id', { id: affectedId }),
             };
             currentData.external_bindings = updatedBindings;
             currentData.external_platform = String(affectedId) === String(conversationId)
@@ -3755,7 +4006,7 @@ function updateFolderConversationExternalBindings(conversationId, externalBindin
     document.querySelectorAll(`.folder-chat-item[data-conversation-id="${conversationId}"]`).forEach(element => {
         const currentData = element._conversationData || {
             id: parseInt(conversationId, 10),
-            chat_name: element.querySelector('.chat-name')?.textContent?.trim() || `Chat ${conversationId}`,
+            chat_name: element.querySelector('.chat-name')?.textContent?.trim() || window.AurvekI18n.t('chat.chat_id', { id: conversationId }),
         };
         currentData.external_bindings = externalBindings;
         element._conversationData = currentData;
@@ -3788,7 +4039,7 @@ function createPlatformLink(platform, conversation) {
         const mainLink = document.createElement('a');
         mainLink.href = '#';
         mainLink.classList.add('platform-link');
-        mainLink.innerHTML = `<i class="fab ${icon}"></i> Remove from ${platformName}`;
+        mainLink.innerHTML = `<i class="fab ${icon}"></i> ${escapeHTML(window.AurvekI18n.t('chat.remove_platform', { platform: platformName }))}`;
         mainLink.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
@@ -3803,7 +4054,7 @@ function createPlatformLink(platform, conversation) {
         const voiceModeLink = document.createElement('a');
         voiceModeLink.href = '#';
         voiceModeLink.classList.add('platform-link', 'platform-mode-option');
-        voiceModeLink.innerHTML = `<i class="fas fa-microphone"></i> <span class="mode-text">Voice Mode</span> <span class="mode-check" style="display: none;">✓</span>`;
+        voiceModeLink.innerHTML = `<i class="fas fa-microphone"></i> <span class="mode-text">${escapeHTML(window.AurvekI18n.t('chat.voice_mode'))}</span> <span class="mode-check" style="display: none;">✓</span>`;
         voiceModeLink.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
@@ -3814,7 +4065,7 @@ function createPlatformLink(platform, conversation) {
         const textModeLink = document.createElement('a');
         textModeLink.href = '#';
         textModeLink.classList.add('platform-link', 'platform-mode-option');
-        textModeLink.innerHTML = `<i class="fas fa-keyboard"></i> <span class="mode-text">Text Mode</span> <span class="mode-check" style="display: none;">✓</span>`;
+        textModeLink.innerHTML = `<i class="fas fa-keyboard"></i> <span class="mode-text">${escapeHTML(window.AurvekI18n.t('chat.text_mode'))}</span> <span class="mode-check" style="display: none;">✓</span>`;
         textModeLink.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
@@ -3840,7 +4091,7 @@ function createPlatformLink(platform, conversation) {
         const link = document.createElement('a');
         link.href = '#';
         link.classList.add('platform-link');
-        link.innerHTML = `<i class="fab ${icon}"></i> Use for ${platformName}`;
+        link.innerHTML = `<i class="fab ${icon}"></i> ${escapeHTML(window.AurvekI18n.t('chat.use_platform', { platform: platformName }))}`;
         link.addEventListener('click', function(e) {
             e.stopPropagation();
             closeAllChatMenus();
@@ -3907,10 +4158,10 @@ const toggleExternalPlatform = withSession(function(conversationId, platform, is
                 const externalChatsContainer = document.querySelector('#external-chats-container');
                 const dynamicChatsContainer = document.querySelector('#dynamic-chats-container');
 
-                document.querySelectorAll(`[data-conversation-id="${conversationId}"]`).forEach(el => el.remove());
+                document.querySelectorAll(`#sidebar .list-group-item[data-conversation-id="${conversationId}"]`).forEach(el => el.remove());
 
                 data.updatedConversations.forEach(conv => {
-                    const existingElement = document.querySelector(`[data-conversation-id="${conv.id}"]`);
+                    const existingElement = document.querySelector(`#sidebar .list-group-item[data-conversation-id="${conv.id}"]`);
                     if (existingElement) {
                         updateSingleConversation(existingElement, conv, externalChatsContainer, dynamicChatsContainer);
                     } else {
@@ -3925,14 +4176,14 @@ const toggleExternalPlatform = withSession(function(conversationId, platform, is
         } else if (data.error === 'no_phone_number') {
             showPhoneRequiredModal(platform);
         } else if (data.message) {
-            NotificationModal.error('Assignment Error', data.message);
+            NotificationModal.error(() => window.AurvekI18n.t('chat.assignment_error'), data.message);
         } else {
             console.error('Error updating external platform:', data.error);
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        NotificationModal.error('Assignment Error', 'Could not update the external platform assignment.');
+        NotificationModal.error(() => window.AurvekI18n.t('chat.assignment_error'), () => window.AurvekI18n.t('chat.assignment_update_error'));
     });
 });
 
@@ -3940,8 +4191,8 @@ function updateConversationElement(conversationId, updatedConversation, allConve
     const externalChatsContainer = document.querySelector('#external-chats-container');
     const dynamicChatsContainer = document.querySelector('#dynamic-chats-container');
 
-    // First, remove all existing instances of updated conversation
-    document.querySelectorAll(`[data-conversation-id="${conversationId}"]`).forEach(el => el.remove());
+    // First, remove all existing sidebar instances of updated conversation
+    document.querySelectorAll(`#sidebar .list-group-item[data-conversation-id="${conversationId}"]`).forEach(el => el.remove());
 
     // Then, update or create conversation element
     const element = document.createElement('a');
@@ -3955,7 +4206,7 @@ function updateConversationElement(conversationId, updatedConversation, allConve
     // Update other conversations if necessary
     allConversations.forEach(conv => {
         if (conv.id !== conversationId) {
-            const existingElement = document.querySelector(`[data-conversation-id="${conv.id}"]`);
+            const existingElement = document.querySelector(`#sidebar .list-group-item[data-conversation-id="${conv.id}"]`);
             if (existingElement) {
                 updateSingleConversation(existingElement, conv, externalChatsContainer, dynamicChatsContainer);
             } else {
@@ -4139,7 +4390,7 @@ function conversationClickHandler(e) {
     if (!e.target.closest('.chat-menu') && !e.target.closest('.external-device-badge')) {
         var conversationId = this.getAttribute('data-conversation-id');
         var chatNameElement = this.querySelector('.chat-name');
-        var chatName = chatNameElement ? chatNameElement.textContent.trim() : `Chat ${conversationId}`;
+        var chatName = chatNameElement ? chatNameElement.textContent.trim() : window.AurvekI18n.t('chat.chat_id', { id: conversationId });
         var machine = this.getAttribute('data-machine');
         
         if (conversationId) {
@@ -4221,6 +4472,7 @@ function moveConversationToTop(conversationId) {
 }
 
 function loadConversations(loadMore = false, isInit = false) {
+    if (window.AurvekEmbed && !isInit) return Promise.resolve();
     if (allConversationsLoaded && !isInit) return Promise.resolve();
     if (isLoadingConversations && !isInit) return Promise.resolve();
     isLoadingConversations = true;
@@ -4397,7 +4649,9 @@ function continueConversation(
     processedMessageIds.clear();
     currentConversationId = conversationId;
     const isIncognitoConversation = isConversationIncognitoData(conversationData, selectedChat);
-    if (isIncognitoConversation) {
+    if (window.AurvekEmbed) {
+        // A frame is bound by its bootstrap. Never restore another tab's chat.
+    } else if (isIncognitoConversation) {
         localStorage.removeItem('activeConversationId');
     } else {
         localStorage.setItem('activeConversationId', conversationId);
@@ -4407,10 +4661,10 @@ function continueConversation(
         void window.syncElevenLabsVoiceAvailability();
     }
     const dateOptions = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    const formattedStartDate = new Date(startDate).toLocaleDateString(undefined, dateOptions);
+    const formattedStartDate = new Date(startDate).toLocaleDateString(window.AurvekI18n.locale, dateOptions);
 
     // Extract only chat name, ignoring menu
-    let chatTitleText = "New Chat";
+    let chatTitleText = window.AurvekI18n.t('chat.new_chat');
     if (selectedChat && selectedChat.firstChild) {
         chatTitleText = selectedChat.firstChild.textContent.trim();
     } else if (chatName) {
@@ -4505,7 +4759,7 @@ function continueConversation(
             if (isCurrentConversationLocked) {
                 // Show locked banner and disable input (but not loading indicator)
                 if (lockedBanner) lockedBanner.style.display = 'flex';
-                messageText.placeholder = 'This conversation is locked';
+                window.AurvekI18n.bindAttribute(messageText, 'placeholder', 'chat.locked');
                 messageText.disabled = true;
                 document.querySelector('#form-message button[type="submit"]').disabled = true;
                 document.getElementById('loading-indicator').style.display = 'none';
@@ -4513,7 +4767,7 @@ function continueConversation(
                 // Hide locked banner and enable input
                 if (lockedBanner) lockedBanner.style.display = 'none';
                 enableInputControls();
-                messageText.placeholder = 'Type a message...';
+                window.AurvekI18n.bindAttribute(messageText, 'placeholder', 'chat.type_message');
                 messageText.disabled = false;
             }
             notifyConversationChannelControls();
@@ -4528,8 +4782,6 @@ function continueConversation(
                     : (selectedChat?.dataset?.isPaid === '1');
                 window.updateConversationBalanceAvailability(isPaid);
             }
-
-            showPromptInfo();
 
             // Initialize web search toggle control with data from conversation element or passed data
             let webSearchAllowedByPrompt = null;
@@ -4552,7 +4804,7 @@ function continueConversation(
 }
 
 function isMyBookmarksView() {
-    return document.querySelector('.chatbot-info h4').textContent === "My Bookmarks";
+    return currentChatView === 'bookmarks';
 }
 
 function updateChatHeader(
@@ -4569,10 +4821,12 @@ function updateChatHeader(
     const chatModel = document.getElementById('chat-model');
     const chatTitleAvatar = document.getElementById('chat-title-avatar');
     const dateOptions = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    const formattedStartDate = new Date(startDate).toLocaleDateString(undefined, dateOptions);
+    const formattedStartDate = new Date(startDate).toLocaleDateString(window.AurvekI18n.locale, dateOptions);
 
     chatTitleAvatar.innerHTML = ''; // Clear the container
     const botAvatar = createAvatar('bot');
+    botAvatar.removeAttribute('title');
+    botAvatar.querySelector('img')?.removeAttribute('title');
     chatTitleAvatar.appendChild(botAvatar);
 
     chatTitleAvatar.style.display = 'block';
@@ -4582,8 +4836,8 @@ function updateChatHeader(
     if (modelSelectorContainer) modelSelectorContainer.style.display = '';
 
     // Set clean title (without date or prompt)
-    chatTitle.textContent = chatName;
-    chatTitle.title = `Created: ${formattedStartDate}`; // Show date on hover
+    chatTitle.textContent = chatName || window.AurvekI18n.t('chat.new_chat');
+    chatTitle.title = window.AurvekI18n.t('chat.created', { date: formattedStartDate }); // Show date on hover
 
     // Use provided model or fetch from API as fallback
     const parsedHeaderLlmId = parseInt(llmId, 10);
@@ -4592,7 +4846,7 @@ function updateChatHeader(
             model => Number(model.id) === Number(llmId)
         );
         const displayName = modelData?.display_name || llmModel;
-        chatModel.textContent = (window.modelSelector && window.modelSelector.hideLlmName) ? 'AI' : displayName;
+        chatModel.textContent = (window.modelSelector && window.modelSelector.hideLlmName) ? window.AurvekI18n.t('chat.ai') : displayName;
         if (window.modelSelector) {
             window.modelSelector.updateCurrentModel(llmModel, llmId);
         }
@@ -4620,7 +4874,7 @@ function updateChatHeader(
                 if (!data || !isCurrentConversationView(conversationId, viewGeneration)) {
                     return;
                 }
-                const modelInfo = data.model || 'Unknown Model';
+                const modelInfo = data.model || window.AurvekI18n.t('chat.unknown_model');
                 const modelData = (window.availableModels || []).find(
                     model => Number(model.id) === Number(data.llm_id)
                 );
@@ -4639,6 +4893,7 @@ function updateChatHeader(
                 }
                 if (window.modelSelector && modelIdentityStillCurrent) {
                     window.modelSelector.updateCurrentModel(modelInfo, data.llm_id);
+                    setCurrentModelAvailability(data.llm_enabled, data.llm_id);
                 }
 
                 // Apply restrictions from conversation details
@@ -4649,7 +4904,7 @@ function updateChatHeader(
                         data.allowed_llms || null
                     );
                     if (window.modelSelector.hideLlmName) {
-                        chatModel.textContent = 'AI';
+                        window.AurvekI18n.bindText(chatModel, 'chat.ai');
                     }
                 }
 
@@ -4679,9 +4934,10 @@ function updateChatHeader(
 
 function convertToLocalTime(utcTimestamp) {
     
-    const date = new Date(utcTimestamp + 'Z');  // Add 'Z' to force UTC
+    const timestamp = String(utcTimestamp).replace(' ', 'T');
+    const date = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(timestamp) ? timestamp : timestamp + 'Z');
 
-    const localTimeString = date.toLocaleString('en-CA', {
+    const localTimeString = date.toLocaleString(window.AurvekI18n.locale, {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -4691,7 +4947,7 @@ function convertToLocalTime(utcTimestamp) {
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
     });
     
-    const formattedTime = localTimeString.replace(/(\d+)\/(\d+)\/(\d+)/, '$3/$2/$1');
+    const formattedTime = localTimeString;
     
     return {
         originalUtc: utcTimestamp,
@@ -4717,6 +4973,10 @@ function processMessage(
             played_ms: message.played_ms ?? null,
             delivery_state: message.delivery_state || null,
             turn_id: message.provenance?.turn_id || null,
+            audio: message.provenance?.audio &&
+                typeof message.provenance.audio === 'object'
+                ? message.provenance.audio
+                : null,
             timestamps: message.phone_timestamps || null
         }
     } : {};
@@ -4724,7 +4984,16 @@ function processMessage(
         typeof message.channel_provenance === 'object'
         ? { channel_provenance: message.channel_provenance }
         : {};
-    const messageMetadata = { ...phoneMetadata, ...channelMetadata };
+    const elevenLabsVoiceMetadata = message.elevenlabs_voice &&
+        typeof message.elevenlabs_voice === 'object'
+        ? { elevenlabs_voice: message.elevenlabs_voice }
+        : {};
+    const messageMetadata = {
+        original_audio_url: message.original_audio_url,
+        ...phoneMetadata,
+        ...channelMetadata,
+        ...elevenLabsVoiceMetadata
+    };
 
     try {
         const parsedMessage = JSON.parse(message.message);
@@ -4793,6 +5062,7 @@ function processMessage(
                 } else if (item.type === 'document_url') {
                     messageObj = {
                         type: 'document_url',
+                        attachment_ref: item.document_url.attachment_ref,
                         url: item.document_url.url,
                         filename: item.document_url.filename || 'document.pdf',
                         pages: item.document_url.pages || 0,
@@ -4803,6 +5073,8 @@ function processMessage(
                 } else if (item.type === 'text_file') {
                     messageObj = {
                         type: 'text_file',
+                        url: item.text_file.url,
+                        attachment_ref: item.text_file.attachment_ref,
                         filename: item.text_file.filename,
                         lines: item.text_file.lines,
                         is_bookmarked: message.is_bookmarked,
@@ -4930,6 +5202,9 @@ async function loadMessages(
 
         const messages = Array.isArray(data.messages) ? data.messages : [];
         const conversationInfo = data.conversation_info || {};
+        window.applicationConversation = conversationInfo.application
+            ? {id: conversationId, application: conversationInfo.application} : null;
+        setCurrentModelAvailability(conversationInfo.llm_enabled, conversationInfo.llm_id);
         setIncognitoUiState(isConversationIncognitoData(conversationInfo));
         setCurrentProviderHealth(conversationInfo.provider_health || null);
         allMessagesLoaded = !data.has_more;
@@ -4981,14 +5256,19 @@ async function loadMessages(
             const anchor = chatMessagesContainer.firstElementChild;
             const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
             chatMessagesContainer.insertBefore(tempDiv, chatMessagesContainer.firstChild);
+            showPromptInfo();
             if (anchor) {
                 const newAnchorTop = anchor.getBoundingClientRect().top;
                 chatWindow.scrollTop += newAnchorTop - anchorTop;
             }
         } else {
             chatMessagesContainer.appendChild(tempDiv);
+            showPromptInfo();
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
+
+        const promptAvatar = document.getElementById('chat-title-avatar');
+        if (promptAvatar) promptAvatar.disabled = Boolean(window.AurvekEmbed);
 
         if (messages.length > 0) {
             oldestLoadedMessageId = messages[0].id;
@@ -5015,7 +5295,7 @@ async function loadMessages(
         }
         return data;
     } catch (error) {
-        if (error.name !== 'AbortError' && error.message !== 'Session expired' &&
+        if (error.name !== 'AbortError' && error.code !== 'session_expired' &&
             isCurrentConversationView(conversationId, viewGeneration)) {
             console.error('Error loading messages:', error);
         }
@@ -5073,6 +5353,10 @@ function highlightAndScrollToMessage(messageId) {
 }
 
 function enableInputControls() {
+    if (window.AurvekEmbed && (window.AurvekEmbed.isExpired() || !canSendMessages)) {
+        document.getElementById('loading-indicator').style.display = 'none';
+        return;
+    }
     // Don't enable if conversation is locked
     if (isCurrentConversationLocked) {
         document.getElementById('loading-indicator').style.display = 'none';
@@ -5137,15 +5421,80 @@ function isConversationIncognitoData(conversationData, selectedChat = null) {
 
 function setIncognitoUiState(isIncognito) {
     currentConversationIncognito = Boolean(isIncognito);
-    const badge = document.getElementById('incognito-chat-badge');
-    const closeBtn = document.getElementById('close-incognito-chat-btn');
-    if (badge) {
-        badge.hidden = !currentConversationIncognito;
+    for (const id of ['incognito-chat-controls', 'incognito-chat-badge',
+        'save-incognito-chat-btn', 'close-incognito-chat-btn']) {
+        const element = document.getElementById(id);
+        if (element) {
+            element.hidden = !currentConversationIncognito;
+            if (!currentConversationIncognito) {
+                window.bootstrap?.Tooltip.getInstance(element)?.hide();
+            }
+        }
     }
-    if (closeBtn) {
-        closeBtn.hidden = !currentConversationIncognito;
-    }
+    updateIncognitoChatControls();
     notifyConversationChannelControls();
+}
+
+function updateIncognitoChatControls() {
+    const saveBtn = document.getElementById('save-incognito-chat-btn');
+    const closeBtn = document.getElementById('close-incognito-chat-btn');
+    const busy = Boolean(incognitoSavePromise || incognitoClosePromise);
+    if (saveBtn) {
+        saveBtn.disabled = busy ||
+            document.getElementById('send-button')?.onclick === stopReceivingStream;
+        saveBtn.setAttribute('aria-busy', incognitoSavePromise ? 'true' : 'false');
+        saveBtn.querySelector('span').textContent = incognitoSavePromise ? window.AurvekI18n.t('chat.saving') : window.AurvekI18n.t('chat.save_chat');
+    }
+    if (closeBtn) closeBtn.disabled = busy;
+}
+
+window.updateIncognitoChatControls = updateIncognitoChatControls;
+
+function saveCurrentIncognitoConversation() {
+    if (incognitoSavePromise) return incognitoSavePromise;
+    if (!currentConversationIncognito || !currentConversationId || incognitoClosePromise) {
+        return Promise.resolve(false);
+    }
+    if (document.getElementById('send-button')?.onclick === stopReceivingStream) {
+        NotificationModal.toast(window.AurvekI18n.t('chat.save_wait'), 'info');
+        return Promise.resolve(false);
+    }
+    const savingId = currentConversationId;
+    window.bootstrap?.Tooltip.getInstance(document.getElementById('save-incognito-chat-btn'))?.hide();
+    incognitoSavePromise = secureFetch(`/api/conversations/${savingId}/incognito/save`, {
+        method: 'POST'
+    })
+    .then(async response => {
+        const data = response ? await response.json() : null;
+        if (!response?.ok || !data?.success || !data.conversation) {
+            throw Object.assign(new Error('Chat save failed'), { uiMessage: data?.error || data?.detail });
+        }
+        // Keep the current messages, draft and scroll position intact.
+        if (conversationIdsMatch(currentConversationId, savingId)) {
+            setIncognitoUiState(false);
+            localStorage.setItem('activeConversationId', savingId);
+            window.ChatWarmup?.resetForConversation(savingId);
+        }
+        addConversationElement(data.conversation, data.conversation.chat_name, currentConversationId);
+        sortDynamicChats();
+        if (conversationIdsMatch(currentConversationId, savingId)) {
+            window.selectedChat = document.querySelector(`#sidebar [data-conversation-id="${savingId}"]`);
+            notifyConversationChannelControls();
+        }
+        NotificationModal.toast(window.AurvekI18n.t('chat.chat_saved'), 'success');
+        return true;
+    })
+    .catch(error => {
+        console.error('Error saving incognito conversation:', error);
+        NotificationModal.toast(error.uiMessage || window.AurvekI18n.t('chat.save_error'), 'error');
+        return false;
+    })
+    .finally(() => {
+        incognitoSavePromise = null;
+        updateIncognitoChatControls();
+    });
+    updateIncognitoChatControls();
+    return incognitoSavePromise;
 }
 
 function applyUpdatedConversationCards(conversations) {
@@ -5207,7 +5556,7 @@ function phoneBindingCardSummary(binding) {
     return {
         id: Number(binding.id),
         contact_id: Number(binding.contact_id),
-        display_name: String(binding.display_name || 'Phone contact'),
+        display_name: String(binding.display_name || window.AurvekI18n.t('chat.phone_contact')),
         allow_inbound: Boolean(binding.allow_inbound),
         allow_outbound: Boolean(binding.allow_outbound)
     };
@@ -5250,15 +5599,28 @@ window.addEventListener('aurvek:phone-binding-changed', event => {
 });
 
 function closeCurrentIncognitoConversation() {
+    if (incognitoSavePromise) return incognitoSavePromise;
+    if (incognitoClosePromise) return incognitoClosePromise;
     if (!currentConversationIncognito || !currentConversationId) {
         return Promise.resolve(false);
     }
     const closingId = currentConversationId;
-    return secureFetch(`/api/conversations/${closingId}/incognito/close`, {
+    window.bootstrap?.Tooltip.getInstance(document.getElementById('close-incognito-chat-btn'))?.hide();
+    incognitoClosePromise = secureFetch(`/api/conversations/${closingId}/incognito/close`, {
         method: 'POST'
     })
-    .then(response => response ? response.json() : null)
-    .then(() => {
+    .then(async response => {
+        const data = response ? await response.json() : null;
+        if (!response?.ok || !data?.success) {
+            throw new Error(data?.error || window.AurvekI18n.t('chat.incognito_close_error'));
+        }
+        if (data.already_saved) {
+            if (conversationIdsMatch(currentConversationId, closingId)) {
+                setIncognitoUiState(false);
+                localStorage.setItem('activeConversationId', closingId);
+            }
+            return true;
+        }
         removeConversationElement(closingId);
         loadedConversationIds.delete(Number(closingId));
         loadedConversationIds.delete(String(closingId));
@@ -5276,12 +5638,19 @@ function closeCurrentIncognitoConversation() {
     })
     .catch(error => {
         console.error('Error closing incognito conversation:', error);
-        NotificationModal.error('Close Failed', 'Could not close the incognito chat.');
+        NotificationModal.error(() => window.AurvekI18n.t('chat.close_failed'), () => window.AurvekI18n.t('chat.incognito_close_error'));
         return false;
+    })
+    .finally(() => {
+        incognitoClosePromise = null;
+        updateIncognitoChatControls();
     });
+    updateIncognitoChatControls();
+    return incognitoClosePromise;
 }
 
 function maybeCloseCurrentIncognitoBeforeLeaving() {
+    if (incognitoSavePromise) return incognitoSavePromise;
     if (!currentConversationIncognito || !currentConversationId) {
         return Promise.resolve(true);
     }
@@ -5289,6 +5658,21 @@ function maybeCloseCurrentIncognitoBeforeLeaving() {
 }
 
 function initIncognitoChatControls() {
+    for (const id of ['save-incognito-chat-btn', 'close-incognito-chat-btn']) {
+        const button = document.getElementById(id);
+        if (button && window.bootstrap?.Tooltip) {
+            bootstrap.Tooltip.getOrCreateInstance(button, {
+                container: 'body', placement: 'bottom', trigger: 'hover focus'
+            });
+        }
+    }
+    const saveBtn = document.getElementById('save-incognito-chat-btn');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            void saveCurrentIncognitoConversation();
+        });
+    }
     const newIncognitoBtn = document.getElementById('new-incognito-chat-btn');
     if (newIncognitoBtn) {
         newIncognitoBtn.addEventListener('click', function(e) {
@@ -5319,6 +5703,8 @@ function initIncognitoChatControls() {
 
     window.addEventListener('pagehide', function() {
         if (!currentConversationIncognito || !currentConversationId) return;
+        // An in-flight save decides persistence; do not race it with deletion.
+        if (incognitoSavePromise || incognitoClosePromise) return;
         const url = `/api/conversations/${currentConversationId}/incognito/close`;
         if (navigator.sendBeacon) {
             navigator.sendBeacon(url, new Blob([], { type: 'application/json' }));
@@ -5474,7 +5860,7 @@ function startNewConversation(promptId = null, options = {}) {
     .then(response => {
         if (!response) {
             // secureFetch returned null (likely session expired)
-            throw new Error('Session expired');
+            throw Object.assign(new Error('Session expired'), { code: 'session_expired' });
         }
         return response.json();
     })
@@ -5497,7 +5883,7 @@ function startNewConversation(promptId = null, options = {}) {
         isFirstCall = false;
     })
     .catch(error => {
-        if (error.message === 'Session expired') {
+        if (error.code === 'session_expired') {
             // Session validation was already handled by secureFetch, no need to log as error
             return;
         }
@@ -5508,6 +5894,12 @@ function startNewConversation(promptId = null, options = {}) {
 function stopReceivingStream(event) {
     if (event) {
         event.preventDefault();
+    }
+    if (window.AurvekEmbed) {
+        // Keep the shared stream alive until the server settles it; the parent
+        // receives a close acknowledgement only after real activity is idle.
+        void window.AurvekEmbed.stopActivity();
+        return;
     }
     userStopped = true;
     if (controller) {
@@ -5567,7 +5959,7 @@ function toggleBookmark(messageId, conversationId, bookmarkIcon) {
                     bookmarkIcon.classList.remove('fade-out');
                     bookmarkIcon.style.display = 'none';
                     
-                    if (document.querySelector('.chatbot-info h4').textContent === "My Bookmarks") {
+                    if (isMyBookmarksView()) {
                         bookmarkIcon.closest('.message').remove();
                     }
                 }, 300);
@@ -5624,7 +6016,8 @@ function loadBookmarkedMessages() {
         
         const chatTitle = document.querySelector('.chatbot-info h4');
         const chatModel = document.getElementById('chat-model');
-        chatTitle.textContent = "My Bookmarks";
+        currentChatView = 'bookmarks';
+        chatTitle.textContent = window.AurvekI18n.t('chat.bookmarks');
         chatTitle.title = '';
         chatModel.textContent = '';
 
@@ -5645,10 +6038,10 @@ function loadBookmarkedMessages() {
                 localConversationId = message.conversation_id;
                 const header = document.createElement('div');
                 header.className = 'bookmark-conversation-header';
-                header.title = 'Click to go to conversation';
+                header.title = window.AurvekI18n.t('chat.click_conversation');
                 const name = document.createElement('span');
                 name.className = 'bookmark-conversation-name';
-                name.textContent = message.chat_name || `Chat ${message.conversation_id}`;
+                name.textContent = message.chat_name || window.AurvekI18n.t('chat.chat_id', { id: message.conversation_id });
                 header.appendChild(name);
                 header.addEventListener('click', () => {
                     continueConversation(message.conversation_id, message.chat_name);
@@ -5780,13 +6173,13 @@ async function handleResponse(response) {
     removeLoadingIndicator();
     switch (response.status) {
         case 402:
-            showInsufficientBalancePopup("transcribe audio");
+            showInsufficientBalancePopup();
             break;
         case 204:
             break;
         case 500:
             const data = await response.json();
-            NotificationModal.error('Server Error', data.error);
+            NotificationModal.error(() => window.AurvekI18n.t('chat.server_error'), data.error);
             break;
         default:
             if (response.ok) {
@@ -5809,6 +6202,12 @@ function showPromptInfo() {
         existingPromptInfo.remove();
     }
 
+    if (allMessagesLoaded) {
+        chatMessagesContainer.insertBefore(createPromptInfoCard(), chatMessagesContainer.firstChild);
+    }
+}
+
+function createPromptInfoCard() {
     const promptInfo = document.createElement('div');
     promptInfo.classList.add('prompt-info');
 
@@ -5821,9 +6220,9 @@ function showPromptInfo() {
 
     const initialContainer = document.createElement('div');
     initialContainer.classList.add('prompt-initial');
-    const initial = (botname || 'Assistant').charAt(0).toUpperCase();
+    const initial = (botname || window.AurvekI18n.t('chat.assistant')).charAt(0).toUpperCase();
     initialContainer.textContent = initial;
-    initialContainer.title = botname || 'Assistant';
+    initialContainer.title = botname || window.AurvekI18n.t('chat.assistant');
     imageSection.appendChild(initialContainer);
 
     const displayAvatarUrl = (
@@ -5838,6 +6237,7 @@ function showPromptInfo() {
     if (displayAvatarUrl) {
         const img = document.createElement('img');
         img.src = displayAvatarUrl;
+        img.alt = botname || window.AurvekI18n.t('chat.assistant');
         img.style.position = 'absolute';
         img.style.top = '0';
         img.style.left = '0';
@@ -5846,6 +6246,7 @@ function showPromptInfo() {
         img.style.objectFit = 'cover';
 
         img.style.cursor = 'pointer';
+        img.title = window.AurvekI18n.t('chat.photo_full');
         img.dataset.fullsize = fullsizeAvatarUrl;
         img.onclick = function() {
             imageHandler.showFullsize(this.dataset.fullsize, null);
@@ -5859,7 +6260,7 @@ function showPromptInfo() {
     
     const promptName = document.createElement('h3');
     promptName.classList.add('prompt-name');
-    promptName.textContent = botname || 'Assistant';
+    promptName.textContent = botname || window.AurvekI18n.t('chat.assistant');
     
     textSection.appendChild(promptName);
 
@@ -5887,11 +6288,32 @@ function showPromptInfo() {
     infoContainer.appendChild(textSection);
     promptInfo.appendChild(infoContainer);
 
-    if (chatMessagesContainer.firstChild) {
-        chatMessagesContainer.insertBefore(promptInfo, chatMessagesContainer.firstChild);
-    } else {
-        chatMessagesContainer.appendChild(promptInfo);
-    }
+    return promptInfo;
+}
+
+function initializePromptInfoModal() {
+    const modal = document.getElementById('promptInfoModal');
+    if (!modal) return;
+    modal.addEventListener('show.bs.modal', event => {
+        const avatar = document.getElementById('chat-title-avatar');
+        if (!currentConversationId || !avatar || avatar.disabled) {
+            event.preventDefault();
+            return;
+        }
+        const card = createPromptInfoCard();
+        const photo = card.querySelector('img');
+        if (photo) {
+            photo.onclick = () => {
+                photo.onclick = null;
+                // Close the modal backdrop before opening the existing image viewer.
+                modal.addEventListener('hidden.bs.modal', () => {
+                    imageHandler.showFullsize(photo.dataset.fullsize, null);
+                }, { once: true });
+                bootstrap.Modal.getInstance(modal).hide();
+            };
+        }
+        document.getElementById('prompt-info-modal-body').replaceChildren(card);
+    });
 }
 
 // Model Selector functionality
@@ -5945,9 +6367,9 @@ class ModelSelector {
             return;
         }
 
-        const models = filterIds
-            ? window.availableModels.filter(m => filterIds.includes(m.id))
-            : window.availableModels;
+        const models = window.availableModels.filter(model =>
+            model.enabled !== false && model.enabled !== 0 &&
+            (!filterIds || filterIds.includes(model.id)));
 
         // Group models by machine
         const groupedModels = {};
@@ -5965,7 +6387,7 @@ class ModelSelector {
         const sortedMachines = Object.keys(groupedModels).sort((a, b) => {
             if (a === 'GPT') return -1;
             if (b === 'GPT') return 1;
-            return a.localeCompare(b);
+            return a.localeCompare(b, window.AurvekI18n.locale);
         });
         
         sortedMachines.forEach((machine, groupIndex) => {
@@ -5978,7 +6400,7 @@ class ModelSelector {
             html += `<div class="model-group-header">${safeMachine}</div>`;
             
             // Sort models within each group
-            const sortedModels = groupedModels[machine].sort((a, b) => (a.display_name || a.model).localeCompare(b.display_name || b.model));
+            const sortedModels = groupedModels[machine].sort((a, b) => (a.display_name || a.model).localeCompare(b.display_name || b.model, window.AurvekI18n.locale));
             
             sortedModels.forEach(model => {
                 const displayText = escapeHtml(String(model.display_name || model.model || ''));
@@ -6027,6 +6449,7 @@ class ModelSelector {
             window.conversationModelIdentityUnknown = true;
         }
         
+        refreshModelAvailabilityBanner();
         // Update UI to show current model
         this.updateModelDisplay();
         if (typeof ApiKeyManager !== 'undefined') {
@@ -6091,10 +6514,10 @@ class ModelSelector {
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) {
-            throw new Error(result.detail || 'Failed to update model');
+            throw Object.assign(new Error('Model update failed'), { uiMessage: result.detail });
         }
         if (!result.success) {
-            throw new Error('Failed to update model');
+            throw new Error(window.AurvekI18n.t('chat.model_update_error'));
         }
         return result;
     }
@@ -6121,12 +6544,13 @@ class ModelSelector {
             ? this.identityRevision
             : 0) + 1;
         window.conversationModelIdentityUnknown = false;
+        setCurrentModelAvailability(true, parsedLlmId);
 
         const modelData = (window.availableModels || []).find(
             model => Number(model.id) === parsedLlmId
         );
         this.chatModel.textContent = this.hideLlmName
-            ? 'AI'
+            ? window.AurvekI18n.t('chat.ai')
             : (modelData?.display_name || modelName);
         this.updateModelDisplay();
         if (typeof ApiKeyManager !== 'undefined') {
@@ -6197,6 +6621,7 @@ class ModelSelector {
                     conversationId,
                     conversationViewGeneration
                 );
+                setCurrentModelAvailability(details.llm_enabled, parsedLlmId);
             }
             return true;
         } catch (_error) {
@@ -6262,10 +6687,10 @@ class ModelSelector {
             this.closeDropdown();
             return Promise.resolve(false);
         }
-        if (document.getElementById('send-button')?.innerText === 'Stop') {
+        if (document.getElementById('send-button')?.dataset.streaming === 'true') {
             NotificationModal.warning(
-                'Message in progress',
-                'Wait for the current message to finish before changing the AI model.'
+                () => window.AurvekI18n.t('chat.message_progress_title'),
+                () => window.AurvekI18n.t('chat.message_progress')
             );
             this.closeDropdown();
             return Promise.resolve(false);
@@ -6280,7 +6705,7 @@ class ModelSelector {
             previousModel: this.currentModel,
             previousLlmId: this.currentLlmId
         };
-        this.chatModel.textContent = 'Updating...';
+        window.AurvekI18n.bindText(this.chatModel, 'chat.updating');
 
         return this.scheduleMutation(() => this.requestAndCacheModelUpdate(
             state,
@@ -6289,7 +6714,7 @@ class ModelSelector {
             if (error) {
                 if (!isLatest || !this.isRequestCurrent(state)) return false;
                 console.error('Error updating model:', error);
-                this.showError(error.message);
+                this.showError(error.uiMessage || window.AurvekI18n.t('chat.model_update_error'));
                 this.closeDropdown();
                 return false;
             }
@@ -6409,9 +6834,9 @@ class ModelSelector {
             if (this.dropdownIcon) {
                 this.dropdownIcon.style.display = 'none';
             }
-            // If hide_llm_name, show "AI" instead of model name
+            // If hide_llm_name, show the generic AI label
             if (this.hideLlmName && this.chatModel) {
-                this.chatModel.textContent = 'AI';
+                window.AurvekI18n.bindText(this.chatModel, 'chat.ai');
             }
         } else if (this.allowedLlms) {
             // Restricted mode: re-populate dropdown with only allowed models
@@ -6421,6 +6846,7 @@ class ModelSelector {
             // Any mode: full access
             this.clearRestrictions();
         }
+        refreshModelAvailabilityBanner();
     }
 
     clearRestrictions() {
@@ -6560,7 +6986,7 @@ class ExtensionSelector {
     updateCurrentDisplay() {
         if (!this.currentName) return;
         const current = this.extensions.find(e => e.id === this.currentExtensionId);
-        this.currentName.textContent = current ? current.name : 'No level';
+        this.currentName.textContent = current ? current.name : window.AurvekI18n.t('chat.no_level');
     }
 
     cancelPendingRequest() {
@@ -6684,7 +7110,8 @@ class MultiAiManager {
         // Should not be reachable if visibility is updated correctly, but guard anyway
         if (forcedLlmId) return;
 
-        let models = window.availableModels.filter(m => m.machine !== 'GPTSub');
+        let models = window.availableModels.filter(m =>
+            m.machine !== 'GPTSub' && m.enabled !== false && m.enabled !== 0);
         if (allowedLlms) {
             models = models.filter(m => allowedLlms.includes(m.id));
         }
@@ -6700,14 +7127,14 @@ class MultiAiManager {
         const sortedMachines = Object.keys(grouped).sort((a, b) => {
             if (a === 'GPT') return -1;
             if (b === 'GPT') return 1;
-            return a.localeCompare(b);
+            return a.localeCompare(b, window.AurvekI18n.locale);
         });
 
         sortedMachines.forEach(machine => {
             const safeMachine = escapeHtml(machine);
             html += `<div class="multi-ai-provider-group">`;
             html += `<div class="multi-ai-provider-header">${safeMachine}</div>`;
-            grouped[machine].sort((a, b) => (a.display_name || a.model).localeCompare(b.display_name || b.model)).forEach(model => {
+            grouped[machine].sort((a, b) => (a.display_name || a.model).localeCompare(b.display_name || b.model, window.AurvekI18n.locale)).forEach(model => {
                 const checked = this.selectedModels.some(s => s.llm_id === model.id) ? 'checked' : '';
                 const displayText = escapeHtml(String(model.display_name || model.model || ''));
                 const safeModelName = escapeHtml(String(model.model || ''));
@@ -6786,12 +7213,12 @@ class MultiAiManager {
 
         if (this.enabled) {
             if (badge) {
-                badge.textContent = `${this.selectedModels.length} AIs`;
+                badge.textContent = window.AurvekI18n.t('chat.ai_count', { count: this.selectedModels.length });
                 badge.classList.add('active');
             }
         } else {
             if (badge) {
-                badge.textContent = 'Off';
+                badge.textContent = window.AurvekI18n.t('chat.off');
                 badge.classList.remove('active');
             }
         }
@@ -6851,7 +7278,7 @@ class MultiAiManager {
         }
 
         const multiAiCandidates = (window.availableModels || []).filter(
-            m => m.machine !== 'GPTSub'
+            m => m.machine !== 'GPTSub' && m.enabled !== false && m.enabled !== 0
         );
         const availableCount = allowedLlms
             ? multiAiCandidates.filter(m => allowedLlms.includes(m.id)).length
@@ -6873,6 +7300,11 @@ class MultiAiManager {
 
 // Initialize model selector, extension selector, and multi-ai manager when DOM is loaded
 document.addEventListener('DOMContentLoaded', function() {
+    initializePromptInfoModal();
+    document.getElementById('change-unavailable-model-btn')?.addEventListener('click', event => {
+        event.stopPropagation();
+        window.modelSelector?.openDropdown();
+    });
     window.modelSelector = new ModelSelector();
     window.extensionSelector = new ExtensionSelector();
     window.multiAiManager = new MultiAiManager();
@@ -6917,11 +7349,11 @@ function updateModeCheckmarks(voiceModeLink, textModeLink, currentMode) {
 }
 
 const changePlatformMode = withSession(async function(conversationId, platform, newMode) {
-    const modeText = newMode === 'voice' ? 'Voice Mode' : 'Text Mode';
+    const modeText = newMode === 'voice' ? window.AurvekI18n.t('chat.voice_mode') : window.AurvekI18n.t('chat.text_mode');
 
     NotificationModal.confirm(
-        'Confirm Mode Change',
-        `Are you sure you want to switch to ${modeText}?`,
+        () => window.AurvekI18n.t('chat.mode_confirm_title'),
+        () => window.AurvekI18n.t('chat.mode_confirm', { mode: modeText }),
         async function() {
             try {
                 const response = await secureFetch(`/api/platform-mode/${platform}/${conversationId}`, {
@@ -6933,15 +7365,15 @@ const changePlatformMode = withSession(async function(conversationId, platform, 
                 });
 
                 if (response && response.ok) {
-                    NotificationModal.success('Mode Changed', `The mode has been changed to ${modeText} successfully.`);
+                    NotificationModal.success(() => window.AurvekI18n.t('chat.mode_changed'), () => window.AurvekI18n.t('chat.mode_success', { mode: modeText }));
                     updatePlatformModeInAllMenus(conversationId, newMode);
                 } else {
                     const errorData = await response.json();
-                    throw new Error(errorData.error || 'Error changing mode');
+                    throw new Error(errorData.error || window.AurvekI18n.t('chat.mode_error'));
                 }
             } catch (error) {
                 console.error(`Error changing ${platform} mode:`, error);
-                NotificationModal.error('Error', `Could not change mode: ${error.message}`);
+                NotificationModal.error(() => window.AurvekI18n.t('chat.error'), () => window.AurvekI18n.t('chat.mode_error'));
             }
         }
     );
@@ -6985,15 +7417,15 @@ function showPhoneRequiredModal(platform) {
     modal.innerHTML = `
         <div class="modal-content">
             <div class="modal-header">
-                <h5>Phone Number Required</h5>
-                <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+                <h5>${escapeHTML(window.AurvekI18n.t('chat.phone_required'))}</h5>
+                <button class="modal-close" aria-label="${escapeHTML(window.AurvekI18n.t('chat.close'))}" onclick="this.closest('.modal-overlay').remove()">&times;</button>
             </div>
             <div class="modal-body">
-                <p>To use ${platformName}, you need to set your phone number in your profile settings first.</p>
+                <p>${escapeHTML(window.AurvekI18n.t('chat.phone_required_detail', { platform: platformName }))}</p>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Close</button>
-                <a href="/settings" class="btn btn-primary">Go to Settings</a>
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">${escapeHTML(window.AurvekI18n.t('chat.close'))}</button>
+                <a href="/settings" class="btn btn-primary">${escapeHTML(window.AurvekI18n.t('chat.go_settings'))}</a>
             </div>
         </div>
     `;
@@ -7029,17 +7461,16 @@ function initPlusMenu() {
     if (attachBtn) {
         attachBtn.addEventListener('click', () => {
             closePlusMenu();
-            document.getElementById('chat-files').click();
+            window.AurvekChatActions.fromControl('attachment');
         });
     }
 
-    // Record audio (delegates to hidden #audio-button for audio.js compatibility)
+    // Use the same recording entry point as authenticated application hosts.
     const recordBtn = document.getElementById('plus-record-audio');
     if (recordBtn) {
         recordBtn.addEventListener('click', () => {
             closePlusMenu();
-            const audioBtn = document.getElementById('audio-button');
-            if (audioBtn) audioBtn.click();
+            window.AurvekChatActions.fromControl('dictation');
         });
     }
 
@@ -7110,9 +7541,9 @@ function initializeReasoningControl() {
         'xhigh', 'max', 'custom'
     ]);
     const labels = {
-        default: 'Predeterminado', off: 'Desactivado', auto: 'Automático',
-        minimal: 'Mínimo', low: 'Bajo', medium: 'Medio', high: 'Alto',
-        xhigh: 'Muy alto', max: 'Máximo', custom: 'Personalizado'
+        default: window.AurvekI18n.t('chat.reasoning.default'), off: window.AurvekI18n.t('chat.off'), auto: window.AurvekI18n.t('chat.reasoning.auto'),
+        minimal: window.AurvekI18n.t('chat.reasoning.minimal'), low: window.AurvekI18n.t('chat.reasoning.low'), medium: window.AurvekI18n.t('chat.reasoning.medium'), high: window.AurvekI18n.t('chat.reasoning.high'),
+        xhigh: window.AurvekI18n.t('chat.reasoning.xhigh'), max: window.AurvekI18n.t('chat.reasoning.max'), custom: window.AurvekI18n.t('chat.reasoning.custom')
     };
 
     function currentKey() {
@@ -7218,8 +7649,8 @@ function initializeReasoningControl() {
 
         if (behavior === 'configurable' && allowedModes.length) {
             description.textContent = reasoning.multi_ai
-                ? 'Selecciona un modo compatible con todos los modelos elegidos.'
-                : 'Selecciona uno de los modos disponibles para este modelo.';
+                ? window.AurvekI18n.t('chat.reasoning.multi')
+                : window.AurvekI18n.t('chat.reasoning.select');
             allowedModes.forEach(mode => {
                 const button = document.createElement('button');
                 button.type = 'button';
@@ -7250,19 +7681,19 @@ function initializeReasoningControl() {
                 applyBtn.hidden = false;
             }
         } else if (behavior === 'fixed') {
-            description.textContent = 'Gestionado por el modelo.';
+            description.textContent = window.AurvekI18n.t('chat.reasoning.managed_detail');
         } else if (behavior === 'none') {
-            description.textContent = 'No disponible.';
+            description.textContent = window.AurvekI18n.t('chat.reasoning.unavailable_detail');
         } else {
-            description.textContent = 'Capacidad no catalogada; se usará el valor del proveedor.';
+            description.textContent = window.AurvekI18n.t('chat.reasoning.unknown_detail');
         }
 
         if (badge) {
             badge.textContent = behavior === 'configurable'
                 ? (labels[selection.mode] || labels.default)
-                : behavior === 'fixed' ? 'Gestionado'
-                : behavior === 'none' ? 'No disponible'
-                : 'No catalogada';
+                : behavior === 'fixed' ? window.AurvekI18n.t('chat.reasoning.managed')
+                : behavior === 'none' ? window.AurvekI18n.t('chat.reasoning.unavailable')
+                : window.AurvekI18n.t('chat.reasoning.unknown');
             badge.classList.toggle('active', behavior === 'configurable' && selection.mode !== 'default');
         }
         updateAiSectionVisibility();
@@ -7301,7 +7732,7 @@ function initializeReasoningControl() {
         popup.style.display = 'none';
         render();
         const originalText = applyBtn.textContent;
-        applyBtn.textContent = 'Aplicado';
+        applyBtn.textContent = window.AurvekI18n.t('chat.applied');
         setTimeout(() => { applyBtn.textContent = originalText; }, 1000);
     });
 
@@ -7343,7 +7774,7 @@ function initWebSearchControl(conversationId, webSearchAllowedByPrompt = null, w
         menuItem.classList.add('forced-active');
         menuItem.style.pointerEvents = 'none';
         menuItem.style.opacity = '0.7';
-        menuItem.title = 'Web search is always active for this prompt';
+        menuItem.title = window.AurvekI18n.t('chat.web_forced');
     } else if (webSearchAllowed) {
         // Normal: user can toggle
         menuItem.style.display = '';
@@ -7431,18 +7862,19 @@ function renderGranSabioStatus(messageEl, statusData) {
         panel.innerHTML = `
             <div class="gransabio-header" onclick="this.parentElement.classList.toggle('collapsed')">
                 <i class="fas fa-brain"></i>
-                <span class="gransabio-title">GranSabio Pipeline</span>
+                <span class="gransabio-title">${escapeHTML(window.AurvekI18n.t('chat.gransabio.title'))}</span>
                 <span class="gransabio-toggle"><i class="fas fa-chevron-down"></i></span>
             </div>
             <div class="gransabio-body"></div>
         `;
         // Insert before any existing content
         messageEl.insertBefore(panel, messageEl.firstChild);
+        window.AurvekI18n.bindText(panel.querySelector('.gransabio-title'), 'chat.gransabio.title');
     }
 
     const body = panel.querySelector('.gransabio-body');
     const phase = statusData.phase || 'unknown';
-    const text = statusData.text || '';
+    const phaseKeys = { generating: 'chat.gransabio.generating', qa: 'chat.gransabio.qa', scoring: 'chat.gransabio.scoring', editing: 'chat.gransabio.editing', retry: 'chat.gransabio.retry', gran_sabio: 'chat.gransabio.gran_sabio', arbiter: 'chat.gransabio.arbiter', preflight: 'chat.gransabio.preflight', status: 'chat.gransabio.status' };
 
     // Build status line
     const line = document.createElement('div');
@@ -7459,20 +7891,25 @@ function renderGranSabioStatus(messageEl, statusData) {
     else if (phase === 'preflight') icon = 'fa-plane-departure';
     else if (phase === 'status') icon = 'fa-info-circle';
 
-    let extra = '';
+    line.innerHTML = `<i class="fas ${icon}"></i> <span class="gransabio-text"></span>`;
+    window.AurvekI18n.bindText(line.querySelector('.gransabio-text'), phaseKeys[phase] || 'chat.gransabio.status');
     if (statusData.iteration && statusData.max_iterations) {
-        extra += ` <span class="gransabio-iter">iter ${statusData.iteration}/${statusData.max_iterations}</span>`;
-    }
-    if (statusData.layer_name) {
-        extra += ` <span class="gransabio-layer">${DOMPurify.sanitize(statusData.layer_name)}</span>`;
+        const iteration = document.createElement('span');
+        iteration.className = 'gransabio-iter';
+        window.AurvekI18n.bindText(iteration, 'chat.gransabio.iteration', {
+            current: statusData.iteration, max: statusData.max_iterations,
+        });
+        line.append(' ', iteration);
     }
     if (statusData.score !== undefined && statusData.min_score !== undefined) {
-        const passed = statusData.passed !== false;
-        const scoreClass = passed ? 'gransabio-score-pass' : 'gransabio-score-fail';
-        extra += ` <span class="${scoreClass}">${statusData.score.toFixed(1)}/${statusData.min_score.toFixed(1)}</span>`;
+        const score = document.createElement('span');
+        score.className = statusData.passed !== false ? 'gransabio-score-pass' : 'gransabio-score-fail';
+        window.AurvekI18n.bindValue(score, () => {
+            const format = new Intl.NumberFormat(window.AurvekI18n.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+            return `${format.format(statusData.score)}/${format.format(statusData.min_score)}`;
+        });
+        line.append(' ', score);
     }
-
-    line.innerHTML = `<i class="fas ${icon}"></i> <span class="gransabio-text">${DOMPurify.sanitize(text)}</span>${extra}`;
     body.appendChild(line);
 
     // Keep only last 50 lines to prevent DOM bloat
@@ -7495,12 +7932,14 @@ function finalizeGranSabioStatus(messageEl, summaryData) {
     const title = panel.querySelector('.gransabio-title');
     if (title && summaryData) {
         const approved = summaryData.approved === true;
-        const score = summaryData.final_score != null ? summaryData.final_score.toFixed(1) : '?';
-        const iters = summaryData.iterations_used || summaryData.iterations || '?';
-        const cost = summaryData.total_cost != null ? `$${summaryData.total_cost.toFixed(4)}` :
-                     (summaryData.api_cost != null ? `$${summaryData.api_cost.toFixed(4)}` : '');
-        const status = approved ? 'Approved' : 'Failed';
-        title.textContent = `GranSabio: ${status} (${score}, ${iters} iter${cost ? ', ' + cost : ''})`;
+        window.AurvekI18n.bindValue(title, () => {
+            const score = summaryData.final_score != null ? new Intl.NumberFormat(window.AurvekI18n.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(summaryData.final_score) : '?';
+            const iters = summaryData.iterations_used || summaryData.iterations || '?';
+            const cost = summaryData.total_cost != null ? new Intl.NumberFormat(window.AurvekI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(summaryData.total_cost) :
+                         (summaryData.api_cost != null ? new Intl.NumberFormat(window.AurvekI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(summaryData.api_cost) : '');
+            const status = approved ? window.AurvekI18n.t('chat.gransabio.approved') : window.AurvekI18n.t('chat.gransabio.failed');
+            return cost ? window.AurvekI18n.t('chat.gransabio.summary_cost', { status, score, iterations: iters, cost }) : window.AurvekI18n.t('chat.gransabio.summary', { status, score, iterations: iters });
+        });
         title.classList.add(approved ? 'gransabio-approved' : 'gransabio-failed');
     }
 

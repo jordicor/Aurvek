@@ -3,6 +3,7 @@
 import orjson
 import os
 import asyncio
+import math
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from common import custom_unescape, generate_user_hash, sanitize_name, users_dir
 from database import get_db_connection, DB_MAX_RETRIES, DB_RETRY_DELAY_BASE, is_lock_error
 from storage_quota import record_generated_file
 from log_config import logger
+from user_languages import language_display_name, load_user_preferred_languages
 from ai_runtime.channel_turns import ChannelContext
 from ai_runtime.context.message_provenance import (
     merge_internal_turn_context,
@@ -27,6 +29,14 @@ from ai_runtime.voice_resolution import (
     resolve_prompt_voice,
 )
 from wellbeing_service import record_voice_transcript_activity
+
+
+async def _reject_application_hosted_voice(connection, conversation_id, user_id):
+    from integrations.applications.runtime import authorize_application_read
+    if await authorize_application_read(connection, conversation_id, user_id) is not None:
+        raise CanonicalVoiceResolutionError(
+            "hosted_voice_unavailable_for_application",
+            "This application uses Aurvek's shared voice conversation.")
 
 def get_elevenlabs_key():
     """Return an ElevenLabs API key from the load balancer.
@@ -46,6 +56,9 @@ CONTEXT_MESSAGE_LIMIT = int(os.getenv("ELEVENLABS_CONTEXT_LIMIT", "20"))  # Incr
 MAX_CONTEXT_CHARACTERS = int(os.getenv("ELEVENLABS_CONTEXT_MAX_CHARS", "8000"))  # Increased from 6000 to 8000
 HTTP_TIMEOUT_SECONDS = float(os.getenv("ELEVENLABS_HTTP_TIMEOUT", "30"))
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+MAX_CLIENT_CORRECTION_HINTS = 100
+MAX_SOURCE_EVENT_ID_CHARACTERS = 200
+MAX_TIME_IN_CALL_SECONDS = 24 * 60 * 60
 
 
 class ElevenLabsSessionBindingError(ValueError):
@@ -98,6 +111,7 @@ class ElevenLabsService:
             if not is_admin and conversation["user_id"] != current_user_id:
                 return None
 
+            await _reject_application_hosted_voice(conn, conversation_id, conversation["user_id"])
             agent_info = await self._resolve_agent(conn, conversation.get("role_id"))
             if not agent_info:
                 logger.warning(
@@ -115,6 +129,10 @@ class ElevenLabsService:
                 )
             canonical_voice = require_elevenlabs_webrtc_compatible(
                 await resolve_prompt_voice(prompt_id, conn=conn)
+            )
+            preferred_languages = await load_user_preferred_languages(
+                conn,
+                conversation["user_id"],
             )
 
             signed_url = await self._fetch_signed_url(agent_info["agent_id"]) if USE_SIGNED_URL else None
@@ -219,6 +237,12 @@ class ElevenLabsService:
             # Bind provider metadata to the conversation owner. This also keeps
             # admin-initiated calls scoped to the chat they are acting on.
             "user_id": conversation["user_id"],
+            "preferred_languages": list(preferred_languages),
+            "language": (
+                language_display_name(preferred_languages[0])
+                if preferred_languages
+                else "English"
+            ),
         }
 
         # Watchdog: include steering hint and CAS token if available
@@ -262,6 +286,10 @@ class ElevenLabsService:
                     "conversation_locked",
                     "Browser voice calls are unavailable because this conversation is locked.",
                 )
+            try:
+                await _reject_application_hosted_voice(conn, conversation_id, conversation["user_id"])
+            except CanonicalVoiceResolutionError as exc:
+                return unavailable(exc.code, str(exc))
             if conversation.get("is_incognito"):
                 return unavailable(
                     "conversation_incognito",
@@ -346,6 +374,7 @@ class ElevenLabsService:
                 raise ElevenLabsSessionBindingError(
                     "Conversation does not match the session owner"
                 )
+            await _reject_application_hosted_voice(conn, conversation_id, user_id)
             agent_info = await self._resolve_agent(conn, conversation.get("role_id"))
             if not agent_info:
                 raise ElevenLabsSessionBindingError(
@@ -744,6 +773,99 @@ class ElevenLabsService:
             return [turn for turn in transcript if isinstance(turn, dict)]
         return []
 
+    def reconcile_transcript_with_client_corrections(
+        self,
+        transcript: List[Dict[str, Any]],
+        client_corrections: Any,
+    ) -> List[Dict[str, Any]]:
+        """Apply SDK correction events only when they match provider text safely.
+
+        The final provider transcript remains authoritative whenever it already
+        reports an interruption/original response. Browser events are an older
+        SDK fallback and may only shorten an exact provider response to one of
+        its prefixes; they can never inject replacement text.
+        """
+
+        sanitized_hints = self._sanitize_client_corrections(client_corrections)
+        reconciled: List[Dict[str, Any]] = []
+        client_eligible_turns: List[int] = []
+
+        for raw_turn in transcript:
+            if not isinstance(raw_turn, dict):
+                continue
+            turn = dict(raw_turn)
+            if self._map_transcript_role(turn.get("role")) != "bot":
+                reconciled.append(turn)
+                continue
+
+            provider_original = self._metadata_text(turn.get("original_message"))
+            provider_interrupted = self._coerce_bool(turn.get("interrupted"))
+
+            if provider_interrupted is True or provider_original:
+                # ElevenLabs' completed-conversation payload is the source of
+                # truth. Its ``message`` is already the delivered correction.
+                turn["_aurvek_correction_source"] = "provider"
+            else:
+                client_eligible_turns.append(len(reconciled))
+            reconciled.append(turn)
+
+        used_turns: set[int] = set()
+        for hint in reversed(sanitized_hints):
+            original_message = hint["original_message"]
+            corrected_message = hint["corrected_message"]
+            if not self._is_credible_prefix(original_message, corrected_message):
+                continue
+
+            candidates: List[tuple[int, Optional[str]]] = []
+            for turn_index in reversed(client_eligible_turns):
+                if turn_index in used_turns:
+                    continue
+                turn = reconciled[turn_index]
+                provider_message = self._extract_transcript_text(turn)
+                if len(provider_message) > MAX_CONTEXT_CHARACTERS:
+                    provider_message = provider_message[:MAX_CONTEXT_CHARACTERS]
+                if provider_message not in {original_message, corrected_message}:
+                    continue
+                candidates.append((turn_index, self._source_event_id(turn)))
+
+            selected_turn: Optional[int] = None
+            hint_event_id = hint.get("event_id")
+            if hint_event_id:
+                identifier_matches = [
+                    turn_index
+                    for turn_index, provider_event_id in candidates
+                    if provider_event_id == hint_event_id
+                ]
+                if len(identifier_matches) == 1:
+                    selected_turn = identifier_matches[0]
+                elif any(provider_event_id for _, provider_event_id in candidates):
+                    # Both sides supplied identifiers, so text equality alone
+                    # must not override a contradictory provider identity.
+                    continue
+                elif len(candidates) == 1:
+                    selected_turn = candidates[0][0]
+            elif len(candidates) == 1:
+                selected_turn = candidates[0][0]
+
+            # Repeated provider responses are intentionally left untouched
+            # when the client event cannot identify one unambiguously.
+            if selected_turn is None:
+                continue
+            turn = reconciled[selected_turn]
+            provider_message = self._extract_transcript_text(turn)
+            if provider_message == original_message:
+                turn["message"] = corrected_message
+            turn["interrupted"] = True
+            turn["original_message"] = original_message
+            if hint.get("time_in_call_secs") is not None:
+                turn["time_in_call_secs"] = hint["time_in_call_secs"]
+            if hint_event_id:
+                turn["event_id"] = hint_event_id
+            turn["_aurvek_correction_source"] = "client"
+            used_turns.add(selected_turn)
+
+        return reconciled
+
     async def save_transcript_to_db(
         self,
         conversation_id: int,
@@ -792,6 +914,11 @@ class ElevenLabsService:
                         transaction_started = False
                         return (0, None, None, True)
 
+                    metadata_table_available = await self._table_exists(
+                        conn,
+                        "ELEVENLABS_MESSAGE_METADATA",
+                    )
+
                     for index, turn in enumerate(transcript):
                         message_text = self._extract_transcript_text(turn)
                         if not message_text:
@@ -831,6 +958,33 @@ class ElevenLabsService:
                                 )
                         else:
                             last_bot_message_id = inserted_id
+
+                        if metadata_table_available:
+                            metadata = self._extract_turn_metadata(turn)
+                            await conn.execute(
+                                """
+                                INSERT INTO ELEVENLABS_MESSAGE_METADATA (
+                                    message_id,
+                                    session_id,
+                                    turn_index,
+                                    interrupted,
+                                    original_message,
+                                    time_in_call_secs,
+                                    source_event_id,
+                                    correction_source
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    inserted_id,
+                                    session_id,
+                                    index,
+                                    int(metadata["interrupted"]),
+                                    metadata["original_message"],
+                                    metadata["time_in_call_secs"],
+                                    metadata["source_event_id"],
+                                    metadata["correction_source"],
+                                ),
+                            )
                         saved_messages += 1
 
                     if saved_messages == 0:
@@ -1338,6 +1492,152 @@ class ElevenLabsService:
         return custom_unescape(str(message).strip())
 
     @staticmethod
+    def _coerce_bool(value: Any) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in {0, 1}:
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1"}:
+                return True
+            if normalized in {"false", "0"}:
+                return False
+        return None
+
+    @staticmethod
+    def _coerce_nonnegative_number(value: Any) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(number)
+            or number < 0
+            or number > MAX_TIME_IN_CALL_SECONDS
+        ):
+            return None
+        return number
+
+    @staticmethod
+    def _metadata_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            value = value.get("text") or value.get("content")
+        if value is None:
+            return None
+        text = custom_unescape(str(value).strip())
+        if not text:
+            return None
+        return text[:MAX_CONTEXT_CHARACTERS]
+
+    @staticmethod
+    def _source_event_id(turn: Dict[str, Any]) -> Optional[str]:
+        metadata = turn.get("metadata")
+        values = [
+            turn.get("event_id"),
+            turn.get("source_event_id"),
+            turn.get("id"),
+        ]
+        if isinstance(metadata, dict):
+            values.extend([metadata.get("event_id"), metadata.get("id")])
+        for value in values:
+            if value is None or isinstance(value, (dict, list)):
+                continue
+            normalized = str(value).strip()
+            if normalized:
+                return normalized[:MAX_SOURCE_EVENT_ID_CHARACTERS]
+        return None
+
+    @classmethod
+    def _is_credible_prefix(cls, original: str, corrected: str) -> bool:
+        if not original or not corrected or original == corrected:
+            return False
+        if original.startswith(corrected):
+            return True
+
+        # Some SDK releases append one standard ellipsis to the delivered
+        # prefix. Permit exactly that marker, not an arbitrary punctuation tail.
+        if corrected.endswith("..."):
+            prefix = corrected[:-3]
+        elif corrected.endswith("\u2026"):
+            prefix = corrected[:-1]
+        else:
+            return False
+        return (
+            bool(prefix)
+            and len(prefix) < len(original)
+            and original.startswith(prefix)
+        )
+
+    @classmethod
+    def _sanitize_client_corrections(cls, value: Any) -> List[Dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+
+        sanitized: List[Dict[str, Any]] = []
+        for raw_hint in value[:MAX_CLIENT_CORRECTION_HINTS]:
+            if not isinstance(raw_hint, dict):
+                continue
+            original_message = cls._metadata_text(
+                raw_hint.get("original_message")
+                or raw_hint.get("original_agent_response")
+            )
+            corrected_message = cls._metadata_text(
+                raw_hint.get("corrected_message")
+                or raw_hint.get("corrected_agent_response")
+            )
+            if not original_message or not corrected_message:
+                continue
+            if not cls._is_credible_prefix(original_message, corrected_message):
+                continue
+
+            event_id = raw_hint.get("event_id") or raw_hint.get("source_event_id")
+            if event_id is not None and not isinstance(event_id, (dict, list)):
+                event_id = str(event_id).strip()[:MAX_SOURCE_EVENT_ID_CHARACTERS]
+            else:
+                event_id = None
+            sanitized.append(
+                {
+                    "original_message": original_message,
+                    "corrected_message": corrected_message,
+                    "time_in_call_secs": cls._coerce_nonnegative_number(
+                        raw_hint.get("time_in_call_secs")
+                    ),
+                    "event_id": event_id or None,
+                }
+            )
+        return sanitized
+
+    @classmethod
+    def _extract_turn_metadata(cls, turn: Dict[str, Any]) -> Dict[str, Any]:
+        original_message = cls._metadata_text(turn.get("original_message"))
+        interrupted = cls._coerce_bool(turn.get("interrupted")) is True
+        correction_source = turn.get("_aurvek_correction_source")
+        if correction_source not in {"provider", "client"}:
+            correction_source = "provider" if interrupted or original_message else None
+        return {
+            "interrupted": interrupted,
+            "original_message": original_message,
+            "time_in_call_secs": cls._coerce_nonnegative_number(
+                turn.get("time_in_call_secs")
+            ),
+            "source_event_id": cls._source_event_id(turn),
+            "correction_source": correction_source,
+        }
+
+    @staticmethod
+    async def _table_exists(conn: Any, table_name: str) -> bool:
+        cursor = await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        )
+        return await cursor.fetchone() is not None
+
+    @staticmethod
     def _map_transcript_role(role: Optional[str]) -> str:
         if not role:
             return "bot"
@@ -1345,6 +1645,54 @@ class ElevenLabsService:
         if role_lower in {"user", "customer", "client", "speaker", "human", "caller"}:
             return "user"
         return "bot"
+
+
+async def load_elevenlabs_message_metadata(
+    message_ids: List[int],
+) -> Dict[int, Dict[str, Any]]:
+    """Load browser-voice metadata for a page of chat messages.
+
+    Older installations may serve requests before the new migration has run.
+    Treat a missing sidecar as an empty result so message history remains
+    backwards compatible during rolling deploys and in lightweight tests.
+    """
+
+    ids = sorted({int(value) for value in message_ids if value is not None})
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    try:
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT message_id, session_id, turn_index, interrupted,
+                       original_message, time_in_call_secs, source_event_id,
+                       correction_source
+                FROM ELEVENLABS_MESSAGE_METADATA
+                WHERE message_id IN ({placeholders})
+                """,
+                ids,
+            )
+            rows = await cursor.fetchall()
+    except Exception as exc:
+        if "no such table" in str(exc).lower():
+            return {}
+        raise
+
+    result: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        result[int(row["message_id"])] = {
+            "elevenlabs_voice": {
+                "session_id": row["session_id"],
+                "turn_index": int(row["turn_index"]),
+                "interrupted": bool(row["interrupted"]),
+                "original_message": row["original_message"],
+                "time_in_call_secs": row["time_in_call_secs"],
+                "source_event_id": row["source_event_id"],
+                "correction_source": row["correction_source"],
+            }
+        }
+    return result
 
 
 async def delete_remote_conversation(conversation_id: str) -> None:

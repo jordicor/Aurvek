@@ -1,7 +1,12 @@
 from ai_runtime.dependencies import *
 from ai_runtime.memory.context import _context_messages_for_memory_provider, _resolve_memory_context
 from ai_runtime.context.formatting import flatten_multi_ai_context, parse_stored_message
+from ai_runtime.context.message_provenance import merge_internal_turn_context
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
+from ai_runtime.context.user_language import load_user_language_context
+from ai_runtime.context.user_time import load_user_time_context, render_user_time_context
+from ai_runtime.context.user_language import render_user_language_context
+from integrations.applications.profile import conversation_profile, personal_context
 from ai_runtime.watchdog.prompting import (
     _build_escalated_hint_block,
     _sanitize_watchdog_directive,
@@ -373,6 +378,14 @@ async def build_full_prompt_context(
                     elif role_name == "user":
                         user_level = "user"
 
+            from integrations.embed.runtime import is_embed_conversation
+
+            embed_interview = await is_embed_conversation(conversation_id)
+            app_profile = await conversation_profile(conn_ro, conversation_id) if embed_interview else None
+            if embed_interview:
+                user_info = personal_context(app_profile) if app_profile is not None else None
+                current_alter_ego_id = None
+
             # --- Alter-ego / user_info injection ---
             if current_alter_ego_id:
                 await cursor_ro.execute(
@@ -421,9 +434,14 @@ async def build_full_prompt_context(
                             f"{ext_list}\n--- END EXTENSION LEVELS ---"
                         )
 
-            # A channel may provide trusted ephemeral state (the native phone
-            # clock is the first consumer).  Apply it once before pre-watchdog
-            # so the evaluator and main model see exactly the same base block.
+            # User-local time and channel state are trusted, ephemeral inputs.
+            # Apply them once before pre-watchdog so the evaluator and main
+            # model see the exact same scheduling and channel context.
+            internal_turn_context = merge_internal_turn_context(
+                internal_turn_context,
+                render_user_time_context(app_profile.timezone_name if app_profile else None) if embed_interview else await load_user_time_context(conn_ro, user_id),
+                render_user_language_context(app_profile.preferred_languages) if app_profile is not None else (None if embed_interview else await load_user_language_context(conn_ro, user_id)),
+            )
             prompt_base, pre_watchdog_prompt_context = (
                 prepare_pre_watchdog_and_model_prompt(
                     prompt_base,

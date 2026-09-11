@@ -1,0 +1,12 @@
+{
+  "curation.access": "Seuls les comptes de type Utilisateur ou Administrateur peuvent accéder aux paramètres de curation",
+  "curation.update_access": "Seuls les comptes de type Utilisateur ou Administrateur peuvent modifier les paramètres de curation",
+  "curation.load_failed": "Impossible de charger les paramètres de curation. Réessayez.",
+  "curation.save_failed": "Impossible d’enregistrer les paramètres de curation. Réessayez.",
+  "curation.negative": "La majoration ne peut pas être négative",
+  "curation.maximum": "La majoration ne peut pas dépasser {amount} par million de tokens",
+  "curation.saved": "Paramètres de curation mis à jour",
+  "curation.invalid": "Valeur de majoration invalide",
+  "prompt.not_found": "Prompt introuvable",
+  "access.denied": "Accès refusé"
+}

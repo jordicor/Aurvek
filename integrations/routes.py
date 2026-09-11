@@ -1,6 +1,9 @@
 from fastapi import APIRouter
 
 from integrations import platform_routes
+from integrations.applications.twilio_admin import router as application_twilio_router
+from integrations.applications.review import router as application_review_router
+from integrations.applications.funding_admin import router as application_funding_router
 from integrations.elevenlabs import admin_routes as elevenlabs_admin_routes
 from integrations.elevenlabs import routes as elevenlabs_routes
 from integrations.elevenlabs import sdk_routes as elevenlabs_sdk_routes
@@ -22,6 +25,9 @@ from integrations.messaging_voice_notes import routes as messaging_voice_routes
 
 router = APIRouter()
 router.include_router(platform_routes.router)
+router.include_router(application_twilio_router)
+router.include_router(application_review_router)
+router.include_router(application_funding_router)
 router.include_router(elevenlabs_sdk_routes.router)
 router.include_router(elevenlabs_admin_routes.router)
 router.include_router(elevenlabs_routes.router)

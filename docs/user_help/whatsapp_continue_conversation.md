@@ -17,12 +17,12 @@ prerequisites:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-31
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
 
-You can assign any web conversation to WhatsApp from the chat sidebar. Right-click (or tap the menu icon on) a conversation and select "Use for WhatsApp." That conversation becomes your active WhatsApp thread, and any message you send to the Aurvek WhatsApp number will go to that conversation.
+Assign a web conversation to WhatsApp from its sidebar menu with **Use for WhatsApp**. Messages sent to the Aurvek WhatsApp number then continue in that conversation.
 
 ## Steps
 
@@ -39,6 +39,7 @@ To stop using a conversation on WhatsApp, open the same menu and select **Remove
 
 - Only one conversation can be assigned to WhatsApp at a time. Assigning a new one automatically unlinks the previous one.
 - A conversation cannot be on both WhatsApp and Telegram simultaneously. Assigning it to WhatsApp removes it from Telegram, and vice versa.
+- Its telephone assignment is separate and can stay active.
 - If you have never used WhatsApp before, the system creates a new conversation for you automatically on your first message. You can then reassign it to an existing conversation from the web.
 - You can switch between **Text Mode** and **Voice Mode** from the conversation menu once WhatsApp is assigned. Voice mode sends audio responses instead of text.
 - From WhatsApp itself, you can send `!chats` to list your recent conversations and `!set <id>` to switch without opening the web interface.
@@ -50,3 +51,4 @@ To stop using a conversation on WhatsApp, open the same menu and select **Remove
 - whatsapp_commands
 - whatsapp_setup_phone
 - external_manage_conversations
+- phone_calls_usage

@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from common import slugify
 from database import get_db_connection
 from marketplace.landing.isolation import primary_app_url
+from i18n import Translator
 
 
 LANDING_RELATED_LINKS_ENABLED = os.getenv("LANDING_RELATED_LINKS_ENABLED", "1") == "1"
@@ -44,7 +45,7 @@ LANDING_MEDIA_TYPES = {
 }
 
 
-def landing_404_response() -> HTMLResponse:
+def landing_404_response(translator=None, *, domain=False) -> HTMLResponse:
     """Return a simple HTML 404 page for landing pages."""
     html = """<!DOCTYPE html>
 <html lang="en">
@@ -68,7 +69,13 @@ def landing_404_response() -> HTMLResponse:
     </div>
 </body>
 </html>"""
-    return HTMLResponse(content=html, status_code=404)
+    translator = translator or Translator()
+    message = escape(translator.t("public_shell.domain_not_found" if domain else "public_shell.page_not_found"))
+    html = html.replace('lang="en"', f'lang="{translator.language}"')
+    html = html.replace("Page Not Found", message).replace("Page not found", message)
+    return HTMLResponse(content=html, status_code=404, headers={
+        "Cache-Control": "no-store", "Content-Language": translator.language,
+    })
 
 
 def media_type_for_path(path) -> str:
@@ -130,8 +137,9 @@ async def get_related_landing_links(prompt_id: int, max_links: int) -> list:
         ]
 
 
-def build_related_links_html(links: list) -> str:
+def build_related_links_html(links: list, translator=None) -> str:
     """Build a lightweight, self-styled HTML block for related prompt links."""
+    translator = translator or Translator()
     items = "".join(
         f'<a href="{lnk["url"]}" style="display:inline-block;padding:0.4rem 0.8rem;'
         f'background:#f5f5f5;border-radius:6px;color:#333;text-decoration:none;'
@@ -142,13 +150,13 @@ def build_related_links_html(links: list) -> str:
         '<section style="max-width:900px;margin:2rem auto;padding:1.5rem 1rem;'
         'border-top:1px solid #e0e0e0;font-family:system-ui,-apple-system,sans-serif;">'
         '<h3 style="font-size:1rem;color:#555;margin:0 0 1rem;font-weight:600;">'
-        "Related assistants</h3>"
+        f"{escape(translator.t('public_shell.related'))}</h3>"
         f'<nav style="display:flex;flex-wrap:wrap;gap:0.5rem;">{items}</nav>'
         "</section>"
     )
 
 
-async def inject_related_links(html_content: str, prompt_id: int, *, page: str, is_preview: bool, is_unlisted: bool) -> str:
+async def inject_related_links(html_content: str, prompt_id: int, *, page: str, is_preview: bool, is_unlisted: bool, translator=None) -> str:
     if (
         page == "home"
         and not is_preview
@@ -158,7 +166,7 @@ async def inject_related_links(html_content: str, prompt_id: int, *, page: str, 
     ):
         related = await get_related_landing_links(prompt_id, LANDING_RELATED_LINKS_MAX)
         if related:
-            related_html = build_related_links_html(related)
+            related_html = build_related_links_html(related, translator)
             html_content = html_content.replace("</body>", related_html + "\n</body>")
             html_content = html_content.replace("</BODY>", related_html + "\n</BODY>")
     return html_content
@@ -223,9 +231,11 @@ async def render_prompt_landing_html(
     page: str,
     is_preview: bool,
     is_unlisted: bool,
+    ui_language: str = "en",
 ) -> str:
     """Read and decorate landing HTML with a short, file-aware TTL cache."""
     html_path = Path(html_path)
+    translator = Translator(ui_language)
     stat = await asyncio.to_thread(html_path.stat)
     cache_key = (
         "primary",
@@ -236,6 +246,7 @@ async def render_prompt_landing_html(
         page,
         bool(is_preview),
         bool(is_unlisted),
+        translator.language,
     )
     try:
         return _landing_render_cache[cache_key]
@@ -249,6 +260,7 @@ async def render_prompt_landing_html(
         page=page,
         is_preview=is_preview,
         is_unlisted=is_unlisted,
+        translator=translator,
     )
     html_content = inject_prompt_landing_analytics(
         html_content,

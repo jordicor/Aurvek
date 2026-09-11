@@ -1,6 +1,8 @@
+{% set i18n_domains = ['marketplace'] %}
 {% extends 'base.html' %}
+{% set purchase_title_key = 'marketplace.purchase.success' if access_granted else 'marketplace.purchase.confirmed' if purchase_state == 'paid' else 'marketplace.purchase.pending' if purchase_state == 'pending' else 'marketplace.purchase.not_completed' if purchase_state == 'not_completed' else 'marketplace.purchase.unverified' %}
 
-{% block title %}Purchase Successful - AURVEK{% endblock %}
+{% block title %}{{ t(purchase_title_key) }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
@@ -101,11 +103,17 @@
 {% block content %}
 <div class="success-container">
     <div class="success-icon">
-        <i class="fas fa-check-circle"></i>
+        <i class="fas {{ 'fa-check-circle' if purchase_state == 'paid' else 'fa-info-circle' }}"></i>
     </div>
 
-    <h1 class="mb-3">Purchase Successful!</h1>
-    <p class="text-muted mb-3">You now have full access to this prompt.</p>
+    <h1 class="mb-3">{{ t(purchase_title_key) }}</h1>
+    <p class="text-muted mb-3" role="status">
+        {% if access_granted %}{{ t('marketplace.purchase.full_access') }}
+        {% elif purchase_state == 'paid' %}{{ t('marketplace.purchase.access_pending') }}
+        {% elif purchase_state == 'pending' %}{{ t('marketplace.purchase.pending_detail') }}
+        {% elif purchase_state == 'not_completed' %}{{ t('marketplace.purchase.not_completed_detail') }}
+        {% else %}{{ t('marketplace.purchase.unverified_detail') }}{% endif %}
+    </p>
 
     <div class="prompt-info">
         {% if prompt_image_url %}
@@ -116,29 +124,35 @@
         <div class="prompt-info-details">
             <h3>{{ prompt_name }}</h3>
             {% if prompt_creator %}
-            <div class="meta">by @{{ prompt_creator }}</div>
+            <div class="meta">{{ t('marketplace.explore.by_creator', name='@' ~ prompt_creator) }}</div>
             {% endif %}
         </div>
     </div>
 
     {% if payment_amount is not none %}
     <div class="purchase-amount">
-        <div class="label">Amount Paid</div>
-        <div class="amount">${{ "%.2f"|format(payment_amount) }}</div>
+        <div class="label">{{ t('marketplace.purchase.amount_paid') }}</div>
+        <div class="amount">{{ format_currency(payment_amount, 'USD') }}</div>
     </div>
     {% endif %}
 
+    {% if access_granted %}
     <div class="access-badge">
-        <i class="fas fa-unlock"></i> Access Granted
+        <i class="fas fa-unlock"></i> {{ t('marketplace.purchase.access_granted') }}
     </div>
 
+    {% endif %}
+
     <div class="d-grid gap-2 mt-3">
+        {% if not access_granted %}
+        <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()">{{ t('marketplace.purchase.check_again') }}</button>
+        {% endif %}
         <a href="/chat" class="btn btn-primary btn-lg">
-            <i class="fas fa-comments me-2"></i>Start Chatting
+            <i class="fas fa-comments me-2"></i>{{ t('marketplace.purchase.start_chatting') }}
         </a>
         {% if prompt_landing_url %}
         <a href="{{ prompt_landing_url }}" class="btn btn-outline-secondary">
-            <i class="fas fa-external-link-alt me-2"></i>View Prompt
+            <i class="fas fa-external-link-alt me-2"></i>{{ t('marketplace.purchase.view_prompt') }}
         </a>
         {% endif %}
     </div>

@@ -1,7 +1,9 @@
+from urllib.parse import urlencode
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from i18n import get_translator
 from auth import get_current_user
 from captcha_service import get_captcha_config
 from clients import async_telegram
@@ -24,6 +26,12 @@ from request_security import (
 router = APIRouter()
 
 
+
+def _redirect_feedback(request: Request, kind: str, key: str, **params) -> RedirectResponse:
+    message = get_translator(request).t("admin_channels." + key, **params)
+    return RedirectResponse(url="/admin/telegram?" + urlencode({kind: message}), status_code=303)
+
+
 # ============================================================================
 # Telegram Admin
 # ============================================================================
@@ -31,10 +39,11 @@ router = APIRouter()
 @router.get("/admin/telegram", response_class=HTMLResponse)
 async def admin_telegram(request: Request, current_user: User = Depends(get_current_user)):
     """Admin dashboard for Telegram configuration."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_channels.access_denied"))
 
     message = request.query_params.get("message")
     error = request.query_params.get("error")
@@ -54,7 +63,7 @@ async def admin_telegram(request: Request, current_user: User = Depends(get_curr
             }
         except Exception as e:
             logger.error(f"Failed to get Telegram bot info: {e}")
-            webhook_info = {"error": str(e)}
+            webhook_info = {"error": t("admin_channels.webhook_check_error", provider="Telegram")}
 
     # Get configurable messages from SYSTEM_CONFIG
     unknown_user_message = ""
@@ -92,8 +101,10 @@ async def admin_telegram(request: Request, current_user: User = Depends(get_curr
             for row in rows:
                 try:
                     platforms = orjson.loads(row[2]) if row[2] else {}
+                    if not isinstance(platforms, dict):
+                        continue
                     tg = platforms.get('telegram')
-                    if tg:
+                    if isinstance(tg, dict) and tg:
                         chat_id_str = str(row[1]) if row[1] else ""
                         if len(chat_id_str) > 5:
                             chat_id_display = chat_id_str[:3] + "***" + chat_id_str[-2:]
@@ -169,13 +180,14 @@ async def admin_telegram(request: Request, current_user: User = Depends(get_curr
 @router.post("/admin/telegram", response_class=HTMLResponse)
 async def admin_telegram_save(request: Request, current_user: User = Depends(get_current_user)):
     """Save Telegram admin configuration."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_channels.access_denied"))
 
     if async_telegram is None:
-        return RedirectResponse(url="/admin/telegram?error=Telegram bot not configured. Set TELEGRAM_BOT_TOKEN in .env", status_code=303)
+        return _redirect_feedback(request, "error", "telegram_not_configured")
 
     form = await request.form()
     csrf_rejection = validate_mutation_request(
@@ -218,24 +230,18 @@ async def admin_telegram_save(request: Request, current_user: User = Depends(get
                 """, (retain_voice_notes,))
                 await conn.commit()
 
-            return RedirectResponse(url="/admin/telegram?message=Configuration saved successfully", status_code=303)
+            return _redirect_feedback(request, "message", "configuration_saved")
         except Exception as e:
             logger.error(f"Error saving Telegram config: {e}")
-            return RedirectResponse(url="/admin/telegram?error=Failed to save configuration", status_code=303)
+            return _redirect_feedback(request, "error", "configuration_failed")
 
     if action == "fix_webhook":
         webhook_url = f"https://{PRIMARY_APP_DOMAIN}/telegram"
         try:
             await async_telegram.set_webhook(webhook_url, TELEGRAM_WEBHOOK_SECRET)
-            return RedirectResponse(
-                url=f"/admin/telegram?message=Webhook URL updated to {webhook_url}",
-                status_code=303
-            )
+            return _redirect_feedback(request, "message", "webhook_updated", url=webhook_url)
         except Exception as e:
             logger.error(f"Failed to update Telegram webhook: {e}")
-            return RedirectResponse(
-                url=f"/admin/telegram?error=Failed to update webhook: {e}",
-                status_code=303
-            )
+            return _redirect_feedback(request, "error", "webhook_failed")
 
     return RedirectResponse(url="/admin/telegram", status_code=303)

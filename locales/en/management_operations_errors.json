@@ -1,0 +1,12 @@
+{
+  "admin_required": "Admin access required",
+  "invalid_llm": "Invalid LLM selection",
+  "unsupported_key": "Unsupported key type",
+  "task_not_found": "Task not found in failed queue.",
+  "invalid_ip": "Enter a valid IP address.",
+  "conversation_ids_required": "Select at least one conversation.",
+  "conversation_deleted": "Conversation deleted successfully.",
+  "conversation_folder_failed": "Conversation deleted from the database, but its folder could not be deleted.",
+  "conversations_folder_failed": "Some conversations were deleted from the database, but their folders could not be deleted.",
+  "conversations_deleted": "Conversations deleted successfully."
+}

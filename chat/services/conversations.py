@@ -98,11 +98,8 @@ async def create_conversation_core(
     llm_row = await cursor.fetchone()
     if not llm_row:
         raise ValueError("LLM model not found")
-    if not bool(llm_row[0]) and (
-        llm_row[1] == "GPTSub"
-        or int(effective_llm_id) != int(user_details[0] or 0)
-    ):
-        raise ValueError("This LLM model is disabled")
+    if not bool(llm_row[0]):
+        raise ValueError("This AI model is no longer available. Choose an available model to start a new chat.")
     # GPTSub (ChatGPT subscription) models need an active per-user link. This is a
     # UX write-gate; the authoritative fail-closed gate runs at inference time.
     # Never preserve an unlinked GPTSub default: no-op/default inheritance is still

@@ -27,6 +27,7 @@ import ipaddress
 # Own libraries
 from database import get_db_connection, DB_MAX_RETRIES, DB_RETRY_DELAY_BASE, is_lock_error
 from log_config import logger
+from i18n import get_catalogs, get_translator, template_context as i18n_template_context
 
 load_dotenv()
 
@@ -403,7 +404,8 @@ cache_directory = Path("data/cache")
 users_directory = os.path.join("data", "users")
 
 # Templates folder
-templates = Jinja2Templates(directory="templates")
+get_catalogs()
+templates = Jinja2Templates(directory="templates", context_processors=[i18n_template_context])
 
 MARKETPLACE_TEMPLATE_FLAGS_DISABLED = {
     "enabled": False,
@@ -423,6 +425,7 @@ templates.env.globals['marketplace'] = MARKETPLACE_TEMPLATE_FLAGS_DISABLED
 
 async def get_template_context(request, current_user, branding_context=None):
     """Generate base context for templates that include navbar.html"""
+    get_translator(request, current_user)
     is_user = await current_user.is_user if current_user else False
     is_admin = await current_user.is_admin if current_user else False
 
@@ -1077,18 +1080,22 @@ def text_file_block_to_text(
     block: dict,
     owner_username: str | None = None,
     conversation_id: int | None = None,
+    ui_language: str = "en",
 ) -> str:
     """Read a stored text_file block from disk and convert to text string for providers."""
+    from i18n import Translator
+
+    t = Translator(ui_language).t
     tf = block.get('text_file', {})
     filename = tf.get('filename', 'file.txt')
     lines = tf.get('lines', 0)
     attachment_ref = tf.get('attachment_ref')
     if attachment_ref:
-        return f"[Attached file: {filename} -- content unavailable]"
+        return t("exports.file_unavailable", filename=filename)
     url = tf.get('url', '')
 
     if not owner_username:
-        return f"[Attached file: {filename} -- content unavailable]"
+        return t("exports.file_unavailable", filename=filename)
 
     raw = unquote(str(url).split('?', 1)[0])
     if CLOUDFLARE_BASE_URL and raw.startswith(CLOUDFLARE_BASE_URL):
@@ -1097,7 +1104,7 @@ def text_file_block_to_text(
     if parsed.scheme in {'http', 'https'}:
         raw = parsed.path
     if parsed.scheme and parsed.scheme not in {'http', 'https'}:
-        return f"[Attached file: {filename} -- content unavailable]"
+        return t("exports.file_unavailable", filename=filename)
 
     raw = raw.lstrip('/')
     file_path = Path(raw) if raw.startswith('data/') else Path('data') / raw
@@ -1107,22 +1114,22 @@ def text_file_block_to_text(
     try:
         resolved_path = file_path.resolve()
         if not resolved_path.is_relative_to(user_root):
-            return f"[Attached file: {filename} -- content unavailable]"
+            return t("exports.file_unavailable", filename=filename)
         if conversation_id is not None:
             conv = f"{int(conversation_id):07d}"
             text_root = (user_root / "files" / conv[:3] / conv[3:] / "txt").resolve()
             if not resolved_path.is_relative_to(text_root):
-                return f"[Attached file: {filename} -- content unavailable]"
+                return t("exports.file_unavailable", filename=filename)
     except (OSError, RuntimeError, ValueError):
-        return f"[Attached file: {filename} -- content unavailable]"
+        return t("exports.file_unavailable", filename=filename)
 
     try:
         with open(resolved_path, 'r', encoding='utf-8') as f:
             content = f.read()
     except (FileNotFoundError, IOError):
-        return f"[Attached file: {filename} -- content unavailable]"
+        return t("exports.file_unavailable", filename=filename)
 
-    return f"[Content of uploaded file: {filename} ({lines} lines)]\n\n{content}"
+    return t("exports.file_content", filename=filename, lines=lines) + "\n\n" + content
 
 
 def estimate_message_tokens(text: str, token_ratio: float = 4.0, margin: float = 1.1) -> int:
@@ -2269,6 +2276,7 @@ async def consume_token(
     byok=False,
     override_api_cost=None,
     billing_account_id_override=None,
+    application_billing_reservation_id=None,
 ):
     """
     Consume tokens and apply pricing logic based on prompt configuration.
@@ -2393,6 +2401,49 @@ async def consume_token(
             # No prompt_id - fallback to free pricing (shouldn't happen normally)
             total_cost = api_cost * (1 + margin_free)
             logger.debug(f"[consume_token] No prompt_id - using free margin: API={api_cost:.6f}, total={total_cost:.6f}")
+
+        # Sponsored charges use the reservation's frozen payer, retaining native
+        # pricing and usage statistics without borrowing the user's team limit.
+        from integrations.applications.billing import (
+            current_application_operation, reservation_operation,
+        )
+        application_operation = None
+        if application_billing_reservation_id is not None:
+            application_operation = await reservation_operation(
+                conn, application_billing_reservation_id)
+            await cursor.execute('SELECT user_id,billing_account_id,status FROM BILLING_USAGE_RESERVATIONS WHERE id=?',
+                                 (application_billing_reservation_id,))
+            reservation = await cursor.fetchone()
+            if (application_operation is None or reservation is None
+                    or application_operation.scope.user_id != int(user_id)
+                    or int(reservation[0]) != int(user_id)
+                    or int(reservation[1]) != application_operation.payer_user_id
+                    or reservation[2] != 'active'
+                    or billing_account_id_override != application_operation.payer_user_id):
+                return False
+        ambient_operation = current_application_operation(user_id)
+        if (application_operation is None and ambient_operation is not None
+                and ambient_operation.mode == 'sponsored' and total_cost > 0):
+            return False
+        if application_operation is None and total_cost == 0:
+            application_operation = ambient_operation
+        if application_operation is not None and application_operation.mode == 'sponsored':
+            await cursor.execute('''UPDATE USER_DETAILS SET balance=COALESCE(balance,0)-?
+                WHERE user_id=? AND COALESCE(balance,0)>=? RETURNING balance''',
+                (total_cost, application_operation.payer_user_id, total_cost))
+            if await cursor.fetchone() is None:
+                return False
+            await cursor.execute('''UPDATE USER_DETAILS SET
+                input_tokens=COALESCE(input_tokens,0)+?,output_tokens=COALESCE(output_tokens,0)+?,
+                input_token_cost=COALESCE(input_token_cost,0)+?,output_token_cost=COALESCE(output_token_cost,0)+?,
+                total_cost=COALESCE(total_cost,0)+?,tokens_spent=COALESCE(tokens_spent,0)+?
+                WHERE user_id=?''',
+                (input_tokens, output_tokens+reasoning_tokens, input_cost_total,
+                 output_cost_total, total_cost, total_tokens, user_id))
+            return await record_daily_usage(
+                user_id=user_id, usage_type='ai_tokens', cost=total_cost,
+                tokens_in=input_tokens, tokens_out=output_tokens+reasoning_tokens,
+                conn=conn, cursor=cursor)
 
         # Check for team billing
         billing_info = await get_user_billing_info(user_id, conn)

@@ -267,15 +267,20 @@ def verify_content_token(
     return payload
 
 
-def creator_content_unavailable_response() -> HTMLResponse:
+def creator_content_unavailable_response(translator=None) -> HTMLResponse:
     """Return a non-sensitive fail-closed response for unconfigured isolation."""
+    from i18n import Translator
+    from html import escape
+
+    translator = translator or Translator()
     return HTMLResponse(
-        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' "
-        "content='width=device-width,initial-scale=1'><title>Page unavailable</title>"
-        "</head><body><main><h1>Page temporarily unavailable</h1>"
-        "<p>Please try again later.</p></main></body></html>",
+        f"<!doctype html><html lang='{translator.language}'><head><meta charset='utf-8'><meta name='viewport' "
+        "content='width=device-width,initial-scale=1'><title>"
+        f"{escape(translator.t('public_shell.unavailable_title'))}</title>"
+        f"</head><body><main><h1>{escape(translator.t('public_shell.unavailable'))}</h1>"
+        f"<p>{escape(translator.t('public_shell.retry'))}</p></main></body></html>",
         status_code=503,
-        headers={"Retry-After": "300", "Cache-Control": "no-store"},
+        headers={"Retry-After": "300", "Cache-Control": "no-store", "Content-Language": translator.language},
     )
 
 

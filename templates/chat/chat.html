@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="">
+<html lang="{{ ui_language|default('en') }}" data-theme="{{ embed_theme|default('') }}"{% if presentation|default('native') == 'embedded' %} data-presentation="embedded" data-embed-controls="{% for key, enabled in embed_config.controls|default({})|items if enabled %}{{ key }} {% endfor %}" data-embed-capabilities="{% for key, enabled in embed_config.capabilities.items() if enabled %}{{ key }} {% endfor %}"{% endif %}>
 
 <head>
     <meta charset="UTF-8">
@@ -7,8 +7,18 @@
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta http-equiv="X-XSS-Protection" content="1; mode=block">
     <meta name="aurvek-csrf-token" content="{{ telephony_csrf_token }}">
-    <title>Chat - AURVEK</title>
+    <title>{% if presentation|default('native') == 'embedded' %}{{ embed_config.application.display_name if embed_config.application is defined else initial_conversations[0].chat_name }}{% else %}{{ t('chat_ui.title.chat') }} - AURVEK{% endif %}</title>
+    {% set i18n_domains = ['chat', 'chat_widgets', 'chat_ui', 'chat_errors'] %}
+    {% if presentation|default('native') == 'embedded' %}{% set i18n_domains = i18n_domains + ['embed', 'application'] %}{% endif %}
+    {% include 'includes/i18n.html' %}
 
+    {% if presentation|default('native') == 'embedded' %}
+    <script id="aurvek-embed-config" type="application/json">{{ embed_config|tojson }}</script>
+    <script src="{{ get_static_url('/static/js/chat/embed-adapter.js') }}"></script>
+    {% if embed_config.application is defined %}
+    <script src="{{ get_static_url('/static/js/chat/application-panel.js') }}"></script>
+    {% endif %}
+    {% else %}
     <!-- Theme detection - sets data-theme for skeleton CSS -->
     <script>
         var savedTheme = 'default';
@@ -20,6 +30,7 @@
     <script>
         try { if (localStorage.getItem('sidebarCollapsed') === '1') document.documentElement.classList.add('sidebar-collapsed'); } catch(e) {}
     </script>
+    {% endif %}
 
     <!-- Skeleton CSS - loads immediately for skeleton display -->
     <link rel="stylesheet" href="{{ get_static_url('/static/css/skeleton.css') }}">
@@ -37,7 +48,11 @@
     <script>window.STATIC_HASHES = {{ get_static_theme_hashes()|tojson }};</script>
 
     <!-- Theme loader AFTER Bootstrap and common.css so theme styles have priority -->
+    {% if presentation|default('native') == 'embedded' %}
+    <link rel="stylesheet" id="theme-css" href="{{ get_static_url('/static/css/chat/chat-' ~ embed_theme ~ '.css') }}">
+    {% else %}
     <script src="{{ get_static_url('/static/js/theme-loader.js') }}"></script>
+    {% endif %}
     <!-- <script src="/static/js/countdown.js"></script> -->
     <style>
         /* Page content wrapper inherits body layout styles for skeleton system */
@@ -62,6 +77,9 @@
     <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/phone-call.css') }}">
     <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/phone-history.css') }}">
     <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/voice-note-retranscription.css') }}">
+    {% if presentation|default('native') == 'embedded' %}
+    <link rel="stylesheet" href="{{ get_static_url('/static/css/chat/embed.css') }}">
+    {% endif %}
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -166,8 +184,8 @@
     <!-- Page content - hidden until loaded -->
     <div id="page-content" style="display: none;">
     {% if readonly_mode %}
-    <div style="background: #f0ad4e; color: #000; text-align: center; padding: 8px; position: sticky; top: 0; z-index: 9999; font-weight: 500;">
-        Read-only mode — You can browse but cannot send messages or make changes. Normal service will resume shortly.
+    <div{% if presentation|default('native') == 'embedded' %} data-embed-text="readonly"{% endif %} style="background: #f0ad4e; color: #000; text-align: center; padding: 8px; position: sticky; top: 0; z-index: 9999; font-weight: 500;">
+        {{ t('navigation.readonly.notice') }}
     </div>
     {% endif %}
     <div id="chat-layout-wrapper">
@@ -175,21 +193,21 @@
     <div id="sidebar">
         <div class="sidebar-collapse-row">
             <div class="sidebar-nav-icons">
-                <a href="/home" class="btn-home-sidebar" title="Home">
+                <a href="/home" class="btn-home-sidebar" title="{{ t('navigation.menu.home') }}">
                     <i class="fas fa-home"></i>
                 </a>
                 {% if marketplace.discovery_enabled|default(false) %}
-                <a href="/explore" class="btn-home-sidebar" title="Explore">
+                <a href="/explore" class="btn-home-sidebar" title="{{ t('navigation.menu.explore') }}">
                     <i class="fas fa-compass"></i>
                 </a>
                 {% endif %}
                 {% if is_admin or is_user %}
-                <a href="/dashboard" class="btn-home-sidebar" title="Dashboard">
+                <a href="/dashboard" class="btn-home-sidebar" title="{{ t('navigation.menu.dashboard') }}">
                     <i class="fas fa-tachometer-alt"></i>
                 </a>
                 {% endif %}
             </div>
-            <button class="btn-collapse-sidebar" id="collapse-sidebar-btn" title="Collapse sidebar">
+            <button class="btn-collapse-sidebar" id="collapse-sidebar-btn" title="{{ t('chat_ui.sidebar.collapse') }}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
                     <path d="M9 3v18"/>
@@ -198,28 +216,28 @@
         </div>
         <div class="sidebar-top-fixed">
 			<div class="sidebar-section">
-			  <div class="btn-group w-100" role="group" aria-label="New Chat Button">
+			  <div class="btn-group w-100" role="group" aria-label="{{ t('chat_ui.new_chat.group') }}">
 				<button type="button" class="btn custom-new-chat-btn" id="new-chat-main-btn">
-				  <i class="fas fa-comment-alt"></i> New Chat
+				  <i class="fas fa-comment-alt"></i> {{ t('chat_ui.new_chat.action') }}
 				</button>
 				<button type="button" class="btn custom-new-chat-btn dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
-				  <span class="visually-hidden">Toggle Dropdown</span>
+				  <span class="visually-hidden">{{ t('chat_ui.action.toggle_dropdown') }}</span>
 				</button>
 				<ul class="dropdown-menu new-chat-settings" aria-labelledby="new-chat-btn">
-				  <li><h6 class="dropdown-header">New Chat Settings <i class="fas fa-info-circle" data-bs-toggle="tooltip" data-bs-placement="right" title="These settings will be used when creating a new chat"></i></h6></li>
+				  <li><h6 class="dropdown-header">{{ t('chat_ui.new_chat.settings') }} <i class="fas fa-info-circle" data-bs-toggle="tooltip" data-bs-placement="right" title="{{ t('chat_ui.new_chat.settings_help') }}"></i></h6></li>
 				  <li><hr class="dropdown-divider"></li>
 				  <li>
 					<button type="button" class="dropdown-item" id="new-incognito-chat-btn">
-					  <i class="fas fa-user-secret"></i> New incognito chat
+					  <i class="fas fa-user-secret"></i> {{ t('chat_ui.new_chat.incognito') }}
 					</button>
 				  </li>
 				  <li><hr class="dropdown-divider"></li>
 				  <li>
-					<h6 class="dropdown-header">Select Prompt</h6>
+					<h6 class="dropdown-header">{{ t('chat_ui.new_chat.select_prompt') }}</h6>
 					<select class="form-select" id="promptDropdown" name="prompt_id">
 					  {% set fav_prompts = prompts|selectattr('is_favorite')|list %}
 					  {% if fav_prompts %}
-					  <optgroup label="&#9733; Favorites">
+					  <optgroup label="&#9733; {{ t('chat_ui.prompts.favorites') }}">
 						{% for prompt in fav_prompts %}
 						<option value="{{ prompt.id }}" {% if prompt.id == current_prompt_id %}selected{% endif %}>
 						  {{ prompt.text }}
@@ -229,7 +247,7 @@
 					  {% endif %}
 					  {% set my_prompts = prompts|selectattr('is_mine')|list %}
 					  {% if my_prompts %}
-					  <optgroup label="My Prompts">
+					  <optgroup label="{{ t('chat_ui.prompts.mine') }}">
 						{% for prompt in my_prompts %}
 						<option value="{{ prompt.id }}" {% if prompt.id == current_prompt_id %}selected{% endif %}>
 						  {% if prompt.is_favorite %}&#9733; {% endif %}{{ prompt.text }}
@@ -237,7 +255,7 @@
 						{% endfor %}
 					  </optgroup>
 					  {% endif %}
-					  <optgroup label="All Prompts">
+					  <optgroup label="{{ t('chat_ui.prompts.all') }}">
 						{% for prompt in prompts %}
 						<option value="{{ prompt.id }}" {% if prompt.id == current_prompt_id %}selected{% endif %}>
 						  {% if prompt.is_favorite %}&#9733; {% endif %}{{ prompt.text }}
@@ -248,13 +266,13 @@
 				  </li>
 				  <li><hr class="dropdown-divider"></li>
 				  <li>
-					<h6 class="dropdown-header">Select LLM Engine</h6>
+					<h6 class="dropdown-header">{{ t('chat_ui.new_chat.select_engine') }}</h6>
 					<select class="form-select" id="llmDropdown" name="type_of_model">
 					  {% set priority_machines = ['GPT', 'O1'] %}
 					  {% for machine, models in llm_models|groupby('machine') if machine in priority_machines %}
 					  <optgroup label="{{ machine }}">
 						{% for model in models %}
-						<option value="{{ model['id'] }}" {% if new_chat_model_type == model['id'] %}selected{% endif %}>
+						<option value="{{ model['id'] }}" {% if new_chat_model_type == model['id'] %}selected{% endif %}{% if not model.enabled %} disabled{% endif %}>
 						  {{ model.display_name | default(model.model, true) }}
 						</option>
 						{% endfor %}
@@ -263,7 +281,7 @@
 					  {% for machine, models in llm_models|groupby('machine') if machine not in priority_machines %}
 					  <optgroup label="{{ machine }}">
 						{% for model in models %}
-						<option value="{{ model['id'] }}" {% if new_chat_model_type == model['id'] %}selected{% endif %}>
+						<option value="{{ model['id'] }}" {% if new_chat_model_type == model['id'] %}selected{% endif %}{% if not model.enabled %} disabled{% endif %}>
 						  {{ model.display_name | default(model.model, true) }}
 						</option>
 						{% endfor %}
@@ -279,9 +297,9 @@
                 <div class="search-input-container">
                     <i class="fas fa-search search-input-icon"></i>
                     <input type="text" class="search-input" id="message-search-input"
-                           placeholder="Search messages..." aria-label="Search messages"
+                           placeholder="{{ t('chat_ui.search.placeholder') }}" aria-label="{{ t('chat_ui.search.label') }}"
                            autocomplete="off">
-                    <button class="search-clear-btn" id="search-clear-btn" title="Clear search">
+                    <button class="search-clear-btn" id="search-clear-btn" title="{{ t('chat_ui.search.clear') }}">
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
@@ -296,35 +314,35 @@
                 </div>
                 <div class="search-results-list" id="search-results-list" role="listbox"></div>
                 <button class="search-load-more" id="search-load-more" style="display:none">
-                    Load more results <i class="fas fa-chevron-down"></i>
+                    {{ t('chat_ui.search.load_more') }} <i class="fas fa-chevron-down"></i>
                 </button>
                 <div class="search-empty-state" id="search-empty-state" style="display:none">
-                    No messages found
+                    {{ t('chat_ui.search.empty') }}
                 </div>
             </div>
 
             <div class="sidebar-section">
-                <h3><i class="fas fa-bookmark sidebar-section-icon"></i> Bookmarks</h3>
+                <h3><i class="fas fa-bookmark sidebar-section-icon"></i> {{ t('chat_ui.sidebar.bookmarks') }}</h3>
                 <a href="#" id="my-bookmarks-btn" class="list-group-item list-group-item-action">
-                    My Bookmarks
+                    {{ t('chat_ui.sidebar.my_bookmarks') }}
                 </a>
             </div>
 
             <!-- Chat Folders Section -->
             <div class="sidebar-section folders-section">
-                <h3><i class="fas fa-folder sidebar-section-icon"></i> Folders <button type="button" class="btn-section-action" id="add-folder-header-btn" title="New Folder"><i class="fas fa-plus"></i></button></h3>
+                <h3><i class="fas fa-folder sidebar-section-icon"></i> {{ t('chat_ui.sidebar.folders') }} <button type="button" class="btn-section-action" id="add-folder-header-btn" title="{{ t('chat_ui.folder.new') }}"><i class="fas fa-plus"></i></button></h3>
                 <div id="chat-folders-container"></div>
             </div>
 
             <div class="sidebar-section external-section" style="display: none;">
-                <h3><i class="fas fa-share-nodes sidebar-section-icon"></i> External</h3>
+                <h3><i class="fas fa-share-nodes sidebar-section-icon"></i> {{ t('chat_ui.sidebar.external') }}</h3>
                 <div id="external-chats-container"></div>
             </div>
             <div class="sidebar-section chats-section">
-                <h3><i class="fas fa-message sidebar-section-icon"></i> Chats</h3>
+                <h3><i class="fas fa-message sidebar-section-icon"></i> {{ t('chat_ui.sidebar.chats') }}</h3>
                 <div id="dynamic-chats-container"></div>
                 <button id="load-more-button" onclick="loadMoreConversations()">
-                    Load more <i class="fas fa-chevron-down"></i>
+                    {{ t('chat_ui.action.load_more') }} <i class="fas fa-chevron-down"></i>
                 </button>
             </div>
         </div>
@@ -342,72 +360,125 @@
                 <div class="user-info-text" role="button" id="userDropdownDesktop" data-bs-toggle="dropdown" aria-expanded="false">
                     <div class="user-info-name">{{ username }}</div>
                     <div class="user-info-role">
-                        {% if is_admin %}Administrator{% elif is_user %}User{% else %}Customer{% endif %}
+                        {% if is_admin %}{{ t('chat_ui.role.administrator') }}{% elif is_user %}{{ t('chat_ui.role.user') }}{% else %}{{ t('chat_ui.role.customer') }}{% endif %}
                     </div>
                 </div>
                 <ul class="dropdown-menu" aria-labelledby="userDropdownDesktop">
-                    <li><a class="dropdown-item" href="/settings"><i class="fas fa-cog"></i> Settings</a></li>
-                    <li><a class="dropdown-item" href="/media-gallery"><i class="fas fa-images"></i> Media Gallery</a></li>
+                    <li><a class="dropdown-item" href="/settings"><i class="fas fa-cog"></i> {{ t('navigation.menu.settings') }}</a></li>
+                    <li><a class="dropdown-item" href="/media-gallery"><i class="fas fa-images"></i> {{ t('navigation.menu.media_gallery') }}</a></li>
                     <li><hr class="dropdown-divider"></li>
                     <li class="dropend">
                       <a class="dropdown-item dropdown-toggle" href="#">
-                        <i class="fas fa-palette"></i> Theme
+                        <i class="fas fa-palette"></i> {{ t('navigation.menu.theme') }}
                       </a>
-                      <ul class="dropdown-menu theme-submenu">
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="default">Default</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="light">Light</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="writer">Writer</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="coder">Coder</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="terminal">Terminal</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="eink">E-Ink</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="nekoglass">Neko Glass</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="frutigeraero">Frutiger Aero</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="memphis">Memphis</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="katarishoji">Katari Shoji</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="xmas">Christmas</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="halloween">Halloween</a></li>
-                        <li><a class="dropdown-item theme-option" href="#" data-theme="valentinesday">Valentine's Day</a></li>
+                      <ul class="dropdown-menu theme-submenu settings-submenu" data-submenu="theme">
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="default">{{ t('navigation.theme.default') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="light">{{ t('navigation.theme.light') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="writer">{{ t('navigation.theme.writer') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="coder">{{ t('navigation.theme.coder') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="terminal">{{ t('navigation.theme.terminal') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="eink">{{ t('navigation.theme.eink') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="nekoglass">{{ t('navigation.theme.neko_glass') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="frutigeraero">{{ t('navigation.theme.frutiger_aero') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="memphis">{{ t('navigation.theme.memphis') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="katarishoji">{{ t('navigation.theme.katari_shoji') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="xmas">{{ t('navigation.theme.christmas') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="halloween">{{ t('navigation.theme.halloween') }}</a></li>
+                        <li><a class="dropdown-item theme-option" href="#" data-theme="valentinesday">{{ t('navigation.theme.valentines_day') }}</a></li>
                       </ul>
                     </li>
+                    {% if presentation|default('native') != 'embedded' %}
+                    <li class="dropend">
+                      <a class="dropdown-item dropdown-toggle" href="#">
+                        <i class="fas fa-language"></i> {{ t('navigation.menu.language') }}
+                      </a>
+                      <ul class="dropdown-menu theme-submenu settings-submenu language-submenu" data-submenu="language">
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="en">{{ t('navigation.language.name.en') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="es">{{ t('navigation.language.name.es') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="ja">{{ t('navigation.language.name.ja') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="fr">{{ t('navigation.language.name.fr') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="pt">{{ t('navigation.language.name.pt') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="it">{{ t('navigation.language.name.it') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                        <li><a class="dropdown-item ui-language-option d-flex align-items-center" href="#" data-ui-language="de">{{ t('navigation.language.name.de') }}<span class="ui-language-check ms-auto" aria-hidden="true" hidden>✓</span></a></li>
+                      </ul>
+                    </li>
+                    {% endif %}
                 </ul>
             </div>
-            <a href="/logout" class="btn-logout" title="Log Out">
+            <a href="/logout" class="btn-logout" title="{{ t('navigation.menu.log_out') }}">
                 <i class="fas fa-right-from-bracket"></i>
             </a>
         </div>
     </div>
 
     <div id="window-chat">
+        {% if presentation|default('native') == 'embedded' %}
+        <div id="embed-session-status" role="status" aria-live="polite"></div>
+        {% if embed_config.application is defined %}
+        <section id="application-panel" class="p-2 border-bottom flex-shrink-0" aria-busy="true">
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <span data-application-text="active"></span>: <strong id="application-active">{{ embed_config.application.display_name }}</strong>
+                <button id="application-back" type="button" class="btn btn-sm btn-outline-secondary" disabled data-application-text="back"></button>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <label for="application-assistant" data-application-text="assistant"></label>
+                <select id="application-assistant" class="form-select form-select-sm w-auto mw-100" disabled></select>
+                <button id="application-resume" type="button" class="btn btn-sm btn-primary" disabled data-application-text="resume"></button>
+                <button id="application-fresh" type="button" class="btn btn-sm btn-outline-secondary" disabled data-application-text="fresh"></button>
+                <button id="application-entry" type="button" class="btn btn-sm btn-outline-secondary" disabled data-application-text="entry"></button>
+                <button id="application-reset" type="button" class="btn btn-sm btn-outline-secondary" disabled data-application-text="reset"></button>
+                <span id="application-entry-value" class="small"></span>
+            </div>
+            <div id="application-status" class="small mt-1" role="status" aria-live="polite"></div>
+        </section>
+        <div id="application-action-controls" role="status" aria-live="polite"></div>
+        {% endif %}
+        <div id="embed-capability-notice">
+            {% if not embed_config.capabilities.memory %}
+            <span data-embed-text="memory_notice"></span>
+            {% endif %}
+            {% if embed_config.application is not defined %}
+            <button type="button" id="embed-voice-unavailable" disabled aria-describedby="embed-voice-reason" data-embed-text="voice"></button>
+            <span id="embed-voice-reason" data-embed-text="voice_unavailable"></span>
+            {% endif %}
+        </div>
+        {% endif %}
         <div class="chatbot-info">
             <button class="btn btn-toggle-sidebar d-md-none">
                 <i class="fas fa-bars"></i>
             </button>
-            <button class="btn-expand-sidebar" id="expand-sidebar-btn" title="Expand sidebar">
+            <button class="btn-expand-sidebar" id="expand-sidebar-btn" title="{{ t('chat_ui.sidebar.expand') }}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
                     <path d="M9 3v18"/>
                 </svg>
             </button>
             <div class="chat-title-container">
-                <div id="chat-title-avatar" class="chat-title-avatar"></div>
+                <button type="button" id="chat-title-avatar" class="chat-title-avatar" title="{{ t('chat_ui.assistant.view_details') }}" aria-label="{{ t('chat_ui.assistant.view_details') }}" aria-haspopup="dialog" aria-controls="promptInfoModal" data-bs-toggle="modal" data-bs-target="#promptInfoModal" disabled></button>
                 <div class="chat-title-info">
                     <div class="chat-title-main-row">
-                        <h4 class="mb-0" id="chat-title" title="">Prompt Tests</h4>
-                        <span id="incognito-chat-badge" class="incognito-chat-badge" hidden>
-                            <i class="fas fa-user-secret"></i> Incognito
-                        </span>
-                        <button type="button" id="close-incognito-chat-btn" class="btn-close-incognito" title="Close incognito chat" hidden>
-                            <i class="fas fa-times"></i>
-                        </button>
+                        <h4 class="mb-0" id="chat-title" title="">{{ t('chat_ui.title.chat') }}</h4>
+                        <div id="incognito-chat-controls" class="incognito-chat-controls" hidden>
+                            <span id="incognito-chat-badge" class="incognito-chat-badge" hidden>
+                                <i class="fas fa-user-secret" aria-hidden="true"></i> {{ t('chat_ui.incognito.label') }}
+                            </span>
+                            <button type="button" id="save-incognito-chat-btn" class="btn-save-incognito" title="{{ t('chat_ui.incognito.save_help') }}" aria-label="{{ t('chat_ui.incognito.save_help') }}" hidden>
+                                <i class="fas fa-floppy-disk" aria-hidden="true"></i>
+                                <span>{{ t('chat_ui.incognito.save') }}</span>
+                            </button>
+                            <button type="button" id="close-incognito-chat-btn" class="btn-close-incognito" title="{{ t('chat_ui.incognito.close') }}" aria-label="{{ t('chat_ui.incognito.close_help') }}" hidden>
+                                <i class="fas fa-times" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="model-selector-container">
                         <small id="chat-model" class="chat-model-info"></small>
-                        <i class="fas fa-chevron-down model-dropdown-icon" id="model-dropdown-icon" title="Change AI model"></i>
+                        <i class="fas fa-chevron-down model-dropdown-icon" id="model-dropdown-icon" title="{{ t('chat_ui.model.change') }}"></i>
                         <!-- Model Selector Dropdown -->
                         <div class="model-dropdown-menu" id="model-dropdown-menu">
                             <div class="model-dropdown-header">
                                 <i class="fas fa-robot"></i>
-                                <span>Select AI Model</span>
+                                <span>{{ t('chat_ui.model.select') }}</span>
                             </div>
                             <div class="model-dropdown-content" id="model-dropdown-content">
                                 <!-- Models will be populated by JavaScript -->
@@ -421,7 +492,7 @@
                         <div class="extension-dropdown-menu" id="extension-dropdown-menu">
                             <div class="extension-dropdown-header">
                                 <i class="fas fa-layer-group"></i>
-                                <span>Select Level</span>
+                                <span>{{ t('chat_ui.extension.select_level') }}</span>
                             </div>
                             <div class="extension-dropdown-content" id="extension-dropdown-content">
                                 <!-- Extensions populated by JS -->
@@ -436,10 +507,10 @@
             <div class="voice-overlay-card">
                 <div class="voice-overlay-header">
                     <div>
-                        <h3 class="voice-overlay-title">Real-time conversation</h3>
-                        <p class="voice-overlay-caption" id="voice-overlay-caption">Activate your microphone to start the ElevenLabs session.</p>
+                        <h3 class="voice-overlay-title" data-i18n-text="chat_ui.voice.title">{{ t('chat_ui.voice.title') }}</h3>
+                        <p class="voice-overlay-caption" id="voice-overlay-caption">{{ t('chat_ui.voice.caption') }}</p>
                     </div>
-                    <button type="button" id="close-voice-overlay" class="voice-overlay-close" aria-label="Close voice panel">
+                    <button type="button" id="close-voice-overlay" class="voice-overlay-close" data-i18n-aria-label="chat_ui.voice.close" aria-label="{{ t('chat_ui.voice.close') }}">
                         <i class="fas fa-xmark"></i>
                     </button>
                 </div>
@@ -448,7 +519,7 @@
                         <span class="voice-status-icon loading" id="voice-status-icon">
                             <i class="fas fa-clock"></i>
                         </span>
-                        <span id="voice-status-text">Preparing configuration...</span>
+                        <span id="voice-status-text">{{ t('chat_ui.voice.preparing') }}</span>
                     </div>
                     <div class="voice-overlay-context">
                         <div id="voice-overlay-prompt" class="voice-prompt-display hidden">
@@ -459,12 +530,12 @@
                                 <h3 id="voice-overlay-prompt-name" class="voice-prompt-title"></h3>
                             </div>
                         </div>
-                        <span class="voice-helper-text" id="voice-helper-text">We will request permission to use your microphone.</span>
+                        <span class="voice-helper-text" id="voice-helper-text">{{ t('chat_ui.voice.permission') }}</span>
                     </div>
                 </div>
                 <div class="voice-overlay-footer">
-                    <button type="button" id="voice-start-stop" class="voice-primary-btn" disabled>Configuring...</button>
-                    <button type="button" id="voice-mute-toggle" class="voice-secondary-btn hidden" aria-pressed="false" aria-label="Mute microphone">
+                    <button type="button" id="voice-start-stop" class="voice-primary-btn" disabled>{{ t('chat_ui.voice.configuring') }}</button>
+                    <button type="button" id="voice-mute-toggle" class="voice-secondary-btn hidden" aria-pressed="false" aria-label="{{ t('chat_ui.voice.mute') }}">
                         <i class="fas fa-microphone"></i>
                     </button>
                 </div>
@@ -477,18 +548,18 @@
             </div>
             <div id="loading-indicator" style="display: none; text-align: center; padding: 10px;">
                 <div class="spinner-border text-primary" role="status">
-                    <span class="visually-hidden">Loading messages...</span>
+                    <span class="visually-hidden">{{ t('chat_ui.messages.loading') }}</span>
                 </div>
-                <div>Loading messages...</div>
+                <div>{{ t('chat_ui.messages.loading') }}</div>
             </div>
         </div>
 
         <div id="image-previews" class="hidden"></div>
 
-        <button id="scroll-top-btn" class="scroll-nav-btn scroll-top-btn" title="Scroll to top">
+        <button id="scroll-top-btn" class="scroll-nav-btn scroll-top-btn" title="{{ t('chat_ui.messages.scroll_top') }}">
             <i class="fas fa-chevron-up"></i>
         </button>
-        <button id="scroll-bottom-btn" class="scroll-nav-btn scroll-bottom-btn" title="Scroll to bottom">
+        <button id="scroll-bottom-btn" class="scroll-nav-btn scroll-bottom-btn" title="{{ t('chat_ui.messages.scroll_bottom') }}">
             <i class="fas fa-chevron-down"></i>
         </button>
 
@@ -496,8 +567,20 @@
         <div id="api-keys-required-banner" class="api-keys-banner"{% if can_send_messages %} style="display: none;"{% endif %}>
             <div class="api-keys-banner-content">
                 <i class="fas fa-key"></i>
-                <span>You need to configure your API keys to send messages.</span>
-                <a href="/api-credentials" class="btn btn-sm btn-primary">Configure API Keys</a>
+                {% if presentation|default('native') == 'embedded' %}
+                <span data-embed-text="keys">{{ t('embed.keys') }}</span>
+                {% else %}
+                <span>{{ t('chat_ui.composer.api_keys_required') }}</span>
+                <a href="/api-credentials" class="btn btn-sm btn-primary">{{ t('chat_ui.composer.configure_api_keys') }}</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div id="model-unavailable-banner" class="api-keys-banner" role="status" hidden>
+            <div class="api-keys-banner-content">
+                <i class="fas fa-circle-info" aria-hidden="true"></i>
+                <span id="model-unavailable-text"></span>
+                <button type="button" id="change-unavailable-model-btn" class="btn btn-sm btn-primary">{{ t('chat_ui.model.change') }}</button>
             </div>
         </div>
 
@@ -505,7 +588,7 @@
         <div id="locked-conversation-banner" class="api-keys-banner" style="display: none;">
             <div class="api-keys-banner-content">
                 <i class="fas fa-comment-slash"></i>
-                <span>This conversation has been locked and cannot receive new messages.</span>
+                <span>{{ t('chat_ui.composer.locked') }}</span>
             </div>
         </div>
 
@@ -528,7 +611,7 @@
                 <div class="input-container">
                     <!-- Plus Menu Dropdown -->
                     <div class="plus-menu-wrapper" id="plus-menu-wrapper">
-                        <button type="button" class="plus-menu-btn" id="plus-menu-btn" title="Tools & attachments">
+                        <button type="button" class="plus-menu-btn" id="plus-menu-btn" title="{{ t('chat_ui.tools.title') }}">
                             <i class="fas fa-plus"></i>
                         </button>
                         <div class="plus-menu-dropdown" id="plus-menu-dropdown">
@@ -536,66 +619,74 @@
                                 {% if can_send_files %}
                                 <button type="button" class="plus-menu-item" id="plus-attach-files">
                                     <i class="fas fa-paperclip"></i>
-                                    <span class="plus-menu-label">Attach files</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.tools.attach_files') }}</span>
                                 </button>
                                 {% endif %}
                                 <button type="button" class="plus-menu-item" id="plus-record-audio">
                                     <i class="fas fa-microphone"></i>
-                                    <span class="plus-menu-label">Record audio</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.tools.record_audio') }}</span>
                                 </button>
                             </div>
                             <div class="plus-menu-section" id="plus-ai-section">
                                 <button type="button" class="plus-menu-item" id="plus-reasoning">
                                     <i class="fas fa-brain"></i>
-                                    <span class="plus-menu-label">Razonamiento</span>
-                                    <span class="plus-menu-badge" id="reasoning-badge">Predeterminado</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.reasoning.label') }}</span>
+                                    <span class="plus-menu-badge" id="reasoning-badge">{{ t('chat_ui.reasoning.default') }}</span>
                                 </button>
                                 <button type="button" class="plus-menu-item" id="plus-web-search" style="display: none;">
                                     <i class="fas fa-globe"></i>
-                                    <span class="plus-menu-label">Web search</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.tools.web_search') }}</span>
                                     <div class="plus-menu-toggle-switch" id="web-search-toggle-switch"></div>
                                 </button>
                             </div>
                             <div class="plus-menu-section">
-                                <button type="button" class="plus-menu-item" id="plus-voice-call" title="AI voice assistant">
+                                <button type="button" class="plus-menu-item" id="plus-voice-call" title="{{ t('chat_ui.tools.voice_assistant') }}">
                                     <i class="voice-wave-icon"></i>
-                                    <span class="plus-menu-label">AI Voice</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.tools.ai_voice') }}</span>
                                     <span id="voice-call-availability-reason" class="voice-call-availability-reason" role="status" hidden></span>
                                 </button>
-                                <button type="button" class="plus-menu-item" id="plus-phone-call" title="Ask Aurvek to call your account phone">
+                                {% if presentation|default('native') == 'embedded' and embed_config.application is defined %}
+                                {% if embed_config.controls.export_pdf %}
+                                <button type="button" class="plus-menu-item" data-application-action="export_pdf"><i class="fas fa-file-pdf"></i><span class="plus-menu-label">{{ t('chat.download_pdf') }}</span></button>
+                                {% endif %}
+                                {% if embed_config.controls.export_mp3 %}
+                                <button type="button" class="plus-menu-item" data-application-action="export_mp3"><i class="fas fa-file-audio"></i><span class="plus-menu-label">{{ t('chat.download_mp3') }}</span></button>
+                                {% endif %}
+                                {% endif %}
+                                <button type="button" class="plus-menu-item" id="plus-phone-call" title="{{ t('chat_ui.phone.help') }}">
                                     <i class="fas fa-phone" aria-hidden="true"></i>
-                                    <span class="plus-menu-label">Call me</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.phone.call_me') }}</span>
                                     <span id="phone-call-menu-state" class="phone-call-menu-state" role="status"></span>
                                 </button>
                             </div>
                             <div class="plus-menu-section" id="plus-multi-ai-section" style="display: none;">
                                 <button type="button" class="plus-menu-item" id="plus-multi-ai">
                                     <i class="fas fa-layer-group"></i>
-                                    <span class="plus-menu-label">Multi-AI Compare</span>
-                                    <span class="plus-menu-badge" id="multi-ai-badge">Off</span>
+                                    <span class="plus-menu-label">{{ t('chat_ui.multi_ai.title') }}</span>
+                                    <span class="plus-menu-badge" id="multi-ai-badge">{{ t('chat_ui.state.off') }}</span>
                                 </button>
                             </div>
                         </div>
                         <!-- Reasoning popup (standalone, position: fixed in CSS) -->
                         <div id="reasoning-control">
-                            <div id="reasoning-popup" class="thinking-tokens-popup" style="display: none;">
-                                <h4>Razonamiento</h4>
-                                <p id="reasoning-description">Capacidad no catalogada; se usará el valor del proveedor.</p>
+                            <div id="reasoning-popup" class="thinking-tokens-popup" data-label="{{ t('chat_ui.reasoning.label') }}" style="display: none;">
+                                <h4>{{ t('chat_ui.reasoning.label') }}</h4>
+                                <p id="reasoning-description">{{ t('chat_ui.reasoning.provider_default') }}</p>
                                 <div id="reasoning-modes" class="thinking-tokens-presets"></div>
                                 <div id="reasoning-custom-value" class="thinking-tokens-value" hidden>
-                                    <label for="reasoning-budget-input">Tokens</label>
+                                    <label for="reasoning-budget-input">{{ t('chat_ui.reasoning.tokens') }}</label>
                                     <input type="number" id="reasoning-budget-input" required>
                                 </div>
-                                <button id="reasoning-apply" class="btn btn-sm btn-primary" hidden>Aplicar</button>
+                                <button id="reasoning-apply" class="btn btn-sm btn-primary" hidden>{{ t('chat_ui.action.apply') }}</button>
                             </div>
                         </div>
                     </div>
                     <!-- Hidden audio button for audio.js compatibility -->
                     <i class="fas fa-microphone" id="audio-button" style="display: none;"></i>
-                    <textarea id="message-text" class="form-control" placeholder="Write a message" rows="1" disabled></textarea>
+                    <textarea id="message-text" class="form-control" placeholder="{{ t('chat_ui.composer.placeholder') }}" rows="1" disabled></textarea>
                     <div class="send-controls">
                         <button class="btn send-btn" type="submit" id="send-button" onclick="handleSendButtonClick(event)" disabled>
-                            <span class="send-label">Send</span>
+                            <span class="send-label">{{ t('chat_ui.composer.send') }}</span>
                             <span class="send-icon" aria-hidden="true"></span>
                         </button>
                     </div>
@@ -606,16 +697,16 @@
             <div id="audio-recording-controls" class="hidden">
                 <div id="time-counter">00:00</div>
                 <div class="audio-buttons">
-                    <button id="cancel-audio" class="btn btn-danger">
+                    <button id="cancel-audio" class="btn btn-danger" aria-label="{{ t('chat_ui.action.cancel') }}">
                         <i class="fas fa-times button-icon"></i>
                     </button>
-                    <button id="send-audio" class="btn btn-success">
+                    <button id="send-audio" class="btn btn-success" aria-label="{{ t('chat_ui.tools.record_audio') }}">
                         <i class="fas fa-paper-plane button-icon"></i>
                     </button>
                 </div>
             </div>
             <div id="insufficient-balance-message" class="alert alert-warning" style="display: none;">
-                Your current balance is 0, please <a href="/payment">recharge your balance</a> or <a href="/settings#api-keys">BYOK</a>.
+                {% if presentation|default('native') == 'embedded' %}{{ t('embed.balance') }}{% else %}{{ t('chat_ui.balance.empty') }} <a href="/payment">{{ t('chat_ui.balance.recharge') }}</a> {{ t('chat_ui.balance.or') }} <a href="/settings#api-keys">BYOK</a>.{% endif %}
             </div>
         </div>
         {% if can_send_files %}
@@ -623,17 +714,17 @@
             class="drop-zone-overlay position-absolute d-none justify-content-center align-items-center"
             style="top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1050;">
             <p class="text-white">
-                Drop file here
+                <span data-i18n-text="chat_ui.attachments.drop_here">{{ t('chat_ui.attachments.drop_here') }}</span>
             </p>
         </div>
         {% endif %}
     </div>
 
     <div id="fullsizeContainer" class="fullsize-container">
-        <img id="fullsizeImage" class="fullsize-image" src="" alt="Fullsize Image">
+        <img id="fullsizeImage" class="fullsize-image" src="" data-i18n-alt="chat_ui.viewer.fullsize_image" alt="{{ t('chat_ui.viewer.fullsize_image') }}">
         <div class="fullsize-controls">
-            <button id="downloadButton" class="btn btn-primary">Download</button>
-            <button id="deleteButton" class="btn btn-danger">Delete</button>
+            <button id="downloadButton" class="btn btn-primary" data-i18n-text="chat_ui.action.download">{{ t('chat_ui.action.download') }}</button>
+            <button id="deleteButton" class="btn btn-danger" data-i18n-text="chat_ui.action.delete">{{ t('chat_ui.action.delete') }}</button>
         </div>
     </div>
 
@@ -642,32 +733,44 @@
 
     <!-- Modals: placed outside #page-content to avoid stacking context z-index issues (nekoglass theme) -->
 
+    <div class="modal" id="promptInfoModal" tabindex="-1" aria-labelledby="prompt-info-modal-title" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="prompt-info-modal-title">{{ t('chat_ui.assistant.details') }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('chat_ui.action.close') }}"></button>
+                </div>
+                <div class="modal-body" id="prompt-info-modal-body"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Multi-AI Compare Modal -->
     <div class="modal fade" id="multiAiModal" tabindex="-1" aria-labelledby="multiAiModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="multiAiModalLabel">Multi-AI Compare</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h5 class="modal-title" id="multiAiModalLabel">{{ t('chat_ui.multi_ai.title') }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('chat_ui.action.close') }}"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="multi-ai-description">Select up to 4 AI models to compare responses side by side.</p>
+                    <p class="multi-ai-description">{{ t('chat_ui.multi_ai.description') }}</p>
                     <div id="multi-ai-model-list" class="multi-ai-model-list">
                         <!-- Populated dynamically by JS, grouped by provider -->
                     </div>
                     <div class="multi-ai-selection-count">
-                        <span id="multi-ai-count">0</span>/4 models selected
+                        <span id="multi-ai-count">0</span>{{ t('chat_ui.multi_ai.selected_suffix') }}
                     </div>
                     <div class="multi-ai-keep-active">
                         <label class="form-check-label" for="multi-ai-keep-active-check">
                             <input type="checkbox" class="form-check-input" id="multi-ai-keep-active-check">
-                            Keep active for all following messages
+                            {{ t('chat_ui.multi_ai.keep_active') }}
                         </label>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" id="multi-ai-disable-btn">Disable</button>
-                    <button type="button" class="btn btn-primary" id="multi-ai-apply-btn" disabled>Apply</button>
+                    <button type="button" class="btn btn-secondary" id="multi-ai-disable-btn">{{ t('chat_ui.action.disable') }}</button>
+                    <button type="button" class="btn btn-primary" id="multi-ai-apply-btn" disabled>{{ t('chat_ui.action.apply') }}</button>
                 </div>
             </div>
         </div>
@@ -681,11 +784,11 @@
                     <div>
                         <h5 class="modal-title" id="phoneCallModalLabel">
                             <i class="fas fa-phone" aria-hidden="true"></i>
-                            Call me
+                            {{ t('chat_ui.phone.call_me') }}
                         </h5>
-                        <p class="phone-call-subtitle">Aurvek will use this conversation when it calls you.</p>
+                        <p class="phone-call-subtitle">{{ t('chat_ui.phone.subtitle') }}</p>
                     </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close call controls"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('chat_ui.phone.close') }}"></button>
                 </div>
                 <div class="modal-body">
                     <div id="phone-call-status" class="phone-call-status" role="status" aria-live="polite"></div>
@@ -695,57 +798,57 @@
                             <i class="fas fa-mobile-screen-button"></i>
                         </div>
                         <div class="phone-call-target-copy">
-                            <h6 id="phone-call-target-title">Your phone</h6>
-                            <p id="phone-call-target" class="phone-call-muted">Checking your phone number…</p>
+                            <h6 id="phone-call-target-title">{{ t('chat_ui.phone.your_phone') }}</h6>
+                            <p id="phone-call-target" class="phone-call-muted">{{ t('chat_ui.phone.checking_number') }}</p>
                             <p id="phone-call-move-note" class="phone-call-muted" hidden></p>
                         </div>
                         <div class="phone-call-target-actions">
-                            <a id="phone-call-profile-link" class="btn btn-sm btn-outline-primary" href="/settings#profile" hidden>Open Settings</a>
+                            <a id="phone-call-profile-link" class="btn btn-sm btn-outline-primary" href="/settings#profile" hidden>{{ t('chat_ui.phone.open_settings') }}</a>
                             <a class="btn btn-sm btn-outline-secondary" href="/settings#calls">
                                 <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
-                                View call history
+                                {{ t('chat_ui.phone.view_history') }}
                             </a>
                         </div>
                     </section>
 
                     <section id="phone-action-section" class="phone-call-section" aria-labelledby="phone-action-title" hidden>
-                        <h6 id="phone-action-title">When should we call?</h6>
-                        <p class="phone-call-muted">The prompt, history and voice from this conversation will be used.</p>
+                        <h6 id="phone-action-title">{{ t('chat_ui.phone.when') }}</h6>
+                        <p class="phone-call-muted">{{ t('chat_ui.phone.context_help') }}</p>
 
                         <div id="phone-active-card" class="phone-call-state-card is-active" hidden>
                             <div class="phone-call-state-main">
-                                <strong id="phone-active-title">Preparing call</strong>
+                                <strong id="phone-active-title">{{ t('chat_ui.phone.preparing') }}</strong>
                                 <span id="phone-active-summary" class="phone-call-state-detail"></span>
                             </div>
-                            <button type="button" class="btn btn-sm btn-outline-danger" id="phone-hangup">Hang up</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger" id="phone-hangup">{{ t('chat_ui.phone.hang_up') }}</button>
                         </div>
 
                         <button type="button" class="btn btn-success phone-call-now" id="phone-call-now">
                             <i class="fas fa-phone-volume" aria-hidden="true"></i>
-                            Call now
+                            {{ t('chat_ui.phone.call_now') }}
                         </button>
 
                         <form id="phone-schedule-form" class="phone-schedule-form">
-                            <label class="form-label" for="phone-schedule-at">Schedule for later</label>
+                            <label class="form-label" for="phone-schedule-at">{{ t('chat_ui.phone.schedule_later') }}</label>
                             <div class="phone-schedule-row">
                                 <input type="datetime-local" class="form-control" id="phone-schedule-at" required>
-                                <button type="submit" class="btn btn-primary" id="phone-schedule-submit">Schedule</button>
+                                <button type="submit" class="btn btn-primary" id="phone-schedule-submit">{{ t('chat_ui.phone.schedule') }}</button>
                             </div>
-                            <div class="form-text">Uses your current time zone.</div>
+                            <div class="form-text">{{ t('chat_ui.phone.time_zone_help') }}</div>
                         </form>
 
                         <div id="phone-scheduled-card" class="phone-call-state-card is-scheduled" hidden>
                             <div class="phone-call-state-main">
-                                <strong>Scheduled call</strong>
+                                <strong>{{ t('chat_ui.phone.scheduled') }}</strong>
                                 <span id="phone-scheduled-summary" class="phone-call-state-detail"></span>
                             </div>
-                            <button type="button" class="btn btn-sm btn-outline-danger" id="phone-cancel-scheduled">Cancel</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger" id="phone-cancel-scheduled">{{ t('chat_ui.action.cancel') }}</button>
                         </div>
 
                         <div class="phone-call-assignment-control" id="phone-conversation-assignment-control" hidden>
                             <button type="button" class="btn phone-call-assignment-action" id="phone-conversation-assignment">
                                 <i id="phone-conversation-assignment-icon" class="fas fa-phone" aria-hidden="true"></i>
-                                <span id="phone-conversation-assignment-label">Use this conversation for phone calls</span>
+                                <span id="phone-conversation-assignment-label">{{ t('chat_ui.phone.use_conversation') }}</span>
                             </button>
                         </div>
                     </section>
@@ -760,20 +863,20 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="folderModalLabel">Add Folder</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h5 class="modal-title" id="folderModalLabel">{{ t('chat_ui.folder.add') }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('chat_ui.action.close') }}"></button>
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label for="folderName" class="form-label">Folder Name</label>
-                        <input type="text" class="form-control" id="folderName" placeholder="Enter folder name">
+                        <label for="folderName" class="form-label">{{ t('chat_ui.folder.name') }}</label>
+                        <input type="text" class="form-control" id="folderName" placeholder="{{ t('chat_ui.folder.name_placeholder') }}">
                     </div>
                     <div class="mb-3">
-                        <label for="folderColor" class="form-label">Color</label>
+                        <label for="folderColor" class="form-label">{{ t('chat_ui.folder.color') }}</label>
                         <input type="color" class="form-control form-control-color" id="folderColor" value="#3B82F6">
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Color Presets</label>
+                        <label class="form-label">{{ t('chat_ui.folder.color_presets') }}</label>
                         <div class="d-flex flex-wrap gap-2">
                             <div class="color-preset" style="width: 30px; height: 30px; background-color: #3B82F6; cursor: pointer; border-radius: 50%;" data-color="#3B82F6"></div>
                             <div class="color-preset" style="width: 30px; height: 30px; background-color: #EF4444; cursor: pointer; border-radius: 50%;" data-color="#EF4444"></div>
@@ -785,8 +888,8 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="saveFolderBtn">Save</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('chat_ui.action.cancel') }}</button>
+                    <button type="button" class="btn btn-primary" id="saveFolderBtn">{{ t('chat_ui.action.save') }}</button>
                 </div>
             </div>
         </div>
@@ -797,22 +900,22 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="moveChatModalLabel">Move Chat to Folder</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h5 class="modal-title" id="moveChatModalLabel">{{ t('chat_ui.folder.move_chat') }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('chat_ui.action.close') }}"></button>
                 </div>
                 <div class="modal-body">
-                    <p>Select a folder to move this chat to:</p>
+                    <p>{{ t('chat_ui.folder.select_destination') }}</p>
                     <div class="list-group" id="foldersList">
                         <!-- Folders will be populated here -->
                     </div>
                     <div class="mt-3">
                         <button type="button" class="btn btn-outline-secondary" id="removeFromFolderBtn">
-                            <i class="fas fa-times"></i> Remove from Folder
+                            <i class="fas fa-times"></i> {{ t('chat_ui.folder.remove') }}
                         </button>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('chat_ui.action.cancel') }}</button>
                 </div>
             </div>
         </div>
@@ -832,25 +935,34 @@
     </script>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+    {% if presentation|default('native') != 'embedded' %}
     <script src="{{ get_static_url('/static/js/api-credentials-client.js') }}"></script>
+    {% endif %}
     <script src="{{ get_static_url('/static/js/common/notification-modal.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/session-utils.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/utils.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/fileHandling.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/audio.js') }}"></script>
+    {% if presentation|default('native') != 'embedded' %}
     <script src="{{ get_static_url('/static/js/chat/voice-note-retranscription.js') }}"></script>
+    {% endif %}
     <script src="{{ get_static_url('/static/js/chat/main.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/chat.js') }}"></script>
+    {% if presentation|default('native') != 'embedded' %}
     <script src="{{ get_static_url('/static/js/chat/phone-history.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/warmup.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/message-search.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/folders.js') }}"></script>
     <script src="{{ get_static_url('/static/js/themeManager.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/common/ui-language.js') }}"></script>
     <script src="{{ get_static_url('/static/js/nekoglass-controls.js') }}"></script>
     <script src="/sdk/elevenlabs-client.js"></script>
-    <script src="{{ get_static_url('/static/js/chat/voice-call.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/phone-call.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/wellbeing.js') }}"></script>
+    {% endif %}
+    <script src="{{ get_static_url('/static/js/chat/browser-voice.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/chat/voice-call.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/chat/application-actions.js') }}"></script>
     <script>
         // CDN Configuration for JavaScript
         window.CDN_CONFIG = {
@@ -867,7 +979,7 @@
         Config.max_chat_image_dimension = {{ max_chat_image_dimension | tojson }};
         Config.attachment_upload_chunk_size_bytes = {{ attachment_upload_chunk_size_bytes | tojson }};
         var user_id = {{ user_id }};
-        var username = "{{ username }}";
+        var username = {{ username|tojson }};
         var userProfilePicture = "{{ user_profile_picture | default('', true) }}";
         var botProfilePicture = "{{ bot_profile_picture | default('', true) }}";
         var botProfilePicture128 = "{{ bot_profile_picture_128 | default('', true) }}";

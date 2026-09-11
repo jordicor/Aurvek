@@ -1,5 +1,6 @@
 (function() {
     'use strict';
+    const tr = (key, params) => AurvekI18n.t(`chat_widgets.phone_history.${key}`, params);
 
     const calls = new Map();
     const renderedMarkerIds = new Set();
@@ -23,7 +24,7 @@
         const raw = String(value);
         const parsed = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw.replace(' ', 'T')}Z`);
         if (Number.isNaN(parsed.getTime())) return raw;
-        return parsed.toLocaleString();
+        return parsed.toLocaleString(AurvekI18n.locale);
     }
 
     function isAdminView() {
@@ -31,34 +32,27 @@
     }
 
     function technicalLabel(value) {
-        return asText(value, 'unknown').replaceAll('_', ' ');
+        return asText(value, tr('unknown')).replaceAll('_', ' ');
     }
 
     function statusLabel(value) {
         const labels = {
-            created: 'Preparing',
-            dispatching: 'Preparing',
-            dispatch_unknown: 'Checking status',
-            queued: 'Preparing',
-            initiated: 'Calling',
-            ringing: 'Ringing',
-            in_progress: 'In call',
-            completed: 'Completed',
-            busy: 'Busy',
-            no_answer: 'No answer',
-            machine: 'Voicemail',
-            failed: 'Failed',
-            canceled: 'Canceled',
-            unresolved: 'Status unavailable'
+            created: tr('status_preparing'), dispatching: tr('status_preparing'),
+            dispatch_unknown: tr('status_checking'), queued: tr('status_preparing'),
+            initiated: tr('status_calling'), ringing: tr('status_ringing'),
+            in_progress: tr('status_in_call'), completed: tr('status_completed'),
+            busy: tr('status_busy'), no_answer: tr('status_no_answer'),
+            machine: tr('status_voicemail'), failed: tr('status_failed'),
+            canceled: tr('status_canceled'), unresolved: tr('status_unavailable')
         };
         const normalized = String(value || '').toLowerCase();
         return labels[normalized] || technicalLabel(value);
     }
 
     function directionLabel(value) {
-        if (String(value || '').toLowerCase() === 'inbound') return 'Incoming';
-        if (String(value || '').toLowerCase() === 'outbound') return 'Outgoing';
-        return 'Phone';
+        if (String(value || '').toLowerCase() === 'inbound') return tr('incoming');
+        if (String(value || '').toLowerCase() === 'outbound') return tr('outgoing');
+        return tr('phone');
     }
 
     function formatDuration(value) {
@@ -68,9 +62,9 @@
         const rounded = Math.round(total);
         const minutes = Math.floor(rounded / 60);
         const seconds = rounded % 60;
-        if (minutes === 0) return `${seconds} sec`;
-        if (seconds === 0) return `${minutes} min`;
-        return `${minutes} min ${seconds} sec`;
+        if (minutes === 0) return tr('seconds', {count: seconds});
+        if (seconds === 0) return tr('minutes', {count: minutes});
+        return tr('duration', {minutes, seconds});
     }
 
     function activeConversationId() {
@@ -123,12 +117,12 @@
         detailTitle = document.createElement('h5');
         detailTitle.className = 'modal-title';
         detailTitle.id = 'phoneHistoryDetailTitle';
-        detailTitle.textContent = 'Phone call';
+        detailTitle.textContent = tr('phone_call');
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'btn-close';
         close.setAttribute('data-bs-dismiss', 'modal');
-        close.setAttribute('aria-label', 'Close phone call details');
+        close.setAttribute('aria-label', tr('close_details'));
         detailBody = document.createElement('div');
         detailBody.className = 'modal-body phone-history-detail-body';
         header.append(detailTitle, close);
@@ -144,7 +138,7 @@
         const number = Number(value);
         if (!Number.isFinite(number)) return '—';
         try {
-            return new Intl.NumberFormat(undefined, {
+            return new Intl.NumberFormat(AurvekI18n.locale, {
                 style: 'currency',
                 currency: asText(currency, 'USD')
             }).format(number);
@@ -167,20 +161,16 @@
 
     function safeServerMessage(response, payload, scope) {
         if (response && [400, 403, 404, 409, 422].includes(response.status)) {
-            const detail = payload && typeof payload.detail === 'string'
-                ? payload.detail.trim()
-                : '';
-            if (detail && isAdminView()) return detail.slice(0, 300);
             if (response.status === 404 && scope === 'recording') {
-                return 'Saved audio is no longer available.';
+                return tr('audio_unavailable');
             }
-            if (response.status === 404) return 'This call is no longer available.';
+            if (response.status === 404) return tr('call_unavailable');
         }
-        if (response?.status === 401) return 'Your session has expired.';
+        if (response?.status === 401) return AurvekI18n.t('common.session.expired_message');
         if (response?.status >= 500) {
-            return 'The deletion could not be started. Please try again later.';
+            return tr('deletion_failed_later');
         }
-        return 'The deletion could not be started.';
+        return tr('deletion_failed');
     }
 
     async function deletePhoneData(call, scope, button, status) {
@@ -189,17 +179,16 @@
         if (!callId || pendingDeletes.has(requestKey)) return;
         const originConversationId = activeConversationId();
         const originGeneration = conversationGeneration;
-        const noun = scope === 'recording' ? 'saved audio' : 'phone call and its data';
-        if (!window.confirm(`Delete this ${noun}? This action cannot be undone.`)) return;
+        if (!window.confirm(tr(scope === 'recording' ? 'delete_audio_confirm' : 'delete_call_confirm'))) return;
 
         const csrfToken = document.querySelector('meta[name="aurvek-csrf-token"]')?.content;
         if (!csrfToken) {
-            status.textContent = 'Deletion security is unavailable. Reload the page and try again.';
+            status.textContent = tr('deletion_security');
             return;
         }
         pendingDeletes.add(requestKey);
         button.disabled = true;
-        status.textContent = 'Starting deletion…';
+        status.textContent = tr('deletion_starting');
         const suffix = scope === 'recording' ? '/recording' : '';
         try {
             const fetcher = typeof window.secureFetch === 'function'
@@ -213,7 +202,11 @@
                     headers: {'X-GPTSub-CSRF': csrfToken}
                 }
             );
-            if (!response) throw new Error('Your session is no longer available.');
+            if (!response) {
+                const error = new Error(AurvekI18n.t('common.session.expired_message'));
+                error.code = 'session_expired';
+                throw error;
+            }
             let payload = null;
             try {
                 payload = await response.json();
@@ -222,20 +215,19 @@
             }
             if (!response.ok) throw new Error(safeServerMessage(response, payload, scope));
             status.textContent = scope === 'recording'
-                ? 'Audio deletion scheduled.'
-                : 'Call deletion scheduled.';
+                ? tr('audio_deletion_scheduled') : tr('call_deletion_scheduled');
             if (isOriginConversationCurrent(originConversationId, originGeneration) &&
                 typeof window.refreshActiveConversation === 'function') {
                 try {
                     await window.refreshActiveConversation();
                 } catch (_error) {
-                    status.textContent += ' Reload the conversation to update the history.';
+                    status.textContent += ' ' + tr('reload_history');
                 }
             }
         } catch (error) {
             status.textContent = error instanceof Error
                 ? error.message
-                : 'The deletion could not be started.';
+                : tr('deletion_failed');
             button.disabled = false;
         } finally {
             pendingDeletes.delete(requestKey);
@@ -246,7 +238,7 @@
         const section = document.createElement('section');
         section.className = 'phone-history-detail-section';
         const heading = document.createElement('h6');
-        heading.textContent = 'Saved audio and call';
+        heading.textContent = tr('saved_audio_and_call');
         const fields = document.createElement('dl');
         fields.className = 'phone-history-summary';
         const recording = call.recording && typeof call.recording === 'object'
@@ -254,19 +246,18 @@
             : {};
         appendField(
             fields,
-            'Saved audio',
-            recording.present ? 'Available' : 'Not available'
+            tr('saved_audio'), recording.present ? tr('available') : tr('not_available')
         );
         if (recording.present && isAdminView()) {
-            appendField(fields, 'Recording status', technicalLabel(recording.status));
+            appendField(fields, tr('recording_status'), technicalLabel(recording.status));
         }
 
         const purge = call.purge && typeof call.purge === 'object' ? call.purge : null;
         if (purge && isAdminView()) {
-            appendField(fields, 'Deletion status', technicalLabel(purge.status));
-            appendField(fields, 'Deletion scope', technicalLabel(purge.scope));
-            appendField(fields, 'Deletion attempt', Number(purge.attempt) || 0);
-            if (purge.error) appendField(fields, 'Deletion note', purge.error);
+            appendField(fields, tr('deletion_status'), technicalLabel(purge.status));
+            appendField(fields, tr('deletion_scope'), technicalLabel(purge.scope));
+            appendField(fields, tr('deletion_attempt'), Number(purge.attempt) || 0);
+            if (purge.status === 'needs_attention') appendField(fields, tr('deletion_note'), tr('deletion_pending_review'));
         }
         section.append(heading, fields);
 
@@ -280,19 +271,18 @@
             .includes(String(purge.status));
         if (deletionBlocked) {
             status.textContent = purge.status === 'needs_attention'
-                ? 'Deletion is pending review.'
-                : 'Deletion is pending.';
+                ? tr('deletion_pending_review') : tr('deletion_pending');
         } else {
             if (recording.present && TERMINAL_CALL_STATUSES.has(String(call.status))) {
                 actions.appendChild(makeButton(
-                    'Delete audio',
+                    tr('delete_audio'),
                     'btn btn-outline-danger btn-sm',
                     event => deletePhoneData(call, 'recording', event.currentTarget, status)
                 ));
             }
             if (TERMINAL_CALL_STATUSES.has(String(call.status))) {
                 actions.appendChild(makeButton(
-                    'Delete call',
+                    tr('delete_call'),
                     'btn btn-danger btn-sm',
                     event => deletePhoneData(call, 'call', event.currentTarget, status)
                 ));
@@ -307,7 +297,7 @@
         const section = document.createElement('section');
         section.className = 'phone-history-detail-section';
         const heading = document.createElement('h6');
-        heading.textContent = 'Timeline';
+        heading.textContent = tr('timeline');
         const list = document.createElement('ol');
         list.className = 'phone-history-timeline';
         const entries = Array.isArray(call.timeline) ? call.timeline : [];
@@ -324,7 +314,7 @@
         if (entries.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'phone-call-muted';
-            empty.textContent = 'No timeline events are available.';
+            empty.textContent = tr('timeline_empty');
             section.append(heading, empty);
         } else {
             section.append(heading, list);
@@ -336,12 +326,12 @@
         const section = document.createElement('section');
         section.className = 'phone-history-detail-section';
         const heading = document.createElement('h6');
-        heading.textContent = 'Cost';
+        heading.textContent = tr('cost');
         const summary = document.createElement('p');
         const cost = call.final_cost ?? call.estimated_cost;
         summary.textContent = call.final_cost === null || call.final_cost === undefined
-            ? `Estimated: ${formatCost(cost, call.currency)}`
-            : `Final: ${formatCost(cost, call.currency)}`;
+            ? tr('estimated_cost', {cost: formatCost(cost, call.currency)})
+            : tr('final_cost', {cost: formatCost(cost, call.currency)});
         section.append(heading, summary);
 
         const components = Array.isArray(call.cost_components) ? call.cost_components : [];
@@ -353,7 +343,7 @@
                 const label = [component.provider, component.component_type]
                     .filter(Boolean)
                     .join(' · ');
-                item.textContent = `${label || 'Usage'}: ${formatCost(component.customer_charge, component.currency)}`;
+                item.textContent = tr('cost_item', {label: label || tr('usage'), cost: formatCost(component.customer_charge, component.currency)});
                 list.appendChild(item);
             });
             section.appendChild(list);
@@ -375,24 +365,24 @@
         const section = document.createElement('section');
         section.className = 'phone-history-detail-section';
         const heading = document.createElement('h6');
-        heading.textContent = 'Message provenance';
+        heading.textContent = tr('message_provenance');
         const fields = document.createElement('dl');
         fields.className = 'phone-history-summary';
-        appendField(fields, 'Messages', Number(summary.total_messages) || 0);
-        appendField(fields, 'Phone messages', Number(summary.phone_messages) || 0);
-        appendField(fields, 'Interrupted', Number(summary.interrupted_messages) || 0);
-        appendField(fields, 'Played audio', `${Number(summary.played_ms) || 0} ms`);
-        appendField(fields, 'Delivery', countsLabel(summary.delivery_states));
-        appendField(fields, 'Participants', countsLabel(summary.participants));
-        appendField(fields, 'Origin channels', countsLabel(summary.origin_channels));
+        appendField(fields, tr('messages'), Number(summary.total_messages) || 0);
+        appendField(fields, tr('phone_messages'), Number(summary.phone_messages) || 0);
+        appendField(fields, tr('interrupted'), Number(summary.interrupted_messages) || 0);
+        appendField(fields, tr('played_audio'), tr('milliseconds', {count: Number(summary.played_ms) || 0}));
+        appendField(fields, tr('delivery'), countsLabel(summary.delivery_states));
+        appendField(fields, tr('participants'), countsLabel(summary.participants));
+        appendField(fields, tr('origin_channels'), countsLabel(summary.origin_channels));
         const turnIds = Array.isArray(summary.turn_ids) ? summary.turn_ids : [];
         const visibleTurnIds = turnIds.slice(0, 12);
         const turnsLabel = visibleTurnIds.length > 0
             ? `${visibleTurnIds.join(' · ')}${turnIds.length > visibleTurnIds.length
-                ? ` · +${turnIds.length - visibleTurnIds.length} more`
+                ? tr('more_turns', {count: turnIds.length - visibleTurnIds.length})
                 : ''}`
             : '—';
-        appendField(fields, 'Turns', turnsLabel);
+        appendField(fields, tr('turns'), turnsLabel);
         section.append(heading, fields);
         return section;
     }
@@ -403,7 +393,7 @@
         const section = document.createElement('section');
         section.className = 'phone-history-detail-section';
         const heading = document.createElement('h6');
-        heading.textContent = 'Saved audio';
+        heading.textContent = tr('saved_audio');
         section.appendChild(heading);
         tracks.forEach(track => {
             const url = safeRecordingUrl(track?.url);
@@ -411,8 +401,8 @@
             const wrapper = document.createElement('div');
             wrapper.className = 'phone-history-audio-track';
             const label = document.createElement('span');
-            const trackLabels = {mixed: 'Full call', participant: 'You', assistant: 'Assistant'};
-            label.textContent = trackLabels[String(track.track || '').toLowerCase()] || 'Audio';
+            const trackLabels = {mixed: tr('full_call'), participant: tr('you'), assistant: tr('assistant')};
+            label.textContent = trackLabels[String(track.track || '').toLowerCase()] || tr('audio');
             const audio = document.createElement('audio');
             audio.controls = true;
             audio.preload = 'none';
@@ -428,30 +418,30 @@
         if (!call) return;
         ensureDetailModal();
         const direction = directionLabel(call.direction);
-        detailTitle.textContent = direction === 'Phone' ? 'Phone call' : `${direction} call`;
+        detailTitle.textContent = tr('direction_call', {direction});
         detailBody.replaceChildren();
 
         const summary = document.createElement('dl');
         summary.className = 'phone-history-summary';
-        appendField(summary, 'Status', statusLabel(call.status));
-        appendField(summary, 'Date', localDateTime(
+        appendField(summary, tr('status'), statusLabel(call.status));
+        appendField(summary, tr('date'), localDateTime(
             call.answered_at || call.initiated_at || call.created_at
         ));
-        appendField(summary, 'Duration', formatDuration(call.duration_seconds));
-        appendField(summary, 'Cost', formatCost(
+        appendField(summary, tr('duration_label'), formatDuration(call.duration_seconds));
+        appendField(summary, tr('cost'), formatCost(
             call.final_cost ?? call.estimated_cost,
             call.currency
         ));
         if (isAdminView()) {
-            appendField(summary, 'Status code', technicalLabel(call.status));
-            appendField(summary, 'Direction', technicalLabel(call.direction));
-            appendField(summary, 'Answered by', technicalLabel(call.answered_by));
-            appendField(summary, 'Ended', localDateTime(call.ended_at));
+            appendField(summary, tr('status_code'), technicalLabel(call.status));
+            appendField(summary, tr('direction'), technicalLabel(call.direction));
+            appendField(summary, tr('answered_by'), technicalLabel(call.answered_by));
+            appendField(summary, tr('ended'), localDateTime(call.ended_at));
             if (call.termination_reason) {
-                appendField(summary, 'End reason', technicalLabel(call.termination_reason));
+                appendField(summary, tr('end_reason'), technicalLabel(call.termination_reason));
             }
             if (call.error_code) {
-                appendField(summary, 'Error code', technicalLabel(call.error_code));
+                appendField(summary, tr('error_code'), technicalLabel(call.error_code));
             }
         }
         detailBody.appendChild(summary);
@@ -492,12 +482,12 @@
         icon.setAttribute('aria-hidden', 'true');
         const text = document.createElement('span');
         const isEnd = marker.kind === 'end';
-        text.textContent = isEnd ? 'Phone call ended' : 'Phone call started';
+        text.textContent = tr(isEnd ? 'call_ended' : 'call_started');
         label.append(icon, text);
         if (!marker.transcript_present) {
             const noTranscript = document.createElement('span');
             noTranscript.className = 'phone-history-no-transcript';
-            noTranscript.textContent = 'No transcript';
+            noTranscript.textContent = tr('no_transcript');
             label.appendChild(noTranscript);
         }
         if (marker.occurred_at) {
@@ -514,7 +504,7 @@
             label.appendChild(callState);
         }
         if (call) {
-            label.appendChild(makeButton('Details', 'phone-history-detail-button', () => showCall(callId)));
+            label.appendChild(makeButton(tr('details'), 'phone-history-detail-button', () => showCall(callId)));
         }
         element.append(rule, label, rule.cloneNode());
         return element;

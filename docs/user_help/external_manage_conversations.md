@@ -21,12 +21,12 @@ prerequisites:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-31
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
 
-You can list and switch between your conversations directly from WhatsApp or Telegram using the `!chats` and `!set` commands. No need to open the web interface.
+You can list and switch messaging conversations directly from WhatsApp or Telegram using `!chats` and `!set`. Telephone assignment is managed separately and is not changed by these commands.
 
 ## Steps
 
@@ -38,11 +38,12 @@ You can list and switch between your conversations directly from WhatsApp or Tel
 ## Notes
 
 - Only one conversation can be active per platform at a time.
-- A conversation can only be on one external platform at a time.
+- A conversation can only use one messaging assignment at a time: WhatsApp or Telegram. Its independent telephone assignment may remain active.
 - If you move a conversation away from the platform you are currently using, the system warns you that your next message there will start a new conversation automatically.
 - Locked conversations cannot be assigned. Use `!new` to start a fresh one instead.
 - Cross-platform assignment requires the target platform to be linked to your account.
 - You can also assign conversations from the web sidebar.
+- Use **+ > Call me** in the web chat to assign or manage the telephone channel.
 
 ## Related
 
@@ -50,3 +51,4 @@ You can list and switch between your conversations directly from WhatsApp or Tel
 - telegram_commands
 - whatsapp_continue_conversation
 - external_platforms_overview
+- phone_calls_usage

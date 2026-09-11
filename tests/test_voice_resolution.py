@@ -215,6 +215,11 @@ async def test_elevenlabs_configuration_ignores_mapping_voice_override(
             yield conn
 
     monkeypatch.setattr(service_module, "get_db_connection", get_connection)
+    monkeypatch.setattr(
+        service_module,
+        "load_user_preferred_languages",
+        AsyncMock(return_value=("es", "en")),
+    )
     service = ElevenLabsService()
     monkeypatch.setattr(service, "_fetch_signed_url", AsyncMock(return_value=None))
 
@@ -224,11 +229,37 @@ async def test_elevenlabs_configuration_ignores_mapping_voice_override(
     assert config["voice_id"] == "el-other"
     assert config["voice_provider"] == "elevenlabs"
     assert config["voice_id"] != "legacy-override"
+    assert config["preferred_languages"] == ["es", "en"]
+    assert config["language"] == "Spanish"
     assert "current origin=web.live_voice" in config["prompt_text"]
     assert "perception=transcript_only" in config["prompt_text"]
     assert "[TRUSTED_INPUT_HISTORY]" in config["prompt_text"]
     assert "[AVCTX:" in config["context"]
     assert all("id" not in message for message in config["recent_messages"])
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_configuration_keeps_english_without_profile_language(
+    voice_db, monkeypatch
+):
+    @asynccontextmanager
+    async def get_connection(readonly=False):
+        async with _connect(voice_db) as conn:
+            yield conn
+
+    monkeypatch.setattr(service_module, "get_db_connection", get_connection)
+    monkeypatch.setattr(
+        service_module,
+        "load_user_preferred_languages",
+        AsyncMock(return_value=()),
+    )
+    service = ElevenLabsService()
+    monkeypatch.setattr(service, "_fetch_signed_url", AsyncMock(return_value=None))
+
+    config = await service.get_configuration(1, 1, False)
+
+    assert config["preferred_languages"] == []
+    assert config["language"] == "English"
 
 
 @pytest.mark.asyncio

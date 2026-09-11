@@ -1,0 +1,18 @@
+{
+  "support": "Aurvek-Support",
+  "support_contact": "Bei Fragen zu Konto, Sicherheit, Abrechnung oder Inhalten erreichen Sie uns unter {email}.",
+  "welcome": "Willkommen",
+  "home": "Startseite",
+  "chat": "Chat",
+  "settings": "Einstellungen",
+  "classic_home": "Klassische Startseite",
+  "related": "Ähnliche Assistenten",
+  "page_not_found": "Seite nicht gefunden",
+  "domain_not_found": "Domain nicht eingerichtet",
+  "unavailable": "Seite vorübergehend nicht verfügbar",
+  "unavailable_title": "Seite nicht verfügbar",
+  "retry": "Bitte versuchen Sie es später erneut.",
+  "copied": "Kopiert!",
+  "expired": "Angebot abgelaufen",
+  "countdown": "{days}T {hours}Std {minutes}Min {seconds}Sek"
+}

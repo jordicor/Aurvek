@@ -1,0 +1,13 @@
+{
+  "conversation_filename": "conversazione_{id}",
+  "usage_filename": "esportazione_utilizzo_{days}giorni.csv",
+  "conversation_by": "Conversazione di: {username}",
+  "model": "Modello IA: {machine} {model}",
+  "prompt": "Prompt: {name}",
+  "sender.user": "UTENTE",
+  "sender.bot": "ASSISTENTE",
+  "model_number": "Modello {number}",
+  "pdf_attached": "[PDF allegato: {filename} ({pages} pagine)]",
+  "file_content": "[Contenuto del file caricato: {filename} ({lines} righe)]",
+  "file_unavailable": "[File allegato: {filename} -- contenuto non disponibile]"
+}

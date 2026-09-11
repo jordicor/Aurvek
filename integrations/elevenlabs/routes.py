@@ -307,6 +307,7 @@ async def complete_elevenlabs_session(
     requested_session_id = (
         raw_session_id.strip() if isinstance(raw_session_id, str) else ""
     )
+    client_corrections = payload.get("client_corrections")
 
     is_admin_user = await _is_admin_user(current_user)
     conversation = await elevenlabs_service.validate_conversation_access(
@@ -432,6 +433,11 @@ async def complete_elevenlabs_session(
             },
             status_code=502,
         )
+
+    transcript = elevenlabs_service.reconcile_transcript_with_client_corrections(
+        transcript,
+        client_corrections,
+    )
 
     try:
         saved, last_user_id, last_bot_id, already_saved = await elevenlabs_service.save_transcript_to_db(

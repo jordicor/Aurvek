@@ -1,0 +1,43 @@
+<div id="catalogAutoUpdate" class="alert alert-info" role="status" aria-live="polite">
+    <span id="catalogAutoUpdateSpinner" class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+    <span id="catalogAutoUpdateText">{{ t('admin_models.catalog.checking_model_catalogs') }}</span>
+</div>
+<script>
+    async function autoUpdateLlmCatalog() {
+        const notice = document.getElementById('catalogAutoUpdate');
+        const message = document.getElementById('catalogAutoUpdateText');
+        let result = null;
+        try {
+            const response = await fetch('/api/admin/llms/sync-if-stale', { method: 'POST' });
+            result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(modelText('catalog.catalog_check_failed'));
+            }
+            if (result.refreshed) {
+                // Reuse the normal server-rendered page instead of a second row renderer.
+                const pageResponse = await fetch(window.location.href, { cache: 'no-store' });
+                if (!pageResponse.ok) throw new Error(modelText('catalog.catalog_display_refresh_failed'));
+                const freshPage = new DOMParser().parseFromString(await pageResponse.text(), 'text/html');
+                if (!freshPage.getElementById('catalogAutoUpdate')) throw new Error(modelText('catalog.catalog_page_unavailable'));
+                result.freshPage = freshPage;
+            }
+            const labels = { openrouter: 'OpenRouter', openai: 'OpenAI', anthropic: 'Claude', google: 'Gemini', xai: 'xAI', minimax: 'MiniMax', kimi: 'Kimi' };
+            const failed = Object.entries(result.results || {}).filter(([, item]) => item.error);
+            if (failed.length) {
+                notice.classList.replace('alert-info', 'alert-warning');
+                message.textContent = modelText('sync.partial', {providers: failed.map(([key]) => labels[key] || key).join(', ')});
+            } else {
+                notice.classList.replace('alert-info', 'alert-success');
+                message.textContent = result.refreshed
+                    ? modelText('catalog.model_catalogs_updated_new_models_have_been_added_disabled')
+                    : modelText('catalog.model_catalogs_are_up_to_date_they_update_automatically_after_24_hours_when_you_open_');
+            }
+        } catch (_) {
+            notice.classList.replace('alert-info', 'alert-warning');
+            message.textContent = modelText('catalog.could_not_refresh_the_catalog_view_you_can_still_manage_saved_models_or_reload_to_try');
+        } finally {
+            document.getElementById('catalogAutoUpdateSpinner').hidden = true;
+        }
+        return result;
+    }
+</script>

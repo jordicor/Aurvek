@@ -33,7 +33,8 @@
 }
 
 /* Show submenu on hover */
-.dropstart:hover > .dropdown-menu {
+.dropstart:hover > .dropdown-menu,
+.dropstart.show > .dropdown-menu {
     display: block;
 }
 

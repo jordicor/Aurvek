@@ -130,25 +130,35 @@ function renderSearchResults(append = false) {
             div.classList.add('active-result');
         }
 
-        div.innerHTML = `
-            <div class="search-result-header">
-                <span class="search-result-chat-name">${escapeHtml(item.chat_name)}</span>
-                <span class="search-result-meta">
-                    <span class="search-result-type">${item.type}</span>
-                    <span>${formatSearchDate(item.date)}</span>
-                </span>
-            </div>
-            <div class="search-result-snippet">${item.snippet_html}</div>
-        `;
+        const header = document.createElement('div');
+        header.className = 'search-result-header';
+        const chatName = document.createElement('span');
+        chatName.className = 'search-result-chat-name';
+        chatName.textContent = item.chat_name;
+        const meta = document.createElement('span');
+        meta.className = 'search-result-meta';
+        const type = document.createElement('span');
+        type.className = 'search-result-type';
+        type.textContent = item.type;
+        const date = document.createElement('span');
+        date.textContent = formatSearchDate(item.date);
+        meta.append(type, date);
+        header.append(chatName, meta);
+        const snippet = document.createElement('div');
+        snippet.className = 'search-result-snippet';
+        // The API supplies marked-up snippets; all other result fields remain text nodes.
+        snippet.innerHTML = item.snippet_html;
+        div.append(header, snippet);
 
         div.addEventListener('click', () => openSearchResult(item));
         list.appendChild(div);
     });
 
     const total = messageSearchState.items.length;
-    countEl.textContent = total === 0
-        ? 'No results'
-        : `${total} result${total !== 1 ? 's' : ''}${messageSearchState.hasMore ? '+' : ''}`;
+    countEl.textContent = AurvekI18n.t('chat_widgets.search.results', {
+        count: total,
+        suffix: messageSearchState.hasMore ? '+' : ''
+    });
 
     loadMoreBtn.style.display = messageSearchState.hasMore ? 'block' : 'none';
     emptyState.style.display = total === 0 ? 'block' : 'none';
@@ -258,8 +268,8 @@ function ensureSearchHighlightDismissButton(messageEl) {
         dismissBtn = document.createElement('button');
         dismissBtn.type = 'button';
         dismissBtn.className = 'message-highlight-dismiss';
-        dismissBtn.setAttribute('aria-label', 'Clear message highlight');
-        dismissBtn.title = 'Clear highlight';
+        dismissBtn.setAttribute('aria-label', AurvekI18n.t('chat_widgets.search.clear_highlight'));
+        dismissBtn.title = AurvekI18n.t('chat_widgets.search.clear_highlight');
         dismissBtn.textContent = 'x';
 
         dismissBtn.addEventListener('click', (e) => {
@@ -321,11 +331,11 @@ function formatSearchDate(dateStr) {
         const now = new Date();
         const diffDays = Math.floor((now - d) / 86400000);
         if (diffDays === 0) {
-            return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            return d.toLocaleTimeString(AurvekI18n.locale, { hour: '2-digit', minute: '2-digit' });
         } else if (diffDays < 7) {
-            return d.toLocaleDateString(undefined, { weekday: 'short' });
+            return d.toLocaleDateString(AurvekI18n.locale, { weekday: 'short' });
         } else {
-            return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            return d.toLocaleDateString(AurvekI18n.locale, { month: 'short', day: 'numeric' });
         }
     } catch {
         return dateStr;

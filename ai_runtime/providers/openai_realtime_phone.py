@@ -161,7 +161,9 @@ async def call_openai_realtime_phone_api(
         return
     # The closure is resolved only by OpenAIRealtimeClient.connect and the
     # transport discards the returned key after the handshake.
-    api_key_provider = lambda: key
+    def api_key_provider() -> str:
+        return key
+
     if isinstance(bridge_ref, RealtimeBridgeHandle):
         bridge = await bridge_ref.bind_provider(
             api_key_provider=api_key_provider, model=model
@@ -199,7 +201,10 @@ async def call_openai_realtime_phone_api(
         else:
             realtime_instructions = "\n\n".join(
                 part
-                for part in (str(prompt or "").strip(), _PHONE_TOOL_AUDIO_INSTRUCTION)
+                for part in (
+                    _PHONE_TOOL_AUDIO_INSTRUCTION,
+                    str(prompt or "").strip(),
+                )
                 if part
             )
             await bridge.start_turn(

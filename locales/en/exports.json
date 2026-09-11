@@ -1,0 +1,13 @@
+{
+  "conversation_filename": "conversation_{id}",
+  "usage_filename": "usage_export_{days}days.csv",
+  "conversation_by": "Conversation by: {username}",
+  "model": "LLM: {machine} {model}",
+  "prompt": "Prompt: {name}",
+  "sender.user": "USER",
+  "sender.bot": "BOT",
+  "model_number": "Model {number}",
+  "pdf_attached": "[PDF attached: {filename} ({pages} pages)]",
+  "file_content": "[Content of uploaded file: {filename} ({lines} lines)]",
+  "file_unavailable": "[Attached file: {filename} -- content unavailable]"
+}

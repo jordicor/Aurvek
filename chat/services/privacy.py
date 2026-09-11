@@ -110,7 +110,8 @@ async def mark_conversation_incognito(
             UPDATE CONVERSATIONS
             SET is_incognito = 0,
                 hidden_from_history = 0,
-                purge_on_close = 0
+                purge_on_close = 0,
+                incognito_closed_at = NULL
             WHERE id = ?
               AND user_id = ?
             """,
@@ -373,6 +374,22 @@ async def delete_conversation_rows(
                     """,
                     [conversation_id, *provider_names],
                 )
+
+    # Keep failed/ambiguous remote targets available for a later erasure retry,
+    # even after the current app membership and conversation have disappeared.
+    for table in ("APPLICATION_MEMORY_MESSAGE_DESTINATIONS", "APPLICATION_MEMORY_DESTINATIONS"):
+        if not await _table_exists(conn, table):
+            continue
+        providers = memory_link_providers_to_delete
+        if providers is None:
+            await conn.execute(f"DELETE FROM {table} WHERE conversation_id=?", (conversation_id,))
+        elif providers:
+            names = sorted(providers)
+            placeholders = ",".join("?" for _ in names)
+            await conn.execute(f"DELETE FROM {table} WHERE conversation_id=? AND provider IN ({placeholders})",
+                               (conversation_id, *names))
+    if await _table_exists(conn, "APPLICATION_MEMORY_ACTIVATIONS"):
+        await conn.execute("DELETE FROM APPLICATION_MEMORY_ACTIVATIONS WHERE conversation_id=?", (conversation_id,))
 
     try:
         from file_storage import delete_attachments_for_conversation

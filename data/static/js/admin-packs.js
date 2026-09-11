@@ -71,7 +71,7 @@
         } else {
             maxBal = typeof MAX_FREE_BALANCE !== 'undefined' ? MAX_FREE_BALANCE : 5.0;
         }
-        balanceHint.textContent = 'Max: $' + maxBal.toFixed(2);
+        balanceHint.textContent = AurvekI18n.t('marketplace_admin.ui.maximum_balance', { amount: AurvekI18n.formatCurrency(maxBal) });
     }
 
     if (isPaidCheckbox) {
@@ -125,6 +125,7 @@
             removeBtn.className = 'tag-remove';
             removeBtn.dataset.idx = idx;
             removeBtn.innerHTML = '&times;';
+            removeBtn.setAttribute('title', AurvekI18n.t('marketplace_admin.ui.remove_tag', { name: tag }));
             chip.appendChild(removeBtn);
             tagsContainer.appendChild(chip);
         });
@@ -144,11 +145,11 @@
         const val = tagInput.value.trim().substring(0, 30);
         if (!val) return;
         if (tags.length >= 10) {
-            NotificationModal.toast('Maximum 10 tags allowed', 'warning');
+            NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.maximum_10_tags_allowed'), 'warning');
             return;
         }
         if (tags.indexOf(val) !== -1) {
-            NotificationModal.toast('Tag already exists', 'warning');
+            NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.tag_already_exists'), 'warning');
             return;
         }
         tags.push(val);
@@ -195,7 +196,7 @@
             const btn = document.getElementById('saveDraftBtn');
             const originalHTML = btn.innerHTML;
             btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + escapeHtml(AurvekI18n.t('marketplace_admin.ui.saving'));
 
             const data = {
                 name: document.getElementById('packName').value.trim(),
@@ -227,18 +228,18 @@
                             await uploadCoverImage(savedPackId);
                             coverUploaded = true;
                         } catch (imgError) {
-                            NotificationModal.toast('Pack saved but cover image failed: ' + imgError.message, 'warning');
+                            NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.saved_with_cover_error'), 'warning');
                         }
                     }
 
-                    btn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                    btn.innerHTML = '<i class="fas fa-check me-1"></i> ' + escapeHtml(AurvekI18n.t('marketplace_admin.ui.saved_exclamation'));
                     btn.classList.add('btn-success');
-                    NotificationModal.toast(result.message || 'Pack saved', 'success');
+                    NotificationModal.toast(result.message || AurvekI18n.t('marketplace_admin.ui.pack_saved'), 'success');
 
                     // FormGuard: mark groups clean after successful save
                     if (typeof packMainGroup !== 'undefined') packMainGroup.markClean();
                     if (typeof packTagsGroup !== 'undefined') packTagsGroup.markClean();
-                    if (typeof packCoverGroup !== 'undefined') {
+                    if (typeof packCoverGroup !== 'undefined' && (coverUploaded || !hasPendingCoverImage())) {
                         packCoverGroup._manualDirty = false;
                         packCoverGroup.markClean();
                     }
@@ -265,12 +266,12 @@
                         btn.disabled = false;
                     }, 2000);
                 } else {
-                    NotificationModal.toast(result.detail || 'Failed to save pack', 'danger');
+                    NotificationModal.toast(result.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_save_pack'), 'danger');
                     btn.innerHTML = originalHTML;
                     btn.disabled = false;
                 }
             } catch (error) {
-                NotificationModal.toast('Error: ' + error.message, 'danger');
+                NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
                 btn.innerHTML = originalHTML;
                 btn.disabled = false;
             }
@@ -283,44 +284,44 @@
 
     window.publishPack = function() {
         if (!isEdit) return;
-        NotificationModal.confirm('Publish Pack', 'Publish this pack? It will be visible to all users.', async () => {
+        NotificationModal.confirm(AurvekI18n.t('marketplace_admin.ui.publish_pack'), AurvekI18n.t('marketplace_admin.ui.publish_this_pack_it_will_be_visible_to_all_users'), async () => {
             try {
                 const response = await fetch('/api/packs/' + packId + '/publish', { method: 'POST' });
                 const result = await response.json();
                 if (response.ok) {
-                    NotificationModal.toast('Pack published!', 'success');
+                    NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.pack_published'), 'success');
                     setTimeout(function() { location.reload(); }, 1000);
                 } else {
                     if (result.detail && typeof result.detail === 'object') {
-                        var msg = result.detail.message || 'Failed to publish';
+                        var msg = result.detail.message || AurvekI18n.t('marketplace_admin.ui.failed_to_publish');
                         var reason = result.detail.reason ? ': ' + result.detail.reason : '';
                         NotificationModal.toast(msg + reason, 'danger');
                     } else {
-                        NotificationModal.toast(result.detail || 'Failed to publish', 'danger');
+                        NotificationModal.toast(result.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_publish'), 'danger');
                     }
                 }
             } catch (error) {
-                NotificationModal.toast('Error: ' + error.message, 'danger');
+                NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
             }
-        }, null, { type: 'warning', confirmText: 'Publish' });
+        }, null, { type: 'warning', confirmText: AurvekI18n.t('marketplace_admin.ui.publish') });
     };
 
     window.unpublishPack = function() {
         if (!isEdit) return;
-        NotificationModal.confirm('Unpublish Pack', 'Unpublish this pack? It will no longer be visible to users.', async () => {
+        NotificationModal.confirm(AurvekI18n.t('marketplace_admin.ui.unpublish_pack'), AurvekI18n.t('marketplace_admin.ui.unpublish_this_pack_it_will_no_longer_be_visible_to_users'), async () => {
             try {
                 const response = await fetch('/api/packs/' + packId + '/unpublish', { method: 'POST' });
                 const result = await response.json();
                 if (response.ok) {
-                    NotificationModal.toast('Pack unpublished', 'success');
+                    NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.pack_unpublished'), 'success');
                     setTimeout(function() { location.reload(); }, 1000);
                 } else {
-                    NotificationModal.toast(result.detail || 'Failed to unpublish', 'danger');
+                    NotificationModal.toast(result.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_unpublish'), 'danger');
                 }
             } catch (error) {
-                NotificationModal.toast('Error: ' + error.message, 'danger');
+                NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
             }
-        }, null, { type: 'warning', confirmText: 'Unpublish' });
+        }, null, { type: 'warning', confirmText: AurvekI18n.t('marketplace_admin.ui.unpublish') });
     };
 
     // -----------------------------------------------------------------------
@@ -329,7 +330,7 @@
 
     window.removePackItem = function(promptId, promptName) {
         if (!isEdit) return;
-        NotificationModal.confirm('Remove Prompt', 'Remove "' + promptName + '" from this pack?', async () => {
+        NotificationModal.confirm(AurvekI18n.t('marketplace_admin.ui.remove_prompt'), AurvekI18n.t('marketplace_admin.ui.remove_prompt_confirm', { name: promptName }), async () => {
             try {
                 const response = await fetch('/api/packs/' + packId + '/items/' + promptId, { method: 'DELETE' });
                 const result = await response.json();
@@ -339,19 +340,19 @@
                     if (row) row.remove();
                     renumberItems();
                     if (typeof packItemsGroup !== 'undefined') packItemsGroup.markClean();
-                    NotificationModal.toast('Prompt removed', 'success');
+                    NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.prompt_removed'), 'success');
                 } else {
-                    NotificationModal.toast(result.detail || 'Failed to remove prompt', 'danger');
+                    NotificationModal.toast(result.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_remove_prompt'), 'danger');
                 }
             } catch (error) {
-                NotificationModal.toast('Error: ' + error.message, 'danger');
+                NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
             }
-        }, null, { type: 'error', confirmText: 'Remove' });
+        }, null, { type: 'error', confirmText: AurvekI18n.t('marketplace_admin.ui.remove') });
     };
 
     function renumberItems() {
         document.querySelectorAll('#packItemsBody tr .item-order').forEach(function(td, i) {
-            td.textContent = i + 1;
+            td.textContent = AurvekI18n.formatNumber(i + 1);
         });
     }
 
@@ -416,6 +417,7 @@
         if (!resultsContainer) return;
         try {
             const response = await fetch('/api/packs/' + packId + '/available-prompts?search=' + encodeURIComponent(query));
+            if (!response.ok) throw new Error('Prompt search failed');
             const prompts = await response.json();
 
             resultsContainer.innerHTML = '';
@@ -428,24 +430,24 @@
 
                 let avatarHtml;
                 if (p.image) {
-                    avatarHtml = '<img src="/static/' + p.image + '" alt="">';
+                    avatarHtml = '<img src="/static/' + escapeHtml(p.image) + '" alt="">';
                 } else {
                     avatarHtml = '<div class="prompt-search-placeholder"><i class="fas fa-robot"></i></div>';
                 }
 
                 const notice = p.pack_notice_period_days > 0
                     ? (p.pack_notice_period_days >= 365
-                        ? Math.floor(p.pack_notice_period_days / 365) + 'y'
-                        : p.pack_notice_period_days + 'd')
+                        ? noticeYears(Math.floor(p.pack_notice_period_days / 365))
+                        : noticeDays(p.pack_notice_period_days))
                     : '';
 
                 div.innerHTML = avatarHtml +
                     '<div style="flex:1;min-width:0;">' +
                         '<div style="font-weight:500;">' + escapeHtml(p.name) + '</div>' +
                         '<small class="text-muted">' + escapeHtml(p.owner_username || '') +
-                        (notice ? ' &middot; Notice: ' + notice : '') + '</small>' +
+                        (notice ? ' &middot; ' + escapeHtml(AurvekI18n.t('marketplace_admin.ui.notice_period', { period: notice })) : '') + '</small>' +
                     '</div>' +
-                    '<button type="button" class="btn btn-sm btn-outline-primary">Add</button>';
+                    '<button type="button" class="btn btn-sm btn-outline-primary">' + escapeHtml(AurvekI18n.t('marketplace_admin.ui.add')) + '</button>';
 
                 div.querySelector('button').addEventListener('click', function(e) {
                     e.stopPropagation();
@@ -460,7 +462,7 @@
                 resultsContainer.appendChild(div);
             });
         } catch (error) {
-            resultsContainer.innerHTML = '<div class="text-danger p-2">Error loading prompts</div>';
+            resultsContainer.innerHTML = '<div class="text-danger p-2">' + escapeHtml(AurvekI18n.t('marketplace_admin.ui.error_loading_prompts')) + '</div>';
         }
     }
 
@@ -487,45 +489,65 @@
 
                     let avatarHtml;
                     if (prompt.image) {
-                        avatarHtml = '<img class="prompt-avatar" src="/static/' + prompt.image + '" alt="">';
+                        avatarHtml = '<img class="prompt-avatar" src="/static/' + escapeHtml(prompt.image) + '" alt="">';
                     } else {
                         avatarHtml = '<div class="prompt-avatar-placeholder"><i class="fas fa-robot"></i></div>';
                     }
 
                     const notice = prompt.pack_notice_period_days > 0
                         ? (prompt.pack_notice_period_days >= 365
-                            ? Math.floor(prompt.pack_notice_period_days / 365) + 'y'
-                            : prompt.pack_notice_period_days + 'd')
+                            ? escapeHtml(noticeYears(Math.floor(prompt.pack_notice_period_days / 365)))
+                            : escapeHtml(noticeDays(prompt.pack_notice_period_days)))
                         : '<small class="text-muted">--</small>';
 
                     tr.innerHTML =
                         '<td><i class="fas fa-grip-vertical drag-handle"></i></td>' +
-                        '<td class="item-order">' + (rowCount + 1) + '</td>' +
+                        '<td class="item-order">' + AurvekI18n.formatNumber(rowCount + 1) + '</td>' +
                         '<td>' + avatarHtml + '</td>' +
                         '<td>' + escapeHtml(prompt.name) + '</td>' +
                         '<td><small class="text-muted">' + escapeHtml(prompt.owner_username || '--') + '</small></td>' +
                         '<td>' + notice + '</td>' +
                         '<td class="text-end">' +
                             '<button type="button" class="btn btn-sm btn-outline-danger" ' +
-                            'onclick="removePackItem(' + prompt.id + ', \'' + escapeHtml(prompt.name).replace(/'/g, "\\'") + '\')">' +
+                            'aria-label="' + escapeHtml(AurvekI18n.t('marketplace_admin.ui.remove_prompt')) + '">' +
                             '<i class="fas fa-times"></i></button>' +
                         '</td>';
+                    tr.querySelector('button').addEventListener('click', () => removePackItem(prompt.id, prompt.name));
                     tbody.appendChild(tr);
                 }
                 if (typeof packItemsGroup !== 'undefined') packItemsGroup.markClean();
-                NotificationModal.toast('"' + prompt.name + '" added to pack', 'success');
+                NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.prompt_added', { name: prompt.name }), 'success');
             } else {
-                NotificationModal.toast(result.detail || 'Failed to add prompt', 'danger');
+                NotificationModal.toast(result.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_add_prompt'), 'danger');
             }
         } catch (error) {
-            NotificationModal.toast('Error: ' + error.message, 'danger');
+            NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
         }
     }
+
+    function noticeDays(days) {
+        return AurvekI18n.t('marketplace_admin.ui.notice_days', { count: days, days: AurvekI18n.formatNumber(days) });
+    }
+    function noticeYears(years) {
+        return AurvekI18n.t('marketplace_admin.ui.notice_years', { count: years, years: AurvekI18n.formatNumber(years) });
+    }
+    function purchaseStatusLabel(status) {
+        const keys = { completed: 'marketplace_admin.ui.purchase_completed', refunded: 'marketplace_admin.ui.purchase_refunded', pending: 'marketplace_admin.ui.purchase_pending', failed: 'marketplace_admin.ui.purchase_failed' };
+        return AurvekI18n.t(keys[status] || 'marketplace_admin.ui.purchase_unknown');
+    }
+    function paymentMethodLabel(method) {
+        if (method === 'stripe') return 'Stripe';
+        if (method === 'paypal') return 'PayPal';
+        return AurvekI18n.t(method === 'free' ? 'marketplace_admin.ui.payment_free' : 'marketplace_admin.ui.payment_unknown');
+    }
+    document.querySelectorAll('[data-remove-prompt]').forEach(button => {
+        button.addEventListener('click', () => removePackItem(button.dataset.removePrompt, button.dataset.promptName));
+    });
 
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.appendChild(document.createTextNode(text || ''));
-        return div.innerHTML;
+        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // -----------------------------------------------------------------------
@@ -586,7 +608,7 @@
 
         if (!response.ok) {
             var data = await response.json();
-            throw new Error(data.detail || 'Failed to upload cover image');
+            throw new Error(data.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_upload_cover_image'));
         }
 
         return await response.json();
@@ -596,7 +618,7 @@
         var currentPackId = document.getElementById('packId')?.value;
         if (!currentPackId) return;
 
-        NotificationModal.confirm('Remove Cover Image', 'Remove cover image?', async () => {
+        NotificationModal.confirm(AurvekI18n.t('marketplace_admin.ui.remove_cover_image'), AurvekI18n.t('marketplace_admin.ui.remove_cover_image_question'), async () => {
             try {
                 var response = await fetch('/api/packs/' + currentPackId + '/cover-image', {
                     method: 'DELETE'
@@ -606,12 +628,12 @@
                     location.reload();
                 } else {
                     var data = await response.json();
-                    NotificationModal.toast(data.detail || 'Failed to remove cover image', 'danger');
+                    NotificationModal.toast(data.detail || AurvekI18n.t('marketplace_admin.ui.failed_to_remove_cover_image'), 'danger');
                 }
             } catch (error) {
-                NotificationModal.toast('Error: ' + error.message, 'danger');
+                NotificationModal.toast(AurvekI18n.t('marketplace_admin.ui.network_error_please_try_again'), 'danger');
             }
-        }, null, { type: 'error', confirmText: 'Remove' });
+        }, null, { type: 'error', confirmText: AurvekI18n.t('marketplace_admin.ui.remove') });
     }
 
     function cancelCoverPreview() {
@@ -656,8 +678,8 @@
                 loadingEl.style.display = 'none';
                 var purchases = data.purchases || [];
 
-                countEl.textContent   = data.total_count || 0;
-                revenueEl.textContent = (data.total_revenue || 0).toFixed(2);
+                countEl.textContent = AurvekI18n.t('marketplace_admin.ui.purchase_count', { count: data.total_count || 0, purchases: AurvekI18n.formatNumber(data.total_count || 0) });
+                revenueEl.textContent = AurvekI18n.t('marketplace_admin.ui.revenue_amount', { amount: AurvekI18n.formatCurrency(data.total_revenue || 0) });
                 summaryEl.style.display = '';
 
                 if (purchases.length === 0) {
@@ -674,7 +696,7 @@
                     var dateStr = '';
                     if (p.created_at) {
                         var d = new Date(p.created_at);
-                        dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+                        dateStr = d.toLocaleString(AurvekI18n.locale);
                     }
 
                     // Status badge color
@@ -687,9 +709,9 @@
                         '<td>' + escapeHtml(dateStr) + '</td>' +
                         '<td>' + escapeHtml(p.username) + '</td>' +
                         '<td>' + escapeHtml(p.email) + '</td>' +
-                        '<td class="text-end">$' + Number(p.amount || 0).toFixed(2) + '</td>' +
-                        '<td>' + escapeHtml(p.payment_method || '-') + '</td>' +
-                        '<td><span class="badge ' + statusClass + '">' + escapeHtml(p.status || 'unknown') + '</span></td>';
+                        '<td class="text-end">' + escapeHtml(AurvekI18n.formatCurrency(Number(p.amount || 0))) + '</td>' +
+                        '<td>' + escapeHtml(paymentMethodLabel(p.payment_method)) + '</td>' +
+                        '<td><span class="badge ' + statusClass + '">' + escapeHtml(purchaseStatusLabel(p.status)) + '</span></td>';
 
                     tbodyEl.appendChild(tr);
                 }
@@ -697,7 +719,7 @@
             })
             .catch(function(err) {
                 loadingEl.style.display = 'none';
-                emptyEl.textContent = 'Error loading sales data.';
+                emptyEl.textContent = AurvekI18n.t('marketplace_admin.ui.error_loading_sales_data');
                 emptyEl.style.display = '';
             });
     }

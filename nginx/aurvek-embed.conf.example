@@ -1,0 +1,60 @@
+# Dedicated HTTPS-public host behind the EXISTING local Cloudflare tunnel.
+# Replace {{EMBED_HOST}} and {{FASTAPI_PORT}} before installing this vhost.
+# Never include security-headers.conf here: it sets incompatible SAMEORIGIN.
+# Keep the native Aurvek vhost and all other site vhosts unchanged.
+# Install aurvek-embed-logging.conf.example in nginx's http context first.
+# Define this map once in the http context, shared by all application vhosts.
+map $http_upgrade $aurvek_embed_connection {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 80;
+    server_name {{EMBED_HOST}};
+
+    # The local tunnel terminates public HTTPS. Reject other peers before using
+    # visitor metadata; realip_remote_addr is the original transport peer.
+    if ($realip_remote_addr !~ "^(127\\.0\\.0\\.1|::1)$") { return 404; }
+    if ($host != "{{EMBED_HOST}}") { return 404; }
+
+    access_log /var/log/nginx/aurvek-embed-access.log aurvek_embed_private;
+    # Upstream timeout errors can repeat an untrusted URI or Referer. Rely on
+    # sanitized application errors and the status/timing access log instead.
+    error_log /dev/null crit;
+    # Native attachment chunks are at most 8 MiB; audio uploads also use this
+    # ingress. Application/user quotas still authorize each upload separately.
+    client_max_body_size 32m;
+    client_body_timeout 30s;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # This backend contract is for direct authenticated loopback callers only.
+    location ^~ /api/embed/v1/ { return 404; }
+    location ^~ /api/applications/v1/ { return 404; }
+
+    location / {
+        proxy_pass http://127.0.0.1:{{FASTAPI_PORT}};
+        proxy_http_version 1.1;
+        proxy_set_header Host {{EMBED_HOST}};
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Original-Host "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $aurvek_embed_connection;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Referrer-Policy;
+        # Preserve the upstream exact registered frame-ancestors policy.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+
+# The runtime permits only the registered application's effective capabilities
+# and its scoped voice WebSocket. This ingress does not grant additional access.

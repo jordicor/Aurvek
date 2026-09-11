@@ -40,6 +40,7 @@ _DELETABLE_CALL_STATUSES = {
     "canceled",
 }
 _PURGE_SCHEMA_TABLES = {
+    "PHONE_CALL_MESSAGE_AUDIO_RANGES",
     "PHONE_DATA_PURGE_JOBS",
     "PHONE_CALL_TOMBSTONES",
     "PHONE_RECORDING_TOMBSTONES",
@@ -92,6 +93,27 @@ def _json(value: Mapping[str, Any]) -> str:
 
 def _row(value: Any) -> dict[str, Any] | None:
     return dict(value) if value is not None else None
+
+
+async def _application_memory_snapshot(connection, conversation_id: int):
+    """Capture erasure/replay destinations before conversation and app links go."""
+    from integrations.applications.memory import list_memory_destinations, list_memory_message_destinations
+
+    destinations = await list_memory_destinations(conversation_id=conversation_id, connection=connection)
+    messages = await list_memory_message_destinations(conversation_id=conversation_id, connection=connection)
+    serialized = []
+    for item in destinations:
+        namespace = item["namespace"]
+        serialized.append({"provider": item["provider"], "namespace": namespace.as_dict(),
+            "message_ids": sorted(row["message_id"] for row in messages
+                if row["provider"] == item["provider"] and row["namespace"] == namespace)})
+    is_application = bool(serialized)
+    for table in ("APPLICATION_CONVERSATIONS", "EMBED_INTERVIEWS"):
+        exists = await connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        if await exists.fetchone() is not None:
+            cursor = await connection.execute(f"SELECT 1 FROM {table} WHERE conversation_id=?", (conversation_id,))
+            is_application = is_application or await cursor.fetchone() is not None
+    return is_application, serialized
 
 
 class PhoneDataPurgeFailure(RuntimeError):
@@ -269,7 +291,22 @@ class PhoneDataPurgeRepository:
                 )
             recordings = await self._recordings(conn, str(call_id))
             if not recordings:
-                return PurgeRequest(None, False, True)
+                cursor = await conn.execute(
+                    """
+                    INSERT INTO PHONE_RECORDINGS(call_id,status,last_error)
+                    VALUES(?,'pending','audio_deletion_fence')
+                    """,
+                    (str(call_id),),
+                )
+                recordings = [
+                    {
+                        "recording_id": int(cursor.lastrowid),
+                        "provider_recording_sid": None,
+                        "participant_path": None,
+                        "assistant_path": None,
+                        "mixed_path": None,
+                    }
+                ]
             source = await self._source_snapshot(
                 conn,
                 call,
@@ -336,7 +373,14 @@ class PhoneDataPurgeRepository:
         owner_user_id: int | None = None,
     ) -> list[str]:
         """Capture every external/local phone asset before conversation cascades."""
-
+        call_scope = """(
+            c.conversation_id=? OR c.active_conversation_id=? OR EXISTS (
+                SELECT 1 FROM PHONE_CALL_MESSAGE_LINKS l
+                JOIN MESSAGES m ON m.id=l.message_id
+                WHERE l.call_id=c.id AND m.conversation_id=?
+            )
+        )"""
+        scope_params = [int(conversation_id)] * 3
         if not await self.schema_ready(conn):
             cursor = await conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='PHONE_CALLS'"
@@ -344,21 +388,21 @@ class PhoneDataPurgeRepository:
             if await cursor.fetchone() is None:
                 return []
             cursor = await conn.execute(
-                "SELECT 1 FROM PHONE_CALLS WHERE conversation_id=? LIMIT 1",
-                (int(conversation_id),),
+                "SELECT 1 FROM PHONE_CALLS c WHERE " + call_scope + " LIMIT 1",
+                scope_params,
             )
             if await cursor.fetchone() is not None:
                 raise PhoneDataPurgeFailure(
                     "phone data purge schema is incomplete for existing call assets"
                 )
             return []
-        params: list[Any] = [int(conversation_id)]
+        params: list[Any] = list(scope_params)
         owner_filter = ""
         if owner_user_id is not None:
-            owner_filter = " AND owner_user_id=?"
+            owner_filter = " AND c.owner_user_id=?"
             params.append(int(owner_user_id))
         cursor = await conn.execute(
-            "SELECT * FROM PHONE_CALLS WHERE conversation_id=?" + owner_filter,
+            "SELECT c.* FROM PHONE_CALLS c WHERE " + call_scope + owner_filter,
             tuple(params),
         )
         calls = [dict(raw) for raw in await cursor.fetchall()]
@@ -389,13 +433,27 @@ class PhoneDataPurgeRepository:
             )
             if tombstone is not None:
                 job_id = str(tombstone["purge_job_id"])
+                if int(tombstone["conversation_id_snapshot"]) != int(conversation_id):
+                    # Do not turn an existing A-only purge into deletion of A's
+                    # entire memory merely because B is being deleted as well.
+                    raise TelephonyConflictError(
+                        "A call purge for another conversation must finish before deletion"
+                    )
                 if job_id not in seen_jobs:
                     await self._mark_job_conversation_deleted(conn, job_id)
                     jobs.append(job_id)
                     seen_jobs.add(job_id)
-                continue
-            job = await self._stage_call_job(conn, call, conversation_deleted=True)
-            jobs.append(str(job["id"]))
+            else:
+                # The shared recording is erased as a whole. Text and memory
+                # erasure remain scoped to the conversation being deleted.
+                scoped_call = dict(call, conversation_id=int(conversation_id))
+                job = await self._stage_call_job(conn, scoped_call, conversation_deleted=True)
+                jobs.append(str(job["id"]))
+            await conn.execute(
+                "UPDATE PHONE_CALLS SET active_conversation_id=NULL,"
+                "active_config_snapshot_json=NULL WHERE id=? AND active_conversation_id=?",
+                (str(call["id"]), int(conversation_id)),
+            )
         return jobs
 
     async def get_owned_recording(
@@ -415,6 +473,17 @@ class PhoneDataPurgeRepository:
         async with self._connection_factory(readonly=True) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='PHONE_RECORDING_TOMBSTONES'"
+            )
+            tombstone_guard = (
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM PHONE_RECORDING_TOMBSTONES t "
+                "WHERE t.call_id_snapshot=r.call_id)"
+                if await cursor.fetchone() is not None
+                else ""
+            )
+            cursor = await conn.execute(
                 f"""
                 SELECT r.id,r.call_id,r.status,r.duration_seconds,r.{column} AS path,
                        c.conversation_id
@@ -422,6 +491,7 @@ class PhoneDataPurgeRepository:
                 JOIN PHONE_CALLS c ON c.id=r.call_id
                 WHERE r.call_id=? AND c.owner_user_id=? AND c.deleted_at IS NULL
                   AND r.status='available' AND r.{column} IS NOT NULL
+                  {tombstone_guard}
                 ORDER BY r.id DESC LIMIT 1
                 """,
                 (str(call_id), int(owner_user_id)),
@@ -429,6 +499,60 @@ class PhoneDataPurgeRepository:
             row = _row(await cursor.fetchone())
             if row is None:
                 raise TelephonyNotFoundError("Phone recording not found")
+            return row
+
+    async def get_owned_message_audio(
+        self,
+        *,
+        owner_user_id: int,
+        message_id: int,
+    ) -> dict[str, Any]:
+        """Resolve one owner-scoped message range to its trusted raw track."""
+
+        async with self._connection_factory(readonly=True) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='PHONE_RECORDING_TOMBSTONES'"
+            )
+            tombstone_guard = (
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM PHONE_RECORDING_TOMBSTONES t "
+                "WHERE t.call_id_snapshot=a.call_id)"
+                if await cursor.fetchone() is not None
+                else ""
+            )
+            cursor = await conn.execute(
+                f"""
+                SELECT a.message_id,a.call_id,a.start_byte,a.end_byte,
+                       l.participant,m.conversation_id,
+                       CASE l.participant
+                           WHEN 'caller' THEN r.participant_path
+                           WHEN 'assistant' THEN r.assistant_path
+                       END AS path
+                FROM PHONE_CALL_MESSAGE_AUDIO_RANGES a
+                JOIN PHONE_CALL_MESSAGE_LINKS l
+                  ON l.call_id=a.call_id AND l.message_id=a.message_id
+                JOIN PHONE_CALLS c ON c.id=a.call_id
+                JOIN MESSAGES m ON m.id=a.message_id AND m.user_id=c.owner_user_id
+                JOIN PHONE_RECORDINGS r ON r.call_id=a.call_id
+                WHERE a.message_id=? AND c.owner_user_id=?
+                  AND c.deleted_at IS NULL AND l.origin_channel='phone'
+                  AND l.participant IN ('caller','assistant')
+                  AND r.status='available'
+                  {tombstone_guard}
+                  AND (
+                      (l.participant='caller' AND r.participant_path IS NOT NULL)
+                      OR
+                      (l.participant='assistant' AND r.assistant_path IS NOT NULL)
+                  )
+                ORDER BY r.id DESC LIMIT 1
+                """,
+                (int(message_id), int(owner_user_id)),
+            )
+            row = _row(await cursor.fetchone())
+            if row is None:
+                raise TelephonyNotFoundError("Phone message audio not found")
             return row
 
     async def claim_next(
@@ -784,6 +908,16 @@ class PhoneDataPurgeRepository:
                 if int(revision_row[0]) != int(job["content_revision_snapshot"]):
                     raise PhoneDataPurgeSnapshotChanged("conversation content changed")
             if job["purge_scope"] == "recording":
+                cursor = await conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='PHONE_CALL_MESSAGE_AUDIO_RANGES'"
+                )
+                if await cursor.fetchone() is not None:
+                    await conn.execute(
+                        "DELETE FROM PHONE_CALL_MESSAGE_AUDIO_RANGES "
+                        "WHERE call_id=?",
+                        (str(job["call_id_snapshot"]),),
+                    )
                 ids = [
                     int(item["recording_id"])
                     for item in source.get("recordings", [])
@@ -1250,10 +1384,11 @@ class PhoneDataPurgeRepository:
         cursor = await conn.execute(
             """
             SELECT l.message_id FROM PHONE_CALL_MESSAGE_LINKS l
-            WHERE l.call_id=? AND l.origin_channel='phone'
+            JOIN MESSAGES m ON m.id=l.message_id
+            WHERE l.call_id=? AND l.origin_channel='phone' AND m.conversation_id=?
             ORDER BY l.message_id
             """,
-            (str(call["id"]),),
+            (str(call["id"]), int(call["conversation_id"])),
         )
         message_ids = [int(row[0]) for row in await cursor.fetchall()]
         providers: set[str] = set()
@@ -1289,9 +1424,12 @@ class PhoneDataPurgeRepository:
             (int(call["conversation_id"]),),
         )
         conversation = await cursor.fetchone()
+        application_memory, destinations = await _application_memory_snapshot(conn, int(call["conversation_id"]))
+        providers.update(item["provider"] for item in destinations)
         return {
             "call_id": str(call["id"]),
             "provider_call_sid": call.get("provider_call_sid"),
+            "config_snapshot_json": call.get("config_snapshot_json") or "{}",
             "dispatch_token": str(call["dispatch_token"]),
             "owner_user_id": int(call["owner_user_id"]),
             "conversation_id": int(call["conversation_id"]),
@@ -1302,6 +1440,8 @@ class PhoneDataPurgeRepository:
             "conversation_deleted": bool(conversation_deleted),
             "message_ids": message_ids,
             "memory_providers": sorted(providers),
+            "application_memory": application_memory,
+            "memory_destinations": destinations,
             "recordings": recordings,
         }
 
@@ -1328,6 +1468,17 @@ class PhoneDataPurgeRepository:
             str(value) for value in source.get("memory_providers") or [] if value
         }
         conversation_id = int(job["conversation_id_snapshot"])
+        application_memory, destinations = await _application_memory_snapshot(conn, conversation_id)
+        source["application_memory"] = bool(source.get("application_memory") or application_memory)
+        merged = {(item["provider"], _json(item["namespace"])): item
+                  for item in source.get("memory_destinations", [])}
+        for item in destinations:
+            key = (item["provider"], _json(item["namespace"]))
+            previous = merged.get(key, {})
+            item["message_ids"] = sorted(set(previous.get("message_ids", [])) | set(item["message_ids"]))
+            merged[key] = item
+        source["memory_destinations"] = list(merged.values())
+        providers.update(item["provider"] for item in merged.values())
         for table in (
             "MEMORY_PROVIDER_MESSAGE_LINKS",
             "MEMORY_PROVIDER_CONVERSATION_LINKS",
@@ -1624,7 +1775,10 @@ class PhoneDataPurgeService:
                 and source.get("provider_call_sid")
                 and not progress.get("remote_call_deleted")
             ):
-                client = self.voice_client_factory()
+                from integrations.telephony.account_routing import client_for_call
+                async with self.repository._connection_factory(readonly=True) as connection:
+                    client = await client_for_call(source, legacy_factory=self.voice_client_factory,
+                        allow_inactive=True, connection=connection)
             for recording_sid in remote_recordings:
                 if recording_sid in deleted_remote:
                     continue
@@ -1668,15 +1822,21 @@ class PhoneDataPurgeService:
                 _purge_memory_conversation_best_effort,
             )
 
-            purged = await _purge_memory_conversation_best_effort(
-                user_id=int(source["owner_user_id"]),
-                conversation_id=int(source["conversation_id"]),
-                prompt_id=source.get("prompt_id"),
-                incognito=bool(source.get("incognito")),
-                provider="mem0",
-            )
-            if not purged:
-                raise PhoneDataPurgeFailure("Mem0 conversation purge was not confirmed")
+            from integrations.applications.memory import MemoryNamespace
+
+            destinations = [MemoryNamespace.from_dict(item["namespace"])
+                            for item in source.get("memory_destinations", []) if item["provider"] == "mem0"]
+            for namespace in destinations or ([] if source.get("application_memory") else [None]):
+                scoped = {"namespace": namespace} if namespace is not None else {}
+                purged = await _purge_memory_conversation_best_effort(
+                    user_id=int(source["owner_user_id"]),
+                    conversation_id=int(source["conversation_id"]),
+                    prompt_id=source.get("prompt_id"),
+                    incognito=bool(source.get("incognito")),
+                    provider="mem0", **scoped,
+                )
+                if not purged:
+                    raise PhoneDataPurgeFailure("Mem0 conversation purge was not confirmed")
 
     async def _purge_and_replay_atagia(
         self,
@@ -1689,6 +1849,9 @@ class PhoneDataPurgeService:
         prompt_id = source.get("prompt_id")
         incognito = bool(source.get("incognito"))
         try:
+            if source.get("application_memory") or source.get("memory_destinations"):
+                await self._purge_and_replay_application_atagia(job, source, bridge)
+                return
             scopes = [prompt_id, None] if prompt_id is not None else [None]
             for scope in scopes:
                 confirmed = await bridge.purge_conversation(
@@ -1762,6 +1925,56 @@ class PhoneDataPurgeService:
             close = getattr(bridge, "close", None)
             if callable(close):
                 await close()
+
+    async def _purge_and_replay_application_atagia(self, job, source, bridge):
+        """Rebuild only the original sources in their frozen historical space."""
+        from integrations.applications.memory import MemoryNamespace, resolve_application_memory
+        from integrations.embed.models import EmbedError
+        from atagia_sync import _message_text_for_atagia_sync
+
+        user_id = int(source["owner_user_id"])
+        conversation_id = int(source["conversation_id"])
+        destinations = [item for item in source.get("memory_destinations", []) if item["provider"] == "atagia"]
+        for item in destinations:
+            namespace = MemoryNamespace.from_dict(item["namespace"])
+            confirmed = await bridge.purge_conversation(user_id=user_id, conversation_id=conversation_id,
+                prompt_id=source.get("prompt_id"), incognito=bool(source.get("incognito")), namespace=namespace)
+            if not confirmed:
+                raise PhoneDataPurgeFailure("Atagia application memory purge was not confirmed")
+        await self.repository.reset_memory_links(job, "atagia")
+        if source.get("conversation_deleted"):
+            return
+        messages = await self.repository.surviving_messages(job, [int(i) for i in source.get("message_ids", [])])
+        for item in destinations:
+            namespace = MemoryNamespace.from_dict(item["namespace"])
+            original_ids = set(item.get("message_ids", []))
+            for message in messages:
+                message_id = int(message["id"])
+                if message_id not in original_ids:
+                    continue
+                try:
+                    scope = await resolve_application_memory(conversation_id, user_id)
+                except EmbedError:
+                    # Erasure remains possible after revocation; replay does not.
+                    return
+                if scope is None or scope.write != namespace or not scope.allows_historical_message(message_id):
+                    continue
+                text = _message_text_for_atagia_sync(message.get("message")).strip()
+                if not text:
+                    continue
+                role = "user" if message.get("type") == "user" else "assistant"
+                accepted = await bridge.ingest_message(user_id=user_id, conversation_id=conversation_id,
+                    role=role, text=text, occurred_at=message.get("date"), prompt_id=source.get("prompt_id"),
+                    message_id=message_id, source_seq=message_id, ingest_origin="backfill",
+                    confirmation_strategy="admin_review_only", namespace=namespace)
+                if not accepted:
+                    raise PhoneDataPurgeFailure(f"Atagia application replay failed for message {message_id}")
+                await self.repository.record_replay_link(job=job, provider="atagia", message_id=message_id,
+                    provider_message_id=namespace.provider_message_id(message_id), conversation_id=conversation_id,
+                    user_id=int(message["user_id"]), role=role, prompt_id=source.get("prompt_id"))
+        flush = getattr(bridge, "flush", None)
+        if callable(flush):
+            await flush()
 
 
 class PhoneDataPurgeWorker:

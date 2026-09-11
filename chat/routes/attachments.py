@@ -15,9 +15,12 @@ from file_storage import (
 )
 from log_config import logger
 from models import User
+from integrations.applications.runtime import authorize_application_read
+from integrations.embed.models import EmbedError
 from storage_quota import StorageQuotaExceededError
 
 from chat.services.attachment_uploads import (
+    AttachmentValidationError, attachment_error_text,
     ATTACHMENT_UPLOAD_CHUNK_ROOT,
     ATTACHMENT_UPLOAD_CHUNK_SIZE_BYTES,
     ATTACHMENT_UPLOAD_LEGACY_CHUNK_SIZE_BYTES,
@@ -33,6 +36,8 @@ from chat.services.attachment_uploads import (
     prune_stale_attachment_upload_dirs,
     validate_chunk_upload_metadata,
 )
+
+from chat.services.localization import chat_text, chat_error
 
 router = APIRouter()
 
@@ -59,7 +64,7 @@ def _ensure_upload_dir(upload_dir):
 def _read_upload_metadata(meta_path):
     metadata = orjson.loads(meta_path.read_bytes())
     if not isinstance(metadata, dict):
-        raise ValueError("Upload metadata is corrupted")
+        raise AttachmentValidationError("upload_metadata_corrupted")
     return metadata
 
 
@@ -80,7 +85,7 @@ def _store_chunk_part_idempotent(part_path, data):
     if part_path.exists():
         if part_path.read_bytes() == data:
             return
-        raise ValueError("Upload chunk already exists with different content")
+        raise AttachmentValidationError("chunk_content_changed")
 
     tmp_path = part_path.with_name(f"{part_path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -90,7 +95,7 @@ def _store_chunk_part_idempotent(part_path, data):
         except FileExistsError:
             if part_path.read_bytes() == data:
                 return
-            raise ValueError("Upload chunk already exists with different content")
+            raise AttachmentValidationError("chunk_content_changed")
     finally:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -142,21 +147,21 @@ async def upload_attachment_chunk(
             )
             upload_dir = attachment_upload_dir(current_user.id, conversation_id, upload_id)
         except ValueError as exc:
-            return json_error(str(exc), status_code=400)
+            return json_error(attachment_error_text(current_user, exc), status_code=400)
 
         expected_size = _expected_chunk_size(total_size, chunk_index, effective_chunk_size)
         data = await chunk.read(effective_chunk_size + 1)
         if len(data) > effective_chunk_size:
-            return json_error("Chunk exceeds upload size limit", status_code=400)
+            return json_error(chat_text(current_user, "chunk_too_large"), status_code=400)
         if len(data) != expected_size:
-            return json_error("Chunk size does not match metadata", status_code=400)
+            return json_error(chat_text(current_user, "chunk_size_invalid"), status_code=400)
     else:
         candidates = _legacy_chunk_size_candidates()
         data = await chunk.read(max(candidates) + 1)
         if len(data) > max(candidates):
-            return json_error("Chunk exceeds upload size limit", status_code=400)
+            return json_error(chat_text(current_user, "chunk_too_large"), status_code=400)
 
-        candidate_errors: list[str] = []
+        candidate_errors: list[ValueError] = []
         for candidate in candidates:
             try:
                 candidate_type, _max_bytes = validate_chunk_upload_metadata(
@@ -169,7 +174,7 @@ async def upload_attachment_chunk(
                     chunk_size=candidate,
                 )
             except ValueError as exc:
-                candidate_errors.append(str(exc))
+                candidate_errors.append(exc)
                 continue
 
             expected_size = _expected_chunk_size(total_size, chunk_index, candidate)
@@ -179,11 +184,11 @@ async def upload_attachment_chunk(
                 try:
                     upload_dir = attachment_upload_dir(current_user.id, conversation_id, upload_id)
                 except ValueError as exc:
-                    return json_error(str(exc), status_code=400)
+                    return json_error(attachment_error_text(current_user, exc), status_code=400)
                 break
         else:
-            message = candidate_errors[0] if candidate_errors else "Chunk size does not match metadata"
-            return json_error(message, status_code=400)
+            message = candidate_errors[0] if candidate_errors else AttachmentValidationError("chunk_size_invalid")
+            return json_error(attachment_error_text(current_user, message), status_code=400)
 
     try:
         upload_dir_created = await asyncio.to_thread(_ensure_upload_dir, upload_dir)
@@ -213,18 +218,18 @@ async def upload_attachment_chunk(
                 existing = await asyncio.to_thread(_read_upload_metadata, meta_path)
             except Exception:
                 await delete_attachment_upload_dir(upload_dir)
-                return json_error("Upload metadata is corrupted. Please attach the file again.", status_code=400)
+                return json_error(chat_text(current_user, "upload_corrupted"), status_code=400)
             if not _upload_metadata_matches(existing, metadata):
                 await delete_attachment_upload_dir(upload_dir)
-                return json_error("Upload metadata changed during transfer", status_code=400)
+                return json_error(chat_text(current_user, "upload_changed"), status_code=400)
 
         part_path = upload_dir / f"{chunk_index:06d}.part"
         await asyncio.to_thread(_store_chunk_part_idempotent, part_path, data)
     except ValueError as exc:
-        return json_error(str(exc), status_code=400)
+        return json_error(attachment_error_text(current_user, exc), status_code=400)
     except Exception as exc:
         logger.error("[upload_attachment_chunk] Could not persist chunk: %s", exc)
-        return json_error("Failed to store upload chunk", status_code=500)
+        return json_error(chat_text(current_user, "chunk_store_failed"), status_code=500)
 
     return JSONResponse(
         content={
@@ -253,18 +258,18 @@ async def complete_attachment_upload(
     try:
         upload_dir = attachment_upload_dir(current_user.id, conversation_id, upload_id)
     except ValueError as exc:
-        return json_error(str(exc), status_code=400)
+        return json_error(attachment_error_text(current_user, exc), status_code=400)
 
     meta_path = upload_dir / "meta.json"
     if not meta_path.exists():
-        return json_error("Upload chunks were not found. Please attach the file again.", status_code=400)
+        return json_error(chat_text(current_user, "upload_not_found"), status_code=400)
 
     try:
         metadata = orjson.loads(await asyncio.to_thread(meta_path.read_bytes))
         chunk_size = int(metadata["chunk_size"])
     except Exception:
         await delete_attachment_upload_dir(upload_dir)
-        return json_error("Upload metadata is corrupted. Please attach the file again.", status_code=400)
+        return json_error(chat_text(current_user, "upload_corrupted"), status_code=400)
 
     try:
         normalized_type, _max_bytes = validate_chunk_upload_metadata(
@@ -277,7 +282,7 @@ async def complete_attachment_upload(
             chunk_size=chunk_size,
         )
     except ValueError as exc:
-        return json_error(str(exc), status_code=400)
+        return json_error(attachment_error_text(current_user, exc), status_code=400)
 
     expected_metadata = {
         "filename": filename,
@@ -289,25 +294,25 @@ async def complete_attachment_upload(
     }
     if any(metadata.get(key) != value for key, value in expected_metadata.items()):
         await delete_attachment_upload_dir(upload_dir)
-        return json_error("Upload metadata changed during transfer", status_code=400)
+        return json_error(chat_text(current_user, "upload_changed"), status_code=400)
 
     parts: list[bytes] = []
     for index in range(total_chunks):
         part_path = upload_dir / f"{index:06d}.part"
         if not part_path.exists():
-            return json_error("Upload is incomplete. Please retry the file upload.", status_code=400)
+            return json_error(chat_text(current_user, "upload_incomplete"), status_code=400)
         part_data = await asyncio.to_thread(part_path.read_bytes)
         start = index * chunk_size
         expected_size = min(chunk_size, max(0, total_size - start))
         if len(part_data) != expected_size:
             await delete_attachment_upload_dir(upload_dir)
-            return json_error("Upload chunk size mismatch. Please attach the file again.", status_code=400)
+            return json_error(chat_text(current_user, "upload_chunk_mismatch"), status_code=400)
         parts.append(part_data)
 
     data = b"".join(parts)
     if len(data) != total_size:
         await delete_attachment_upload_dir(upload_dir)
-        return json_error("Upload size mismatch. Please attach the file again.", status_code=400)
+        return json_error(chat_text(current_user, "upload_size_mismatch"), status_code=400)
 
     try:
         pending = await create_pending_attachment_from_upload(
@@ -319,14 +324,14 @@ async def complete_attachment_upload(
         )
     except StorageQuotaExceededError as exc:
         await delete_attachment_upload_dir(upload_dir)
-        return json_error(exc.message, status_code=413)
+        return json_error(chat_text(current_user, "storage_quota_exceeded"), status_code=413)
     except ValueError as exc:
         await delete_attachment_upload_dir(upload_dir)
-        return json_error(str(exc), status_code=400)
+        return json_error(attachment_error_text(current_user, exc), status_code=400)
     except Exception as exc:
         await delete_attachment_upload_dir(upload_dir)
         logger.error("[complete_attachment_upload] Could not create pending attachment: %s", exc)
-        return json_error("Failed to finalize uploaded attachment", status_code=500)
+        return json_error(chat_text(current_user, "upload_finalize_failed"), status_code=500)
 
     await delete_attachment_upload_dir(upload_dir)
     return JSONResponse(content=pending_attachment_upload_payload(pending))
@@ -345,7 +350,7 @@ async def attachment_upload_status(
     try:
         upload_dir = attachment_upload_dir(current_user.id, conversation_id, upload_id)
     except ValueError as exc:
-        return json_error(str(exc), status_code=400)
+        return json_error(attachment_error_text(current_user, exc), status_code=400)
 
     meta_path = upload_dir / "meta.json"
     if not meta_path.exists():
@@ -383,22 +388,27 @@ async def discard_uploaded_attachments(
     attachment_refs: str = Form("[]"),
 ):
     if current_user is None:
-        return json_error("Not authenticated", status_code=401, redirect="/login")
+        return json_error(chat_text(current_user, "unauthenticated"), status_code=401, redirect="/login")
     try:
         refs = parse_attachment_refs_value(attachment_refs)
     except ValueError as exc:
-        return json_error(str(exc), status_code=400)
+        return json_error(attachment_error_text(current_user, exc), status_code=400)
     if not refs:
         return JSONResponse(content={"success": True, "discarded": 0})
 
     async with get_db_connection(readonly=True) as conn:
+        try:
+            await authorize_application_read(conn, conversation_id, current_user.id)
+        except EmbedError as exc:
+            return json_error(chat_error(current_user, exc.code),
+                              status_code=exc.status_code, error_code=exc.code)
         cursor = await conn.execute(
             "SELECT user_id FROM CONVERSATIONS WHERE id = ?",
             (conversation_id,),
         )
         row = await cursor.fetchone()
     if not row or int(row["user_id"]) != int(current_user.id):
-        return json_error("Conversation not found.", status_code=404)
+        return json_error(chat_text(current_user, "conversation_not_found"), status_code=404)
 
     discarded = await discard_pending_attachments_for_user(
         refs,
@@ -421,7 +431,7 @@ async def serve_attachment_file(
     from file_storage import THUMB_VARIANT
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     is_admin_user = await current_user.is_admin
     try:
@@ -433,15 +443,21 @@ async def serve_attachment_file(
                 variant=variant,
                 allow_admin=is_admin_user,
             )
+            if resolved:
+                await authorize_application_read(
+                    conn, resolved[1]["conversation_id"], current_user.id,
+                )
+    except EmbedError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=chat_error(current_user, exc.code)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=chat_text(current_user, "upload_invalid"))
 
     if not resolved:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "attachment_not_found"))
 
     path, attachment = resolved
     if variant == THUMB_VARIANT and attachment.get("attachment_type") != "image":
-        raise HTTPException(status_code=404, detail="Attachment variant not found")
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "attachment_variant_not_found"))
     media_type = "image/webp" if variant == THUMB_VARIANT else attachment.get("mime_detected")
     filename = attachment.get("original_filename") or path.name
     response_headers = (
@@ -490,11 +506,18 @@ async def delete_attachment(public_id: str, current_user: User = Depends(get_cur
     from fastapi import HTTPException
 
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     async with get_db_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
         try:
+            cursor = await conn.execute(
+                "SELECT conversation_id FROM FILE_ATTACHMENTS WHERE public_id = ?",
+                (public_id,),
+            )
+            attachment = await cursor.fetchone()
+            if attachment:
+                await authorize_application_read(conn, attachment["conversation_id"], current_user.id)
             deleted = await delete_attachment_and_rewrite_message(
                 conn,
                 public_id=public_id,
@@ -502,11 +525,14 @@ async def delete_attachment(public_id: str, current_user: User = Depends(get_cur
                 allow_admin=await current_user.is_admin,
             )
             await conn.commit()
+        except EmbedError as exc:
+            await conn.rollback()
+            raise HTTPException(status_code=exc.status_code, detail=chat_error(current_user, exc.code)) from exc
         except Exception:
             await conn.rollback()
             raise
 
     if not deleted:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "attachment_not_found"))
     await prune_unreferenced_blobs()
-    return JSONResponse(content={"success": True, "message": "Attachment deleted"})
+    return JSONResponse(content={"success": True, "message": chat_text(current_user, "attachment_deleted")})

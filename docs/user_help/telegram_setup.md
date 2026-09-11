@@ -17,7 +17,7 @@ prerequisites:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
@@ -42,9 +42,11 @@ To link your Telegram account, open the Aurvek bot in Telegram and share your ph
 - If phone verification is required by the platform administrator, you must verify your phone number in your Aurvek account settings before using the Telegram bot.
 - Once linked, the bot automatically creates a conversation for you. You can view this conversation from the Aurvek web interface as well.
 - A conversation cannot be on both Telegram and WhatsApp simultaneously. Assigning it to Telegram removes it from WhatsApp, and vice versa.
+- Its telephone assignment is separate and can stay active.
 - Type `!help` after linking to see all available commands.
 
 ## Related
 
 - telegram_commands
 - telegram_unlink
+- phone_calls_usage

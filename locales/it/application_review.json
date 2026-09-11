@@ -1,0 +1,16 @@
+{
+  "title": "Esamina le conversazioni",
+  "read_only": "Accesso in sola lettura. Le consultazioni vengono registrate nel registro di controllo.",
+  "back": "Torna alle conversazioni",
+  "untitled": "Conversazione senza titolo",
+  "older_messages": "Messaggi precedenti",
+  "client": "Cliente",
+  "assistant": "Assistente",
+  "unavailable": "Questo file non è disponibile.",
+  "audio": "Audio conservato",
+  "empty_messages": "Non ci sono messaggi.",
+  "applications": "Applicazioni",
+  "open": "Apri cronologia",
+  "empty_conversations": "Non ci sono conversazioni per questa applicazione.",
+  "more": "Altre conversazioni"
+}

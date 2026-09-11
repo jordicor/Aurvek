@@ -1,7 +1,12 @@
 from ai_runtime.dependencies import *
 from ai_runtime.memory.context import _warmup_memory_provider
 from ai_runtime.context.formatting import flatten_multi_ai_context, parse_stored_message
+from ai_runtime.context.message_provenance import merge_internal_turn_context
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
+from ai_runtime.context.user_language import load_user_language_context
+from ai_runtime.context.user_time import load_user_time_context, render_user_time_context
+from ai_runtime.context.user_language import render_user_language_context
+from integrations.applications.profile import conversation_profile, personal_context
 from ai_runtime.watchdog.prompting import _build_escalated_hint_block, _sanitize_watchdog_directive
 
 _WARMUP_ACTIVITIES = {"typing", "attachment", "audio_recording", "voice_call"}
@@ -69,6 +74,7 @@ def _build_warmup_cache_key_from_state(
         last_message_id=int(state.get("last_message_id") or 0),
         mode=mode,
         multi_ai_model_ids=normalize_warmup_model_ids(multi_ai_model_ids),
+        is_incognito=bool(state.get("is_incognito")),
     )
 
 async def _load_warmup_conversation_state(conversation_id: int, user_id: int) -> dict[str, Any] | None:
@@ -242,6 +248,14 @@ async def _load_warmup_prompt_runtime_snapshot(
         else:
             user_level = "customer"
 
+        from integrations.embed.runtime import is_embed_conversation
+
+        embed_interview = await is_embed_conversation(conversation_id)
+        app_profile = await conversation_profile(conn_ro, conversation_id) if embed_interview else None
+        if embed_interview:
+            user_info = personal_context(app_profile) if app_profile is not None else None
+            current_alter_ego_id = None
+
         if current_alter_ego_id:
             cursor = await conn_ro.execute(
                 """
@@ -304,6 +318,14 @@ async def _load_warmup_prompt_runtime_snapshot(
                     "--- END EXTENSION LEVELS ---"
                 )
 
+        # Keep diagnostic/warm-up prompt snapshots representative of the real
+        # turn prompt. The live path still regenerates this clock at send time.
+        prompt_base = merge_internal_turn_context(
+            prompt_base,
+            render_user_time_context(app_profile.timezone_name if app_profile else None) if embed_interview else await load_user_time_context(conn_ro, current_user.id),
+            render_user_language_context(app_profile.preferred_languages) if app_profile is not None else (None if embed_interview else await load_user_language_context(conn_ro, current_user.id)),
+        )
+
         watchdog_config = None
         watchdog_hint_block = ""
         watchdog_enabled = False
@@ -354,6 +376,13 @@ async def _load_warmup_prompt_runtime_snapshot(
             watchdog_hint_block,
         )
 
+    from integrations.embed.runtime import append_interview_brief
+
+    # Reference text is read fresh for each actual turn, never retained in this
+    # optional warmup snapshot (which only supplies history to message handling).
+    full_prompt = await append_interview_brief(
+        full_prompt, conversation_id, current_user.id, include_reference=False
+    )
     result["prompt_base"] = prompt_base
     result["full_prompt"] = full_prompt
     result["system_blocks_count"] = len(blocks)

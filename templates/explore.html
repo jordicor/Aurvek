@@ -1,8 +1,9 @@
+{% set i18n_domains = ['marketplace'] %}
 {% extends 'base.html' %}
 
-{% block title %}Explore AI - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace.explore.title') }} - AURVEK{% endblock %}
 
-{% block meta_description %}<meta name="description" content="Explore and discover unique AI personalities, prompts, and packs on Aurvek. Browse categories, preview landing pages, and find the perfect AI assistant for your needs.">{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t('marketplace.explore.meta') }}">{% endblock %}
 
 {% block styles %}
 <link rel="stylesheet" href="{{ get_static_url('/static/css/explore.css') }}">
@@ -14,21 +15,21 @@
 {% block content %}
 <!-- Hero Section -->
 <div class="explore-hero">
-    <h1>AURVEK <span class="accent">SELECTOR</span></h1>
-    <p class="subtitle">Discover unique AI personalities. Choose your companion.</p>
+    <h1>AURVEK <span class="accent">{{ t('marketplace.explore.selector') }}</span></h1>
+    <p class="subtitle">{{ t('marketplace.explore.subtitle') }}</p>
     <div class="explore-search">
         <i class="fas fa-search"></i>
-        <input type="text" id="exploreSearch" placeholder="Search prompts..." autocomplete="off">
+        <input type="text" id="exploreSearch" aria-label="{{ t('marketplace.explore.search') }}" placeholder="{{ t('marketplace.explore.search') }}" autocomplete="off">
     </div>
 </div>
 
 <!-- Tab Toggle -->
 <div class="explore-tabs">
     <button class="explore-tab active" data-tab="prompts" onclick="switchTab('prompts', this)">
-        <i class="fas fa-robot"></i> Prompts
+        <i class="fas fa-robot"></i> {{ t('marketplace.common.prompts') }}
     </button>
     <button class="explore-tab" data-tab="packs" onclick="switchTab('packs', this)">
-        <i class="fas fa-box"></i> Packs
+        <i class="fas fa-box"></i> {{ t('marketplace.common.packs') }}
     </button>
 </div>
 
@@ -66,27 +67,26 @@
 
 <!-- Landing Preview Overlay -->
 <div id="landingPreviewOverlay" class="landing-preview-overlay">
-    <button class="landing-preview-close" onclick="closeLandingPreview()" title="Close (Esc)">
+    <button class="landing-preview-close" onclick="closeLandingPreview()" title="{{ t('marketplace.explore.close_escape') }}">
         <i class="fas fa-times"></i>
     </button>
-    <button id="previewPrevBtn" class="landing-preview-nav prev" onclick="navigatePreview(-1)">
+    <button id="previewPrevBtn" aria-label="{{ t('marketplace.explore.previous') }}" class="landing-preview-nav prev" onclick="navigatePreview(-1)">
         <i class="fas fa-chevron-left"></i>
     </button>
-    <button id="previewNextBtn" class="landing-preview-nav next" onclick="navigatePreview(1)">
+    <button id="previewNextBtn" aria-label="{{ t('marketplace.explore.next') }}" class="landing-preview-nav next" onclick="navigatePreview(1)">
         <i class="fas fa-chevron-right"></i>
     </button>
-    <iframe id="landingPreviewIframe" class="landing-preview-iframe"
+    <iframe id="landingPreviewIframe" title="{{ t('marketplace.explore.landing_preview') }}" class="landing-preview-iframe"
             sandbox="allow-scripts" loading="lazy"></iframe>
     <div class="landing-preview-bar">
         <div class="landing-preview-bar-info">
             <span id="previewItemName" class="preview-name"></span>
-            <span class="preview-by">by</span>
             <span id="previewItemCreator" class="preview-creator"></span>
             <span id="previewCounter" class="preview-counter"></span>
         </div>
         <div class="landing-preview-bar-actions">
             <button id="previewCtaBtn" class="landing-preview-cta" onclick="previewCtaAction()"></button>
-            <button class="landing-preview-close-btn" onclick="closeLandingPreview()">Close</button>
+            <button class="landing-preview-close-btn" onclick="closeLandingPreview()">{{ t('marketplace.explore.close') }}</button>
         </div>
     </div>
 </div>

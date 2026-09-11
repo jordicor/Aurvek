@@ -1,6 +1,7 @@
+{% set i18n_domains = ['marketplace', 'admin_ranking'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Ranking Configuration - AURVEK{% endblock %}
+{% block title %}{{ t('admin_ranking.title') }} - AURVEK{% endblock %}
 
 {% block styles %}
 <style>
@@ -70,10 +71,10 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Ranking Configuration{% endblock %}
+{% block page_title %}{{ t('admin_ranking.title') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Configure how prompts are ranked and scored on the Explore page.</p>
+<p class="page-subtitle">{{ t('admin_ranking.subtitle') }}</p>
 {% endblock %}
 
 {% block content %}
@@ -81,212 +82,212 @@
     <!-- Configuration Form -->
     <div class="col-lg-7 mb-4">
         <form id="rankingForm" data-form-guard>
-            <!-- Recalculation Mode Section -->
+            <!-- {{ t('admin_ranking.mode.title') }} Section -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-sync-alt me-2"></i>Recalculation Mode</div>
-                <p class="help-text mb-3">Choose when ranking scores are recalculated.</p>
+                <div class="section-title"><i class="fas fa-sync-alt me-2"></i>{{ t('admin_ranking.mode.title') }}</div>
+                <p class="help-text mb-3">{{ t('admin_ranking.mode.help') }}</p>
 
                 <div class="mb-3">
                     <label class="mode-option d-flex align-items-start {% if ranking_config.mode == 'piggyback' %}active{% endif %}" id="modePiggybackLabel">
                         <input type="radio" name="mode" value="piggyback" class="form-check-input me-2 mt-1"
                                {% if ranking_config.mode == 'piggyback' %}checked{% endif %}>
                         <div>
-                            <strong>Piggyback (Lazy)</strong>
-                            <div class="help-text">Recalculates on-demand when users visit /explore. Lower resource usage, slightly stale results.</div>
+                            <strong>{{ t('admin_ranking.mode.piggyback') }}</strong>
+                            <div class="help-text">{{ t('admin_ranking.mode.piggyback_help') }}</div>
                         </div>
                     </label>
                     <label class="mode-option d-flex align-items-start {% if ranking_config.mode == 'scheduled' %}active{% endif %}" id="modeScheduledLabel">
                         <input type="radio" name="mode" value="scheduled" class="form-check-input me-2 mt-1"
                                {% if ranking_config.mode == 'scheduled' %}checked{% endif %}>
                         <div>
-                            <strong>Scheduled (Periodic)</strong>
-                            <div class="help-text">Background recalculation at fixed intervals. Always-fresh results, uses more resources.</div>
+                            <strong>{{ t('admin_ranking.mode.scheduled') }}</strong>
+                            <div class="help-text">{{ t('admin_ranking.mode.scheduled_help') }}</div>
                         </div>
                     </label>
                 </div>
 
                 <div class="mb-3">
                     <label for="interval_hours" class="form-label">
-                        Recalculation Interval
-                        <span class="badge bg-secondary ms-1">Default: 6 hours</span>
+                        {{ t('admin_ranking.interval') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.interval.default') }}</span>
                     </label>
                     <div class="input-group">
                         <input type="number" class="form-control" id="interval_hours" name="interval_hours"
                                min="1" max="168" step="1"
                                value="{{ ranking_config.interval_hours }}">
-                        <span class="input-group-text">hours</span>
+                        <span class="input-group-text">{{ t('admin_ranking.interval.unit') }}</span>
                     </div>
-                    <small class="help-text">Minimum hours between ranking recalculations (1 = hourly, 168 = weekly).</small>
+                    <small class="help-text">{{ t('admin_ranking.interval.help') }}</small>
                 </div>
             </div>
 
-            <!-- Ranking Weights Section -->
+            <!-- {{ t('admin_ranking.weights.title') }} Section -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-balance-scale me-2"></i>Ranking Weights</div>
-                <p class="help-text mb-3">Each metric is multiplied by its weight to produce the final ranking score.</p>
+                <div class="section-title"><i class="fas fa-balance-scale me-2"></i>{{ t('admin_ranking.weights.title') }}</div>
+                <p class="help-text mb-3">{{ t('admin_ranking.weights.help') }}</p>
 
                 <div class="mb-3">
                     <label for="w_users_with_access" class="form-label">
-                        Users with Access
-                        <span class="badge bg-secondary ms-1">Default: 3</span>
+                        {{ t('admin_ranking.weight.users_with_access') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(3)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_users_with_access"
                            name="users_with_access" min="0" max="100" step="0.5"
                            value="{{ ranking_config.weights.users_with_access }}">
-                    <small class="help-text">Points per user who has access to the prompt.</small>
+                    <small class="help-text">{{ t('admin_ranking.help.users_with_access') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="w_purchases" class="form-label">
-                        Purchases
-                        <span class="badge bg-secondary ms-1">Default: 5</span>
+                        {{ t('admin_ranking.weight.purchases') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(5)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_purchases"
                            name="purchases" min="0" max="100" step="0.5"
                            value="{{ ranking_config.weights.purchases }}">
-                    <small class="help-text">Points per purchase.</small>
+                    <small class="help-text">{{ t('admin_ranking.help.purchases') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="w_unique_chatters" class="form-label">
-                        Unique Chatters
-                        <span class="badge bg-secondary ms-1">Default: 4</span>
+                        {{ t('admin_ranking.weight.unique_chatters') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(4)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_unique_chatters"
                            name="unique_chatters" min="0" max="100" step="0.5"
                            value="{{ ranking_config.weights.unique_chatters }}">
-                    <small class="help-text">Points per unique user who chatted.</small>
+                    <small class="help-text">{{ t('admin_ranking.help.unique_chatters') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="w_landing_conversions" class="form-label">
-                        Landing Conversions
-                        <span class="badge bg-secondary ms-1">Default: 6</span>
+                        {{ t('admin_ranking.weight.landing_conversions') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(6)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_landing_conversions"
                            name="landing_conversions" min="0" max="100" step="0.5"
                            value="{{ ranking_config.weights.landing_conversions }}">
-                    <small class="help-text">Points per landing page conversion.</small>
+                    <small class="help-text">{{ t('admin_ranking.help.landing_conversions') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="w_favorites" class="form-label">
-                        Favorites
-                        <span class="badge bg-secondary ms-1">Default: 2</span>
+                        {{ t('admin_ranking.weight.favorites') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(2)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_favorites"
                            name="favorites" min="0" max="100" step="0.5"
                            value="{{ ranking_config.weights.favorites }}">
-                    <small class="help-text">Points per favorite.</small>
+                    <small class="help-text">{{ t('admin_ranking.help.favorites') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="w_has_landing_boost" class="form-label">
-                        Has Landing Page Boost
-                        <span class="badge bg-secondary ms-1">Default: 15</span>
+                        {{ t('admin_ranking.weight.has_landing_boost') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(15)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_has_landing_boost"
                            name="has_landing_boost" min="0" max="200" step="1"
                            value="{{ ranking_config.weights.has_landing_boost }}">
-                    <small class="help-text">Flat bonus for having a landing page.</small>
+                    <small class="help-text">{{ t('admin_ranking.help.has_landing_boost') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="w_recency_max_bonus" class="form-label">
-                        Recency Max Bonus
-                        <span class="badge bg-secondary ms-1">Default: 30</span>
+                        {{ t('admin_ranking.weight.recency_max_bonus') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_ranking.default', number=format_number(30)) }}</span>
                     </label>
                     <input type="number" class="form-control weight-input" id="w_recency_max_bonus"
                            name="recency_max_bonus" min="0" max="200" step="1"
                            value="{{ ranking_config.weights.recency_max_bonus }}">
-                    <small class="help-text">Max bonus for new prompts (decays linearly over 90 days).</small>
+                    <small class="help-text">{{ t('admin_ranking.help.recency_max_bonus') }}</small>
                 </div>
             </div>
 
             <div class="d-flex gap-2 align-items-center flex-wrap">
                 <button type="submit" class="btn btn-primary btn-lg" id="saveBtn">
-                    <i class="fas fa-save me-1"></i> Save Configuration
+                    <i class="fas fa-save me-1"></i> {{ t('admin_ranking.save') }}
                 </button>
                 <button type="button" class="btn btn-outline-secondary" id="resetBtn">
-                    <i class="fas fa-undo me-1"></i> Reset to Defaults
+                    <i class="fas fa-undo me-1"></i> {{ t('admin_ranking.reset') }}
                 </button>
             </div>
             <small class="help-text d-block mt-2">
                 <i class="fas fa-info-circle me-1"></i>
-                Changing weights will affect prompt positioning after the next recalculation.
+                {{ t('admin_ranking.weights.change_help') }}
             </small>
         </form>
     </div>
 
-    <!-- Status & Formula Preview -->
+    <!-- Status & {{ t('admin_ranking.formula.title') }} -->
     <div class="col-lg-5">
         <!-- Status Section -->
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-info-circle me-2"></i>Status</div>
+            <div class="section-title"><i class="fas fa-info-circle me-2"></i>{{ t('marketplace.common.status') }}</div>
 
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <span>Last recalculation:</span>
+                <span>{{ t('admin_ranking.last_recalculation') }}</span>
                 <strong id="lastUpdatedDisplay">--</strong>
             </div>
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <span>Current mode:</span>
+                <span>{{ t('admin_ranking.current_mode') }}</span>
                 <span class="status-badge {{ ranking_config.mode }}" id="currentModeBadge">
-                    {{ ranking_config.mode | capitalize }}
+                    {{ t('admin_ranking.mode.' ~ ranking_config.mode) }}
                 </span>
             </div>
 
             <button type="button" class="btn btn-warning w-100" id="recalcBtn">
-                <i class="fas fa-calculator me-1"></i> Recalculate Now
+                <i class="fas fa-calculator me-1"></i> {{ t('admin_ranking.recalculate') }}
             </button>
         </div>
 
-        <!-- Formula Preview Section -->
+        <!-- {{ t('admin_ranking.formula.title') }} Section -->
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-function me-2"></i>Formula Preview</div>
-            <p class="help-text mb-3">Current scoring formula with live weights:</p>
+            <div class="section-title"><i class="fas fa-function me-2"></i>{{ t('admin_ranking.formula.title') }}</div>
+            <p class="help-text mb-3">{{ t('admin_ranking.formula.help') }}</p>
 
             <div class="preview-card">
                 <div class="formula-block" style="background: rgba(0,0,0,0.2); border-color: rgba(255,255,255,0.1); color: white;">
-                    Score = (access x <span class="formula-weight" id="fw_access">{{ ranking_config.weights.users_with_access }}</span>)<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + (purchases x <span class="formula-weight" id="fw_purchases">{{ ranking_config.weights.purchases }}</span>)<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + (chatters x <span class="formula-weight" id="fw_chatters">{{ ranking_config.weights.unique_chatters }}</span>)<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + (conversions x <span class="formula-weight" id="fw_conversions">{{ ranking_config.weights.landing_conversions }}</span>)<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + (favorites x <span class="formula-weight" id="fw_favorites">{{ ranking_config.weights.favorites }}</span>)<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + (has_landing x <span class="formula-weight" id="fw_landing">{{ ranking_config.weights.has_landing_boost }}</span>)<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + recency_bonus(<span class="formula-weight" id="fw_recency">{{ ranking_config.weights.recency_max_bonus }}</span>)
+                    {{ t('admin_ranking.formula.score') }} = ({{ t('admin_ranking.weight.users_with_access') }} × <span class="formula-weight" id="fw_access">{{ format_number(ranking_config.weights.users_with_access, maximum_fraction_digits=20) }}</span>)<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + ({{ t('admin_ranking.weight.purchases') }} × <span class="formula-weight" id="fw_purchases">{{ format_number(ranking_config.weights.purchases, maximum_fraction_digits=20) }}</span>)<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + ({{ t('admin_ranking.weight.unique_chatters') }} × <span class="formula-weight" id="fw_chatters">{{ format_number(ranking_config.weights.unique_chatters, maximum_fraction_digits=20) }}</span>)<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + ({{ t('admin_ranking.weight.landing_conversions') }} × <span class="formula-weight" id="fw_conversions">{{ format_number(ranking_config.weights.landing_conversions, maximum_fraction_digits=20) }}</span>)<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + ({{ t('admin_ranking.weight.favorites') }} × <span class="formula-weight" id="fw_favorites">{{ format_number(ranking_config.weights.favorites, maximum_fraction_digits=20) }}</span>)<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + ({{ t('admin_ranking.weight.has_landing_boost') }} × <span class="formula-weight" id="fw_landing">{{ format_number(ranking_config.weights.has_landing_boost, maximum_fraction_digits=20) }}</span>)<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; + {{ t('admin_ranking.formula.recency') }}(<span class="formula-weight" id="fw_recency">{{ format_number(ranking_config.weights.recency_max_bonus, maximum_fraction_digits=20) }}</span>)
                 </div>
             </div>
 
             <div class="mt-3">
-                <h6 class="mb-2" style="color: var(--text-secondary);">Weight Summary</h6>
+                <h6 class="mb-2" style="color: var(--text-secondary);">{{ t('admin_ranking.summary') }}</h6>
                 <div class="preview-card">
                     <div class="preview-item">
-                        <span>Users with access</span>
-                        <span id="ps_access">x{{ ranking_config.weights.users_with_access }}</span>
+                        <span>{{ t('admin_ranking.weight.users_with_access') }}</span>
+                        <span id="ps_access">×{{ format_number(ranking_config.weights.users_with_access, maximum_fraction_digits=20) }}</span>
                     </div>
                     <div class="preview-item">
-                        <span>Purchases</span>
-                        <span id="ps_purchases">x{{ ranking_config.weights.purchases }}</span>
+                        <span>{{ t('admin_ranking.weight.purchases') }}</span>
+                        <span id="ps_purchases">×{{ format_number(ranking_config.weights.purchases, maximum_fraction_digits=20) }}</span>
                     </div>
                     <div class="preview-item">
-                        <span>Unique chatters</span>
-                        <span id="ps_chatters">x{{ ranking_config.weights.unique_chatters }}</span>
+                        <span>{{ t('admin_ranking.weight.unique_chatters') }}</span>
+                        <span id="ps_chatters">×{{ format_number(ranking_config.weights.unique_chatters, maximum_fraction_digits=20) }}</span>
                     </div>
                     <div class="preview-item">
-                        <span>Landing conversions</span>
-                        <span id="ps_conversions">x{{ ranking_config.weights.landing_conversions }}</span>
+                        <span>{{ t('admin_ranking.weight.landing_conversions') }}</span>
+                        <span id="ps_conversions">×{{ format_number(ranking_config.weights.landing_conversions, maximum_fraction_digits=20) }}</span>
                     </div>
                     <div class="preview-item">
-                        <span>Favorites</span>
-                        <span id="ps_favorites">x{{ ranking_config.weights.favorites }}</span>
+                        <span>{{ t('admin_ranking.weight.favorites') }}</span>
+                        <span id="ps_favorites">×{{ format_number(ranking_config.weights.favorites, maximum_fraction_digits=20) }}</span>
                     </div>
                     <div class="preview-item">
-                        <span>Landing page boost</span>
-                        <span id="ps_landing">+{{ ranking_config.weights.has_landing_boost }}</span>
+                        <span>{{ t('admin_ranking.weight.has_landing_boost') }}</span>
+                        <span id="ps_landing">+{{ format_number(ranking_config.weights.has_landing_boost, maximum_fraction_digits=20) }}</span>
                     </div>
                     <div class="preview-item">
-                        <span>Recency max bonus</span>
-                        <span id="ps_recency">+{{ ranking_config.weights.recency_max_bonus }}</span>
+                        <span>{{ t('admin_ranking.weight.recency_max_bonus') }}</span>
+                        <span id="ps_recency">+{{ format_number(ranking_config.weights.recency_max_bonus, maximum_fraction_digits=20) }}</span>
                     </div>
                 </div>
             </div>
@@ -297,6 +298,7 @@
 
 {% block scripts_inline %}
 <script>
+    const rankingText = (key, params) => AurvekI18n.t('admin_ranking.' + key, params);
     // Default weight values
     const DEFAULTS = {
         users_with_access: 3,
@@ -314,9 +316,9 @@
     const lastUpdatedTs = {{ ranking_config.last_updated }};
 
     function formatTimestamp(ts) {
-        if (!ts || ts === 0) return 'Never';
+        if (!ts || ts === 0) return rankingText('never');
         const d = new Date(ts * 1000);
-        return d.toLocaleString(undefined, {
+        return d.toLocaleString(AurvekI18n.locale, {
             year: 'numeric', month: 'short', day: 'numeric',
             hour: '2-digit', minute: '2-digit'
         });
@@ -344,22 +346,22 @@
         const recency = document.getElementById('w_recency_max_bonus').value;
 
         // Formula weights
-        document.getElementById('fw_access').textContent = access;
-        document.getElementById('fw_purchases').textContent = purchases;
-        document.getElementById('fw_chatters').textContent = chatters;
-        document.getElementById('fw_conversions').textContent = conversions;
-        document.getElementById('fw_favorites').textContent = favorites;
-        document.getElementById('fw_landing').textContent = landing;
-        document.getElementById('fw_recency').textContent = recency;
+        document.getElementById('fw_access').textContent = AurvekI18n.formatNumber(Number(access), {maximumFractionDigits: 20});
+        document.getElementById('fw_purchases').textContent = AurvekI18n.formatNumber(Number(purchases), {maximumFractionDigits: 20});
+        document.getElementById('fw_chatters').textContent = AurvekI18n.formatNumber(Number(chatters), {maximumFractionDigits: 20});
+        document.getElementById('fw_conversions').textContent = AurvekI18n.formatNumber(Number(conversions), {maximumFractionDigits: 20});
+        document.getElementById('fw_favorites').textContent = AurvekI18n.formatNumber(Number(favorites), {maximumFractionDigits: 20});
+        document.getElementById('fw_landing').textContent = AurvekI18n.formatNumber(Number(landing), {maximumFractionDigits: 20});
+        document.getElementById('fw_recency').textContent = AurvekI18n.formatNumber(Number(recency), {maximumFractionDigits: 20});
 
         // Summary
-        document.getElementById('ps_access').textContent = 'x' + access;
-        document.getElementById('ps_purchases').textContent = 'x' + purchases;
-        document.getElementById('ps_chatters').textContent = 'x' + chatters;
-        document.getElementById('ps_conversions').textContent = 'x' + conversions;
-        document.getElementById('ps_favorites').textContent = 'x' + favorites;
-        document.getElementById('ps_landing').textContent = '+' + landing;
-        document.getElementById('ps_recency').textContent = '+' + recency;
+        document.getElementById('ps_access').textContent = '×' + AurvekI18n.formatNumber(Number(access), {maximumFractionDigits: 20});
+        document.getElementById('ps_purchases').textContent = '×' + AurvekI18n.formatNumber(Number(purchases), {maximumFractionDigits: 20});
+        document.getElementById('ps_chatters').textContent = '×' + AurvekI18n.formatNumber(Number(chatters), {maximumFractionDigits: 20});
+        document.getElementById('ps_conversions').textContent = '×' + AurvekI18n.formatNumber(Number(conversions), {maximumFractionDigits: 20});
+        document.getElementById('ps_favorites').textContent = '×' + AurvekI18n.formatNumber(Number(favorites), {maximumFractionDigits: 20});
+        document.getElementById('ps_landing').textContent = '+' + AurvekI18n.formatNumber(Number(landing), {maximumFractionDigits: 20});
+        document.getElementById('ps_recency').textContent = '+' + AurvekI18n.formatNumber(Number(recency), {maximumFractionDigits: 20});
     }
 
     // Attach live preview listeners to all weight inputs
@@ -385,7 +387,7 @@
         piggybackRadio.dispatchEvent(new Event('change'));
 
         updateFormulaPreview();
-        NotificationModal.toast('Defaults restored. Click Save to apply.', 'info');
+        NotificationModal.toast(rankingText('defaults_restored'), 'info');
     });
 
     // Save form
@@ -396,7 +398,7 @@
         const originalText = saveBtn.innerHTML;
 
         saveBtn.disabled = true;
-        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + rankingText('saving');
 
         const selectedMode = document.querySelector('input[name="mode"]:checked').value;
 
@@ -425,14 +427,14 @@
 
             if (result.success) {
                 FormGuard.markClean(document.getElementById('rankingForm'));
-                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> ' + rankingText('saved');
                 saveBtn.classList.remove('btn-primary');
                 saveBtn.classList.add('btn-success');
 
                 // Update mode badge
                 const badge = document.getElementById('currentModeBadge');
                 badge.className = 'status-badge ' + selectedMode;
-                badge.textContent = selectedMode.charAt(0).toUpperCase() + selectedMode.slice(1);
+                badge.textContent = rankingText('mode.' + selectedMode);
 
                 setTimeout(() => {
                     saveBtn.innerHTML = originalText;
@@ -441,13 +443,13 @@
                     saveBtn.disabled = false;
                 }, 2000);
             } else {
-                NotificationModal.error('Save Failed', result.message || 'Error saving ranking configuration');
+                NotificationModal.error(rankingText('error.title'), result.message || rankingText('error.save'));
                 saveBtn.innerHTML = originalText;
                 saveBtn.disabled = false;
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Save Error', 'An error occurred while saving ranking configuration');
+            NotificationModal.error(rankingText('error.title'), rankingText('error.save'));
             saveBtn.innerHTML = originalText;
             saveBtn.disabled = false;
         }
@@ -459,7 +461,7 @@
         const originalText = btn.innerHTML;
 
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Recalculating...';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + rankingText('recalculating');
 
         try {
             const response = await fetch('/api/admin/ranking-recalculate', {
@@ -470,16 +472,13 @@
             const result = await response.json();
 
             if (result.success) {
-                NotificationModal.toast('Ranking recalculated successfully', 'success');
-                // Update the last updated display
-                const now = new Date();
-                document.getElementById('lastUpdatedDisplay').textContent = formatTimestamp(now.getTime() / 1000);
+                NotificationModal.toast(rankingText('recalculation_started'), 'success');
             } else {
-                NotificationModal.error('Recalculation Failed', result.message || 'Error during recalculation');
+                NotificationModal.error(rankingText('error.title'), result.message || rankingText('error.recalculate'));
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Recalculation Error', 'An error occurred during ranking recalculation');
+            NotificationModal.error(rankingText('error.title'), rankingText('error.recalculate'));
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;

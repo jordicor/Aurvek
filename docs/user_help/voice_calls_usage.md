@@ -1,10 +1,12 @@
 ---
 id: voice_calls_usage
-title: How to make a voice call with the AI
+title: Use AI Voice in your browser
 category: voice
 keywords:
   - voice call
   - AI voice
+  - browser voice
+  - browser call
   - ElevenLabs
   - speak
   - microphone
@@ -14,12 +16,12 @@ keywords:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
 
-You can have a real-time voice conversation with the AI directly from the chat. Open the plus (+) menu, select **AI Voice**, and press **Start call**. The AI will listen and respond using voice. When you finish, the transcript is saved to the conversation automatically.
+You can have a real-time voice conversation through your browser microphone. Open the plus (+) menu, select **AI Voice**, and press **Start call**. This is different from **Call me**, which places a telephone call to your saved phone number.
 
 ## Steps
 
@@ -34,12 +36,14 @@ You can have a real-time voice conversation with the AI directly from the chat. 
 
 ## Notes
 
-- The AI voice feature requires a prompt that has an ElevenLabs agent assigned. If no agent is configured, you will see an error when opening the voice panel.
+- AI Voice requires a configured, compatible browser-voice agent. If it is unavailable, the voice panel shows the reason.
 - Voice calls are not available on locked conversations.
 - Your browser must allow microphone access for the call to work.
 - After the call ends, the transcript messages appear in the chat history. The chat scrolls to the bottom automatically.
 - If the transcript save fails, you can retry from the voice panel.
+- To make or receive a telephone call instead, see `phone_calls_usage`.
 
 ## Related
 
 - plus_menu_overview
+- phone_calls_usage

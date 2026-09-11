@@ -209,15 +209,15 @@ function isAcceptedFileType(file) {
 function validateFileSize(file) {
     const sizeMB = file.size / (1024 * 1024);
     if (file.type === 'application/pdf' && sizeMB > MAX_PDF_SIZE_MB) {
-        NotificationModal.warning('File too large', `PDF files must be under ${MAX_PDF_SIZE_MB}MB`);
+        NotificationModal.warning(() => AurvekI18n.t('chat_widgets.files.too_large_title'), () => AurvekI18n.t('chat_widgets.files.pdf_too_large', {size: MAX_PDF_SIZE_MB}));
         return false;
     } else if (isTextFile(file)) {
         if (sizeMB > MAX_TEXT_SIZE_MB) {
-            NotificationModal.warning('File too large', `Text files must be under ${MAX_TEXT_SIZE_MB}MB`);
+            NotificationModal.warning(() => AurvekI18n.t('chat_widgets.files.too_large_title'), () => AurvekI18n.t('chat_widgets.files.text_too_large', {size: MAX_TEXT_SIZE_MB}));
             return false;
         }
     } else if (file.type.startsWith('image/') && sizeMB > MAX_IMAGE_SIZE_MB) {
-        NotificationModal.warning('File too large', `Images must be under ${MAX_IMAGE_SIZE_MB}MB`);
+        NotificationModal.warning(() => AurvekI18n.t('chat_widgets.files.too_large_title'), () => AurvekI18n.t('chat_widgets.files.image_too_large', {size: MAX_IMAGE_SIZE_MB}));
         return false;
     }
     return true;
@@ -269,10 +269,8 @@ async function handlePasteEvent(event) {
         }
 
         if (compressedCount > 0) {
-            const saved = (totalSavedBytes / (1024 * 1024)).toFixed(1);
-            const msg = compressedCount === 1
-                ? `Image compressed (saved ${saved} MB)`
-                : `${compressedCount} images compressed (saved ${saved} MB)`;
+            const saved = new Intl.NumberFormat(AurvekI18n.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(totalSavedBytes / (1024 * 1024));
+            const msg = AurvekI18n.t('chat_widgets.files.images_compressed', {count: compressedCount, saved});
             NotificationModal.toast(msg, 'info', 3000);
         }
     } finally {
@@ -304,7 +302,7 @@ function processFiles(files, formData, imagePreviews, targetConversationId = nul
     for (var i = 0; i < files.length; i++) {
         if (!isAcceptedFileType(files[i]) || !validateFileSize(files[i])) {
             if (!isAcceptedFileType(files[i])) {
-                NotificationModal.warning('Invalid File', 'Only image, PDF, and text files are allowed.');
+                NotificationModal.warning(() => AurvekI18n.t('chat_widgets.files.invalid_title'), () => AurvekI18n.t('chat_widgets.files.invalid_type'));
             }
             continue;
         }
@@ -478,7 +476,8 @@ function updateAttachmentUploadStatus(rendered, progress, text) {
         rendered.progressFill.style.width = `${clamped}%`;
     }
     if (rendered.status) {
-        rendered.status.textContent = text || `${clamped}%`;
+        if (typeof text === 'function') AurvekI18n.bindValue(rendered.status, text);
+        else AurvekI18n.bindValue(rendered.status, () => text || `${new Intl.NumberFormat(AurvekI18n.locale).format(clamped)}%`);
     }
 }
 
@@ -493,10 +492,11 @@ function markAttachmentUploadComplete(rendered) {
         if (!inlineAttachment && rendered.status.parentElement) {
             rendered.status.parentElement.style.textAlign = 'center';
         }
+        AurvekI18n.unbind(rendered.status);
         rendered.status.textContent = '';
         rendered.status.innerHTML = '<i class="fas fa-check-circle" aria-hidden="true"></i>';
-        rendered.status.title = 'Uploaded';
-        rendered.status.setAttribute('aria-label', 'Uploaded');
+        AurvekI18n.bindAttribute(rendered.status, 'title', 'chat_widgets.files.uploaded');
+        AurvekI18n.bindAttribute(rendered.status, 'aria-label', 'chat_widgets.files.uploaded');
         rendered.status.setAttribute('role', 'img');
         Object.assign(rendered.status.style, {
             display: 'inline-flex',
@@ -519,7 +519,11 @@ function markAttachmentUploadFailed(rendered, message) {
         rendered.progressFill.style.background = '#dc3545';
     }
     if (rendered.status) {
-        rendered.status.textContent = message || 'Failed';
+        if (window.AurvekEmbed || !message) AurvekI18n.bindText(rendered.status, 'chat_widgets.files.failed');
+        else {
+            AurvekI18n.unbind(rendered.status);
+            rendered.status.textContent = message;
+        }
     }
 }
 
@@ -618,6 +622,9 @@ function postAttachmentForm(url, formData, { signal, onProgress, timeout } = {})
         xhr.open('POST', url, true);
         xhr.withCredentials = true;
         xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+        if (window.AurvekEmbed && new URL(url, window.location.href).origin === window.location.origin) {
+            window.AurvekEmbed.requestHeaders().forEach((value, name) => xhr.setRequestHeader(name, value));
+        }
         if (Number.isFinite(timeout) && timeout > 0) {
             xhr.timeout = timeout;
         }
@@ -628,7 +635,7 @@ function postAttachmentForm(url, formData, { signal, onProgress, timeout } = {})
         };
         if (signal) {
             if (signal.aborted) {
-                const error = new Error('Upload cancelled');
+                const error = new Error(AurvekI18n.t('chat_widgets.files.cancelled'));
                 error.name = 'AbortError';
                 reject(error);
                 return;
@@ -653,7 +660,7 @@ function postAttachmentForm(url, formData, { signal, onProgress, timeout } = {})
                 resolve(body || {});
                 return;
             }
-            const error = new Error(body?.message || body?.error || `Upload failed (${xhr.status})`);
+            const error = new Error(body?.message || body?.error || AurvekI18n.t('chat_widgets.files.upload_failed_status', {status: xhr.status}));
             error.uploadFailed = true;
             error.status = xhr.status;
             error.uploadRetryable = (xhr.status >= 500 || xhr.status === 408 || xhr.status === 429);
@@ -661,21 +668,21 @@ function postAttachmentForm(url, formData, { signal, onProgress, timeout } = {})
         };
         xhr.onerror = () => {
             if (signal) signal.removeEventListener('abort', abortHandler);
-            const error = new Error('Network error while uploading attachment');
+            const error = new Error(AurvekI18n.t('chat_widgets.files.network_error'));
             error.uploadFailed = true;
             error.uploadRetryable = true;
             reject(error);
         };
         xhr.ontimeout = () => {
             if (signal) signal.removeEventListener('abort', abortHandler);
-            const error = new Error('Upload timed out');
+            const error = new Error(AurvekI18n.t('chat_widgets.files.timed_out'));
             error.uploadFailed = true;
             error.uploadRetryable = true;
             reject(error);
         };
         xhr.onabort = () => {
             if (signal) signal.removeEventListener('abort', abortHandler);
-            const error = new Error(abortedBySignal ? 'Upload cancelled' : 'Attachment upload aborted');
+            const error = new Error(AurvekI18n.t(abortedBySignal ? 'chat_widgets.files.cancelled' : 'chat_widgets.files.aborted'));
             error.name = 'AbortError';
             reject(error);
         };
@@ -759,12 +766,12 @@ async function uploadChunkWithRetry(file, conversationId, uploadId, index, total
         if (attempt > 0) {
             await uploadSleep(UPLOAD_CHUNK_RETRY_DELAYS_MS[attempt - 1] + Math.random() * 250);
             if (options.signal && options.signal.aborted) {
-                const error = new Error('Upload cancelled');
+                const error = new Error(AurvekI18n.t('chat_widgets.files.cancelled'));
                 error.name = 'AbortError';
                 throw error;
             }
             if (conversationId !== null && typeof currentConversationId !== 'undefined' && currentConversationId !== conversationId) {
-                const error = new Error('Conversation changed while uploading attachment');
+                const error = new Error(AurvekI18n.t('chat_widgets.files.conversation_changed'));
                 error.uploadFailed = true;
                 error.uploadConversationChanged = true;
                 throw error;
@@ -830,13 +837,13 @@ async function uploadSingleAttachment(file, conversationId, rendered, options = 
         const sizeForPct = Math.max(1, file.size); // avoid NaN% for a 0-byte file
         for (let index = 0; index < totalChunks; index++) {
             if (conversationId !== null && typeof currentConversationId !== 'undefined' && currentConversationId !== conversationId) {
-                const error = new Error('Conversation changed while uploading attachment');
+                const error = new Error(AurvekI18n.t('chat_widgets.files.conversation_changed'));
                 error.uploadFailed = true;
                 error.uploadConversationChanged = true;
                 throw error;
             }
             if (options.signal && options.signal.aborted) {
-                const error = new Error('Upload cancelled');
+                const error = new Error(AurvekI18n.t('chat_widgets.files.cancelled'));
                 error.name = 'AbortError';
                 throw error;
             }
@@ -864,7 +871,7 @@ async function uploadSingleAttachment(file, conversationId, rendered, options = 
             bytesDone += chunkBytes;
         }
 
-        updateAttachmentUploadStatus(rendered, 98, 'Processing');
+        updateAttachmentUploadStatus(rendered, 98, () => AurvekI18n.t('chat_widgets.files.processing'));
 
         const completeForm = new FormData();
         completeForm.append('upload_id', entry.uploadId);
@@ -908,7 +915,8 @@ async function uploadAttachmentsForMessage(files, conversationId, displayOptions
     if (window.SessionManager && typeof window.SessionManager.validateSession === 'function') {
         const isValid = await window.SessionManager.validateSession(true);
         if (!isValid) {
-            const error = new Error('Session expired');
+            const error = new Error(AurvekI18n.t('common.session.expired_message'));
+            error.code = 'session_expired';
             error.uploadFailed = true;
             throw error;
         }
@@ -917,9 +925,9 @@ async function uploadAttachmentsForMessage(files, conversationId, displayOptions
     for (const file of uploadBatch) {
         if (!isAcceptedFileType(file) || !validateFileSize(file)) {
             if (!isAcceptedFileType(file)) {
-                NotificationModal.warning('Invalid File', 'Only image, PDF, and text files are allowed.');
+                NotificationModal.warning(() => AurvekI18n.t('chat_widgets.files.invalid_title'), () => AurvekI18n.t('chat_widgets.files.invalid_type'));
             }
-            const error = new Error('Attachment is not valid');
+            const error = new Error(AurvekI18n.t('chat_widgets.files.invalid_attachment'));
             error.uploadFailed = true;
             throw error;
         }
@@ -929,7 +937,7 @@ async function uploadAttachmentsForMessage(files, conversationId, displayOptions
         try {
             const uploaded = await uploadSingleAttachment(file, conversationId, rendered, displayOptions);
             if (!uploaded || !uploaded.attachment_ref) {
-                const error = new Error('Upload did not return an attachment reference');
+                const error = new Error(AurvekI18n.t('chat_widgets.files.missing_reference'));
                 error.uploadFailed = true;
                 throw error;
             }
@@ -940,7 +948,7 @@ async function uploadAttachmentsForMessage(files, conversationId, displayOptions
             // AbortError branch. Still expose the echoes so that branch can
             // remove them and revoke their blob URLs.
             if (error.name !== 'AbortError') {
-                markAttachmentUploadFailed(rendered, error.message || 'Failed');
+                markAttachmentUploadFailed(rendered, error.message || AurvekI18n.t('chat_widgets.files.failed'));
                 error.uploadFailed = true;
             }
             error.renderedAttachmentElements = renderedAttachmentElements;
@@ -975,7 +983,7 @@ async function handleFileSelect(event) {
         for (const file of files) {
             if (!isAcceptedFileType(file) || !validateFileSize(file)) {
                 if (!isAcceptedFileType(file)) {
-                    NotificationModal.warning('Invalid File', 'Only image, PDF, and text files are allowed.');
+                    NotificationModal.warning(() => AurvekI18n.t('chat_widgets.files.invalid_title'), () => AurvekI18n.t('chat_widgets.files.invalid_type'));
                 }
                 continue;
             }
@@ -1037,10 +1045,8 @@ async function handleFileSelect(event) {
         }
 
         if (compressedCount > 0) {
-            const saved = (totalSavedBytes / (1024 * 1024)).toFixed(1);
-            const msg = compressedCount === 1
-                ? `Image compressed (saved ${saved} MB)`
-                : `${compressedCount} images compressed (saved ${saved} MB)`;
+            const saved = new Intl.NumberFormat(AurvekI18n.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(totalSavedBytes / (1024 * 1024));
+            const msg = AurvekI18n.t('chat_widgets.files.images_compressed', {count: compressedCount, saved});
             NotificationModal.toast(msg, 'info', 3000);
         }
     } finally {

@@ -26,14 +26,18 @@ from integrations.telephony.realtime_call import (
     RealtimeCallSpeechStartedEvent,
     RealtimeCallTranscriptEvent,
 )
-from integrations.telephony.phone_context import PhoneTurnLinkState
+from integrations.telephony.phone_context import (
+    PhoneMessageAudioRange,
+    PhoneTurnLinkState,
+)
 from integrations.telephony.repository import PhoneHangupAttemptClaim
+from integrations.telephony.tooling import CallSchedulePolicy, phone_tools_for_context
 from integrations.telephony.session import (
     PhoneMediaSession,
     PhoneMediaSessionContext,
     PhoneMediaSessionError,
 )
-from integrations.telephony.recording import LocalRecordingAsset
+from integrations.telephony.recording import LocalCallRecorder, LocalRecordingAsset
 from integrations.telephony.transcription import FinalPhoneUtterance
 
 
@@ -83,6 +87,8 @@ def context(
         call_snapshot=snapshot(maximum=maximum),
         recording_enabled=False,
         direction="inbound",
+        request_source="caller",
+        request_timing="immediate",
         started_at=started_at or datetime.now(UTC),
     )
 
@@ -217,11 +223,138 @@ def realtime_context():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_realtime", [False, True])
+async def test_live_handoff_roundtrip_replaces_provider_and_preserves_physical_call(native_realtime):
+    original = realtime_context() if native_realtime else context()
+    providers = []
+
+    class Provider(FakeDeepgram):
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    def factory(values):
+        provider = Provider()
+        provider.config = dict(values)
+        providers.append(provider)
+        return provider
+
+    repository = FakeRepository()
+    session = make_session(call_context=original, stt=factory(original.call_snapshot),
+                           repository=repository, stt_factory=factory, deepgram=None)
+    original_clock = session.clock
+    session._stream_sid = STREAM_SID
+    for target_id, epoch, prompt_id in [(20, 8, 12), (10, 9, 2)]:
+        target = {**original.call_snapshot, "conversation_id": target_id,
+                  "prompt_id": prompt_id, "phone_realtime_voice": "cedar" if target_id == 20 else "marin"}
+        candidate = await session.prepare_handoff_transport(target)
+        assert candidate.client.connected
+        assert session.context.conversation_id != target_id
+        assert not session.stt.closed
+        await candidate.validate()
+        row = {
+            "id": original.call_id, "provider_call_sid": CALL_SID,
+            "dispatch_token": TOKEN, "owner_user_id": 1, "conversation_id": 10,
+            "config_snapshot_json": json.dumps(original.call_snapshot),
+            "active_conversation_id": target_id, "active_config_snapshot_json": json.dumps(target),
+            "foreground_fencing_token": epoch, "foreground_lease_owner": original.foreground_lease_owner,
+            "recording_enabled": 0, "direction": "inbound", "answered_at": original.started_at.isoformat(),
+        }
+
+        async def get_call(_sid):
+            return row
+
+        repository.get_call_by_provider_sid = get_call
+        previous = session.stt
+        await session._apply_handoff({"conversation_id": target_id, "phone_handoff": {"call_id": original.call_id}})
+        await candidate.close()
+        assert previous.closed
+        assert session.stt is candidate.client and not session.stt.closed
+        assert session.context.conversation_id == target_id
+        assert session.context.call_snapshot["prompt_id"] == prompt_id
+        assert session.context.foreground_epoch == epoch
+        assert session.context.started_at == original.started_at
+        assert session.clock is original_clock and session._stream_sid == STREAM_SID
+        assert not session._provider_input_lock.locked()
+    assert len(providers) == 3 and len({id(provider) for provider in providers}) == 3
+
+
+@pytest.mark.asyncio
+async def test_handoff_retains_source_when_caller_interrupts_prepared_transfer():
+    from integrations.embed.models import EmbedError
+    session = make_session(stt_factory=lambda _snapshot: FakeDeepgram())
+    source = session.stt
+    candidate = await session.prepare_handoff_transport(snapshot())
+    session._speech_generation += 1
+    with pytest.raises(EmbedError, match="handoff_source_busy"):
+        await candidate.validate()
+    await candidate.close()
+    assert session.stt is source and session.context.conversation_id == 10
+    assert not session._turn_admission_lock.locked()
+    assert not session._provider_input_lock.locked()
+
+
+@pytest.mark.parametrize(
+    (
+        "direction",
+        "job_origin",
+        "job_request_timing",
+        "expected_source",
+        "expected_timing",
+    ),
+    (
+        ("inbound", "ui", "scheduled", "caller", "immediate"),
+        ("outbound", "ui", "scheduled", "user_ui", "scheduled"),
+        ("outbound", "assistant", "immediate", "assistant_tool", "immediate"),
+        ("outbound", "api", "scheduled", "external_api", "scheduled"),
+        ("outbound", "untrusted", "later", "unknown", "unknown"),
+    ),
+)
+def test_session_context_derives_closed_request_facts_from_durable_call(
+    direction,
+    job_origin,
+    job_request_timing,
+    expected_source,
+    expected_timing,
+) -> None:
+    call = {
+        "id": "call-session-1",
+        "provider_call_sid": CALL_SID,
+        "dispatch_token": TOKEN,
+        "owner_user_id": 1,
+        "conversation_id": 10,
+        "foreground_fencing_token": 7,
+        "foreground_lease_owner": "media:call-session-1",
+        "config_snapshot_json": json.dumps(snapshot()),
+        "recording_enabled": 0,
+        "direction": direction,
+        "job_origin": job_origin,
+        "job_request_timing": job_request_timing,
+    }
+
+    resolved = PhoneMediaSessionContext.from_call(
+        call,
+        account_sid=ACCOUNT_SID,
+        stream_attempt=0,
+    )
+
+    assert resolved.direction == direction
+    assert resolved.request_source == expected_source
+    assert resolved.request_timing == expected_timing
+
+
 def test_session_uses_snapshot_endpointing_for_elevenlabs_scribe() -> None:
     call_context = context()
     call_context = replace(
         call_context,
-        call_snapshot={**call_context.call_snapshot, "endpointing_ms": 1_600},
+        call_snapshot={
+            **call_context.call_snapshot,
+            "stt_locale": "es",
+            "secondary_languages": ["en", "ca"],
+            "endpointing_ms": 1_600,
+        },
     )
     session = PhoneMediaSession.with_elevenlabs_key_provider(
         call_context,
@@ -233,6 +366,21 @@ def test_session_uses_snapshot_endpointing_for_elevenlabs_scribe() -> None:
     )
 
     assert session.stt.options.endpointing_ms == 1_600
+    assert session.stt.options.language_code == "es"
+    assert session.stt.options.secondary_languages == ("en", "ca")
+
+
+def test_legacy_snapshot_without_secondary_languages_keeps_empty_allow_list() -> None:
+    session = PhoneMediaSession.with_elevenlabs_key_provider(
+        context(),
+        elevenlabs_api_key_provider=lambda: "synthetic-key",
+        repository=FakeRepository(),
+        current_user_loader=_user,
+        hangup_call=_noop,
+        notice_loader=_noop_notice_loader,
+    )
+
+    assert session.stt.options.secondary_languages == ()
 
 
 def test_realtime_factory_uses_snapshot_model_voice_without_scribe_billing() -> None:
@@ -260,6 +408,88 @@ def test_pcmu_activity_filter_rejects_silence_and_single_sample_click() -> None:
     assert session_module._pcmu_has_speech_activity(
         b"\x00" * 16 + b"\xff" * 144
     ) is True
+
+
+def test_retained_caller_range_uses_provider_timing_and_never_overlaps_prior_turn(
+    tmp_path,
+) -> None:
+    call_context = replace(context(), recording_enabled=True)
+    session = make_session(
+        call_context=call_context,
+        recorder=LocalCallRecorder(
+            call_context.call_id,
+            enabled=True,
+            root=tmp_path / "recordings",
+        ),
+    )
+    session._recording_attempt_offset_ms = 1_000
+    session._participant_media_end_byte = 16_000
+    session._caller_audio_floor_byte = 9_000
+
+    ranged = session._attach_caller_audio_range(
+        FinalPhoneUtterance("hello", 1, 0.25, 0.5, 0.9)
+    )
+    state = session._link_state_for_utterance(ranged)
+
+    assert ranged.audio_start_byte == 9_000
+    assert ranged.audio_end_byte == 13_920
+    assert state.caller_audio_range == PhoneMessageAudioRange(9_000, 13_920)
+    assert session._caller_audio_floor_byte == 13_920
+
+
+def test_retained_caller_fallback_spans_all_voice_bursts_until_final(
+    tmp_path,
+) -> None:
+    call_context = replace(context(), recording_enabled=True)
+    session = make_session(
+        call_context=call_context,
+        recorder=LocalCallRecorder(
+            call_context.call_id,
+            enabled=True,
+            root=tmp_path / "recordings",
+        ),
+    )
+    session._recording_attempt_offset_ms = 0
+    session._participant_media_end_byte = 16_160
+    session._caller_audio_floor_byte = 0
+    activity = session._participant_speech_activity
+    activity.observe(b"\x00" * 160, timestamp_ms=100)
+    activity.observe(b"\x00" * 160, timestamp_ms=2_000)
+
+    ranged = session._attach_caller_audio_range(
+        FinalPhoneUtterance("two bursts", 2, None, None, None)
+    )
+
+    assert activity.first_voice_start_ms == 100
+    assert ranged.audio_start_byte == 0
+    assert ranged.audio_end_byte == 16_160
+
+
+def test_retained_caller_range_falls_back_when_quiet_speech_was_transcribed(
+    tmp_path,
+) -> None:
+    call_context = replace(context(), recording_enabled=True)
+    session = make_session(
+        call_context=call_context,
+        recorder=LocalCallRecorder(
+            call_context.call_id,
+            enabled=True,
+            root=tmp_path / "recordings",
+        ),
+    )
+    session._recording_attempt_offset_ms = 1_000
+    session._participant_media_end_byte = 32_000
+    session._caller_audio_floor_byte = 12_000
+
+    ranged = session._attach_caller_audio_range(
+        FinalPhoneUtterance("quiet words", 1, None, None, None)
+    )
+
+    # A trusted final transcript still receives a bounded, observed range even
+    # when the conservative local activity detector found no voiced frame.
+    assert ranged.audio_start_byte == 12_000
+    assert ranged.audio_end_byte == 32_000
+    assert session._caller_audio_floor_byte == 32_000
 
 
 async def _user(_user_id):
@@ -913,9 +1143,19 @@ async def test_final_utterance_uses_canonical_runtime_and_fenced_context(monkeyp
     phone_turn = captured["phone_turn"]
     assert phone_turn.context.channel == "phone"
     assert phone_turn.context.persistence == "deferred"
+    assert phone_turn.context.phone_direction == "inbound"
+    assert phone_turn.context.phone_request_source == "caller"
+    assert phone_turn.context.phone_request_timing == "immediate"
     assert phone_turn.context.turn_key.turn_id == "stt-1"
     assert "openai_realtime_bridge" not in phone_turn.context.provenance
     assert "remaining_seconds=" in phone_turn.context.provenance["internal_turn_context"]
+    schedule_policy = phone_turn.context.provenance["call_schedule_policy"]
+    assert isinstance(schedule_policy, CallSchedulePolicy)
+    assert (schedule_policy.mode, schedule_policy.prompt_id) == ("on_request", 2)
+    assert [
+        tool["function"]["name"]
+        for tool in phone_tools_for_context(phone_turn.context)
+    ] == ["end_call", "schedule_phone_call"]
     assert session._caller_turns == 1
 
 
@@ -965,8 +1205,14 @@ async def test_realtime_turn_passes_bridge_and_uses_realtime_playback(monkeypatc
         "integrations.telephony.session.PhoneTurnPlayback",
         ForbiddenStandardPlayback,
     )
+    outbound_context = replace(
+        realtime_context(),
+        direction="outbound",
+        request_source="user_ui",
+        request_timing="scheduled",
+    )
     session = make_session(
-        call_context=realtime_context(),
+        call_context=outbound_context,
         runtime_starter=starter,
     )
     session._current_user = type("User", (), {"is_enabled": True})()
@@ -985,6 +1231,9 @@ async def test_realtime_turn_passes_bridge_and_uses_realtime_playback(monkeypatc
     )
 
     phone_turn = captured["phone_turn"]
+    assert phone_turn.context.phone_direction == "outbound"
+    assert phone_turn.context.phone_request_source == "user_ui"
+    assert phone_turn.context.phone_request_timing == "scheduled"
     assert phone_turn.context.provenance["openai_realtime_bridge"] is bridge
     assert captured["realtime_playback"]["bridge"] is bridge
     assert captured["realtime_playback"]["phone_turn"] is phone_turn
@@ -1139,6 +1388,9 @@ async def test_stop_event_finalizes_and_bounded_drains_confirmed_phrase_before_s
     async def persist_caller(**values):
         persisted.append(("caller", values["caller_text"]))
         assert values["phone_turn"].context.persistence == "ingest_only"
+        assert values["phone_turn"].context.phone_direction == "inbound"
+        assert values["phone_turn"].context.phone_request_source == "caller"
+        assert values["phone_turn"].context.phone_request_timing == "immediate"
         return 101
 
     deepgram = FakeDeepgram()
@@ -2149,6 +2401,36 @@ async def test_zero_residual_stop_budget_persists_raw_without_starting_mix() -> 
         }
     ]
     assert mix_started == 0
+
+
+@pytest.mark.asyncio
+async def test_tombstone_rejection_removes_late_finalized_local_audio(tmp_path) -> None:
+    repository = FakeRepository()
+
+    async def reject_late_recording(**_values):
+        return None
+
+    repository.persist_local_recording = reject_late_recording
+    call_context = replace(context(), recording_enabled=True)
+    recorder = LocalCallRecorder(
+        call_context.call_id,
+        enabled=True,
+        root=tmp_path / "recordings",
+    )
+    recorder.record_participant(b"\xff" * 160, start_ms=0)
+    session = PhoneMediaSession(
+        call_context,
+        deepgram=FakeDeepgram(),
+        repository=repository,
+        current_user_loader=_user,
+        hangup_call=_noop,
+        notice_loader=_noop_notice_loader,
+        caller_turn_persister=_noop_caller_turn_persister,
+        recorder=recorder,
+    )
+
+    assert await session._persist_raw_recording_bounded() is False
+    assert not (tmp_path / "recordings" / "ca" / call_context.call_id).exists()
 
 
 @pytest.mark.asyncio

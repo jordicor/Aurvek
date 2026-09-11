@@ -1,6 +1,7 @@
+{% set i18n_domains = ['marketplace'] %}
 {% extends "base.html" %}
 
-{% block title %}Home - AURVEK{% endblock %}
+{% block title %}{{ t('marketplace.home.title') }} - AURVEK{% endblock %}
 
 {% block styles %}
 <link rel="stylesheet" href="{{ get_static_url('/static/css/home.css') }}">
@@ -23,11 +24,11 @@
     <!-- Chat Input Bar -->
     <div class="home-chat-input" id="home-chat-input">
         <input type="text" id="home-input" class="home-input-field"
-               placeholder="Write something to start chatting..." autocomplete="off" autofocus>
-        <select id="home-prompt-select" class="home-prompt-select">
-            <option value="">Select prompt...</option>
+               placeholder="{{ t('marketplace.home.start_placeholder') }}" aria-label="{{ t('marketplace.home.start_placeholder') }}" autocomplete="off" autofocus>
+        <select id="home-prompt-select" aria-label="{{ t('marketplace.home.select_prompt') }}" class="home-prompt-select">
+            <option value="">{{ t('marketplace.home.select_prompt') }}</option>
         </select>
-        <button id="home-send-btn" class="home-send-btn" title="Start chat">
+        <button id="home-send-btn" class="home-send-btn" title="{{ t('marketplace.home.start_chat') }}">
             <i class="fas fa-arrow-right"></i>
         </button>
     </div>
@@ -43,9 +44,9 @@
         <div class="window" id="win-welcome" data-dock-id="welcome" style="display:none">
             <div class="window-header">
                 <div class="window-header-icon welcome"><i class="fas fa-envelope-open-text"></i></div>
-                <div class="window-header-title">Welcome Messages</div>
+                <div class="window-header-title">{{ t('marketplace.home.welcome_messages') }}</div>
                 <div class="window-header-badge" id="welcome-badge" style="display:none"></div>
-                <button class="window-minimize-btn" title="Minimize"><i class="fas fa-minus"></i></button>
+                <button class="window-minimize-btn" title="{{ t('marketplace.home.minimize') }}"><i class="fas fa-minus"></i></button>
             </div>
             <div class="window-body">
                 <div class="welcome-layout">
@@ -53,7 +54,7 @@
                     <div class="welcome-display" id="welcome-display">
                         <div class="welcome-display-empty">
                             <i class="fas fa-envelope-open"></i>
-                            <span>Select a message to read</span>
+                            <span>{{ t('marketplace.home.select_message') }}</span>
                         </div>
                     </div>
                 </div>
@@ -67,13 +68,13 @@
             <div class="window" id="win-latest" data-dock-id="latest" style="display:none">
                 <div class="window-header">
                     <div class="window-header-icon latest"><i class="fas fa-bolt"></i></div>
-                    <div class="window-header-title">Latest Prompts</div>
-                    <button class="window-minimize-btn" title="Minimize"><i class="fas fa-minus"></i></button>
+                    <div class="window-header-title">{{ t('marketplace.home.latest_prompts') }}</div>
+                    <button class="window-minimize-btn" title="{{ t('marketplace.home.minimize') }}"><i class="fas fa-minus"></i></button>
                 </div>
                 <div class="window-body">
                     <div class="home-col-list" id="home-latest-list"></div>
                     <div class="list-footer">
-                        <a href="/explore">Explore <i class="fas fa-arrow-right"></i></a>
+                        <a href="/explore">{{ t('marketplace.home.explore') }} <i class="fas fa-arrow-right"></i></a>
                     </div>
                 </div>
             </div>
@@ -83,23 +84,23 @@
             <div class="window" id="win-library" data-dock-id="library">
                 <div class="window-header">
                     <div class="window-header-icon library"><i class="fas fa-book-open"></i></div>
-                    <div class="window-header-title">My Packs &amp; Prompts</div>
+                    <div class="window-header-title">{{ t('marketplace.home.library') }}</div>
                     <div class="home-tab-toggle" id="home-tab-toggle">
-                        <button class="home-tab active" data-tab="prompts">Prompts</button>
-                        <button class="home-tab" data-tab="packs">Packs</button>
+                        <button class="home-tab active" data-tab="prompts">{{ t('marketplace.common.prompts') }}</button>
+                        <button class="home-tab" data-tab="packs">{{ t('marketplace.common.packs') }}</button>
                     </div>
-                    <button class="window-minimize-btn" title="Minimize"><i class="fas fa-minus"></i></button>
+                    <button class="window-minimize-btn" title="{{ t('marketplace.home.minimize') }}"><i class="fas fa-minus"></i></button>
                 </div>
                 <div class="window-body">
                     <div class="home-col-list" id="home-library-list"></div>
                     <div class="list-footer" id="home-view-all-btn" style="display:none">
-                        <a href="#" id="home-view-all-link">View All <i class="fas fa-arrow-right"></i></a>
+                        <a href="#" id="home-view-all-link">{{ t('marketplace.home.view_all') }} <i class="fas fa-arrow-right"></i></a>
                     </div>
                     <div class="home-empty" id="home-library-empty" style="display:none">
                         <i class="fas fa-compass"></i>
-                        <p>No prompts yet</p>
+                        <p>{{ t('marketplace.home.no_prompts') }}</p>
                         {% if marketplace.discovery_enabled|default(false) %}
-                        <a href="/explore" class="home-empty-link">Explore to find your first AI assistant</a>
+                        <a href="/explore" class="home-empty-link">{{ t('marketplace.home.find_first') }}</a>
                         {% endif %}
                     </div>
                 </div>
@@ -117,12 +118,12 @@
 <div class="home-modal-overlay" id="home-modal-overlay" style="display:none">
     <div class="home-modal">
         <div class="home-modal-header">
-            <h3 class="home-modal-title">All Prompts</h3>
-            <button class="home-modal-close" id="home-modal-close"><i class="fas fa-times"></i></button>
+            <h3 class="home-modal-title">{{ t('marketplace.home.all_prompts') }}</h3>
+            <button class="home-modal-close" id="home-modal-close" aria-label="{{ t('marketplace.explore.close') }}"><i class="fas fa-times"></i></button>
         </div>
         <div class="home-modal-tabs" id="home-modal-tabs">
-            <button class="home-tab active" data-tab="prompts">Prompts</button>
-            <button class="home-tab" data-tab="packs">Packs</button>
+            <button class="home-tab active" data-tab="prompts">{{ t('marketplace.common.prompts') }}</button>
+            <button class="home-tab" data-tab="packs">{{ t('marketplace.common.packs') }}</button>
         </div>
         <div class="home-modal-list" id="home-modal-list"></div>
     </div>

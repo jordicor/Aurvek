@@ -23,6 +23,10 @@ from file_storage import (
     read_attachment_bytes,
 )
 from log_config import logger
+from integrations.applications.messaging import (
+    voice_note_application_admission, ApplicationMessagingState, application_messaging_turn,
+)
+from integrations.embed.models import EmbedError
 
 
 SUPPORTED_CHANNELS = {"whatsapp", "telegram"}
@@ -152,6 +156,7 @@ async def clone_message_channel_provenance_for_branch(
     new_message_id: int,
     new_conversation_id: int,
     user_id: int,
+    source_user_id: int | None = None,
 ) -> bool:
     """Clone model input/channel identity and retained audio onto a branch.
 
@@ -161,6 +166,8 @@ async def clone_message_channel_provenance_for_branch(
     content-addressed blob.  Historical retranscription jobs are not copied;
     the branch starts from the source's currently active transcript.
     """
+    source_user_id = user_id if source_user_id is None else source_user_id
+    imported = source_user_id != user_id
     target_cursor = await conn.execute(
         """
         SELECT 1
@@ -192,7 +199,7 @@ async def clone_message_channel_provenance_for_branch(
                 new_message_id,
                 old_message_id,
                 old_conversation_id,
-                user_id,
+                source_user_id,
             ),
         )
         input_provenance_cloned = input_cursor.rowcount == 1
@@ -213,18 +220,20 @@ async def clone_message_channel_provenance_for_branch(
         LEFT JOIN MESSAGE_VOICE_NOTES AS v ON v.message_id = p.message_id
         WHERE p.message_id = ? AND m.conversation_id = ? AND m.user_id = ?
         """,
-        (old_message_id, old_conversation_id, user_id),
+        (old_message_id, old_conversation_id, source_user_id),
     )
     source = await cursor.fetchone()
     if source is None:
         return input_provenance_cloned
 
     metadata = _maybe_json(source["metadata_json"], {})
-    branch_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    branch_metadata = dict(metadata) if isinstance(metadata, dict) and not imported else {}
     branch_metadata.pop("external_message_id", None)
     branch_metadata["conversation_id"] = int(new_conversation_id)
     branch_metadata["user_id"] = int(user_id)
     branch_metadata["branched_from_message_id"] = int(old_message_id)
+    if imported:
+        branch_metadata["imported"] = True
 
     await conn.execute(
         """
@@ -257,6 +266,7 @@ async def clone_message_channel_provenance_for_branch(
             new_message_id=new_message_id,
             new_conversation_id=new_conversation_id,
             user_id=user_id,
+            source_user_id=source_user_id,
             require_kind="audio",
         )
 
@@ -276,7 +286,7 @@ async def clone_message_channel_provenance_for_branch(
             source["initial_stt_provider"],
             source["initial_stt_model"],
             source["duration_seconds"],
-            source["retention_status"],
+            "failed" if imported and source["audio_attachment_ref"] and not new_audio_ref else source["retention_status"],
         ),
     )
     return True
@@ -536,6 +546,9 @@ async def create_retranscription_revision(
     async with get_db_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
         try:
+            admission = await voice_note_application_admission(conn, message_id, owner_user_id, capability="stt")
+            if admission is not None and comparison_llm_id is not None:
+                raise ValueError("Application transcript comparison is not available yet")
             cursor = await conn.execute(
                 """
                 SELECT v.active_transcript, v.audio_attachment_ref,
@@ -658,8 +671,17 @@ async def create_retranscription_revision(
                 ),
             )
             revision_id = int((await cursor.fetchone())[0])
+            if admission is not None:
+                from integrations.applications.billing import admit_application_billing_in_transaction
+                operation = await admit_application_billing_in_transaction(conn, admission.scope)
+                await conn.execute("""UPDATE MESSAGE_TRANSCRIPTION_REVISIONS
+                    SET application_channel_json=?,application_operation_id=? WHERE id=?""",
+                    (orjson.dumps(admission.as_dict()).decode(), operation.operation_id, revision_id))
             await conn.commit()
             return revision_id
+        except EmbedError as exc:
+            await conn.rollback()
+            raise LookupError(exc.code) from exc
         except Exception:
             await conn.rollback()
             raise
@@ -686,7 +708,58 @@ async def get_retranscription_revision(
             (int(revision_id), int(owner_user_id)),
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        if row is not None:
+            try:
+                await voice_note_application_admission(conn, row["message_id"], owner_user_id)
+            except EmbedError:
+                return None
+            result = dict(row)
+            result.pop("application_channel_json", None)
+            result.pop("application_operation_id", None)
+            try:
+                comparison_metadata = orjson.loads(result.get("comparison_json") or "null")
+            except (orjson.JSONDecodeError, TypeError):
+                comparison_metadata = None
+            is_legacy_failure = (
+                isinstance(comparison_metadata, dict)
+                and "error" in comparison_metadata
+            )
+            is_missing_generated_rationale = (
+                isinstance(comparison_metadata, list)
+                and not any(
+                    isinstance(item, dict) and item.get("rationale")
+                    for item in comparison_metadata
+                )
+            )
+            if isinstance(comparison_metadata, dict) and (
+                comparison_metadata.get("rationale_source") == "aurvek"
+                or is_legacy_failure
+            ):
+                result["rationale_source"] = "aurvek"
+                result["rationale_code"] = str(
+                    comparison_metadata.get("rationale_code")
+                    or (
+                        "comparison_incomplete"
+                        if isinstance(comparison_metadata.get("assessments"), list)
+                        else "comparison_failed"
+                    )
+                )
+                generated_rationale = comparison_metadata.get("generated_rationale")
+                if not generated_rationale:
+                    assessments = comparison_metadata.get("assessments")
+                    if isinstance(assessments, list):
+                        generated_rationale = " | ".join(
+                            str(item.get("rationale"))
+                            for item in assessments
+                            if isinstance(item, dict) and item.get("rationale")
+                        )
+                if generated_rationale:
+                    result["generated_rationale"] = str(generated_rationale)
+            elif is_missing_generated_rationale:
+                result["rationale_source"] = "aurvek"
+                result["rationale_code"] = "comparison_no_rationale"
+            return result
+        return None
 
 
 async def get_voice_note_state(
@@ -729,6 +802,11 @@ async def get_voice_note_state(
             (int(message_id), int(owner_user_id)),
         )
         row = await cursor.fetchone()
+        if row is not None:
+            try:
+                await voice_note_application_admission(conn, message_id, owner_user_id)
+            except EmbedError:
+                return None
         return dict(row) if row else None
 
 
@@ -890,21 +968,25 @@ async def _compare_transcripts(
         verdict = "equal"
     confidence = min(1.0, abs(mean) if verdict in {"better", "worse"} else (weight / max(count, 1)))
     rationales = [item["rationale"] for item in assessments if item["rationale"]]
-    rationale = " | ".join(rationales[:6]) or "La comparación textual no fue concluyente."
+    rationale = " | ".join(rationales[:6])
     comparison_payload: Any = assessments
+    if not rationale:
+        comparison_payload = {
+            "assessments": assessments,
+            "rationale_source": "aurvek",
+            "rationale_code": "comparison_no_rationale",
+        }
     if incomplete_error is not None:
         verdict = "uncertain"
         confidence = 0.0
-        rationale = (
-            "La comparación quedó incompleta tras evaluar "
-            f"{len(assessments)} de {count} partes. "
-            f"Resultados parciales: {rationale}"
-        )
         comparison_payload = {
             "assessments": assessments,
             "completed_parts": len(assessments),
             "total_parts": count,
             "error": incomplete_error,
+            "rationale_source": "aurvek",
+            "rationale_code": "comparison_incomplete",
+            "generated_rationale": rationale,
         }
     return (
         verdict,
@@ -1114,6 +1196,25 @@ async def run_retranscription_job(revision_id: int) -> None:
             if not job:
                 await conn.rollback()
                 return
+            job = dict(job)
+            application_state = None
+            application_operation = None
+            admission = await voice_note_application_admission(conn, job["message_id"], job["user_id"], capability="stt")
+            if admission is None and job.get("application_channel_json"):
+                raise EmbedError("application_channel_required", 403)
+            if admission is not None:
+                from integrations.applications.channels import get_application_channel_service
+                from integrations.applications.channel_models import ChannelAdmission
+                from integrations.applications.billing import load_application_operation, revalidate_application_operation
+                if not job.get("application_channel_json") or not job.get("application_operation_id") or job["comparison_model"]:
+                    raise EmbedError("application_channel_required", 403)
+                frozen = ChannelAdmission.from_dict(orjson.loads(job["application_channel_json"]))
+                if frozen != admission:
+                    raise EmbedError("application_scope_changed", 403)
+                application_operation = await load_application_operation(conn, job["application_operation_id"])
+                await revalidate_application_operation(application_operation, connection=conn)
+                application_state = ApplicationMessagingState(get_application_channel_service(), frozen,
+                    require_current_route=False)
             await conn.execute(
                 """
                 UPDATE MESSAGE_TRANSCRIPTION_REVISIONS
@@ -1124,24 +1225,25 @@ async def run_retranscription_job(revision_id: int) -> None:
             )
             await conn.commit()
 
-        audio = await read_attachment_bytes(
-            job["audio_attachment_ref"],
-            message_id=int(job["message_id"]),
-            require_kind="audio",
-            allow_admin=True,
-        )
-        if not audio:
-            raise FileNotFoundError("Retained voice-note audio is unavailable")
-        audio_bytes, _attachment = audio
-        preferred = str(job["stt_provider"] or "configured")
-        result = await transcribe_external_audio_detailed(
-            user_id=int(job["user_id"]),
-            audio_content=audio_bytes,
-            preferred_engine=(None if preferred == "configured" else preferred),
-            duration_seconds=job["retained_duration_seconds"],
-        )
-        if not result.text.strip():
-            raise ValueError("The transcription provider returned empty text")
+        async with application_messaging_turn(application_state, operation=application_operation):
+            audio = await read_attachment_bytes(
+                job["audio_attachment_ref"],
+                message_id=int(job["message_id"]),
+                require_kind="audio",
+                allow_admin=True,
+            )
+            if not audio:
+                raise FileNotFoundError("Retained voice-note audio is unavailable")
+            audio_bytes, _attachment = audio
+            preferred = str(job["stt_provider"] or "configured")
+            result = await transcribe_external_audio_detailed(
+                user_id=int(job["user_id"]),
+                audio_content=audio_bytes,
+                preferred_engine=(None if preferred == "configured" else preferred),
+                duration_seconds=job["retained_duration_seconds"],
+            )
+            if not result.text.strip():
+                raise ValueError("The transcription provider returned empty text")
 
         async with get_db_connection() as conn:
             update_cursor = await conn.execute(
@@ -1181,26 +1283,15 @@ async def run_retranscription_job(revision_id: int) -> None:
             except Exception as comparison_error:
                 logger.exception("Voice-note transcript comparison failed")
                 error_text = str(comparison_error)
-                if "Insufficient balance" in error_text:
-                    failure_rationale = (
-                        "La nueva transcripción está lista, pero no hubo saldo "
-                        "suficiente para ejecutar el juez LLM."
-                    )
-                elif "API key" in error_text:
-                    failure_rationale = (
-                        "La nueva transcripción está lista, pero el juez LLM "
-                        "requiere una clave API compatible con la configuración de la cuenta."
-                    )
-                else:
-                    failure_rationale = (
-                        "La nueva transcripción está lista, pero la comparación "
-                        "automática no pudo completarse."
-                    )
                 verdict, confidence, rationale, comparison_json = (
                     "uncertain",
                     0.0,
-                    failure_rationale,
-                    orjson.dumps({"error": error_text[:1000]}).decode("utf-8"),
+                    "",
+                    orjson.dumps({
+                        "error": error_text[:1000],
+                        "rationale_source": "aurvek",
+                        "rationale_code": "comparison_failed",
+                    }).decode("utf-8"),
                 )
             async with get_db_connection() as conn:
                 await conn.execute(
@@ -1256,6 +1347,7 @@ async def decide_retranscription_revision(
             revision = await cursor.fetchone()
             if not revision:
                 raise LookupError("Retranscription revision not found")
+            await voice_note_application_admission(conn, revision["message_id"], owner_user_id)
             if revision["status"] != "ready":
                 raise RuntimeError("This revision is not awaiting a decision")
             if decision == "reject":
@@ -1309,6 +1401,10 @@ async def decide_retranscription_revision(
                 )
             await conn.commit()
             return {"revision_id": int(revision_id), "status": "accepted" if decision == "accept" else "rejected"}
+        except EmbedError as exc:
+            if conn.in_transaction:
+                await conn.rollback()
+            raise LookupError(exc.code) from exc
         except Exception:
             if conn.in_transaction:
                 await conn.rollback()

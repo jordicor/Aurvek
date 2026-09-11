@@ -8,6 +8,19 @@ const vm = require('node:vm');
 
 const explorePath = path.resolve(__dirname, '../data/static/js/explore.js');
 const exploreSource = fs.readFileSync(explorePath, 'utf8');
+const { create: createI18n } = require('../data/static/js/common/i18n.js');
+const localeRegions = {en: 'en-US', es: 'es-ES', ja: 'ja-JP', fr: 'fr-FR', pt: 'pt-PT', it: 'it-IT', de: 'de-DE'};
+
+function translator(language) {
+    const resources = {};
+    for (const code of new Set(['en', language])) {
+        resources[code] = Object.fromEntries(['marketplace', 'common'].map(domain => [domain,
+            JSON.parse(fs.readFileSync(path.resolve(__dirname, `../locales/${code}/${domain}.json`), 'utf8'))
+        ]));
+    }
+    const runtime = createI18n({version: 1, language, locales: localeRegions, resources});
+    return {...runtime, t: runtime.render}; // Fail explicitly on missing keys/parameters.
+}
 
 function escapeText(value) {
     return String(value)
@@ -71,7 +84,7 @@ class FakeElement {
     replaceWith() {}
 }
 
-function createHarness() {
+function createHarness(language = 'en') {
     const elementIds = [
         'categoryChips',
         'exploreGrid',
@@ -79,7 +92,8 @@ function createHarness() {
         'exploreModalBackdrop',
         'explorePagination',
         'modalContent',
-        'resultsInfo'
+        'resultsInfo', 'previewItemName', 'previewItemCreator', 'previewCtaBtn',
+        'previewCounter', 'previewPrevBtn', 'previewNextBtn', 'packPurchaseBtn', 'packPurchaseError'
     ];
     const elements = Object.fromEntries(
         elementIds.map(id => [id, new FakeElement(id)])
@@ -113,6 +127,7 @@ function createHarness() {
     }
 
     const context = vm.createContext({
+        AurvekI18n: translator(language),
         AbortController,
         URLSearchParams,
         alert() {},
@@ -233,3 +248,63 @@ test('isolated landing purchase requests require a trusted parent confirmation',
     assert.match(exploreSource, /NotificationModal\.confirm/);
     assert.match(exploreSource, /\/purchase\/prompt\//);
 });
+
+for (const language of Object.keys(localeRegions)) {
+    test(`marketplace renders cards, modals, plurals and USD prices in ${language}`, () => {
+        const harness = createHarness(language);
+        const tr = harness.context.AurvekI18n;
+        harness.context.pack = {
+            name: 'Creator <title>', created_by_username: 'Name <img src=x>',
+            item_count: 2, is_paid: true, price: 1234.56, status: 'draft',
+        };
+        harness.evaluate("ExploreState.activeFilter = 'mine'; ExploreState.packs = [pack]; renderPacks(); openPackModal(pack); updatePreviewBar(pack, 'pack');");
+        const html = harness.elements.exploreGrid.innerHTML;
+        assert.ok(html.includes(escapeText(tr.t('marketplace.explore.prompt_count', {count: 2, number: tr.formatNumber(2)}))));
+        assert.ok(html.includes(escapeText(tr.formatCurrency(1234.56))));
+        assert.ok(html.includes('Creator &lt;title&gt;'));
+        assert.doesNotMatch(html, /Name <img/);
+        assert.ok(harness.elements.modalContent.innerHTML.includes(escapeText(tr.t('marketplace.explore.pack_draft'))));
+        assert.equal(harness.elements.previewCtaBtn.textContent, tr.t('marketplace.explore.buy_price', {price: tr.formatCurrency(1234.56)}));
+
+        for (const tab of ['packs', 'prompts']) {
+            for (const count of [1, 2, 1234]) {
+                harness.evaluate(`ExploreState.activeTab = '${tab}'; ExploreState.total = ${count}; updateResultsBar();`);
+                assert.equal(harness.elements.resultsInfo.textContent, tr.t(`marketplace.explore.results_${tab}`, {
+                    count, start: tr.formatNumber(1), end: tr.formatNumber(Math.min(count, 24)), total: tr.formatNumber(count)
+                }));
+            }
+        }
+        harness.context.prompt = {id: 5, name: 'Creator text', is_paid: true, purchase_price: 19.99};
+        harness.evaluate('openModal(prompt);');
+        assert.ok(harness.elements.modalContent.innerHTML.includes(escapeText(tr.t('marketplace.explore.one_time', {price: tr.formatCurrency(19.99)}))));
+        assert.ok(harness.elements.modalContent.innerHTML.includes(escapeText(tr.t('marketplace.explore.unlock_vip'))));
+    });
+
+    test(`marketplace async failure and sharing use ${language} without translating provider data`, async () => {
+        const harness = createHarness(language);
+        const tr = harness.context.AurvekI18n;
+        const request = harness.evaluate('loadPrompts();');
+        harness.pendingFetches[0].respond({}, 500);
+        await request;
+        assert.ok(harness.elements.exploreGrid.innerHTML.includes(escapeText(tr.t('marketplace.explore.load_prompts_error'))));
+
+        let shared;
+        harness.context.navigator.share = async data => { shared = data; };
+        await harness.evaluate(`sharePrompt('Untouched creator name', 'https://example.test/p/1');`);
+        assert.equal(shared.text, tr.t('marketplace.explore.share_text', {name: 'Untouched creator name'}));
+        assert.equal(shared.title, 'Untouched creator name');
+        assert.equal(shared.url, 'https://example.test/p/1');
+
+        let warning;
+        harness.context.NotificationModal = {warning: (...args) => { warning = args; }};
+        harness.elements.packPurchaseBtn.innerHTML = 'original button';
+        const purchase = harness.evaluate("purchasePack(10, '');");
+        assert.equal(harness.elements.packPurchaseBtn.disabled, true);
+        assert.ok(harness.elements.packPurchaseBtn.innerHTML.includes(escapeText(tr.t('marketplace.explore.processing'))));
+        harness.pendingFetches[1].respond({}, 401);
+        await purchase;
+        assert.deepEqual(warning, [tr.t('marketplace.explore.login_required'), tr.t('marketplace.explore.login_purchase')]);
+        assert.equal(harness.elements.packPurchaseBtn.disabled, false);
+        assert.equal(harness.elements.packPurchaseBtn.innerHTML, 'original button');
+    });
+}

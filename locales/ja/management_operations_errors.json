@@ -1,0 +1,12 @@
+{
+  "admin_required": "管理者権限が必要です",
+  "invalid_llm": "LLMの選択が無効です",
+  "unsupported_key": "未対応のキーの種類です",
+  "task_not_found": "失敗キューにタスクが見つかりません。",
+  "invalid_ip": "有効なIPアドレスを入力してください。",
+  "conversation_ids_required": "会話を1件以上選択してください。",
+  "conversation_deleted": "会話を削除しました。",
+  "conversation_folder_failed": "データベースから会話を削除しましたが、フォルダを削除できませんでした。",
+  "conversations_folder_failed": "一部の会話をデータベースから削除しましたが、フォルダを削除できませんでした。",
+  "conversations_deleted": "会話を削除しました。"
+}

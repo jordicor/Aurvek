@@ -1,25 +1,26 @@
+{% set i18n_domains = ['chat_ui'] %}
 {% extends 'base.html' %}
 
-{% block title %}Media Gallery - AURVEK{% endblock %}
+{% block title %}{{ t('chat_ui.gallery.title') }} - AURVEK{% endblock %}
 
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 {% endblock %}
 
-{% block page_title %}Media Gallery{% endblock %}
+{% block page_title %}{{ t('chat_ui.gallery.title') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block tabs %}
 <ul class="nav nav-tabs" id="myTab" role="tablist">
     <li class="nav-item" role="presentation">
-        <button class="nav-link active" id="all-tab" data-bs-toggle="tab" data-bs-target="#all" type="button" role="tab" aria-controls="all" aria-selected="true">ALL images</button>
+        <button class="nav-link active" id="all-tab" data-bs-toggle="tab" data-bs-target="#all" type="button" role="tab" aria-controls="all" aria-selected="true">{{ t('chat_ui.gallery.all_images') }}</button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" id="bot-tab" data-bs-toggle="tab" data-bs-target="#bot" type="button" role="tab" aria-controls="bot" aria-selected="false">Bot</button>
+        <button class="nav-link" id="bot-tab" data-bs-toggle="tab" data-bs-target="#bot" type="button" role="tab" aria-controls="bot" aria-selected="false">{{ t('chat_ui.gallery.bot') }}</button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user" type="button" role="tab" aria-controls="user" aria-selected="false">User</button>
+        <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user" type="button" role="tab" aria-controls="user" aria-selected="false">{{ t('chat_ui.gallery.user') }}</button>
     </li>
     <li class="nav-item" role="presentation">
         <button class="nav-link" id="pdf-tab" data-bs-toggle="tab" data-bs-target="#pdf" type="button" role="tab" aria-controls="pdf" aria-selected="false">PDFs</button>
@@ -36,8 +37,8 @@
     <!-- Image containers -->
     <div class="tab-pane fade show active" id="all" role="tabpanel">
         <div id="allImages" class="image-grid"></div>
-        <button id="deleteSelectedAll" class="btn btn-danger mb-3">Delete Selected</button>
-        <nav aria-label="Page navigation">
+        <button id="deleteSelectedAll" class="btn btn-danger mb-3">{{ t('chat_ui.gallery.delete_selected') }}</button>
+        <nav aria-label="{{ t('chat_ui.gallery.page_navigation') }}">
             <ul class="pagination" id="pagination-all"></ul>
         </nav>
     </div>
@@ -45,8 +46,8 @@
     <!-- Bot Images Tab -->
     <div class="tab-pane fade" id="bot" role="tabpanel">
         <div id="botImages" class="image-grid"></div>
-        <button id="deleteSelectedBot" class="btn btn-danger mb-3">Delete Selected</button>
-        <nav aria-label="Page navigation">
+        <button id="deleteSelectedBot" class="btn btn-danger mb-3">{{ t('chat_ui.gallery.delete_selected') }}</button>
+        <nav aria-label="{{ t('chat_ui.gallery.page_navigation') }}">
             <ul class="pagination" id="pagination-bot"></ul>
         </nav>
     </div>
@@ -54,8 +55,8 @@
     <!-- User Images Tab -->
     <div class="tab-pane fade" id="user" role="tabpanel">
         <div id="userImages" class="image-grid"></div>
-        <button id="deleteSelectedUser" class="btn btn-danger mb-3">Delete Selected</button>
-        <nav aria-label="Page navigation">
+        <button id="deleteSelectedUser" class="btn btn-danger mb-3">{{ t('chat_ui.gallery.delete_selected') }}</button>
+        <nav aria-label="{{ t('chat_ui.gallery.page_navigation') }}">
             <ul class="pagination" id="pagination-user"></ul>
         </nav>
     </div>
@@ -65,8 +66,8 @@
         <div id="pdfContainer" class="pdf-grid">
 
         </div>
-        <button id="deleteSelectedPdfs" class="btn btn-danger my-3">Delete Selected</button>
-        <nav aria-label="Page navigation">
+        <button id="deleteSelectedPdfs" class="btn btn-danger my-3">{{ t('chat_ui.gallery.delete_selected') }}</button>
+        <nav aria-label="{{ t('chat_ui.gallery.page_navigation') }}">
             <ul class="pagination" id="pagination-pdfs"></ul>
         </nav>
     </div>
@@ -76,8 +77,8 @@
         <div id="mp3Container" class="mp3-grid">
 
         </div>
-        <button id="deleteSelectedMp3s" class="btn btn-danger my-3">Delete Selected</button>
-        <nav aria-label="Page navigation">
+        <button id="deleteSelectedMp3s" class="btn btn-danger my-3">{{ t('chat_ui.gallery.delete_selected') }}</button>
+        <nav aria-label="{{ t('chat_ui.gallery.page_navigation') }}">
             <ul class="pagination" id="pagination-mp3s"></ul>
         </nav>
     </div>
@@ -99,6 +100,9 @@
 <script src="{{ get_static_url('/static/js/media_gallery/pdf.js') }}"></script>
 <script src="{{ get_static_url('/static/js/media_gallery/audio.js') }}"></script>
 <script>
+    const escapePaginationLabel = (value) => String(value)
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
     const paginationUtils = {
     getCurrentPageData(items, currentPage, itemsPerPage) {
         const startIndex = (currentPage - 1) * itemsPerPage;
@@ -113,7 +117,7 @@
         // Previous button
         paginationHTML += `
             <li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
-                <a class="page-link" href="#" data-page="${currentPage - 1}">Previous</a>
+                <a class="page-link" href="#" data-page="${currentPage - 1}">${escapePaginationLabel(AurvekI18n.t('chat_ui.gallery.previous'))}</a>
             </li>
         `;
 
@@ -137,7 +141,7 @@
         // Next button
         paginationHTML += `
             <li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
-                <a class="page-link" href="#" data-page="${currentPage + 1}">Next</a>
+                <a class="page-link" href="#" data-page="${currentPage + 1}">${escapePaginationLabel(AurvekI18n.t('chat_ui.gallery.next'))}</a>
             </li>
         `;
 

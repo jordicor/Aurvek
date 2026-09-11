@@ -254,6 +254,14 @@ async def _sync_one_mem0_message(
     )
 
     try:
+        allowed, namespace = await _capture_sync_namespace(
+            provider="mem0", conversation_id=conversation_id,
+            user_id=user_id, message_id=message_id,
+        )
+        if not allowed:
+            summary.skipped_messages += 1
+            await _update_sync_state("mem0", conversation_id, message_id)
+            return
         async with phone_memory_operation_lease(
             conversation_id,
             provider="mem0",
@@ -268,6 +276,15 @@ async def _sync_one_mem0_message(
                 summary.skipped_messages += 1
                 await _update_sync_state("mem0", conversation_id, message_id)
                 return
+            scoped = {"namespace": namespace} if namespace is not None else {}
+            # A retry keeps its original destination; policy changes never move
+            # a message from an assistant's private memory into shared memory.
+            allowed, current = await _capture_sync_namespace(
+                provider="mem0", conversation_id=conversation_id,
+                user_id=user_id, message_id=message_id,
+            )
+            if not allowed or current != namespace:
+                raise RuntimeError("Memory destination is no longer authorized")
             await provider_lease.mark_provider_started()
             result = await provider.add_message(
                 user_id=user_id,
@@ -278,6 +295,7 @@ async def _sync_one_mem0_message(
                 prompt_id=row["prompt_id"],
                 message_id=message_id,
                 incognito=False,
+                **scoped,
             )
             if not result:
                 raise RuntimeError("Mem0 add outcome is ambiguous")
@@ -306,6 +324,40 @@ async def _sync_one_mem0_message(
         return
     summary.linked_messages += 1 if changed else 0
     summary.skipped_messages += 0 if changed else 1
+
+
+async def _capture_sync_namespace(
+    *, provider: str, conversation_id: int, user_id: int, message_id: int,
+) -> tuple[bool, Any]:
+    """Revalidate captured delivery provenance before provider I/O, under a write lock."""
+    from integrations.applications.memory import (
+        list_memory_message_destinations,
+        record_memory_destination,
+        resolve_application_memory,
+    )
+
+    async with database.get_db_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        scope = await resolve_application_memory(conversation_id, user_id, connection=conn)
+        frozen = await list_memory_message_destinations(
+            provider=provider, message_id=message_id, connection=conn
+        )
+        if scope is None:
+            await conn.commit()
+            return (not frozen, None)
+        namespace = scope.write
+        if (not frozen or not scope.allows_historical_message(message_id)
+                or (frozen and frozen[0]["namespace"] != namespace)):
+            await conn.commit()
+            return False, None
+        # Only a live admission may choose a destination. Historical messages
+        # without provenance may have been written while memory was disabled.
+        await record_memory_destination(
+            provider=provider, conversation_id=conversation_id, user_id=user_id,
+            namespace=namespace, message_id=message_id, connection=conn,
+        )
+        await conn.commit()
+        return True, namespace
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

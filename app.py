@@ -119,6 +119,8 @@ from auth import (
     verify_password,
 )
 from auth_constants import SESSION_COOKIE_NAME
+from i18n import LANGUAGES, Translator, get_translator, normalize_language
+from babel.numbers import format_decimal
 from auth import get_current_user_from_websocket, get_user_id_from_conversation, get_user_by_token, create_user_info, create_login_response, generate_magic_link
 from auth import get_user_by_google_id, get_user_by_email, update_user_google_id
 from auth_flows import (
@@ -143,6 +145,15 @@ from user_accounts import (
     get_live_user_role,
     get_user_management_access,
     validate_managed_balance,
+)
+from user_timezone import normalize_user_timezone, selectable_user_timezones
+from timezone_cities import search_timezone_cities
+from user_languages import (
+    language_display_name,
+    load_user_preferred_languages,
+    normalize_preferred_languages,
+    selectable_user_languages,
+    serialize_preferred_languages,
 )
 from billing.usage_reservations import reconcile_stale_usage_reservations
 from phone_verification import (
@@ -198,8 +209,10 @@ from llm_catalog import (
     merge_manual_overrides,
     normalize_provider_key,
     set_model_enabled,
+    set_models_enabled,
     sync_all_providers,
     sync_provider,
+    sync_provider_catalog,
 )
 
 from billing.routes import router as billing_router
@@ -762,6 +775,22 @@ app.include_router(prompt_landings_router)
 app.include_router(prompt_landing_builder_router)
 app.include_router(marketplace_acquisition_router)
 
+from integrations.embed.api import router as embed_api_router
+from integrations.embed.pages import router as embed_pages_router
+from integrations.applications.api import router as applications_api_router
+from integrations.applications.browser_voice import router as application_voice_router
+from integrations.applications.sources_api import router as application_sources_router
+from integrations.applications.tool_api import router as application_tools_router
+from integrations.applications.web_exports import router as application_exports_router
+
+app.include_router(embed_api_router)
+app.include_router(embed_pages_router)
+app.include_router(applications_api_router)
+app.include_router(application_voice_router)
+app.include_router(application_sources_router)
+app.include_router(application_tools_router)
+app.include_router(application_exports_router)
+
 # GPTSub (ChatGPT subscription) account-linking router. Private module,
 # excluded from the public mirror -- guard the import so the open-source build
 # simply lacks the feature.
@@ -937,6 +966,13 @@ async def add_noindex_header(request: Request, call_next):
         response.headers["X-Robots-Tag"] = "noindex"
 
     return response
+
+
+from integrations.embed.middleware import EmbedHostMiddleware
+
+# Outermost classification must happen before landing-domain routing. The
+# middleware preserves native hosts and exposes only the scoped embed surface.
+app.add_middleware(EmbedHostMiddleware)
 
 
 class PhoneVerificationRequest(BaseModel):
@@ -1115,159 +1151,21 @@ async def add_user(
     phone_verification_id=None,
     phone_verification_actor_id=None,
     allow_unverified_phone=False,
+    ui_language=None,
 ):
-    try:
-        async with get_db_connection() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            async with conn.cursor() as c:
-                # Get the role_ids
-                await c.execute("SELECT id, role_name FROM USER_ROLES")
-                roles = {row[1].lower(): row[0] for row in await c.fetchall()}
-
-                # Try to get the role_id for the provided role_name
-                role_id = roles.get(role_name.lower())
-                if role_id is None:
-                    logger.info(f"Role '{role_name}' not found")
-                    return None
-
-                # Check if the current user has permission to create this type of user
-                if current_user:
-                    actor_role = await get_live_user_role(conn, current_user.id)
-                    if not (
-                        actor_role == "admin"
-                        or (actor_role == "user" and role_name.lower() == "customer")
-                    ):
-                        logger.info("User does not have permission to create this type of user")
-                        return None
-
-                # Hash password if provided
-                hashed_password = None
-                if initial_password:
-                    hashed_password = hash_password(initial_password)
-
-                phone_verified = False
-                if phone:
-                    phone = normalize_phone_number(phone)
-                    await c.execute(
-                        "SELECT id FROM USERS WHERE phone_number = ?",
-                        (phone,),
-                    )
-                    if await c.fetchone():
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Phone number already in use.",
-                        )
-
-                    if phone_verification_id:
-                        if not phone_verification_actor_id:
-                            raise HTTPException(
-                                status_code=400,
-                                detail="Phone verification is required.",
-                            )
-                        await consume_phone_verification(
-                            conn,
-                            actor_user_id=phone_verification_actor_id,
-                            challenge_id=phone_verification_id,
-                            phone_number=phone,
-                            purpose=PURPOSE_CREATE_USER,
-                        )
-                        phone_verified = True
-                    elif not allow_unverified_phone:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Phone verification is required.",
-                        )
-
-                # Insert user
-                await c.execute("""
-                    INSERT INTO USERS (
-                        username, password, role_id, is_enabled,
-                        phone_number, phone_verified, email
-                    )
-                    VALUES (?, ?, ?, 1, ?, ?, ?)
-                    RETURNING id
-                """, (
-                    username,
-                    hashed_password,
-                    role_id,
-                    phone,
-                    phone_verified,
-                    email,
-                ))
-
-                user_id = await c.fetchone()
-                user_id = user_id[0] if user_id else None
-
-                if user_id:
-                    await c.execute("""
-                        INSERT INTO USER_DETAILS (
-                            user_id,
-                            current_prompt_id,
-                            all_prompts_access,
-                            public_prompts_access,
-                            llm_id,
-                            allow_file_upload,
-                            allow_image_generation,
-                            balance,
-                            created_by,
-                            current_alter_ego_id,
-                            authentication_mode,
-                            can_change_password,
-                            api_key_mode,
-                            category_access,
-                            billing_account_id,
-                            billing_limit,
-                            billing_limit_action,
-                            billing_auto_refill_amount,
-                            billing_max_limit,
-                            web_search_mode
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'native')
-                    """, (
-                        user_id,
-                        prompt_id,
-                        all_prompts_access,
-                        public_prompts_access,
-                        llm_id,
-                        allow_file_upload,
-                        allow_image_generation,
-                        0.0,
-                        current_user.id if current_user else None,
-                        authentication_mode,
-                        can_change_password,
-                        api_key_mode,
-                        category_access,
-                        billing_account_id,
-                        billing_limit,
-                        billing_limit_action,
-                        billing_auto_refill_amount,
-                        billing_max_limit
-                    ))
-
-                    await apply_initial_balance(
-                        conn,
-                        user_id=user_id,
-                        amount=balance,
-                        funder_user_id=initial_balance_funder_id,
-                        allow_platform_grant=allow_platform_balance_grant,
-                        granted_by_user_id=current_user.id if current_user else None,
-                    )
-
-                    if current_user:
-                        await upsert_creator_relationship(
-                            c,
-                            user_id,
-                            current_user.id,
-                            "assigned_by",
-                            "manual",
-                        )
-
-                    await conn.commit()
-                return user_id
-    except InitialBalanceError:
-        raise
-    except sqlite3.Error as e:
-        logger.error(f"Error adding user: {e}")
-        return None
+    """Compatibility entry point for the shared native account factory."""
+    from account_creation import create_user
+    arguments = locals().copy()
+    arguments.pop("create_user", None)
+    return await create_user(**arguments, dependencies={
+        "get_db_connection": get_db_connection,
+        "get_live_user_role": get_live_user_role,
+        "hash_password": hash_password,
+        "normalize_phone_number": normalize_phone_number,
+        "consume_phone_verification": consume_phone_verification,
+        "apply_initial_balance": apply_initial_balance,
+        "upsert_creator_relationship": upsert_creator_relationship,
+    })
 
 
 #async def get_current_active_user(current_user: User = Depends(get_current_user)):
@@ -1363,6 +1261,8 @@ async def show_change_password_form(request: Request, current_user: User = Depen
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
+    get_translator(request, current_user)
+
     # Fetch auth_provider and password status for Google OAuth users
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.execute(
@@ -1378,6 +1278,7 @@ async def show_change_password_form(request: Request, current_user: User = Depen
 
 @app.post("/api/change-password")
 async def change_password(
+    request: Request,
     old_password: str = Form(...),
     new_password: str = Form(...),
     current_user: User = Depends(get_current_user)
@@ -1385,17 +1286,24 @@ async def change_password(
     if current_user is None:
         return unauthenticated_response()
 
+    t = get_translator(request, current_user).t
     user_id = current_user.id
 
     # Check if user can change password
     if not current_user.should_show_change_password():
-        raise HTTPException(status_code=403, detail="You don't have permission to change your password")
+        raise HTTPException(status_code=403, detail=t("account.password.error.change_forbidden"))
 
     # Validate new password
     if len(new_password) < 8:
-        return JSONResponse(status_code=400, content={"detail": "New password must be at least 8 characters"})
+        return JSONResponse(
+            status_code=400,
+            content={"detail": t("account.password.error.min_length_new", count=8)},
+        )
     if new_password == old_password:
-        return JSONResponse(status_code=400, content={"detail": "New password must be different from the current password"})
+        return JSONResponse(
+            status_code=400,
+            content={"detail": t("account.password.error.must_differ")},
+        )
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
@@ -1403,12 +1311,15 @@ async def change_password(
         row = await cursor.fetchone()
 
         if row is None:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=t("account.password.error.user_not_found"))
 
         stored_password = row[0]
 
         if not stored_password or not verify_password(stored_password, old_password):
-            return JSONResponse(status_code=400, content={"detail": "Current password is incorrect"})
+            return JSONResponse(
+                status_code=400,
+                content={"detail": t("account.password.error.current_incorrect")},
+            )
 
         hashed_new_password = hash_password(new_password)
         await cursor.execute("UPDATE USERS SET password = ? WHERE id = ?", (hashed_new_password, user_id))
@@ -1418,7 +1329,7 @@ async def change_password(
     response = JSONResponse(
         status_code=200,
         content={
-            "detail": "Password changed successfully. Please log in again.",
+            "detail": t("account.password.success.changed"),
             "reauthenticate": True,
         },
     )
@@ -1435,12 +1346,13 @@ async def set_initial_password(
     if current_user is None:
         return unauthenticated_response()
 
+    t = get_translator(request, current_user).t
     if not current_user.can_change_password:
-        raise HTTPException(status_code=403, detail="You don't have permission to set a password")
+        raise HTTPException(status_code=403, detail=t("account.password.error.set_forbidden"))
     if not has_recent_authentication(current_user):
         raise HTTPException(
             status_code=403,
-            detail="Please sign in again before setting a password",
+            detail=t("account.password.error.reauthenticate_to_set"),
         )
 
     async with get_db_connection() as conn:
@@ -1451,19 +1363,22 @@ async def set_initial_password(
         row = await cursor.fetchone()
 
         if not row:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=t("account.password.error.user_not_found"))
 
         stored_password, auth_provider = row[0], row[1]
 
         # Only allow if user has no password set (Google OAuth users)
         if stored_password is not None:
-            raise HTTPException(status_code=400, detail="Password already set. Use change-password instead.")
+            raise HTTPException(status_code=400, detail=t("account.password.error.already_set"))
 
         if auth_provider not in ("google", "google_linked"):
-            raise HTTPException(status_code=400, detail="This endpoint is only for Google OAuth users")
+            raise HTTPException(status_code=400, detail=t("account.password.error.google_only"))
 
         if len(new_password) < 8:
-            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+            raise HTTPException(
+                status_code=400,
+                detail=t("account.password.error.min_length", count=8),
+            )
 
         hashed = hash_password(new_password)
         await conn.execute(
@@ -1477,7 +1392,7 @@ async def set_initial_password(
 
     response = JSONResponse(
         content={
-            "detail": "Password set successfully. Please log in again.",
+            "detail": t("account.password.success.set"),
             "reauthenticate": True,
         }
     )
@@ -1491,11 +1406,15 @@ async def show_edit_profile_form(request: Request, current_user: User = Depends(
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
-        await cursor.execute("SELECT username, phone_number, phone_verified, email, user_info, profile_picture FROM USERS WHERE id = ?", (current_user.id,))
+        await cursor.execute("SELECT username, phone_number, phone_verified, email, user_info, profile_picture, timezone_name FROM USERS WHERE id = ?", (current_user.id,))
         user_data = await cursor.fetchone()
+        preferred_languages = await load_user_preferred_languages(conn, current_user.id)
         await cursor.execute("SELECT balance, voice_id, current_alter_ego_id, home_preferences FROM USER_DETAILS WHERE user_id = ?", (current_user.id,))
         user_details = await cursor.fetchone()
-        formatted_balance = f"{user_details[0]:.3f}" if user_details else "0.000"
+        formatted_balance = format_decimal(
+            user_details[0] if user_details else 0, format="#,##0.000",
+            locale=LANGUAGES[get_translator(request, current_user).language].replace("-", "_"),
+        )
 
         voice_id = user_details[1]
         current_alter_ego_id = user_details[2]  # Get the current_alter_ego_id
@@ -1517,6 +1436,14 @@ async def show_edit_profile_form(request: Request, current_user: User = Depends(
         "email": user_data[3] if user_data[3] not in (None, "None", "null") else "",
         "user_info": user_data[4] if user_data[4] else "",
         "profile_picture": user_data[5] if user_data[5] else "",
+        "timezone_name": user_data[6] if user_data[6] else "",
+        "preferred_languages": preferred_languages,
+        "preferred_languages_json": serialize_preferred_languages(preferred_languages),
+        "primary_language_label": (
+            language_display_name(preferred_languages[0], get_translator(request, current_user).language)
+            if preferred_languages
+            else ""
+        ),
         "current_alter_ego_id": current_alter_ego_id  # Add current_alter_ego_id here
     }
 
@@ -1564,7 +1491,9 @@ async def show_edit_profile_form(request: Request, current_user: User = Depends(
         "current_user_id": current_user.id,
         "alter_egos": alter_ego_list,
         "current_alter_ego_id": current_alter_ego_id,
-        "home_preferences": home_preferences
+        "home_preferences": home_preferences,
+        "timezone_options": selectable_user_timezones(),
+        "language_options": selectable_user_languages(get_translator(request, current_user).language),
     })
     return templates.TemplateResponse("profile/edit_profile.html", context)
 
@@ -1582,11 +1511,15 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
         cursor = await conn.cursor()
 
         # Profile data
-        await cursor.execute("SELECT username, phone_number, phone_verified, email, user_info, profile_picture FROM USERS WHERE id = ?", (current_user.id,))
+        await cursor.execute("SELECT username, phone_number, phone_verified, email, user_info, profile_picture, timezone_name FROM USERS WHERE id = ?", (current_user.id,))
         user_data = await cursor.fetchone()
+        preferred_languages = await load_user_preferred_languages(conn, current_user.id)
         await cursor.execute("SELECT balance, voice_id, current_alter_ego_id, home_preferences FROM USER_DETAILS WHERE user_id = ?", (current_user.id,))
         user_details = await cursor.fetchone()
-        formatted_balance = f"{user_details[0]:.3f}" if user_details else "0.000"
+        formatted_balance = format_decimal(
+            user_details[0] if user_details else 0, format="#,##0.000",
+            locale=LANGUAGES[get_translator(request, current_user).language].replace("-", "_"),
+        )
 
         voice_id = user_details[1]
         current_alter_ego_id = user_details[2]
@@ -1607,6 +1540,14 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
         "email": user_data[3] if user_data[3] not in (None, "None", "null") else "",
         "user_info": user_data[4] if user_data[4] else "",
         "profile_picture": user_data[5] if user_data[5] else "",
+        "timezone_name": user_data[6] if user_data[6] else "",
+        "preferred_languages": preferred_languages,
+        "preferred_languages_json": serialize_preferred_languages(preferred_languages),
+        "primary_language_label": (
+            language_display_name(preferred_languages[0], get_translator(request, current_user).language)
+            if preferred_languages
+            else ""
+        ),
         "current_alter_ego_id": current_alter_ego_id
     }
 
@@ -1656,6 +1597,8 @@ async def settings_page(request: Request, current_user: User = Depends(get_curre
         "alter_egos": alter_ego_list,
         "current_alter_ego_id": current_alter_ego_id,
         "home_preferences": home_preferences,
+        "timezone_options": selectable_user_timezones(),
+        "language_options": selectable_user_languages(get_translator(request, current_user).language),
         "can_change_password": current_user.should_show_change_password(),
         "api_key_mode": api_key_mode,
         "requires_own_keys": requires_own_keys,
@@ -1676,9 +1619,22 @@ VALID_MEMORY_PRIVACY_MODES = {"balanced", "trusted_private"}
 VALID_MEMORY_SCOPES = {"global", "prompt"}
 
 
+def _localize_memory_preferences(preferences: dict, t) -> dict:
+    """Translate the account response using its existing provider/status codes."""
+    if preferences.get("provider") == "none":
+        preferences["message"] = t("account.memory.disabled")
+    elif preferences.get("available") is False:
+        preferences["message"] = t("account.memory.unavailable")
+    health = preferences.get("memory_health", {})
+    if health.get("status") in {"suspected", "degraded", "unavailable"}:
+        health["message"] = t("account.memory.health_" + health["status"])
+    return preferences
+
+
 @app.get("/api/user/memory-preferences")
 async def get_user_memory_preferences(current_user: User = Depends(get_current_user)):
     """Get the current user's active memory-provider preferences."""
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -1702,7 +1658,7 @@ async def get_user_memory_preferences(current_user: User = Depends(get_current_u
                 "remember_across_devices": True,
                 "memory_privacy_mode": "balanced",
                 "provider_available": False,
-                "provider_message": "Memory is not available right now.",
+                "provider_message": t("account.memory.unavailable"),
             }
     elif provider == "atagia":
         preferences = {
@@ -1713,7 +1669,7 @@ async def get_user_memory_preferences(current_user: User = Depends(get_current_u
         }
     memory_enabled = provider != "none" and local_preferences.get("remember_across_chats") is not False
     preferences["memory_health"] = get_user_memory_health_snapshot(provider, enabled=memory_enabled)
-    return JSONResponse(content=preferences)
+    return JSONResponse(content=_localize_memory_preferences(preferences, t))
 
 
 @app.put("/api/user/memory-preferences")
@@ -1722,6 +1678,7 @@ async def update_user_memory_preferences(
     current_user: User = Depends(get_current_user),
 ):
     """Update the current user's active memory-provider preferences."""
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -1736,15 +1693,15 @@ async def update_user_memory_preferences(
         payload.memory_privacy_mode is not None
         and payload.memory_privacy_mode not in VALID_MEMORY_PRIVACY_MODES
     ):
-        raise HTTPException(status_code=400, detail="Invalid memory privacy mode.")
+        raise HTTPException(status_code=400, detail=t("account.memory.privacy_invalid"))
     if payload.memory_scope is not None and payload.memory_scope not in VALID_MEMORY_SCOPES:
-        raise HTTPException(status_code=400, detail="Invalid memory scope.")
+        raise HTTPException(status_code=400, detail=t("account.memory.scope_invalid"))
 
     provider = await get_active_memory_provider()
     if provider == "none":
         preferences = await get_local_memory_preferences(current_user.id, provider)
         preferences["memory_health"] = get_user_memory_health_snapshot(provider, enabled=False)
-        return JSONResponse(content=preferences, status_code=503)
+        return JSONResponse(content=_localize_memory_preferences(preferences, t), status_code=503)
 
     local_preferences = await get_local_memory_preferences(current_user.id, provider)
     requested_remember = (
@@ -1766,11 +1723,11 @@ async def update_user_memory_preferences(
             preferences = {
                 **atagia_preferences,
                 "provider": "atagia",
-                "message": "Memory is not available right now.",
+                "message": t("account.memory.unavailable"),
                 "memory_scope": payload.memory_scope or local_preferences.get("memory_scope"),
                 "memory_health": get_user_memory_health_snapshot(provider, enabled=True),
             }
-            return JSONResponse(content=preferences, status_code=503)
+            return JSONResponse(content=_localize_memory_preferences(preferences, t), status_code=503)
         local_preferences = await save_user_memory_preferences(
             current_user.id,
             provider,
@@ -1801,7 +1758,7 @@ async def update_user_memory_preferences(
         }
     preferences["memory_health"] = get_user_memory_health_snapshot(provider, enabled=memory_enabled)
     status_code = 200 if preferences.get("available", False) else 503
-    return JSONResponse(content=preferences, status_code=status_code)
+    return JSONResponse(content=_localize_memory_preferences(preferences, t), status_code=status_code)
 
 
 # ============================================================================
@@ -1877,6 +1834,7 @@ async def api_credentials_page(request: Request, current_user: User = Depends(ge
 @app.post("/api/test-api-key")
 async def test_api_key(request: Request, current_user: User = Depends(get_current_user)):
     """Test if an API key is valid for a given provider."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -1886,7 +1844,7 @@ async def test_api_key(request: Request, current_user: User = Depends(get_curren
         key = data.get("key")
 
         if not provider or not key:
-            return JSONResponse(content={"success": False, "message": "Provider and key are required"})
+            return JSONResponse(content={"success": False, "message": t("account.credentials.fields_required")})
 
         # Test the key based on provider
         if provider == "openai":
@@ -1894,21 +1852,21 @@ async def test_api_key(request: Request, current_user: User = Depends(get_curren
             test_client = OpenAI(api_key=key)
             # Make a simple API call to verify the key
             test_client.models.list()
-            return JSONResponse(content={"success": True, "message": "OpenAI API key is valid"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="OpenAI")})
 
         elif provider == "anthropic":
             import anthropic as anthropic_test
             test_client = anthropic_test.Anthropic(api_key=key)
             # Make an authenticated, read-only request without consuming tokens.
             test_client.models.list(limit=1)
-            return JSONResponse(content={"success": True, "message": "Anthropic API key is valid"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="Anthropic")})
 
         elif provider == "google":
             from google import genai as genai_test
             test_client = genai_test.Client(api_key=key)
             # List models to verify the key works
             list(test_client.models.list())
-            return JSONResponse(content={"success": True, "message": "Google AI API key is valid"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="Google AI")})
 
         elif provider == "xai":
             # xAI uses OpenAI-compatible API
@@ -1916,49 +1874,47 @@ async def test_api_key(request: Request, current_user: User = Depends(get_curren
                 headers = {"Authorization": f"Bearer {key}"}
                 async with session.get("https://api.x.ai/v1/models", headers=headers) as response:
                     if response.status == 200:
-                        return JSONResponse(content={"success": True, "message": "xAI API key is valid"})
+                        return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="xAI")})
                     else:
-                        error_text = await response.text()
-                        return JSONResponse(content={"success": False, "message": f"Invalid xAI key: {error_text}"})
+                        return JSONResponse(content={"success": False, "message": t("account.credentials.test_failed")})
 
         elif provider == "minimax":
             async with aiohttp.ClientSession() as session:
                 headers = {"Authorization": f"Bearer {key}"}
                 async with session.get("https://api.minimax.io/v1/models", headers=headers) as response:
                     if response.status == 200:
-                        return JSONResponse(content={"success": True, "message": "MiniMax API key is valid"})
-                    error_text = await response.text()
-                    return JSONResponse(content={"success": False, "message": f"Invalid MiniMax key: {error_text}"})
+                        return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="MiniMax")})
+                    return JSONResponse(content={"success": False, "message": t("account.credentials.test_failed")})
 
         elif provider in ("kimi", "moonshot"):
             async with aiohttp.ClientSession() as session:
                 headers = {"Authorization": f"Bearer {key}"}
                 async with session.get("https://api.moonshot.ai/v1/models", headers=headers) as response:
                     if response.status == 200:
-                        return JSONResponse(content={"success": True, "message": "Kimi API key is valid"})
-                    error_text = await response.text()
-                    return JSONResponse(content={"success": False, "message": f"Invalid Kimi key: {error_text}"})
+                        return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="Kimi")})
+                    return JSONResponse(content={"success": False, "message": t("account.credentials.test_failed")})
 
         elif provider == "elevenlabs":
             async with aiohttp.ClientSession() as session:
                 headers = {"xi-api-key": key}
                 async with session.get("https://api.elevenlabs.io/v1/user", headers=headers) as response:
                     if response.status == 200:
-                        return JSONResponse(content={"success": True, "message": "ElevenLabs API key is valid"})
+                        return JSONResponse(content={"success": True, "message": t("account.credentials.valid", provider="ElevenLabs")})
                     else:
-                        return JSONResponse(content={"success": False, "message": "Invalid ElevenLabs key"})
+                        return JSONResponse(content={"success": False, "message": t("account.credentials.test_failed")})
 
         else:
-            return JSONResponse(content={"success": False, "message": f"Unknown provider: {provider}"})
+            return JSONResponse(content={"success": False, "message": t("account.credentials.unknown_provider", provider=provider)})
 
     except Exception as e:
         logger.error(f"Error testing API key: {e}")
-        return JSONResponse(content={"success": False, "message": str(e)})
+        return JSONResponse(content={"success": False, "message": t("account.credentials.test_failed")})
 
 
 @app.get("/api/user-credentials")
 async def get_all_user_credentials(request: Request, current_user: User = Depends(get_current_user)):
     """Get all saved API credentials for the current user (masked)."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -1983,17 +1939,19 @@ async def get_all_user_credentials(request: Request, current_user: User = Depend
                         return JSONResponse(content={"success": True, "keys": masked_keys})
                 except Exception as e:
                     logger.error(f"Error decrypting user API keys: {e}")
+                    raise
 
             return JSONResponse(content={"success": True, "keys": {}})
 
     except Exception as e:
         logger.error(f"Error getting user credentials: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("account.credentials.failed")})
 
 
 @app.get("/api/user-credentials/{provider}")
 async def get_user_credential(provider: str, request: Request, current_user: User = Depends(get_current_user)):
     """Get a specific API credential for the current user (masked)."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -2020,7 +1978,7 @@ async def get_user_credential(provider: str, request: Request, current_user: Use
 
     except Exception as e:
         logger.error(f"Error getting user credential for {provider}: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("account.credentials.failed")})
 
 
 @app.get("/api/user/api-key-status")
@@ -2033,8 +1991,9 @@ async def get_user_api_key_status(
 
     Security: Only returns information for the authenticated user.
     """
+    t = get_translator(request, current_user).t
     if not current_user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     from common import (
         get_user_api_key_mode,
@@ -2056,7 +2015,7 @@ async def get_user_api_key_status(
 
     return {
         "mode": mode,
-        "mode_label": API_KEY_MODE_LABELS.get(mode, mode),
+        "mode_label": t("account.credentials.mode_" + mode) if mode in API_KEY_MODE_LABELS else mode,
         "has_own_keys": has_keys,
         "can_configure_own": can_configure,
         "requires_own_keys": requires_own,
@@ -2067,6 +2026,7 @@ async def get_user_api_key_status(
 @app.post("/api/user-credentials")
 async def save_user_credential(request: Request, current_user: User = Depends(get_current_user)):
     """Save a single API credential for the current user."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -2078,7 +2038,7 @@ async def save_user_credential(request: Request, current_user: User = Depends(ge
             content={
                 'success': False,
                 'error': 'not_allowed',
-                'message': 'Your account is configured to use system API keys only.'
+                'message': t("account.credentials.system_only")
             }
         )
 
@@ -2088,7 +2048,7 @@ async def save_user_credential(request: Request, current_user: User = Depends(ge
         key = data.get("key")
 
         if not provider:
-            return JSONResponse(content={"success": False, "message": "Provider is required"})
+            return JSONResponse(content={"success": False, "message": t("account.credentials.provider_required")})
 
         async with get_db_connection() as conn:
             cursor = await conn.cursor()
@@ -2121,16 +2081,17 @@ async def save_user_credential(request: Request, current_user: User = Depends(ge
             )
             await conn.commit()
 
-            return JSONResponse(content={"success": True, "message": f"Credential for {provider} saved"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.saved", provider=provider)})
 
     except Exception as e:
         logger.error(f"Error saving user credential: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("account.credentials.failed")})
 
 
 @app.post("/api/user-credentials/batch")
 async def save_user_credentials_batch(request: Request, current_user: User = Depends(get_current_user)):
     """Save multiple API credentials at once."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -2142,7 +2103,7 @@ async def save_user_credentials_batch(request: Request, current_user: User = Dep
             content={
                 'success': False,
                 'error': 'not_allowed',
-                'message': 'Your account is configured to use system API keys only.'
+                'message': t("account.credentials.system_only")
             }
         )
 
@@ -2151,7 +2112,7 @@ async def save_user_credentials_batch(request: Request, current_user: User = Dep
         keys = data.get("keys", {})
 
         if not keys:
-            return JSONResponse(content={"success": True, "message": "No keys to save"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.no_keys")})
 
         async with get_db_connection() as conn:
             cursor = await conn.cursor()
@@ -2183,16 +2144,17 @@ async def save_user_credentials_batch(request: Request, current_user: User = Dep
             )
             await conn.commit()
 
-            return JSONResponse(content={"success": True, "message": f"Saved {len(keys)} credentials"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.batch_saved", count=len(keys))})
 
     except Exception as e:
         logger.error(f"Error saving user credentials batch: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("account.credentials.failed")})
 
 
 @app.delete("/api/user-credentials/{provider}")
 async def delete_user_credential(provider: str, request: Request, current_user: User = Depends(get_current_user)):
     """Delete a specific API credential."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -2223,16 +2185,17 @@ async def delete_user_credential(provider: str, request: Request, current_user: 
                         )
                         await conn.commit()
 
-            return JSONResponse(content={"success": True, "message": f"Credential for {provider} deleted"})
+            return JSONResponse(content={"success": True, "message": t("account.credentials.deleted", provider=provider)})
 
     except Exception as e:
         logger.error(f"Error deleting user credential: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("account.credentials.failed")})
 
 
 @app.delete("/api/user-credentials")
 async def delete_all_user_credentials(request: Request, current_user: User = Depends(get_current_user)):
     """Delete all API credentials for the current user."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -2245,11 +2208,11 @@ async def delete_all_user_credentials(request: Request, current_user: User = Dep
             )
             await conn.commit()
 
-        return JSONResponse(content={"success": True, "message": "All credentials deleted"})
+        return JSONResponse(content={"success": True, "message": t("account.credentials.all_deleted")})
 
     except Exception as e:
         logger.error(f"Error deleting all user credentials: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("account.credentials.failed")})
 
 
 # ============================================================================
@@ -2264,9 +2227,12 @@ async def get_curation_settings(request: Request, current_user: User = Depends(g
     if current_user is None:
         return unauthenticated_response()
 
+    translator = get_translator(request, current_user)
+    t = translator.t
+
     # Only users can have curation settings
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Only users can access curation settings"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_errors.curation.access")})
 
     try:
         async with get_db_connection(readonly=True) as conn:
@@ -2292,7 +2258,7 @@ async def get_curation_settings(request: Request, current_user: User = Depends(g
 
     except Exception as e:
         logger.error(f"Error getting curation settings: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("management_errors.curation.load_failed")})
 
 
 @app.put("/api/user/curation-settings")
@@ -2306,21 +2272,27 @@ async def update_curation_settings(
     if current_user is None:
         return unauthenticated_response()
 
+    translator = get_translator(request, current_user)
+    t = translator.t
+
     # Only users can have curation settings
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Only users can update curation settings"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_errors.curation.update_access")})
 
     try:
         data = await request.json()
         markup = float(data.get("referral_markup_per_mtokens", 0))
 
+        if not math.isfinite(markup):
+            raise ValueError("Non-finite markup")
+
         # Validate markup (must be non-negative)
         if markup < 0:
-            return JSONResponse(status_code=400, content={"success": False, "message": "Markup cannot be negative"})
+            return JSONResponse(status_code=400, content={"success": False, "message": t("management_errors.curation.negative")})
 
         # Maximum markup limit (e.g., $100 per Mtokens)
         if markup > 100:
-            return JSONResponse(status_code=400, content={"success": False, "message": "Markup cannot exceed $100 per million tokens"})
+            return JSONResponse(status_code=400, content={"success": False, "message": t("management_errors.curation.maximum", amount=translator.format_currency(100, "USD"))})
 
         async with get_db_connection() as conn:
             cursor = await conn.cursor()
@@ -2330,13 +2302,13 @@ async def update_curation_settings(
             )
             await conn.commit()
 
-        return JSONResponse(content={"success": True, "message": "Curation settings updated", "referral_markup_per_mtokens": markup})
+        return JSONResponse(content={"success": True, "message": t("management_errors.curation.saved"), "referral_markup_per_mtokens": markup})
 
-    except ValueError:
-        return JSONResponse(status_code=400, content={"success": False, "message": "Invalid markup value"})
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"success": False, "message": t("management_errors.curation.invalid")})
     except Exception as e:
         logger.error(f"Error updating curation settings: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("management_errors.curation.save_failed")})
 
 
 @app.get("/curation-settings", response_class=HTMLResponse)
@@ -2347,9 +2319,12 @@ async def curation_settings_page(request: Request, current_user: User = Depends(
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
+    translator = get_translator(request, current_user)
+    t = translator.t
+
     # Only users and admins can access
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only users can access curation settings")
+        raise HTTPException(status_code=403, detail=t("management_errors.curation.access"))
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -2376,11 +2351,12 @@ async def curation_settings_page(request: Request, current_user: User = Depends(
 @app.get("/user/team-billing")
 async def user_team_billing_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the team billing dashboard page for users."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only users can access the team billing dashboard")
+        raise HTTPException(status_code=403, detail=t("management_billing_errors.team.access"))
 
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("user_team_consumption.html", context)
@@ -2389,11 +2365,12 @@ async def user_team_billing_page(request: Request, current_user: User = Depends(
 @app.get("/api/user/team-billing")
 async def get_user_team_billing(request: Request, current_user: User = Depends(get_current_user)):
     """Get team consumption data for the user dashboard."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Only users can access this endpoint"}, status_code=403)
+        return JSONResponse(content={"error": t("management_billing_errors.team.endpoint_access")}, status_code=403)
 
     try:
         from datetime import datetime
@@ -2532,6 +2509,26 @@ async def get_user_team_billing(request: Request, current_user: User = Depends(g
                     'timestamp': row[3]
                 })
 
+        if request.query_params.get("format") == "csv":
+            from io import StringIO
+            import csv
+            from fastapi.responses import Response
+
+            output = StringIO()
+            writer = csv.writer(output)
+            writer.writerow([t("management_billing_errors.csv." + key) for key in (
+                "username", "email", "month_spent", "limit", "status", "currency"
+            )])
+            status_keys = {"Active": "active", "At Limit": "at_limit", "Blocked": "blocked", "Over Limit": "over_limit"}
+            for member in users:
+                # Prefix text that spreadsheets could interpret as a formula.
+                text_cells = [member["username"] or "", member["email"] or ""]
+                text_cells = ["'" + value if value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n")) else value for value in text_cells]
+                writer.writerow(text_cells + [member["this_month_spent"], member["limit"],
+                    t("management_billing_errors.status." + status_keys[member["status"]]), "USD"])
+            return Response(content=output.getvalue(), media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=team_billing.csv"})
+
         return JSONResponse(content={
             'summary': {
                 'my_balance': my_balance,
@@ -2546,7 +2543,7 @@ async def get_user_team_billing(request: Request, current_user: User = Depends(g
 
     except Exception as e:
         logger.error(f"Error getting team consumption data: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": t("management_billing_errors.team.failed")}, status_code=500)
 
 
 # ============================================================================
@@ -2556,11 +2553,12 @@ async def get_user_team_billing(request: Request, current_user: User = Depends(g
 @app.get("/my-branding")
 async def my_branding_page(request: Request, current_user: User = Depends(get_current_user)):
     """Render the user branding configuration page."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_user and not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only users can access branding settings")
+        raise HTTPException(status_code=403, detail=tr.t('landing_builder.response.only_users_can_access_branding_settings'))
 
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("user_branding.html", context)
@@ -2569,11 +2567,12 @@ async def my_branding_page(request: Request, current_user: User = Depends(get_cu
 @app.get("/api/my-branding")
 async def get_my_branding_api(request: Request, current_user: User = Depends(get_current_user)):
     """Get user's white-label branding configuration."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Only users can access branding settings"}, status_code=403)
+        return JSONResponse(content={"error": tr.t('landing_builder.response.only_users_can_access_branding_settings')}, status_code=403)
 
     from common import get_user_branding
     branding = await get_user_branding(current_user.id)
@@ -2584,31 +2583,35 @@ async def get_my_branding_api(request: Request, current_user: User = Depends(get
 @app.put("/api/my-branding")
 async def update_my_branding(request: Request, current_user: User = Depends(get_current_user)):
     """Update user's white-label branding configuration."""
+    tr = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_user and not await current_user.is_admin:
-        return JSONResponse(content={"error": "Only users can update branding settings"}, status_code=403)
+        return JSONResponse(content={"error": tr.t('landing_builder.response.only_users_can_update_branding_settings')}, status_code=403)
 
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse(content={"error": "Invalid JSON"}, status_code=400)
+        return JSONResponse(content={"error": tr.t('landing_builder.response.invalid_json')}, status_code=400)
+
+    if not isinstance(data, dict):
+        return JSONResponse(content={"error": tr.t('landing_builder.response.invalid_json')}, status_code=400)
 
     # Validate color format (must be hex color)
     def is_valid_hex_color(color):
-        if not color:
+        if color is None or color == "":
             return True
         import re
-        return bool(re.match(r'^#[0-9A-Fa-f]{6}$', color))
+        return isinstance(color, str) and bool(re.fullmatch(r'#[0-9A-Fa-f]{6}', color))
 
     brand_color_primary = data.get('brand_color_primary', '#6366f1')
     brand_color_secondary = data.get('brand_color_secondary', '#10B981')
 
     if not is_valid_hex_color(brand_color_primary):
-        return JSONResponse(content={"error": "Invalid primary color format. Use hex format: #RRGGBB"}, status_code=400)
+        return JSONResponse(content={"error": tr.t('landing_builder.response.invalid_primary_color_format_use_hex_format_rrggbb')}, status_code=400)
     if not is_valid_hex_color(brand_color_secondary):
-        return JSONResponse(content={"error": "Invalid secondary color format. Use hex format: #RRGGBB"}, status_code=400)
+        return JSONResponse(content={"error": tr.t('landing_builder.response.invalid_secondary_color_format_use_hex_format_rrggbb')}, status_code=400)
 
     # Validate forced_theme if provided
     valid_themes = [
@@ -2617,8 +2620,8 @@ async def update_my_branding(request: Request, current_user: User = Depends(get_
         'nekoglass', 'frutigeraero', 'eink'
     ]
     forced_theme = data.get('forced_theme')
-    if forced_theme and forced_theme not in valid_themes:
-        return JSONResponse(content={"error": f"Invalid theme. Valid themes: {', '.join(valid_themes)}"}, status_code=400)
+    if forced_theme is not None and (not isinstance(forced_theme, str) or (forced_theme and forced_theme not in valid_themes)):
+        return JSONResponse(content={"error": tr.t('landing_builder.response.select_a_valid_theme')}, status_code=400)
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
@@ -2676,7 +2679,7 @@ async def update_my_branding(request: Request, current_user: User = Depends(get_
 
         await conn.commit()
 
-    return JSONResponse(content={"success": True, "message": "Branding settings saved successfully"})
+    return JSONResponse(content={"success": True, "message": tr.t('landing_builder.response.branding_settings_saved_successfully')})
 
 
 @app.get("/api/user/init")
@@ -2784,11 +2787,14 @@ async def get_user_init(request: Request, current_user: User = Depends(get_curre
         magic_link_expires_in = max(0, expires_in)
 
     # Session is valid - build session data
+    from request_security import ensure_csrf_token
+
     session_data = {
         "expired": False,
         "expires_in": max(expires_in, 0),
         "magic_link_expires_in": magic_link_expires_in,
-        "used_magic_link": used_magic_link
+        "used_magic_link": used_magic_link,
+        "csrf_token": ensure_csrf_token(request),
     }
 
     # Theme configuration logic
@@ -2995,20 +3001,22 @@ async def get_my_usage_data(
 @app.get("/admin/session-health", response_class=HTMLResponse)
 async def get_admin_session_health_page(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for continuous-session health and break reminder policy."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("admin_session_health.html", context)
 
 
 @app.get("/api/admin/session-health/config")
 async def get_admin_session_health_config(current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.admin_required')}, status_code=403)
     return JSONResponse(content={"config": await get_wellbeing_config()})
 
 
@@ -3017,13 +3025,14 @@ async def update_admin_session_health_config(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.admin_required')}, status_code=403)
     payload = await request.json()
     if not isinstance(payload, dict):
-        return JSONResponse(content={"error": "Invalid payload"}, status_code=400)
+        return JSONResponse(content={"error": translator.t('chat_errors.invalid_request')}, status_code=400)
     config = await update_wellbeing_config(payload)
     return JSONResponse(content={"success": True, "config": config})
 
@@ -3034,10 +3043,11 @@ async def get_admin_session_health_live(
     search: str = None,
     current_user: User = Depends(get_current_user),
 ):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.admin_required')}, status_code=403)
     return JSONResponse(content={
         "overview": await get_wellbeing_admin_overview(),
         "sessions": await get_admin_live_sessions(limit=limit, search=search),
@@ -3053,10 +3063,11 @@ async def get_admin_session_health_events(
     search: str = None,
     current_user: User = Depends(get_current_user),
 ):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('management_operations_errors.admin_required')}, status_code=403)
     return JSONResponse(content=await get_wellbeing_admin_events(
         page=page,
         per_page=per_page,
@@ -3149,11 +3160,12 @@ async def api_update_wellbeing_preferences(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     payload = await request.json()
     if not isinstance(payload, dict):
-        return JSONResponse(content={"error": "Invalid payload"}, status_code=400)
+        return JSONResponse(content={"error": t("account.preferences.invalid")}, status_code=400)
     preferences = await update_wellbeing_user_preferences(current_user.id, payload)
     return JSONResponse(content={
         "success": True,
@@ -3167,6 +3179,7 @@ async def api_reset_wellbeing_session(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     payload = await request.json()
@@ -3174,7 +3187,7 @@ async def api_reset_wellbeing_session(
     try:
         return JSONResponse(content=await reset_wellbeing_user_session(current_user.id, conversation_id))
     except ValueError as exc:
-        return JSONResponse(content={"error": str(exc)}, status_code=409)
+        return JSONResponse(content={"error": t("account.wellbeing.reset_blocked")}, status_code=409)
 
 
 # =============================================================================
@@ -3184,10 +3197,11 @@ async def api_reset_wellbeing_session(
 @app.get("/admin/usage", response_class=HTMLResponse)
 async def get_admin_usage_page(request: Request, current_user: User = Depends(get_current_user)):
     """Admin platform usage dashboard."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(status_code=403, detail=t("management_billing_errors.admin_required"))
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("admin_usage.html", context)
 
@@ -3201,10 +3215,11 @@ async def get_admin_usage_data(
     current_user: User = Depends(get_current_user)
 ):
     """Get platform-wide usage data for admin dashboard."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": t("management_billing_errors.admin_required")}, status_code=403)
 
     async with get_db_connection(readonly=True) as conn:
         # Build filters
@@ -3336,10 +3351,11 @@ async def export_admin_usage_csv(
     current_user: User = Depends(get_current_user)
 ):
     """Export usage data as CSV."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": t("management_billing_errors.admin_required")}, status_code=403)
 
     from io import StringIO
     import csv
@@ -3371,9 +3387,15 @@ async def export_admin_usage_csv(
 
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Date', 'Username', 'Type', 'Operations', 'Tokens In', 'Tokens Out', 'Units', 'Cost'])
+    writer.writerow([t("management_billing_errors.csv." + key) for key in (
+        "date", "username", "type", "operations", "tokens_in", "tokens_out", "units", "cost_usd"
+    )])
     for row in rows:
-        writer.writerow(row)
+        cells = list(row)
+        username = cells[1] or ""
+        if username.lstrip().startswith(("=", "+", "-", "@")) or username.startswith(("\t", "\r", "\n")):
+            cells[1] = "'" + username
+        writer.writerow(cells)
 
     csv_content = output.getvalue()
 
@@ -3381,7 +3403,7 @@ async def export_admin_usage_csv(
     return Response(
         content=csv_content,
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=usage_export_{days}days.csv"}
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(t("exports.usage_filename", days=days))}
     )
 
 
@@ -3448,6 +3470,7 @@ def _save_profile_picture_variants(
     profile_directory: str,
     user_hash: str,
     alter_ego_suffix: str,
+    ui_language: str = "en",
 ) -> None:
     """Decode, validate, resize, and persist profile pictures off the event loop."""
     with PilImage.open(io.BytesIO(content)) as image:
@@ -3456,8 +3479,7 @@ def _save_profile_picture_variants(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Image dimensions too large. Maximum is "
-                    f"{MAX_IMAGE_PIXELS:,} pixels"
+                    Translator(ui_language).t("account.image.dimensions", count=MAX_IMAGE_PIXELS)
                 ),
             )
 
@@ -3483,8 +3505,9 @@ async def upload_profile_picture(
     is_alter_ego: bool = False,
     alter_ego_id: Optional[int] = None
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     hash_prefix1, hash_prefix2, user_hash = generate_user_hash(current_user.username)
 
@@ -3494,15 +3517,15 @@ async def upload_profile_picture(
 
     # Security: Check file size limit
     if len(content) > MAX_IMAGE_UPLOAD_SIZE:
-        raise HTTPException(status_code=400, detail=f"Image too large. Maximum size is {MAX_IMAGE_UPLOAD_SIZE // (1024*1024)}MB")
+        raise HTTPException(status_code=400, detail=t("account.image.too_large", size=MAX_IMAGE_UPLOAD_SIZE // (1024*1024)))
 
     # Generate suffix based on alter-ego ID if available
     if is_alter_ego:
         if alter_ego_id is not None:
             alter_ego_suffix = f"_{alter_ego_id:03d}"
         else:
-            logger.error(f"alter_ego_id not found")
-            raise HTTPException(status_code=500, detail="alter_ego_id not found")
+            logger.error("alter_ego_id not found")
+            raise HTTPException(status_code=500, detail=t("account.alter_ego.not_found"))
     else:
         alter_ego_suffix = "_000"
 
@@ -3515,14 +3538,15 @@ async def upload_profile_picture(
             profile_pictures_directory,
             user_hash,
             alter_ego_suffix,
+            get_translator(request, current_user).language,
         )
     except UnidentifiedImageError:
-        raise HTTPException(status_code=400, detail="Invalid image file")
+        raise HTTPException(status_code=400, detail=t("account.image.invalid"))
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error saving images: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error processing image")
+        raise HTTPException(status_code=500, detail=t("account.profile.image_failed"))
 
     return base_url
 
@@ -3635,6 +3659,69 @@ async def delete_nekoglass_wallpaper(
     return JSONResponse(content={"status": "ok"})
 
 
+@app.post("/api/ui-language")
+async def set_ui_language(
+    request: Request, current_user: User = Depends(get_current_user)
+):
+    """Save the native interface preference without changing other settings."""
+    if current_user is None:
+        return unauthenticated_response()
+
+    t = get_translator(request, current_user).t
+    from request_security import validate_mutation_request
+
+    rejection = validate_mutation_request(request)
+    if rejection is not None:
+        return rejection
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = None
+    language = normalize_language(payload.get("ui_language")) if isinstance(payload, dict) else None
+    if language is None:
+        return JSONResponse(
+            {"success": False, "message": t("account.language.invalid")}, status_code=400
+        )
+
+    if language != getattr(current_user, "ui_language", "en"):
+        try:
+            async with get_db_connection() as conn:
+                cursor = await conn.execute(
+                    "UPDATE USERS SET ui_language = ? WHERE id = ?", (language, current_user.id)
+                )
+                if cursor.rowcount != 1:
+                    return JSONResponse(
+                        {"success": False, "message": t("account.profile.user_missing")}, status_code=404
+                    )
+                await conn.commit()
+        except Exception:
+            logger.exception("Failed to save interface language")
+            return JSONResponse(
+                {"success": False, "message": t("common.error.generic")}, status_code=500
+            )
+
+    current_user.ui_language = language
+    get_translator(request, current_user)
+    response = JSONResponse({"success": True, "ui_language": language})
+    response.set_cookie("ui_language", language, path="/",
+                        httponly=True, samesite="lax", secure=SECURE_COOKIES)
+    return response
+
+
+@app.get("/api/profile/timezone-cities")
+async def profile_timezone_cities(
+    request: Request,
+    q: str = Query("", max_length=100),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    language = get_translator(request, current_user).language
+    results = await asyncio.to_thread(search_timezone_cities, q, language)
+    return JSONResponse({"results": results}, headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/edit-profile")
 async def edit_profile(
     request: Request,
@@ -3645,6 +3732,9 @@ async def edit_profile(
     phone_verification_id: Optional[str] = Form(None),
     sample_voice_id: Optional[str] = Form(None),
     user_info: Optional[str] = Form(None),
+    timezone_name: Optional[str] = Form(None),
+    preferred_languages_json: Annotated[Optional[str], Form()] = None,
+    ui_language: Annotated[Optional[str], Form()] = None,
     profile_picture: Optional[UploadFile] = File(None),
     alter_ego_id: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user)
@@ -3656,6 +3746,8 @@ async def edit_profile(
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     phone_number_changed = False
     phone_verification_completed = False
+    translator = get_translator(request, current_user)
+    t = translator.t
 
     try:
         async with get_db_connection() as conn:
@@ -3664,7 +3756,8 @@ async def edit_profile(
 
             await cursor.execute(
                 """
-                SELECT username, phone_number, phone_verified, email, user_info, profile_picture
+                SELECT username, phone_number, phone_verified, email, user_info,
+                       profile_picture, timezone_name, ui_language
                 FROM USERS
                 WHERE id = ?
                 """,
@@ -3672,7 +3765,11 @@ async def edit_profile(
             )
             current_user_data = await cursor.fetchone()
             if not current_user_data:
-                raise HTTPException(status_code=404, detail="User not found.")
+                raise HTTPException(status_code=404, detail=t("account.profile.user_missing"))
+            current_preferred_languages = await load_user_preferred_languages(
+                conn,
+                user_id,
+            )
 
             (
                 current_username,
@@ -3681,7 +3778,16 @@ async def edit_profile(
                 current_email,
                 current_user_info,
                 _current_profile_picture,
+                current_timezone_name,
+                current_ui_language,
             ) = current_user_data
+
+            submitted_ui_language = current_ui_language
+            if ui_language is not None:
+                submitted_ui_language = normalize_language(ui_language)
+                if submitted_ui_language is None:
+                    raise HTTPException(status_code=400, detail=t("account.language.invalid"))
+            ui_language_changed = submitted_ui_language != current_ui_language
 
             # Username is an immutable account identifier. It is also part of the
             # current storage layout, so accepting even a case-only rename would
@@ -3689,7 +3795,7 @@ async def edit_profile(
             if username != current_username:
                 raise HTTPException(
                     status_code=400,
-                    detail="Username cannot be changed after account creation.",
+                    detail=t("account.profile.username_immutable"),
                 )
 
             submitted_phone = current_phone_number
@@ -3705,12 +3811,12 @@ async def edit_profile(
                 if not has_recent_authentication(current_user):
                     raise HTTPException(
                         status_code=403,
-                        detail="Please sign in again before changing your phone number.",
+                        detail=t("account.profile.phone_reauthenticate"),
                     )
                 if not phone_verification_id:
                     raise HTTPException(
                         status_code=400,
-                        detail="Use phone verification to change your phone number.",
+                        detail=t("account.profile.phone_verification_required"),
                     )
                 await cursor.execute(
                     "SELECT id FROM USERS WHERE phone_number = ? AND id != ?",
@@ -3719,7 +3825,7 @@ async def edit_profile(
                 if await cursor.fetchone():
                     raise HTTPException(
                         status_code=400,
-                        detail="Phone number already in use.",
+                        detail=t("account.profile.phone_in_use"),
                     )
                 await consume_phone_verification(
                     conn,
@@ -3736,7 +3842,7 @@ async def edit_profile(
                 if not has_recent_authentication(current_user):
                     raise HTTPException(
                         status_code=403,
-                        detail="Please sign in again before verifying your phone number.",
+                        detail=t("account.profile.verify_reauthenticate"),
                     )
                 await consume_phone_verification(
                     conn,
@@ -3755,17 +3861,39 @@ async def edit_profile(
             if email is not None and submitted_email != normalized_current_email:
                 raise HTTPException(
                     status_code=400,
-                    detail="Email changes require a dedicated verification flow.",
+                    detail=t("account.profile.email_verification_required"),
                 )
 
             if new_password:
                 raise HTTPException(
                     status_code=400,
-                    detail="Use the password form to change your password.",
+                    detail=t("account.profile.password_form_required"),
                 )
+
+            try:
+                submitted_timezone_name = (
+                    normalize_user_timezone(timezone_name)
+                    if timezone_name is not None
+                    else current_timezone_name
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=t("account.profile.timezone_invalid")) from exc
+
+            try:
+                submitted_preferred_languages = (
+                    normalize_preferred_languages(preferred_languages_json)
+                    if preferred_languages_json is not None
+                    else current_preferred_languages
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=t("account.profile.conversation_languages_invalid")) from exc
 
             update_fields = []
             update_values = []
+
+            if ui_language_changed:
+                update_fields.append("ui_language = ?")
+                update_values.append(submitted_ui_language)
 
             if phone_number_changed:
                 update_fields.extend(
@@ -3783,6 +3911,22 @@ async def edit_profile(
                 update_fields.append("user_info = ?")
                 update_values.append(user_info)
 
+            if (
+                timezone_name is not None
+                and submitted_timezone_name != current_timezone_name
+            ):
+                update_fields.append("timezone_name = ?")
+                update_values.append(submitted_timezone_name)
+
+            if (
+                preferred_languages_json is not None
+                and submitted_preferred_languages != current_preferred_languages
+            ):
+                update_fields.append("preferred_languages_json = ?")
+                update_values.append(
+                    serialize_preferred_languages(submitted_preferred_languages)
+                )
+
             if profile_picture is not None and profile_picture.filename:
                 try:
                     # Upload new image (will overwrite previous if exists)
@@ -3796,7 +3940,7 @@ async def edit_profile(
                     update_values.append(new_profile_picture_url)
                 except Exception as e:
                     logger.error(f"Error processing profile image: {str(e)}")
-                    raise HTTPException(status_code=500, detail="Error processing profile image")
+                    raise HTTPException(status_code=500, detail=t("account.profile.image_failed"))
 
             if update_fields:
                 update_query = f"UPDATE USERS SET {', '.join(update_fields)} WHERE id = ?"
@@ -3820,37 +3964,42 @@ async def edit_profile(
 
             await conn.commit()
 
+        current_user.ui_language = submitted_ui_language
+        t = get_translator(request, current_user).t
         if is_ajax:
             response = JSONResponse(
                 content={
                     "success": True,
-                    "message": "Profile updated successfully",
+                    "message": t("profile.saved"),
                     "reauthenticate": phone_number_changed,
+                    "ui_language": submitted_ui_language,
+                    "ui_language_changed": ui_language_changed,
                 },
                 status_code=200,
             )
-            if phone_number_changed:
-                response.delete_cookie(SESSION_COOKIE_NAME)
-            return response
         else:
             redirect_url = "/login" if phone_number_changed else "/edit-profile"
             response = RedirectResponse(url=redirect_url, status_code=303)
-            if phone_number_changed:
-                response.delete_cookie(SESSION_COOKIE_NAME)
-            return response
+        if phone_number_changed:
+            response.delete_cookie(SESSION_COOKIE_NAME)
+        if ui_language is not None:
+            response.set_cookie("ui_language", submitted_ui_language, path="/",
+                                httponly=True, samesite="lax", secure=SECURE_COOKIES)
+        return response
 
     except PhoneVerificationError as e:
+        message = t("account.phone." + e.code)
         headers = None
         if isinstance(e, PhoneVerificationRateLimitError):
             headers = {"Retry-After": str(e.retry_after)}
         if is_ajax:
             return JSONResponse(
-                content={"success": False, "message": e.detail},
+                content={"success": False, "message": message},
                 status_code=e.status_code,
                 headers=headers,
             )
         return RedirectResponse(
-            url=f"/edit-profile?error={quote(e.detail)}",
+            url=f"/edit-profile?error={quote(message)}",
             status_code=303,
             headers=headers,
         )
@@ -3859,14 +4008,14 @@ async def edit_profile(
         if is_ajax:
             return JSONResponse(content={"success": False, "message": str(e.detail)}, status_code=e.status_code)
         else:
-            return RedirectResponse(url=f"/edit-profile?error={str(e.detail)}", status_code=303)
+            return RedirectResponse(url="/edit-profile?" + urlencode({"error": str(e.detail)}), status_code=303)
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         if is_ajax:
-            return JSONResponse(content={"success": False, "message": "An unexpected error occurred"}, status_code=500)
+            return JSONResponse(content={"success": False, "message": t("account.profile.unexpected")}, status_code=500)
         else:
-            return RedirectResponse(url="/edit-profile?error=An unexpected error occurred", status_code=303)
+            return RedirectResponse(url="/edit-profile?" + urlencode({"error": t("account.profile.unexpected")}), status_code=303)
 
 @app.post("/api/check-username")
 async def check_username(request: Request):
@@ -3905,6 +4054,7 @@ async def check_username(request: Request):
 
 @app.post("/api/delete-profile-picture")
 async def delete_profile_picture(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -3949,7 +4099,7 @@ async def delete_profile_picture(request: Request, current_user: User = Depends(
                         logger.debug(f"File deleted: {file_path}")
                     except Exception as e:
                         logger.error(f"Error deleting file {file_path}: {str(e)}")
-                        file_info["error"] = str(e)
+                        file_info["error"] = t("account.image.delete_failed")
                 else:
                     logger.debug(f"File not found: {file_path}")
 
@@ -3961,16 +4111,17 @@ async def delete_profile_picture(request: Request, current_user: User = Depends(
 
             return JSONResponse(content={
                 "success": True,
-                "message": "Profile image deleted successfully",
+                "message": t("account.image.deleted"),
                 "deleted_files": deleted_files
             }, status_code=200)
         else:
-            return JSONResponse(content={"success": False, "message": "Profile image not found"}, status_code=404)
+            return JSONResponse(content={"success": False, "message": t("account.image.not_found")}, status_code=404)
 
 @app.get("/api/get-alter-egos")
 async def get_alter_egos(current_user: User = Depends(get_current_user)):
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -3981,8 +4132,9 @@ async def get_alter_egos(current_user: User = Depends(get_current_user)):
 
 @app.get("/api/get-alter-ego-details/{alter_ego_id}")
 async def get_alter_ego_details(alter_ego_id: int, current_user: User = Depends(get_current_user)):
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -4010,7 +4162,7 @@ async def get_alter_ego_details(alter_ego_id: int, current_user: User = Depends(
             }
         })
     else:
-        raise HTTPException(status_code=404, detail="Alter-ego not found")
+        raise HTTPException(status_code=404, detail=t("account.alter_ego.not_found"))
 
 @app.post("/api/create-alter-ego")
 async def create_alter_ego(
@@ -4020,8 +4172,9 @@ async def create_alter_ego(
     profile_picture: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user)
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     try:
         async with get_db_connection() as conn:
@@ -4038,7 +4191,7 @@ async def create_alter_ego(
 
             result = await cursor.fetchone()
             if not result:
-                raise HTTPException(status_code=500, detail="Failed to create alter-ego")
+                raise HTTPException(status_code=500, detail=t("account.alter_ego.create_failed"))
 
             alter_ego_id = result[0]
 
@@ -4063,17 +4216,17 @@ async def create_alter_ego(
                         (profile_picture_url, alter_ego_id)
                     )
                 except UnidentifiedImageError:
-                    raise HTTPException(status_code=400, detail="Invalid image file")
+                    raise HTTPException(status_code=400, detail=t("account.image.invalid"))
                 except Exception as e:
                     logger.error(f"Error processing alter-ego image: {str(e)}")
-                    raise HTTPException(status_code=500, detail="Error processing the image")
+                    raise HTTPException(status_code=500, detail=t("account.profile.image_failed"))
 
             await conn.commit()
 
             # Prepare the response with the new alter-ego data
             response_data = {
                 "success": True,
-                "message": "Alter-ego created successfully",
+                "message": t("account.alter_ego.created"),
                 "alter_ego": {
                     "id": alter_ego_id,
                     "name": name,
@@ -4107,7 +4260,7 @@ async def create_alter_ego(
 
     except Exception as e:
         logger.error(f"Unexpected error creating alter-ego: {str(e)}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred while creating the alter-ego")
+        raise HTTPException(status_code=500, detail=t("account.alter_ego.create_failed"))
 
 @app.put("/api/update-alter-ego/{alter_ego_id}")
 async def update_alter_ego(
@@ -4118,8 +4271,9 @@ async def update_alter_ego(
     profile_picture: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user)
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     try:
         async with get_db_connection() as conn:
@@ -4134,7 +4288,7 @@ async def update_alter_ego(
             current_alter_ego = await cursor.fetchone()
 
             if not current_alter_ego:
-                raise HTTPException(status_code=404, detail="Alter-ego not found")
+                raise HTTPException(status_code=404, detail=t("account.alter_ego.not_found"))
 
             update_fields = ["name = ?", "description = ?"]
             update_values = [name, description]
@@ -4154,10 +4308,10 @@ async def update_alter_ego(
                     update_values.append(new_profile_picture_url)
 
                 except UnidentifiedImageError:
-                    raise HTTPException(status_code=400, detail="Invalid image file")
+                    raise HTTPException(status_code=400, detail=t("account.image.invalid"))
                 except Exception as e:
                     logger.error(f"Error processing alter-ego image: {str(e)}")
-                    raise HTTPException(status_code=500, detail="Error processing the image")
+                    raise HTTPException(status_code=500, detail=t("account.profile.image_failed"))
 
             # Build and execute update query
             update_query = f"UPDATE USER_ALTER_EGOS SET {', '.join(update_fields)} WHERE id = ? AND user_id = ?"
@@ -4167,7 +4321,7 @@ async def update_alter_ego(
             rows_affected = cursor.rowcount
 
             if rows_affected == 0:
-                raise HTTPException(status_code=404, detail="Alter-ego not found or not owned by current user")
+                raise HTTPException(status_code=404, detail=t("account.alter_ego.not_found"))
 
             await conn.commit()
 
@@ -4183,7 +4337,7 @@ async def update_alter_ego(
             if updated_alter_ego:
                 response_data = {
                     "success": True,
-                    "message": "Alter-ego updated successfully",
+                    "message": t("account.alter_ego.updated"),
                     "alter_ego": {
                         "name": updated_alter_ego[0],
                         "description": updated_alter_ego[1],
@@ -4201,18 +4355,19 @@ async def update_alter_ego(
 
                 return JSONResponse(content=response_data)
             else:
-                raise HTTPException(status_code=404, detail="Could not retrieve updated alter-ego data")
+                raise HTTPException(status_code=404, detail=t("account.alter_ego.load_failed"))
 
     except HTTPException as e:
         raise e
     except Exception as e:
         logger.error(f"Unexpected error updating alter-ego: {str(e)}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred")
+        raise HTTPException(status_code=500, detail=t("account.profile.unexpected"))
 
 @app.delete("/api/delete-alter-ego/{alter_ego_id}")
 async def delete_alter_ego(alter_ego_id: int, current_user: User = Depends(get_current_user)):
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     try:
         async with get_db_connection() as conn:
@@ -4226,7 +4381,7 @@ async def delete_alter_ego(alter_ego_id: int, current_user: User = Depends(get_c
             alter_ego = await cursor.fetchone()
 
             if not alter_ego:
-                raise HTTPException(status_code=404, detail="Alter-ego not found")
+                raise HTTPException(status_code=404, detail=t("account.alter_ego.not_found"))
 
             # If alter-ego has a profile picture, delete it
             if alter_ego[0]:  # profile_picture
@@ -4268,19 +4423,20 @@ async def delete_alter_ego(alter_ego_id: int, current_user: User = Depends(get_c
 
         return JSONResponse(content={
             "success": True,
-            "message": "Alter-ego and associated files deleted successfully"
+            "message": t("account.alter_ego.deleted")
         })
 
     except HTTPException as e:
         raise e
     except Exception as e:
         logger.error(f"Unexpected error deleting alter-ego: {str(e)}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred while deleting the alter-ego")
+        raise HTTPException(status_code=500, detail=t("account.alter_ego.delete_failed"))
 
 @app.delete("/api/delete-alter-ego-picture/{alter_ego_id}")
 async def delete_alter_ego_picture(alter_ego_id: int, current_user: User = Depends(get_current_user)):
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+        raise HTTPException(status_code=401, detail=t("account.unauthenticated"))
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
@@ -4290,7 +4446,7 @@ async def delete_alter_ego_picture(alter_ego_id: int, current_user: User = Depen
         result = await cursor.fetchone()
 
         if not result:
-            raise HTTPException(status_code=404, detail="Alter-ego not found")
+            raise HTTPException(status_code=404, detail=t("account.alter_ego.not_found"))
 
         profile_picture_url = result[0]
 
@@ -4330,7 +4486,7 @@ async def delete_alter_ego_picture(alter_ego_id: int, current_user: User = Depen
                         logger.debug(f"File deleted: {file_path}")
                     except Exception as e:
                         logger.error(f"Error deleting file {file_path}: {str(e)}")
-                        file_info["error"] = str(e)
+                        file_info["error"] = t("account.image.delete_failed")
                 else:
                     logger.debug(f"File not found: {file_path}")
 
@@ -4343,7 +4499,7 @@ async def delete_alter_ego_picture(alter_ego_id: int, current_user: User = Depen
 
     return JSONResponse(content={
         "success": True,
-        "message": "Alter-ego profile image deletion process completed",
+        "message": t("account.alter_ego.picture_deleted"),
         "deleted_files": deleted_files
     })
 
@@ -4356,6 +4512,7 @@ async def check_phone_number(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -4363,7 +4520,7 @@ async def check_phone_number(
     try:
         phone_number = normalize_phone_number(data.get("phone"))
     except PhoneVerificationError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        raise HTTPException(status_code=exc.status_code, detail=t("account.phone." + exc.code)) from exc
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -4639,11 +4796,8 @@ async def home(request: Request, current_user: User = Depends(get_current_user))
         if not get_marketplace_flags().enabled:
             return RedirectResponse(url="/login", status_code=302)
 
-        # Fallback: serve static landing if request reaches FastAPI without auth
-        landing_path = Path("data/index.html")
-        if landing_path.is_file():
-            return HTMLResponse(content=landing_path.read_text(encoding='utf-8'))
-        return RedirectResponse(url="/login", status_code=302)
+        from public_pages import public_page
+        return public_page(request, "index.html")
 
     return RedirectResponse(url="/home", status_code=302)
 
@@ -4696,6 +4850,7 @@ async def get_ip_info(current_user: User = Depends(get_current_user)):
 
 @app.route("/magic-link-recovery", methods=["GET", "POST"])
 async def magic_link_recovery(request: Request):
+    t = get_translator(request).t
     next_url = request.query_params.get("next")
 
     def _build_recovery_context(message=None, message_type=None, current_next_url=None):
@@ -4732,7 +4887,7 @@ async def magic_link_recovery(request: Request):
         if not email:
             return templates.TemplateResponse(
                 "magic_link_recovery.html",
-                _build_recovery_context("Please enter your email address.", "danger", next_url)
+                _build_recovery_context(t("account.recovery.email_required"), "danger", next_url)
             )
 
         # Basic email validation
@@ -4741,7 +4896,7 @@ async def magic_link_recovery(request: Request):
         if not re.match(email_pattern, email):
             return templates.TemplateResponse(
                 "magic_link_recovery.html",
-                _build_recovery_context("Please enter a valid email address.", "danger", next_url)
+                _build_recovery_context(t("account.recovery.email_invalid"), "danger", next_url)
             )
 
         # Find user by email
@@ -4755,7 +4910,7 @@ async def magic_link_recovery(request: Request):
             return templates.TemplateResponse(
                 "magic_link_recovery.html",
                 _build_recovery_context(
-                    "If your email is registered, you will receive a new magic link shortly.",
+                    t("account.recovery.sent"),
                     "success",
                     next_url
                 )
@@ -4770,7 +4925,7 @@ async def magic_link_recovery(request: Request):
             return templates.TemplateResponse(
                 "magic_link_recovery.html",
                 _build_recovery_context(
-                    "Magic link recovery is not available for this account.",
+                    t("account.recovery.unavailable"),
                     "danger",
                     next_url
                 )
@@ -4791,10 +4946,11 @@ async def magic_link_recovery(request: Request):
                 magic_link,
                 username,
                 branding=branding,
+                ui_language=getattr(user_obj, "ui_language", None) or "en",
             )
 
             if email_sent:
-                message = "If your email is registered, you will receive a new magic link shortly."
+                message = t("account.recovery.sent")
                 return templates.TemplateResponse(
                     "magic_link_recovery.html",
                     _build_recovery_context(message, "success", next_url)
@@ -4803,7 +4959,7 @@ async def magic_link_recovery(request: Request):
                 return templates.TemplateResponse(
                     "magic_link_recovery.html",
                     _build_recovery_context(
-                        "There was an error sending your magic link. Please try again later.",
+                        t("account.recovery.send_failed"),
                         "danger",
                         next_url
                     )
@@ -4813,7 +4969,7 @@ async def magic_link_recovery(request: Request):
             logger.error(f"Error generating magic link recovery: {e}")
             return templates.TemplateResponse(
                 "magic_link_recovery.html",
-                _build_recovery_context("An error occurred. Please try again later.", "danger", next_url)
+                _build_recovery_context(t("account.recovery.failed"), "danger", next_url)
             )
 
     # GET request - show the recovery form
@@ -4821,6 +4977,11 @@ async def magic_link_recovery(request: Request):
 
 @app.get("/logout", response_class=HTMLResponse)
 async def logout(request: Request, current_user: User = Depends(get_current_user)):
+    source_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if source_token:
+        from integrations.embed.identity import get_embed_store
+
+        await get_embed_store().revoke_source_session(source_token)
     # A device-code login holds a live child process server-side. Tear down only
     # entries owned by this authenticated user before clearing the signed session;
     # never let a reused browser session act on another user's pending state.
@@ -4836,7 +4997,7 @@ async def logout(request: Request, current_user: User = Depends(get_current_user
     request.session.clear()
     response = templates.TemplateResponse("login.html", {
         "request": request,
-        "message": "You have successfully logged out.",
+        "message": get_translator(request, current_user).t("account.logged_out"),
         "captcha": get_captcha_config(),
         "google_oauth_available": bool(GOOGLE_CLIENT_ID)
     })
@@ -4847,11 +5008,12 @@ async def logout(request: Request, current_user: User = Depends(get_current_user
 
 @app.get("/create-user", response_class=HTMLResponse)
 async def create_user(request: Request, current_user: User = Depends(get_current_user), selected_prompt_id: int = None, selected_machine: str = None):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin and not await current_user.is_user:
-        return handle_error(request, 403, "You do not have permission to access this page.")
+        return handle_error(request, 403, t('admin_users.response.you_do_not_have_permission_to_access_this_page'))
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
@@ -4920,6 +5082,7 @@ async def create_user_post(
     billing_auto_refill_amount: Optional[str] = Form(default=None),
     billing_max_limit: Optional[str] = Form(default=None)
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
@@ -4927,53 +5090,53 @@ async def create_user_post(
         actor_role = await get_live_user_role(conn, current_user.id)
 
     if actor_role not in {"admin", "user"}:
-        raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.you_do_not_have_permission_to_access_this_page'))
 
     if skip_verification and actor_role != "admin":
         raise HTTPException(
             status_code=403,
-            detail="Only administrators can bypass phone verification.",
+            detail=t('admin_users.response.only_administrators_can_bypass_phone_verification'),
         )
 
     # Validate that users can only create regular customers
     if actor_role == "user" and user_type != "customer":
-        raise HTTPException(status_code=403, detail="Users can only create regular customer accounts.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.users_can_only_create_regular_customer_accounts'))
 
     # Users cannot give access to all prompts
     if actor_role == "user" and all_prompts_access:
-        raise HTTPException(status_code=403, detail="Users cannot give access to all prompts.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.users_cannot_give_access_to_all_prompts'))
 
     # Validate that the prompt is accessible to the user
     if actor_role == "user":
         accessible_prompts = await get_user_role_accessible_prompts(current_user.id)
         if prompt_id not in accessible_prompts:
-            raise HTTPException(status_code=403, detail="You can only create users with prompts that you have access to.")
+            raise HTTPException(status_code=403, detail=t('admin_users.response.you_can_only_create_users_with_prompts_that_you_have_access_to'))
 
     try:
         balance = validate_managed_balance(balance)
     except InvalidInitialBalanceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=t('admin_users.response.balance_must_be_a_finite_number_between_0_and_500_usd')) from exc
 
     # Validate authentication mode
     valid_auth_modes = ["magic_link_only", "magic_link_password", "password_only"]
     if authentication_mode not in valid_auth_modes:
-        raise HTTPException(status_code=400, detail="Invalid authentication mode.")
+        raise HTTPException(status_code=400, detail=t('admin_users.response.invalid_authentication_mode'))
 
     # Validate password requirements based on authentication mode
     if authentication_mode == "password_only" and (not initial_password or len(initial_password) < 8):
-        raise HTTPException(status_code=400, detail="Password is required and must be at least 8 characters for password-only mode.")
+        raise HTTPException(status_code=400, detail=t('admin_users.password_is_required_and_must_be_at_least_8_characters_for_password_only'))
 
     if authentication_mode == "magic_link_password" and initial_password and len(initial_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters when provided.")
+        raise HTTPException(status_code=400, detail=t('admin_users.password_must_be_at_least_8_characters_when_provided'))
 
     # Only allow can_change_password for password modes
     if can_change_password and authentication_mode == "magic_link_only":
-        raise HTTPException(status_code=400, detail="Password change permission only applies to password authentication modes.")
+        raise HTTPException(status_code=400, detail=t('admin_users.response.password_change_permission_only_applies_to_password_authentication_modes'))
 
     # Validate API key mode
     from common import VALID_API_KEY_MODES
     if api_key_mode not in VALID_API_KEY_MODES:
-        raise HTTPException(status_code=400, detail="Invalid API key mode.")
+        raise HTTPException(status_code=400, detail=t('admin_users.response.invalid_api_key_mode_147602'))
 
     async with get_db_connection(readonly=True) as conn:
         # `machine` is the selected LLM id (legacy form field name). Validate it is
@@ -4990,11 +5153,11 @@ async def create_user_post(
         ) as cursor:
             selected_default_llm = await cursor.fetchone()
             if not selected_default_llm:
-                raise HTTPException(status_code=400, detail="Selected LLM is not available.")
+                raise HTTPException(status_code=400, detail=t('admin_users.response.selected_llm_is_not_available'))
             if selected_default_llm["machine"] == "GPTSub":
                 raise HTTPException(
                     status_code=400,
-                    detail="ChatGPT subscription models cannot be set as the default for a new account.",
+                    detail=t('admin_users.response.chatgpt_subscription_models_cannot_be_set_as_the_default_for_a_new_account'),
                 )
 
     if phone:
@@ -5003,7 +5166,7 @@ async def create_user_post(
         except PhoneVerificationError as exc:
             raise HTTPException(
                 status_code=exc.status_code,
-                detail=exc.detail,
+                detail=t("account.phone." + exc.code),
             ) from exc
 
         async with get_db_connection(readonly=True) as conn:
@@ -5011,12 +5174,12 @@ async def create_user_post(
                 await cursor.execute("SELECT id FROM USERS WHERE phone_number = ?", (phone,))
                 existing_user = await cursor.fetchone()
                 if existing_user:
-                    raise HTTPException(status_code=400, detail="Phone number already in use. Please use a different number.")
+                    raise HTTPException(status_code=400, detail=t('admin_users.response.phone_number_already_in_use_please_use_a_different_number'))
 
         if not skip_verification and not phone_verification_id:
             raise HTTPException(
                 status_code=400,
-                detail="Phone verification is required.",
+                detail=t('admin_users.response.phone_verification_is_required'),
             )
 
     if use_random_username or not username:
@@ -5026,18 +5189,18 @@ async def create_user_post(
     else:
         # Validate username length
         if len(username) < 3 or len(username) > 20:
-            raise HTTPException(status_code=400, detail="The username must be between 3 and 20 characters.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.the_username_must_be_between_3_and_20_characters'))
 
         # Validate allowed characters
         if not re.match(r'^[a-zA-Z0-9_-]+$', username):
-            raise HTTPException(status_code=400, detail="The username can only contain letters, numbers, hyphens, and underscores.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.the_username_can_only_contain_letters_numbers_hyphens_and_underscores'))
 
         # Validate username is not forbidden (security)
         if is_forbidden_username(username):
-            raise HTTPException(status_code=400, detail="This username is not available. Please choose a different username.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.this_username_is_not_available_please_choose_a_different_username'))
 
         if await username_exists(username):
-            raise HTTPException(status_code=400, detail="This username is already in use.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.this_username_is_already_in_use'))
 
     # Process category_access for curation mode
     # If public_prompts_access is enabled and specific categories were selected, store them
@@ -5050,6 +5213,8 @@ async def create_user_post(
     billing_limit = parse_optional_float(billing_limit)
     billing_auto_refill_amount = parse_optional_float(billing_auto_refill_amount, default=10.0)
     billing_max_limit = parse_optional_float(billing_max_limit)
+    if any(value is not None and not math.isfinite(value) for value in (billing_limit, billing_auto_refill_amount, billing_max_limit)):
+        raise HTTPException(status_code=400, detail=t('admin_users.response.invalid_billing_amount'))
 
     # Process enterprise billing mode
     # billing_mode: "customer_pays" (default) or "user_pays"
@@ -5075,7 +5240,7 @@ async def create_user_post(
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Maximum billing limit cannot be lower than the billing limit.",
+                detail=t('admin_users.response.maximum_billing_limit_cannot_be_lower_than_the_billing_limit'),
             )
 
     try:
@@ -5115,18 +5280,18 @@ async def create_user_post(
     except InsufficientInitialBalanceError as exc:
         raise HTTPException(
             status_code=402,
-            detail="Insufficient balance to fund the customer's initial balance.",
+            detail=t('admin_users.response.insufficient_balance_to_fund_the_customer_s_initial_balance'),
         ) from exc
     except InitialBalanceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=t('admin_users.response.unable_to_fund_the_initial_account_balance')) from exc
     except PhoneVerificationError as exc:
         raise HTTPException(
             status_code=exc.status_code,
-            detail=exc.detail,
+            detail=t("account.phone." + exc.code),
         ) from exc
 
     if not user_id:
-        raise HTTPException(status_code=500, detail="Failed to create user.")
+        raise HTTPException(status_code=500, detail=t('admin_users.response.failed_to_create_user'))
 
     # Generate magic link only for modes that support it
     magic_link = None
@@ -5157,6 +5322,7 @@ async def edit_user_form(
     username: str,
     current_user: User = Depends(get_current_user)
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
@@ -5170,7 +5336,7 @@ async def edit_user_form(
         )
         target_row = await cursor.fetchone()
         if not target_row:
-            raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+            raise HTTPException(status_code=404, detail=t('admin_users.response.user_name_not_found', name=username))
 
         management_access = await get_user_management_access(
             conn,
@@ -5180,7 +5346,7 @@ async def edit_user_form(
         if not management_access.can_manage:
             raise HTTPException(
                 status_code=403,
-                detail="You do not have permission to manage this user.",
+                detail=t('admin_users.response.you_do_not_have_permission_to_manage_this_user'),
             )
 
         # Get all prompts
@@ -5285,7 +5451,7 @@ async def edit_user_form(
         await conn.close()
 
     if not user_data:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+        raise HTTPException(status_code=404, detail=t('admin_users.response.user_name_not_found', name=username))
 
     context = await get_template_context(request, current_user)
     context.update({
@@ -5328,6 +5494,7 @@ async def update_user(
     authentication_mode: str = Form(default="magic_link_only"),
     storage_quota_gb: Annotated[Optional[str], Form()] = None
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
@@ -5346,7 +5513,7 @@ async def update_user(
         )
         user = await cursor.fetchone()
         if not user:
-            raise HTTPException(status_code=404, detail="User not found.")
+            raise HTTPException(status_code=404, detail=t('admin_users.response.user_not_found'))
 
         (
             user_id,
@@ -5365,7 +5532,7 @@ async def update_user(
         if not management_access.can_manage:
             raise HTTPException(
                 status_code=403,
-                detail="You do not have permission to manage this user.",
+                detail=t('admin_users.response.you_do_not_have_permission_to_manage_this_user'),
             )
 
         # Get current balance/default LLM for audit trail and disabled-model preservation
@@ -5414,6 +5581,8 @@ async def update_user(
         billing_limit = parse_optional_float(billing_limit)
         billing_auto_refill_amount = parse_optional_float(billing_auto_refill_amount, default=10.0)
         billing_max_limit = parse_optional_float(billing_max_limit)
+        if any(value is not None and not math.isfinite(value) for value in (billing_limit, billing_auto_refill_amount, billing_max_limit)):
+            raise HTTPException(status_code=400, detail=t('admin_users.response.invalid_billing_amount'))
         user_role_id = int(user_role_id) if user_role_id and user_role_id.strip() else None
 
         # Storage quota override (admin-only). Canonical unit is bytes; the form
@@ -5430,7 +5599,7 @@ async def update_user(
             try:
                 storage_quota_gb_value = float(storage_quota_gb)
             except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="Storage quota must be a number of GB.")
+                raise HTTPException(status_code=400, detail=t('admin_users.response.storage_quota_must_be_a_number_of_gb'))
             if (
                 not math.isfinite(storage_quota_gb_value)
                 or storage_quota_gb_value < 0
@@ -5438,36 +5607,36 @@ async def update_user(
             ):
                 raise HTTPException(
                     status_code=400,
-                    detail="Storage quota must be a finite non-negative value within the supported range.",
+                    detail=t('admin_users.response.storage_quota_must_be_a_finite_non_negative_value_within_the_supported_range'),
                 )
             requested_storage_quota_bytes = int(storage_quota_gb_value * (1024 ** 3))
 
         try:
             balance = validate_managed_balance(balance)
         except InvalidInitialBalanceError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=t('admin_users.response.balance_must_be_a_finite_number_between_0_and_500_usd')) from exc
 
         if management_access.is_creator:
             if abs(balance - previous_balance) > 0.001:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can change account balances.",
+                    detail=t('admin_users.response.only_administrators_can_change_account_balances'),
                 )
             if user_role_id is not None:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can change account roles.",
+                    detail=t('admin_users.response.only_administrators_can_change_account_roles'),
                 )
             if requested_storage_quota_bytes != current_storage_quota_bytes:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can change storage quotas.",
+                    detail=t('admin_users.response.only_administrators_can_change_storage_quotas'),
                 )
             requested_storage_quota_bytes = current_storage_quota_bytes
             if bool(all_prompts_access) != current_all_prompts_access:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can change full prompt access.",
+                    detail=t('admin_users.response.only_administrators_can_change_full_prompt_access'),
                 )
             balance = float(previous_balance)
             all_prompts_access = current_all_prompts_access
@@ -5489,7 +5658,7 @@ async def update_user(
             ):
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can change account phone numbers.",
+                    detail=t('admin_users.response.only_administrators_can_change_account_phone_numbers'),
                 )
             if (
                 email is not None
@@ -5497,12 +5666,12 @@ async def update_user(
             ):
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can change account email addresses.",
+                    detail=t('admin_users.response.only_administrators_can_change_account_email_addresses'),
                 )
             if new_password:
                 raise HTTPException(
                     status_code=403,
-                    detail="Only administrators can reset account passwords.",
+                    detail=t('admin_users.response.only_administrators_can_reset_account_passwords'),
                 )
 
             phone_number = current_phone_number
@@ -5516,13 +5685,13 @@ async def update_user(
             if prompt_id not in accessible_prompts:
                 raise HTTPException(
                     status_code=403,
-                    detail="You can only assign prompts that you can access.",
+                    detail=t('admin_users.response.you_can_only_assign_prompts_that_you_can_access'),
                 )
 
         # Validate authentication mode
         valid_auth_modes = ["magic_link_only", "magic_link_password", "password_only"]
         if authentication_mode not in valid_auth_modes:
-            raise HTTPException(status_code=400, detail="Invalid authentication mode.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.invalid_authentication_mode'))
 
         await cursor.execute(
             """
@@ -5534,12 +5703,12 @@ async def update_user(
         )
         selected_llm = await cursor.fetchone()
         if not selected_llm:
-            raise HTTPException(status_code=400, detail="Selected LLM does not exist.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.selected_llm_does_not_exist'))
         if not bool(selected_llm[1]) and (
             selected_llm[2] == "GPTSub"
             or int(machine) != int(current_user_llm_id or 0)
         ):
-            raise HTTPException(status_code=400, detail="Selected LLM is disabled.")
+            raise HTTPException(status_code=400, detail=t('admin_users.response.selected_llm_is_disabled'))
         if selected_llm[2] == "GPTSub":
             # A personal model is valid only for the target user's exact catalog.
             # Do not preserve an unchanged GPTSub default after unlink.
@@ -5571,15 +5740,14 @@ async def update_user(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "This ChatGPT subscription model is not available to this "
-                        "user; reconnect their subscription or choose another model."
+                        t('admin_users.response.this_chatgpt_subscription_model_is_not_available_to_this_user_reconnect_their_subscri')
                     ),
                 )
 
         if new_username != current_username:
             raise HTTPException(
                 status_code=400,
-                detail="Username cannot be changed after account creation.",
+                detail=t('admin_users.response.username_cannot_be_changed_after_account_creation'),
             )
 
         if management_access.is_admin:
@@ -5606,7 +5774,7 @@ async def update_user(
             if await cursor.fetchone():
                 raise HTTPException(
                     status_code=400,
-                    detail="Phone number already in use.",
+                    detail=t('admin_users.response.phone_number_already_in_use'),
                 )
 
         if email:
@@ -5614,7 +5782,7 @@ async def update_user(
             if not re.match(email_pattern, email):
                 raise HTTPException(
                     status_code=400,
-                    detail="Please enter a valid email address.",
+                    detail=t('admin_users.response.please_enter_a_valid_email_address'),
                 )
 
             if email_changed:
@@ -5625,20 +5793,20 @@ async def update_user(
                 if await cursor.fetchone():
                     raise HTTPException(
                         status_code=400,
-                        detail="Email address already in use.",
+                        detail=t('admin_users.response.email_address_already_in_use'),
                     )
 
         if new_password and len(new_password) < 8:
             raise HTTPException(
                 status_code=400,
-                detail="Password must be at least 8 characters.",
+                detail=t('admin_users.response.password_must_be_at_least_8_characters'),
             )
         if authentication_mode == "password_only" and not (
             current_password_hash or new_password
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Password-only mode requires a password.",
+                detail=t('admin_users.response.password_only_mode_requires_a_password'),
             )
         if (
             authentication_mode in {"magic_link_only", "magic_link_password"}
@@ -5650,12 +5818,12 @@ async def update_user(
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Magic-link authentication requires an email address.",
+                detail=t('admin_users.response.magic_link_authentication_requires_an_email_address'),
             )
         if can_change_password and authentication_mode == "magic_link_only":
             raise HTTPException(
                 status_code=400,
-                detail="Password changes require a password authentication mode.",
+                detail=t('admin_users.response.password_changes_require_a_password_authentication_mode'),
             )
 
         user_update_fields = [
@@ -5683,7 +5851,7 @@ async def update_user(
                     if is_target_admin and is_role_change:
                         req_ip = get_client_ip(request)
                         if not await is_elevated(current_user.id, request_ip=req_ip):
-                            return JSONResponse(content={"success": False, "error": "Ultra Admin+ elevation required to change an admin's role."})
+                            return JSONResponse(content={"success": False, "error": t('admin_users.response.ultra_admin_elevation_required_to_change_an_admin_s_role')})
                         await cursor.execute("SELECT role_name FROM USER_ROLES WHERE id = ?", (user_role_id,))
                         new_role_row = await cursor.fetchone()
                         new_role_name = new_role_row[0] if new_role_row else f"role_id={user_role_id}"
@@ -5708,7 +5876,7 @@ async def update_user(
             from common import VALID_API_KEY_MODES
             if api_key_mode not in VALID_API_KEY_MODES:
                 return JSONResponse(
-                    content={'success': False, 'error': 'Invalid API key mode'},
+                    content={'success': False, 'error': t('admin_users.response.invalid_api_key_mode')},
                     status_code=400
                 )
 
@@ -5778,7 +5946,7 @@ async def update_user(
             return JSONResponse(
                 content={
                     'success': False,
-                    'error': 'Maximum billing limit cannot be lower than the billing limit.',
+                    'error': t('admin_users.response.maximum_billing_limit_cannot_be_lower_than_the_billing_limit'),
                 },
                 status_code=400,
             )
@@ -5813,8 +5981,7 @@ async def update_user(
                     content={
                         'success': False,
                         'error': (
-                            'Billing settings cannot be changed while this '
-                            'account has usage in progress.'
+                            t('admin_users.response.billing_settings_cannot_be_changed_while_this_account_has_usage_in_progress')
                         ),
                     },
                     status_code=409,
@@ -5874,15 +6041,16 @@ async def update_user(
     if pending_admin_role_audit:
         await log_admin_action(**pending_admin_role_audit)
 
-    return JSONResponse(content={"success": True, "message": "User updated successfully"})
+    return JSONResponse(content={"success": True, "message": t('admin_users.response.user_updated_successfully')})
 
 @app.get("/users-list", response_class=HTMLResponse)
 async def users_list(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not (await current_user.is_admin or await current_user.is_user):
-        raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.you_do_not_have_permission_to_access_this_page'))
 
     await ensure_conversation_privacy_schema()
     async with get_db_connection(readonly=True) as conn:
@@ -6023,11 +6191,12 @@ async def users_list(request: Request, current_user: User = Depends(get_current_
 
 @app.post("/admin/renew-token/{username}")
 async def renew_token(request: Request, username: str, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not (await current_user.is_admin or await current_user.is_user):
-        return JSONResponse(content={"error": "You do not have permission to access this action."}, status_code=403)
+        return JSONResponse(content={"error": t('admin_users.response.you_do_not_have_permission_to_access_this_action')}, status_code=403)
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
@@ -6037,7 +6206,7 @@ async def renew_token(request: Request, username: str, current_user: User = Depe
         if user:
             user_id = user[0]
             if not bool(user[1]):
-                return JSONResponse(content={"error": "This user is disabled. Activate the account before renewing the token."}, status_code=400)
+                return JSONResponse(content={"error": t('admin_users.response.this_user_is_disabled_activate_the_account_before_renewing_the_token')}, status_code=400)
 
             if not await current_user.is_admin:
                 ucr_check = await cursor.execute(
@@ -6045,7 +6214,7 @@ async def renew_token(request: Request, username: str, current_user: User = Depe
                     (user_id, current_user.id)
                 )
                 if not await ucr_check.fetchone():
-                    return JSONResponse(content={"error": "You do not have permission to renew the token for this user."}, status_code=403)
+                    return JSONResponse(content={"error": t('admin_users.response.you_do_not_have_permission_to_renew_the_token_for_this_user')}, status_code=403)
 
             new_token = secrets.token_urlsafe(20)
             new_expires_at = datetime.now() + timedelta(days=1)
@@ -6080,12 +6249,13 @@ async def renew_token(request: Request, username: str, current_user: User = Depe
             full_magic_link = f"{get_auth_base_url(request).rstrip('/')}/{url_path}{new_token}"
             return JSONResponse(content={"magic_link": full_magic_link, "expires_at": new_expires_at.isoformat()}, status_code=200)
         else:
-            return JSONResponse(content={"error": "No user found with that username."}, status_code=404)
+            return JSONResponse(content={"error": t('admin_users.response.no_user_found_with_that_username')}, status_code=404)
 
 @app.post("/admin/users/{username}/activation")
 async def set_user_activation(request: Request, username: str, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required."}, status_code=403)
+        return JSONResponse(content={"error": t('admin_users.response.admin_access_required')}, status_code=403)
 
     try:
         payload = await request.json()
@@ -6098,11 +6268,11 @@ async def set_user_activation(request: Request, username: str, current_user: Use
     elif isinstance(enabled_raw, str) and enabled_raw.lower() in {"true", "false", "1", "0"}:
         enabled = enabled_raw.lower() in {"true", "1"}
     else:
-        return JSONResponse(content={"error": "Invalid enabled value."}, status_code=400)
+        return JSONResponse(content={"error": t('admin_users.response.invalid_enabled_value')}, status_code=400)
 
     username_ci = username.strip().lower()
     if not username_ci:
-        return JSONResponse(content={"error": "Username is required."}, status_code=400)
+        return JSONResponse(content={"error": t('admin_users.response.username_is_required')}, status_code=400)
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
@@ -6117,7 +6287,7 @@ async def set_user_activation(request: Request, username: str, current_user: Use
         )
         target = await cursor.fetchone()
         if not target:
-            return JSONResponse(content={"error": "User not found."}, status_code=404)
+            return JSONResponse(content={"error": t('admin_users.response.user_not_found')}, status_code=404)
 
         target_user_id = target[0]
         target_username = target[1]
@@ -6125,13 +6295,13 @@ async def set_user_activation(request: Request, username: str, current_user: Use
         target_role_name = (target[4] or "").lower()
 
         if target_user_id == current_user.id and not enabled:
-            return JSONResponse(content={"error": "You cannot deactivate your own account."}, status_code=400)
+            return JSONResponse(content={"error": t('admin_users.response.you_cannot_deactivate_your_own_account')}, status_code=400)
 
         if target_role_name == "admin" and target_user_id != current_user.id:
             request_ip = get_client_ip(request)
             if not await is_elevated(current_user.id, request_ip=request_ip):
                 return JSONResponse(
-                    content={"error": "Ultra Admin+ elevation required to change another admin's activation status."},
+                    content={"error": t('admin_users.response.ultra_admin_elevation_required_to_change_another_admin_s_activation_status')},
                     status_code=403,
                 )
 
@@ -6150,11 +6320,11 @@ async def set_user_activation(request: Request, username: str, current_user: Use
         if enabled:
             await remove_revoked_user(target_user_id)
             action_type = "admin_activated_user"
-            message = f"User {target_username} activated."
+            message = t('admin_users.response.user_name_activated', name=target_username)
         else:
             await add_revoked_user(target_user_id)
             action_type = "admin_deactivated_user"
-            message = f"User {target_username} deactivated."
+            message = t('admin_users.response.user_name_deactivated', name=target_username)
 
     await log_admin_action(
         admin_id=current_user.id,
@@ -6185,8 +6355,9 @@ def _get_rate_limit_reset_warning() -> Optional[str]:
 
 @app.post("/admin/rate-limits/clear/{username}")
 async def clear_user_rate_limits(request: Request, username: str, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.admin_access_required'))
 
     cleared = rate_limiter.clear_for_identifier(username)
 
@@ -6197,7 +6368,7 @@ async def clear_user_rate_limits(request: Request, username: str, current_user: 
         if row and row[0]:
             cleared += rate_limiter.clear_for_identifier(row[0])
 
-    warning = _get_rate_limit_reset_warning()
+    warning = (t('admin_users.response.rate_limits_are_stored_per_worker_with_count_workers_this_reset_may_be_incomplete', count=int(os.getenv("UVICORN_WORKERS", "1"))) if _get_rate_limit_reset_warning() else None)
     logger.info(
         "Admin %s cleared rate limits for %s (%s keys)",
         current_user.username,
@@ -6215,11 +6386,12 @@ async def clear_user_rate_limits(request: Request, username: str, current_user: 
 
 @app.post("/admin/rate-limits/clear-ip/{ip:path}")
 async def clear_ip_rate_limits(request: Request, ip: str, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.admin_access_required'))
 
     cleared = rate_limiter.clear_for_ip(ip)
-    warning = _get_rate_limit_reset_warning()
+    warning = (t('admin_users.response.rate_limits_are_stored_per_worker_with_count_workers_this_reset_may_be_incomplete', count=int(os.getenv("UVICORN_WORKERS", "1"))) if _get_rate_limit_reset_warning() else None)
     logger.info(
         "Admin %s cleared rate limits for IP %s (%s keys)",
         current_user.username,
@@ -6237,8 +6409,9 @@ async def clear_ip_rate_limits(request: Request, ip: str, current_user: User = D
 
 @app.get("/admin/rate-limits/status/{username}")
 async def get_user_rate_limit_status(request: Request, username: str, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.admin_access_required'))
 
     limits_config = {
         "id:login": RLC.LOGIN_ACCOUNT_OBSERVATION,
@@ -6268,7 +6441,7 @@ async def get_user_rate_limit_status(request: Request, username: str, current_us
         "username": username,
         "limits": status_data,
         "blocked_login_ips": blocked_ips,
-        "warning": _get_rate_limit_reset_warning(),
+        "warning": (t('admin_users.response.rate_limits_are_stored_per_worker_with_count_workers_this_reset_may_be_incomplete', count=int(os.getenv("UVICORN_WORKERS", "1"))) if _get_rate_limit_reset_warning() else None),
         "worker_count": int(os.getenv("UVICORN_WORKERS", "1"))
     })
 
@@ -6346,6 +6519,7 @@ async def delete_user(username, current_user, request_ip=None):
     admin/financial/Atagia guards, the external purge, the local cascade, and the
     filesystem cleanup, so the HTTP path and the CLI behave identically.
     """
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     username = username.strip()
     username_ci = username.lower()
     logger.debug("Attempting to delete username %s by user %s", username, current_user.username)
@@ -6364,7 +6538,7 @@ async def delete_user(username, current_user, request_ip=None):
         user = await cursor.fetchone()
         if not user:
             logger.warning("Delete attempt failed: User %s not found", username)
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail=t("account.password.error.user_not_found"))
         user_id = user[0]
 
         # Non-admins may only delete their own account. Deleting admin accounts is
@@ -6380,27 +6554,26 @@ async def delete_user(username, current_user, request_ip=None):
             )
             raise HTTPException(
                 status_code=403,
-                detail="Unauthorized: You do not have permission to delete this account",
+                detail=t("account.deletion.forbidden"),
             )
 
     result = await user_deletion.delete_user_account(user_id=user_id)
 
     if result.status == "not_found":
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=t("account.password.error.user_not_found"))
     if result.status == "blocked":
-        raise HTTPException(status_code=409, detail=result.summary)
+        raise HTTPException(status_code=409, detail=" ".join(t("account.deletion." + code) for code in result.reason_codes))
     if result.status == "atagia_unreachable":
         logger.error("User deletion blocked for %s: Atagia unreachable", username)
         raise HTTPException(
             status_code=503,
             detail=(
-                "Account deletion requires the external memory service, which is "
-                "currently unreachable. Please retry later."
+                t("account.deletion.memory_unreachable")
             ),
         )
     if result.status not in ("completed", "completed_with_cleanup_errors"):
         logger.error("Unexpected deletion status for %s: %s", username, result.status)
-        raise HTTPException(status_code=500, detail="Error during user deletion process.")
+        raise HTTPException(status_code=500, detail=t("account.deletion.failed"))
 
     if result.status == "completed_with_cleanup_errors":
         logger.error(
@@ -6410,19 +6583,20 @@ async def delete_user(username, current_user, request_ip=None):
         )
 
     logger.info("Successfully deleted user %s and all associated data", username)
-    return {"message": f"User {username} successfully deleted"}
+    return {"message": t("account.deletion.user_completed", username=username)}
 
 # ── Ultra Admin+ endpoints ──────────────────────────────────────────
 
 @app.post("/api/ultra-admin/request-code")
 async def ultra_admin_request_code(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required."}, status_code=403)
+        return JSONResponse(content={"error": t('admin_users.response.admin_access_required')}, status_code=403)
 
     # Check concurrent lock
     lock_owner = await get_active_lock_owner()
     if lock_owner is not None and lock_owner != current_user.id:
-        return JSONResponse(content={"error": "Another admin is currently elevated."}, status_code=409)
+        return JSONResponse(content={"error": t('admin_users.another_admin_is_currently_elevated')}, status_code=409)
 
     # Get admin email
     async with get_db_connection(readonly=True) as conn:
@@ -6431,11 +6605,11 @@ async def ultra_admin_request_code(request: Request, current_user: User = Depend
 
     email = row[0] if row else None
     if not email:
-        return JSONResponse(content={"error": "No email configured for this account."}, status_code=400)
+        return JSONResponse(content={"error": t('admin_users.response.no_email_configured_for_this_account')}, status_code=400)
 
     code = await generate_elevation_code(current_user.id)
     if code is None:
-        return JSONResponse(content={"error": "Please wait before requesting another code."}, status_code=429)
+        return JSONResponse(content={"error": t('admin_users.please_wait_before_requesting_another_code')}, status_code=429)
 
     # Send code via email
     sent = await asyncio.to_thread(
@@ -6443,11 +6617,12 @@ async def ultra_admin_request_code(request: Request, current_user: User = Depend
         email,
         code,
         current_user.username,
+        ui_language=getattr(current_user, "ui_language", None) or "en",
     )
     if not sent:
         await redis_client.delete(f"ultra_admin:code:{current_user.id}")
         await redis_client.delete(f"ultra_admin:cooldown:{current_user.id}")
-        return JSONResponse(content={"error": "Failed to send verification code. Try again."}, status_code=500)
+        return JSONResponse(content={"error": t('admin_users.response.failed_to_send_verification_code_try_again')}, status_code=500)
 
     await log_admin_action(
         admin_id=current_user.id,
@@ -6469,14 +6644,15 @@ async def ultra_admin_request_code(request: Request, current_user: User = Depend
 
 @app.post("/api/ultra-admin/verify")
 async def ultra_admin_verify(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required."}, status_code=403)
+        return JSONResponse(content={"error": t('admin_users.response.admin_access_required')}, status_code=403)
 
     body = await request.json()
     code = body.get("code", "").strip()
 
     if not code or len(code) != 6 or not code.isdigit():
-        return JSONResponse(content={"error": "Invalid code format."}, status_code=400)
+        return JSONResponse(content={"error": t('admin_users.response.invalid_code_format')}, status_code=400)
 
     # Get request IP
     ip_address = get_client_ip(request)
@@ -6499,24 +6675,25 @@ async def ultra_admin_verify(request: Request, current_user: User = Depends(get_
             details=f"Verification failed: {message}"
         )
         error_messages = {
-            "no_code": "No verification code found. Please request a new one.",
-            "max_attempts": "Too many failed attempts. Please request a new code.",
-            "already_elevated": "Another admin is currently elevated. Only one Ultra Admin+ session allowed at a time.",
+            "no_code": t('admin_users.response.no_verification_code_found_please_request_a_new_one'),
+            "max_attempts": t('admin_users.response.too_many_failed_attempts_please_request_a_new_code'),
+            "already_elevated": t('admin_users.response.another_admin_is_currently_elevated_only_one_ultra_admin_session_allowed_at_a_time'),
         }
         # Handle wrong_code:N format
         if message.startswith("wrong_code:"):
             remaining = message.split(":")[1]
-            error_msg = f"Incorrect code. {remaining} attempt(s) remaining."
+            error_msg = t("admin_users.response.code_attempts", count=int(remaining))
         else:
-            error_msg = error_messages.get(message, "Verification failed.")
+            error_msg = error_messages.get(message, t('admin_users.response.verification_failed'))
 
         status_code = 409 if message == "already_elevated" else 403
         return JSONResponse(content={"error": error_msg, "reason": message}, status_code=status_code)
 
 @app.post("/api/ultra-admin/revoke")
 async def ultra_admin_revoke(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required."}, status_code=403)
+        return JSONResponse(content={"error": t('admin_users.response.admin_access_required')}, status_code=403)
 
     await revoke_elevation(current_user.id)
 
@@ -6545,13 +6722,14 @@ async def ultra_admin_status(request: Request, current_user: User = Depends(get_
 
 @app.post("/admin/delete-users")
 async def delete_users(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     # Admin-only: deleting accounts is an administrative action. Regular users
     # delete their own account through /api/delete-account.
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="You do not have permission to access this page.")
+        raise HTTPException(status_code=403, detail=t('admin_users.response.you_do_not_have_permission_to_access_this_page'))
 
     form_data = await request.form()
     selected_users = form_data.getlist("selected_users")
@@ -6560,7 +6738,7 @@ async def delete_users(request: Request, current_user: User = Depends(get_curren
     request_ip = get_client_ip(request)
 
     if not selected_users:
-        return JSONResponse(content={"error": "No users selected."}, status_code=400)
+        return JSONResponse(content={"error": t('admin_users.response.no_users_selected')}, status_code=400)
 
     outcomes = []
     errors = []
@@ -6593,7 +6771,7 @@ async def delete_users(request: Request, current_user: User = Depends(get_curren
     elif errors:
         return JSONResponse(
             content={
-                "message": f"Deleted {len(deleted)} of {len(selected_users)} user(s).",
+                "message": t("admin_users.response.deleted_partial", count=len(deleted), total=len(selected_users)),
                 "deleted": deleted,
                 "errors": errors,
                 "outcomes": outcomes,
@@ -6602,7 +6780,7 @@ async def delete_users(request: Request, current_user: User = Depends(get_curren
     else:
         return JSONResponse(
             content={
-                "message": f"Successfully deleted {len(deleted)} user(s).",
+                "message": t("admin_users.response.deleted", count=len(deleted)),
                 "deleted": deleted,
                 "outcomes": outcomes,
             }
@@ -6610,6 +6788,7 @@ async def delete_users(request: Request, current_user: User = Depends(get_curren
 
 @app.post("/api/delete-account")
 async def delete_account(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if not current_user:
         return unauthenticated_response()
 
@@ -6617,7 +6796,7 @@ async def delete_account(request: Request, current_user: User = Depends(get_curr
         await delete_user(current_user.username, current_user, request_ip=None)
         return {
             "success": True,
-            "message": "Account deleted successfully",
+            "message": t("account.deletion.completed"),
             "logout": True,
         }
     except HTTPException:
@@ -6625,7 +6804,7 @@ async def delete_account(request: Request, current_user: User = Depends(get_curr
     except Exception:
         # Do not leak internal error detail to the client; full context is logged.
         logger.exception("Unexpected error deleting account for user %s", current_user.username)
-        raise HTTPException(status_code=500, detail="Error during account deletion.")
+        raise HTTPException(status_code=500, detail=t("account.deletion.failed"))
 
 LLM_FALLBACK_MODEL = "gpt-5-mini"
 
@@ -6809,6 +6988,17 @@ async def _apply_llm_reassignment(conn: aiosqlite.Connection, old_llm_id: int, n
     return metrics
 
 
+class ModelAdminError(HTTPException):
+    def __init__(self, status_code, detail, message_key, **params):
+        super().__init__(status_code=status_code, detail=detail)
+        self.message_key = message_key
+        self.params = params
+
+    def localize(self, translate):
+        self.detail = translate("admin_models." + self.message_key, **self.params)
+        return self
+
+
 async def _reassign_and_delete_llm(
     conn: aiosqlite.Connection,
     llm_id: int,
@@ -6821,7 +7011,7 @@ async def _reassign_and_delete_llm(
         source_row = await cursor.fetchone()
 
     if not source_row:
-        raise HTTPException(status_code=404, detail=f"LLM {llm_id} not found")
+        raise ModelAdminError(status_code=404, detail=f"LLM {llm_id} not found", message_key="error.missing_id", model_id=llm_id)
 
     source_llm = dict(source_row)
 
@@ -6838,9 +7028,10 @@ async def _reassign_and_delete_llm(
 
     replacement = _select_replacement_llm(source_llm, llm_catalog, blocked_llm_ids)
     if replacement is None:
-        raise HTTPException(
+        raise ModelAdminError(
             status_code=400,
-            detail=f"Cannot delete LLM '{source_llm['model']}' because no replacement model is available."
+            detail=f"Cannot delete LLM '{source_llm['model']}' because no replacement model is available.",
+            message_key="error.no_replacement", model=source_llm["model"],
         )
 
     reassignment_metrics = await _apply_llm_reassignment(conn, llm_id, int(replacement["id"]))
@@ -6868,7 +7059,7 @@ async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_mod
         ) as cursor:
             fallback_row = await cursor.fetchone()
         if not fallback_row:
-            raise HTTPException(status_code=500, detail="No LLMs available for orphan reassignment")
+            raise ModelAdminError(status_code=500, detail="No LLMs available for orphan reassignment", message_key="error.no_orphan_replacement")
 
     fallback_llm_id = int(fallback_row["id"])
 
@@ -6926,11 +7117,12 @@ async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_mod
 
 @app.get("/admin/llms", response_class=HTMLResponse)
 async def llm_list(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
     async with get_db_connection(readonly=True) as conn:
         llms = await get_llm_catalog(conn)
         providers = sorted(set(llm["machine"] for llm in llms))
@@ -7020,11 +7212,12 @@ async def api_llms_list(
 
 @app.get("/admin/llm/new", response_class=HTMLResponse)
 async def create_llm(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("llms/create_llm.html", context)
 
@@ -7038,18 +7231,19 @@ async def create_llm_post(
     output_token_cost: float = Form(...),
     vision: bool = Form(False)
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
 
     if machine == 'GranSabio' and model == 'gransabio-pipeline':
-        raise HTTPException(status_code=403, detail="This machine/model combination is reserved for the system.")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.this_machine_model_combination_is_reserved_for_the_system"))
     if machine.strip().casefold() == "gptsub":
         raise HTTPException(
             status_code=403,
-            detail="GPTSub rows are synchronized from linked user accounts and cannot be created manually.",
+            detail=t("admin_models.error.gptsub_rows_are_synchronized_from_linked_user_accounts_and_cannot_be_created_manually"),
         )
 
     metadata = build_manual_insert_metadata(machine, model, vision)
@@ -7087,11 +7281,12 @@ async def create_llm_post(
 
 @app.get("/admin/llm/edit/{llm_id}", response_class=HTMLResponse)
 async def edit_llm(request: Request, llm_id: int, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
         await cursor.execute(
@@ -7108,15 +7303,15 @@ async def edit_llm(request: Request, llm_id: int, current_user: User = Depends(g
         await conn.close()
 
         if not llm:
-            raise HTTPException(status_code=404, detail="LLM not found")
+            raise HTTPException(status_code=404, detail=t("admin_models.error.llm_not_found"))
 
         # Block editing the synthetic GranSabio LLM
         if llm[0] == 'GranSabio' and llm[1] == 'gransabio-pipeline':
-            raise HTTPException(status_code=403, detail="System LLM cannot be edited.")
+            raise HTTPException(status_code=403, detail=t("admin_models.error.system_llm_cannot_be_edited"))
         if llm[0] == "GPTSub":
             raise HTTPException(
                 status_code=403,
-                detail="Synchronized GPTSub rows cannot be edited manually.",
+                detail=t("admin_models.error.synchronized_gptsub_rows_cannot_be_edited_manually"),
             )
 
         context = await get_template_context(request, current_user)
@@ -7151,11 +7346,12 @@ async def update_llm(
     vision: bool = Form(False),
     display_name: str | None = Form(None),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
 
     # Prevent modification of synthetic GranSabio LLM row
     async with get_db_connection(readonly=True) as conn:
@@ -7169,23 +7365,23 @@ async def update_llm(
         ) as cur:
             row = await cur.fetchone()
         if row and row[0] == 'GranSabio' and row[1] == 'gransabio-pipeline':
-            raise HTTPException(status_code=403, detail="System LLM cannot be modified.")
+            raise HTTPException(status_code=403, detail=t("admin_models.error.system_llm_cannot_be_modified"))
         if row and row[0] == "GPTSub":
             raise HTTPException(
                 status_code=403,
-                detail="Synchronized GPTSub rows cannot be modified manually.",
+                detail=t("admin_models.error.synchronized_gptsub_rows_cannot_be_modified_manually"),
             )
     # Prevent renaming another LLM into the reserved pair
     if machine == 'GranSabio' and model == 'gransabio-pipeline':
-        raise HTTPException(status_code=403, detail="This machine/model combination is reserved for the system.")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.this_machine_model_combination_is_reserved_for_the_system"))
     if machine.strip().casefold() == "gptsub":
         raise HTTPException(
             status_code=403,
-            detail="The GPTSub machine is reserved for account catalog synchronization.",
+            detail=t("admin_models.error.the_gptsub_machine_is_reserved_for_account_catalog_synchronization"),
         )
 
     if not row:
-        raise HTTPException(status_code=404, detail="LLM not found")
+        raise HTTPException(status_code=404, detail=t("admin_models.error.llm_not_found"))
 
     sync_managed = is_sync_managed({
         "machine": row[0],
@@ -7244,22 +7440,23 @@ async def update_llm(
 
 @app.delete("/admin/llm/delete/{llm_id}")
 async def delete_llm(llm_id: int, current_user: User = Depends(get_current_user)):
+    t = Translator(normalize_language(getattr(current_user, "ui_language", None)) or "en").t
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
 
     # Prevent deletion of synthetic GranSabio LLM row
     async with get_db_connection(readonly=True) as conn:
         async with conn.execute("SELECT machine, model FROM LLM WHERE id = ?", (llm_id,)) as cur:
             row = await cur.fetchone()
         if row and row[0] == 'GranSabio' and row[1] == 'gransabio-pipeline':
-            raise HTTPException(status_code=403, detail="System LLM cannot be deleted.")
+            raise HTTPException(status_code=403, detail=t("admin_models.error.system_llm_cannot_be_deleted"))
         if row and row[0] == "GPTSub":
             raise HTTPException(
                 status_code=403,
-                detail="Synchronized GPTSub rows cannot be deleted manually.",
+                detail=t("admin_models.error.synchronized_gptsub_rows_cannot_be_deleted_manually"),
             )
 
     async with get_db_connection() as conn:
@@ -7269,27 +7466,30 @@ async def delete_llm(llm_id: int, current_user: User = Depends(get_current_user)
             orphan_fix_metrics = await _repair_orphan_llm_references(conn, fallback_model=LLM_FALLBACK_MODEL)
             await conn.commit()
             return JSONResponse(content={"success": True, **result, "orphan_fix": orphan_fix_metrics}, status_code=200)
-        except HTTPException:
+        except HTTPException as exc:
             await conn.rollback()
+            if isinstance(exc, ModelAdminError):
+                raise exc.localize(t)
             raise
         except Exception as e:
             await conn.rollback()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=t("admin_models.error.catalog_failed"))
 
 
 @app.post("/admin/llm/bulk-delete")
 async def bulk_delete_llms(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
 
     body = await request.json()
     llm_ids = body.get("llm_ids", [])
 
     if not llm_ids or not isinstance(llm_ids, list):
-        raise HTTPException(status_code=400, detail="No LLM IDs provided")
+        raise HTTPException(status_code=400, detail=t("admin_models.error.no_llm_ids_provided"))
 
     sanitized_ids = []
     for llm_id in llm_ids:
@@ -7300,7 +7500,7 @@ async def bulk_delete_llms(request: Request, current_user: User = Depends(get_cu
 
     sanitized_ids = list(dict.fromkeys(sanitized_ids))
     if not sanitized_ids:
-        raise HTTPException(status_code=400, detail="No valid LLM IDs provided")
+        raise HTTPException(status_code=400, detail=t("admin_models.error.no_valid_llm_ids_provided"))
 
     placeholders = ",".join("?" for _ in sanitized_ids)
     async with get_db_connection() as conn:
@@ -7325,7 +7525,7 @@ async def bulk_delete_llms(request: Request, current_user: User = Depends(get_cu
             reassigned_user_details = sum(item["reassigned"]["user_details"] for item in results)
 
             if target_ids and deleted != len(target_ids):
-                raise HTTPException(status_code=500, detail="Some LLMs could not be deleted")
+                raise HTTPException(status_code=500, detail=t("admin_models.error.some_llms_could_not_be_deleted"))
 
             if target_ids:
                 logger.info(
@@ -7346,12 +7546,14 @@ async def bulk_delete_llms(request: Request, current_user: User = Depends(get_cu
                 },
                 status_code=200,
             )
-        except HTTPException:
+        except HTTPException as exc:
             await conn.rollback()
+            if isinstance(exc, ModelAdminError):
+                raise exc.localize(t)
             raise
         except Exception as e:
             await conn.rollback()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=t("admin_models.error.catalog_failed"))
 
 
 # ---------------------------------------------------------------------------
@@ -7376,13 +7578,43 @@ def _normalize_atagia_admin_payload(value: Any) -> dict[str, Any] | None:
     return {"value": data}
 
 
-def _format_atagia_bridge_error(error: Any) -> dict[str, Any] | None:
+def _format_atagia_bridge_error(error: Any, t) -> dict[str, Any] | None:
+    """Translate known admin guidance; retain unknown engine details only in logs."""
     if error is None:
         return None
-    data = _normalize_atagia_admin_payload(error)
-    if data:
-        return data
-    return {"message": str(error)}
+    message = error.get("message", "") if isinstance(error, dict) else str(error)
+    known = {
+        "Invalid JSON payload.": "invalid_json",
+        "Invalid Atagia transport.": "invalid_transport",
+        "Base URL is required for HTTP transport.": "http_url_required",
+        "Atagia base URL is required for HTTP transport": "http_url_required",
+        "Only http:// and https:// schemes are allowed.": "invalid_url",
+        "Base URL must include a host.": "invalid_url",
+        "Host must be an IP literal for SSRF protection.": "http_help",
+        "Public Atagia URLs must use https://.": "invalid_url",
+        "Atagia service API key is required for HTTP transport": "http_required",
+        "Atagia is disabled.": "atagia_disabled",
+        "System-wide diagnostics are available for local SQLite transport.": "local_diagnostics",
+        "Atagia SQLite database was not found.": "db_missing",
+    }
+    key = known.get(message)
+    if key is None:
+        logger.warning("Atagia admin operation failed: %s", error)
+        key = "engine_error"
+    return {"message": t("ai_config." + key)}
+
+
+def _localize_atagia_sync_status(status: dict[str, Any], t) -> dict[str, Any]:
+    """Copy only the presentation fields; never translate cached engine state."""
+    result = dict(status)
+    latest = dict(result.get("latest_run") or {})
+    errors = latest.get("recent_errors")
+    if errors:
+        logger.warning("Atagia history sync errors: %s", errors)
+        latest["recent_errors"] = [t("ai_config.engine_error")]
+    if result.get("latest_run") is not None:
+        result["latest_run"] = latest
+    return result
 
 
 async def _read_atagia_json_body(request: Request) -> dict[str, Any]:
@@ -7408,8 +7640,10 @@ async def admin_atagia_get(request: Request, current_user: User = Depends(get_cu
 
 @app.post("/admin/atagia")
 async def admin_atagia_post(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_bridge import reset_atagia_bridge
     from atagia_config import get_atagia_config, save_atagia_admin_config, template_config
 
@@ -7417,11 +7651,11 @@ async def admin_atagia_post(request: Request, current_user: User = Depends(get_c
         data = await _read_atagia_json_body(request)
         await save_atagia_admin_config(data)
     except ValueError as exc:
-        return JSONResponse(content={"success": False, "message": str(exc)}, status_code=400)
+        return JSONResponse(content={"success": False, "message": _format_atagia_bridge_error(exc, t)["message"]}, status_code=400)
     except Exception as exc:
         logger.error("Failed to save Atagia configuration: %s", exc, exc_info=True)
         return JSONResponse(
-            content={"success": False, "message": "Failed to save Atagia configuration."},
+            content={"success": False, "message": t("ai_config.save_failed")},
             status_code=500,
         )
 
@@ -7429,7 +7663,7 @@ async def admin_atagia_post(request: Request, current_user: User = Depends(get_c
     return JSONResponse(
         content={
             "success": True,
-            "message": "Atagia configuration saved.",
+            "message": t("ai_config.config_saved"),
             "config": template_config(await get_atagia_config()),
         }
     )
@@ -7437,8 +7671,10 @@ async def admin_atagia_post(request: Request, current_user: User = Depends(get_c
 
 @app.post("/admin/atagia/defaults")
 async def admin_atagia_defaults(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_bridge import reset_atagia_bridge
     from atagia_config import reset_atagia_admin_config, template_config
 
@@ -7447,7 +7683,7 @@ async def admin_atagia_defaults(request: Request, current_user: User = Depends(g
     except Exception as exc:
         logger.error("Failed to reset Atagia configuration: %s", exc, exc_info=True)
         return JSONResponse(
-            content={"success": False, "message": "Failed to restore Atagia defaults."},
+            content={"success": False, "message": t("ai_config.defaults_failed")},
             status_code=500,
         )
 
@@ -7455,7 +7691,7 @@ async def admin_atagia_defaults(request: Request, current_user: User = Depends(g
     return JSONResponse(
         content={
             "success": True,
-            "message": "Atagia configuration restored to defaults.",
+            "message": t("ai_config.defaults_restored"),
             "config": template_config(config),
         }
     )
@@ -7463,8 +7699,10 @@ async def admin_atagia_defaults(request: Request, current_user: User = Depends(g
 
 @app.post("/admin/atagia/test-connection")
 async def admin_atagia_test(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_bridge import AtagiaBridge
     from atagia_config import preview_bridge_config_from_admin_payload
 
@@ -7472,7 +7710,7 @@ async def admin_atagia_test(request: Request, current_user: User = Depends(get_c
         data = await _read_atagia_json_body(request)
         config = await preview_bridge_config_from_admin_payload(data)
     except ValueError as exc:
-        return JSONResponse(content={"success": False, "message": str(exc)}, status_code=400)
+        return JSONResponse(content={"success": False, "message": _format_atagia_bridge_error(exc, t)["message"]}, status_code=400)
 
     bridge = AtagiaBridge(config)
     try:
@@ -7482,15 +7720,17 @@ async def admin_atagia_test(request: Request, current_user: User = Depends(get_c
 
     status_code = 200 if ok else 502
     return JSONResponse(
-        content={"success": ok, "message": message},
+        content={"success": ok, "message": t("ai_config.connected") if ok else _format_atagia_bridge_error(message, t)["message"]},
         status_code=status_code,
     )
 
 
 @app.post("/admin/atagia/sync")
 async def admin_atagia_sync(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_sync import DEFAULT_BATCH_SIZE, start_atagia_history_sync
 
     try:
@@ -7498,42 +7738,63 @@ async def admin_atagia_sync(request: Request, current_user: User = Depends(get_c
     except Exception:
         data = {}
     try:
-        batch_size = int(data.get("batch_size") or DEFAULT_BATCH_SIZE)
+        batch_size = int(data.get("batch_size") or DEFAULT_BATCH_SIZE) if isinstance(data, dict) else DEFAULT_BATCH_SIZE
     except (TypeError, ValueError):
         batch_size = DEFAULT_BATCH_SIZE
 
     result = await start_atagia_history_sync(batch_size=max(1, min(batch_size, 1000)))
+    result = dict(result)
+    result["message"] = t("ai_config.sync_started" if result.get("started") else "ai_config.sync_running")
+    if isinstance(result.get("status"), dict):
+        result["status"] = _localize_atagia_sync_status(result["status"], t)
     status_code = 202 if result.get("started") else 409
     return JSONResponse(content={"success": bool(result.get("started")), **result}, status_code=status_code)
 
 
 @app.get("/admin/atagia/sync-status")
-async def admin_atagia_sync_status(current_user: User = Depends(get_current_user)):
+async def admin_atagia_sync_status(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_sync import get_atagia_sync_status
 
-    return JSONResponse(content={"success": True, "status": await get_atagia_sync_status()})
+    return JSONResponse(content={"success": True, "status": _localize_atagia_sync_status(await get_atagia_sync_status(), t)})
 
 
 @app.get("/admin/atagia/diagnostics")
-async def admin_atagia_diagnostics(current_user: User = Depends(get_current_user)):
+async def admin_atagia_diagnostics(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_admin_status import get_atagia_admin_status
 
-    return JSONResponse(content={"success": True, "status": await get_atagia_admin_status()})
+    status = dict(await get_atagia_admin_status())
+    status["sync"] = _localize_atagia_sync_status(status.get("sync") or {}, t)
+    diagnostics = dict(status.get("atagia") or {})
+    if diagnostics.get("reason"):
+        diagnostics["reason"] = _format_atagia_bridge_error(diagnostics["reason"], t)["message"]
+    if diagnostics.get("active_jobs"):
+        diagnostics["active_jobs"] = [dict(job) for job in diagnostics["active_jobs"]]
+        for job in diagnostics["active_jobs"]:
+            if job.get("error_message"):
+                job["error_message"] = _format_atagia_bridge_error(job["error_message"], t)["message"]
+    status["atagia"] = diagnostics
+    return JSONResponse(content={"success": True, "status": status})
 
 
 @app.get("/admin/atagia/worker-control")
-async def admin_atagia_worker_control_get(current_user: User = Depends(get_current_user)):
+async def admin_atagia_worker_control_get(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_bridge import get_atagia_bridge
 
     bridge = get_atagia_bridge()
     state = await bridge.get_worker_control()
-    error = _format_atagia_bridge_error(bridge.last_error)
+    error = _format_atagia_bridge_error(bridge.last_error, t)
     return JSONResponse(
         content={
             "success": True,
@@ -7549,8 +7810,10 @@ async def admin_atagia_worker_control_post(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from atagia_bridge import get_atagia_bridge
 
     try:
@@ -7558,10 +7821,13 @@ async def admin_atagia_worker_control_post(
     except Exception:
         data = {}
 
+    if not isinstance(data, dict):
+        return JSONResponse(content={"success": False, "message": t("ai_config.invalid_json")}, status_code=400)
+
     action = str(data.get("action") or data.get("mode") or "").strip().lower()
     if action not in _ATAGIA_WORKER_CONTROL_ACTIONS:
         return JSONResponse(
-            content={"success": False, "message": "Invalid Atagia processing action."},
+            content={"success": False, "message": t("ai_config.invalid_action")},
             status_code=400,
         )
 
@@ -7571,14 +7837,14 @@ async def admin_atagia_worker_control_post(
         timeout_seconds = float(timeout_seconds) if timeout_seconds not in (None, "") else None
     except (TypeError, ValueError):
         return JSONResponse(
-            content={"success": False, "message": "Invalid timeout_seconds value."},
+            content={"success": False, "message": t("ai_config.invalid_timeout")},
             status_code=400,
         )
-    if timeout_seconds is not None and (timeout_seconds <= 0 or timeout_seconds > 300):
+    if timeout_seconds is not None and (not 0 < timeout_seconds <= 300):
         return JSONResponse(
             content={
                 "success": False,
-                "message": "timeout_seconds must be greater than 0 and at most 300.",
+                "message": t("ai_config.timeout_range"),
             },
             status_code=400,
         )
@@ -7597,10 +7863,8 @@ async def admin_atagia_worker_control_post(
         state = await bridge.resume_processing(reason=reason)
 
     if state is None:
-        error = _format_atagia_bridge_error(bridge.last_error)
-        message = "Atagia processing control is unavailable."
-        if error and error.get("message"):
-            message = f"{message} {error['message']}"
+        error = _format_atagia_bridge_error(bridge.last_error, t)
+        message = t("ai_config.control_unavailable")
         return JSONResponse(
             content={"success": False, "message": message, "error": error},
             status_code=502,
@@ -7609,7 +7873,7 @@ async def admin_atagia_worker_control_post(
     return JSONResponse(
         content={
             "success": True,
-            "message": "Atagia processing control updated.",
+            "message": t("ai_config.control_updated"),
             "state": _normalize_atagia_admin_payload(state),
         }
     )
@@ -7648,11 +7912,18 @@ async def admin_gransabio_get(request: Request, current_user: User = Depends(get
 
 @app.post("/admin/gransabio")
 async def admin_gransabio_post(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from gransabio_config import validate_gransabio_url, invalidate_gransabio_config_cache, validate_extra_allowed_ips, get_gransabio_config
 
-    data = await request.json()
+    try:
+        data = await request.json()
+    except ValueError:
+        return JSONResponse(content={"success": False, "message": t("ai_config.invalid_json")}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse(content={"success": False, "message": t("ai_config.invalid_json")}, status_code=400)
     # Map short JS keys -> full SYSTEM_CONFIG keys
     _key_map = {
         "enabled": "gransabio_enabled",
@@ -7690,14 +7961,14 @@ async def admin_gransabio_post(request: Request, current_user: User = Depends(ge
     if url:
         ok, err = validate_gransabio_url(url, extra_ips)
         if not ok:
-            return JSONResponse(content={"success": False, "message": f"URL validation failed: {err}"}, status_code=400)
+            return JSONResponse(content={"success": False, "message": t("ai_config.invalid_url")}, status_code=400)
 
     # Validate extra IPs if provided
     if extra_ips:
         try:
             validate_extra_allowed_ips(extra_ips)
         except ValueError as e:
-            return JSONResponse(content={"success": False, "message": str(e)}, status_code=400)
+            return JSONResponse(content={"success": False, "message": t("ai_config.invalid_ips")}, status_code=400)
 
     # Validate BEFORE persisting if GranSabio is being enabled
     if updates.get("gransabio_enabled") == "true":
@@ -7712,19 +7983,20 @@ async def admin_gransabio_post(request: Request, current_user: User = Depends(ge
                 pass
             preview.update(updates)
             merged = merge_gransabio_config({}, preview)
-            valid, err = validate_merged_config(merged)
+            valid, err = validate_merged_config(merged, translator=translator)
             if not valid:
                 return JSONResponse(content={
                     "success": False,
-                    "message": f"Configuration invalid: {err}. Fix before enabling GranSabio.",
+                    "message": t("ai_config.enable_invalid", error=err),
                 }, status_code=400)
         except ImportError:
             logger.warning("GranSabio modules not available, skipping pre-validation")
         except Exception as e:
+            logger.warning("GranSabio admin validation failed", exc_info=True)
             # Fail-closed: if validation can't complete, don't allow enabling
             return JSONResponse(content={
                 "success": False,
-                "message": f"Cannot validate configuration: {e}. Fix before enabling GranSabio.",
+                "message": t("ai_config.enable_validation_failed"),
             }, status_code=400)
 
     async with get_db_connection() as conn:
@@ -7750,26 +8022,33 @@ async def admin_gransabio_post(request: Request, current_user: User = Depends(ge
             from gransabio_service import merge_gransabio_config, validate_merged_config
             fresh_config = await get_gransabio_config()
             merged = merge_gransabio_config({}, fresh_config)
-            valid, err = validate_merged_config(merged)
+            valid, err = validate_merged_config(merged, translator=translator)
             if not valid:
                 return JSONResponse(content={
                     "success": True,
-                    "message": f"Configuration saved, but validation warning: {err}. Prompts using admin defaults may fail at runtime.",
+                    "message": t("ai_config.validation_warning", error=err),
                 })
         except Exception:
             pass
 
-    return JSONResponse(content={"success": True, "message": "GranSabio configuration saved."})
+    return JSONResponse(content={"success": True, "message": t("ai_config.config_saved")})
 
 
 @app.post("/admin/gransabio/test-connection")
 async def admin_gransabio_test(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("ai_config.admin_only")}, status_code=403)
     from gransabio_config import validate_gransabio_url, get_gransabio_config
     from gransabio_service import test_gransabio_connection
 
-    data = await request.json()
+    try:
+        data = await request.json()
+    except ValueError:
+        return JSONResponse(content={"success": False, "message": t("ai_config.invalid_json")}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse(content={"success": False, "message": t("ai_config.invalid_json")}, status_code=400)
     url = data.get("url", "")
     extra_ips = data.get("extra_allowed_ips", "")
     if not extra_ips:
@@ -7777,9 +8056,12 @@ async def admin_gransabio_test(request: Request, current_user: User = Depends(ge
         extra_ips = config.get("gransabio_extra_allowed_ips", "")
     ok, err = validate_gransabio_url(url, extra_ips)
     if not ok:
-        return JSONResponse(content={"success": False, "error": err})
+        return JSONResponse(content={"success": False, "error": t("ai_config.invalid_url")})
 
     result = await test_gransabio_connection(url)
+    if result.get("error"):
+        logger.warning("GranSabio admin connection test failed: %s", result["error"])
+        result = {**result, "error": t("ai_config.engine_error")}
     return JSONResponse(content=result)
 
 
@@ -7788,10 +8070,11 @@ async def admin_gransabio_test(request: Request, current_user: User = Depends(ge
 
 @app.get("/admin/subscription-auth")
 async def admin_subscription_auth_get(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
         return RedirectResponse(url="/")
     if not _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("prompt_editor_errors.not_found"))
     from common import get_subscription_auth_enabled
     from subscription_auth.linking import pending_link_count
     from request_security import ensure_csrf_token
@@ -7829,21 +8112,22 @@ async def admin_subscription_auth_get(request: Request, current_user: User = Dep
 
 @app.post("/admin/subscription-auth")
 async def admin_subscription_auth_post(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None or not await current_user.is_admin:
-        return JSONResponse(content={"success": False, "message": "Admin only"}, status_code=403)
+        return JSONResponse(content={"success": False, "message": t("admin_subscription.error.admin_required")}, status_code=403)
     if not _SUBSCRIPTION_AUTH_MODULE_AVAILABLE:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("prompt_editor_errors.not_found"))
     from request_security import validate_mutation_request
 
     csrf_rejection = validate_mutation_request(request)
     if csrf_rejection:
-        return csrf_rejection
+        return JSONResponse(content={"success": False, "message": t("admin_subscription.error.request_rejected")}, status_code=csrf_rejection.status_code)
     from common import set_subscription_auth_enabled
     data = await request.json()
     enabled = data.get("enabled")
     if not isinstance(enabled, bool):
         return JSONResponse(
-            content={"success": False, "message": "'enabled' must be a boolean."},
+            content={"success": False, "message": t("admin_subscription.error.boolean_required")},
             status_code=400,
         )
     if enabled:
@@ -7853,10 +8137,7 @@ async def admin_subscription_auth_post(request: Request, current_user: User = De
             return JSONResponse(
                 content={
                     "success": False,
-                    "message": (
-                        "GPTSub was disabled by a runtime safety check. Restart "
-                        "Aurvek after fixing the runtime and rerun the doctor."
-                    ),
+                    "message": t("admin_subscription.error.emergency_off"),
                 },
                 status_code=503,
             )
@@ -7866,10 +8147,7 @@ async def admin_subscription_auth_post(request: Request, current_user: User = De
             return JSONResponse(
                 content={
                     "success": False,
-                    "message": (
-                        "GPTSub runtime is not ready. Keep the switch off and run "
-                        "the secret-free production doctor."
-                    ),
+                    "message": t("admin_subscription.error.runtime_not_ready"),
                 },
                 status_code=503,
             )
@@ -7888,7 +8166,7 @@ async def admin_subscription_auth_post(request: Request, current_user: User = De
         from subscription_auth.linking import shutdown_pending_links
 
         await shutdown_pending_links()
-    return JSONResponse(content={"success": True, "message": "Subscription auth setting saved."})
+    return JSONResponse(content={"success": True, "message": t("admin_subscription.notice.saved")})
 
 
 # ============================================================
@@ -7898,11 +8176,12 @@ async def admin_subscription_auth_post(request: Request, current_user: User = De
 @app.get("/admin/security-guard", response_class=HTMLResponse)
 async def admin_security_guard(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for configuring Security Guard LLM."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
 
     # Get current security guard config
     current_llm_id = None
@@ -7944,11 +8223,12 @@ async def save_security_guard_config(
     llm_id: str = Form("")
 ):
     """Save Security Guard LLM configuration."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
 
     async with get_db_connection() as conn:
         # Ensure SYSTEM_CONFIG table exists
@@ -7969,14 +8249,14 @@ async def save_security_guard_config(
             try:
                 parsed_llm_id = int(llm_id)
             except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="Invalid LLM selection")
+                raise HTTPException(status_code=400, detail=translator.t('management_operations_errors.invalid_llm'))
             cursor = await conn.execute(
                 "SELECT id FROM LLM "
                 "WHERE id = ? AND enabled = 1 AND machine != 'GPTSub'",
                 (parsed_llm_id,),
             )
             if await cursor.fetchone() is None:
-                raise HTTPException(status_code=400, detail="Invalid LLM selection")
+                raise HTTPException(status_code=400, detail=translator.t('management_operations_errors.invalid_llm'))
             llm_id_value = str(parsed_llm_id)
 
         # Update or insert the config
@@ -8032,12 +8312,13 @@ LLM_SYNC_PROVIDER_TABS = [
 
 @app.get("/admin/models", response_class=HTMLResponse)
 async def admin_models(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     """Admin page for discovering and syncing LLM provider catalogs."""
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("admin_models.error.access_denied"))
 
     requested_provider = normalize_provider_key(request.query_params.get("provider") or "openrouter")
     provider_keys = {provider["key"] for provider in LLM_SYNC_PROVIDER_TABS}
@@ -8171,12 +8452,22 @@ async def sync_openrouter_models(request: Request, current_user: User = Depends(
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
+def _localize_model_sync_result(result, translate):
+    """Translate only the owned failure envelope, preserving provider catalog data."""
+    if not result.get("error"):
+        return result
+    key = result.get("error_key", "error.catalog_failed")
+    params = result.get("error_params", {})
+    return {**result, "error": translate("admin_models." + key, **params)}
+
+
 @app.get("/api/admin/llms/catalog")
 async def api_admin_llm_catalog(current_user: User = Depends(get_current_user)):
+    t = Translator(normalize_language(getattr(current_user, "ui_language", None)) or "en").t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
     async with get_db_connection(readonly=True) as conn:
         catalog = await get_llm_catalog(conn)
     return JSONResponse(content={"models": catalog})
@@ -8184,32 +8475,45 @@ async def api_admin_llm_catalog(current_user: User = Depends(get_current_user)):
 
 @app.get("/api/admin/llms/providers/{provider_key}/remote")
 async def api_admin_llm_provider_remote(provider_key: str, current_user: User = Depends(get_current_user)):
+    t = Translator(normalize_language(getattr(current_user, "ui_language", None)) or "en").t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
     try:
         async with get_db_connection(readonly=True) as conn:
             provider_view = await get_provider_catalog_view(conn, provider_key)
         return JSONResponse(content=provider_view)
     except LlmCatalogError as e:
-        return JSONResponse(content={"error": str(e)}, status_code=400)
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=400)
     except Exception as e:
         logger.exception("Error fetching remote LLM provider")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=500)
 
 
 @app.post("/api/admin/llms/providers/{provider_key}/sync")
 async def api_admin_llm_provider_sync(request: Request, provider_key: str, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
     try:
         body = await request.json()
+        if not isinstance(body, dict):
+            raise LlmCatalogError("Provider sync requires a JSON object", message_key="error.provider_sync_requires_a_json_object")
         selected_model_ids = body.get("selected_model_ids")
         remote_models = body.get("models")
         disabled_model_ids = body.get("disabled_model_ids")
+        local_enabled_states = body.get("local_enabled_states")
+        if all(value is None for value in (
+            selected_model_ids, remote_models, disabled_model_ids, local_enabled_states
+        )):
+            result = _localize_model_sync_result(await sync_provider_catalog(provider_key), t)
+            succeeded = result["status"] == "updated"
+            return JSONResponse(
+                content={"success": succeeded, **result}, status_code=200 if succeeded else 400
+            )
         if remote_models is None:
             remote_models = await fetch_remote_models(provider_key)
         async with get_db_connection() as conn:
@@ -8221,6 +8525,7 @@ async def api_admin_llm_provider_sync(request: Request, provider_key: str, curre
                     selected_model_ids=selected_model_ids,
                     remote_models=remote_models,
                     disabled_model_ids=disabled_model_ids,
+                    local_enabled_states=local_enabled_states,
                 )
                 await conn.commit()
             except Exception:
@@ -8228,18 +8533,46 @@ async def api_admin_llm_provider_sync(request: Request, provider_key: str, curre
                 raise
         return JSONResponse(content={"success": True, **result})
     except LlmCatalogError as e:
-        return JSONResponse(content={"error": str(e)}, status_code=400)
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=400)
     except Exception as e:
         logger.exception("Error syncing LLM provider")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=500)
+
+
+@app.patch("/api/admin/llms/enabled")
+async def api_admin_llms_enabled(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
+    if current_user is None:
+        return unauthenticated_response()
+    if not await current_user.is_admin:
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise LlmCatalogError("Model state update requires a JSON object", message_key="error.model_state_update_requires_a_json_object")
+        async with get_db_connection() as conn:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                models = await set_models_enabled(conn, body.get("llm_ids"), body.get("enabled"))
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return JSONResponse(content={"success": True, "models": models})
+    except (LlmCatalogError, ValueError) as e:
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=400)
+    except Exception:
+        logger.exception("Error updating LLM selection enabled state")
+        return JSONResponse(content={"error": t("admin_models.error.could_not_update_the_selected_models")}, status_code=500)
 
 
 @app.patch("/api/admin/llms/{llm_id}/enabled")
 async def api_admin_llm_enabled(llm_id: int, request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
     try:
         body = await request.json()
         raw_enabled = body.get("enabled")
@@ -8252,21 +8585,37 @@ async def api_admin_llm_enabled(llm_id: int, request: Request, current_user: Use
             await conn.commit()
         return JSONResponse(content={"success": True, **result})
     except LlmCatalogError as e:
-        return JSONResponse(content={"error": str(e)}, status_code=400)
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=400)
     except Exception as e:
         logger.exception("Error updating LLM enabled state")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": e.localized(t) if isinstance(e, LlmCatalogError) else t("admin_models.error.catalog_failed")}, status_code=500)
+
+
+@app.post("/api/admin/llms/sync-if-stale")
+async def api_admin_llm_sync_if_stale(current_user: User = Depends(get_current_user)):
+    t = Translator(normalize_language(getattr(current_user, "ui_language", None)) or "en").t
+    if current_user is None:
+        return unauthenticated_response()
+    if not await current_user.is_admin:
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
+    results = await sync_all_providers(only_if_stale=True)
+    results = {key: _localize_model_sync_result(value, t) for key, value in results.items()}
+    return JSONResponse(content={
+        "success": True,
+        "refreshed": any(result.get("refreshed") for result in results.values()),
+        "results": results,
+    })
 
 
 @app.post("/api/admin/llms/sync-all")
 async def api_admin_llm_sync_all(current_user: User = Depends(get_current_user)):
+    t = Translator(normalize_language(getattr(current_user, "ui_language", None)) or "en").t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
-    async with get_db_connection() as conn:
-        results = await sync_all_providers(conn)
-        await conn.commit()
+        return JSONResponse(content={"error": t("admin_models.error.access_denied")}, status_code=403)
+    results = await sync_all_providers()
+    results = {key: _localize_model_sync_result(value, t) for key, value in results.items()}
     return JSONResponse(content={"success": True, "results": results})
 
 
@@ -8281,10 +8630,12 @@ VALID_CONDITIONS = {"always", "watchdog_only"}
 
 @app.get("/admin/system-prompts", response_class=HTMLResponse)
 async def admin_system_prompts(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t("ai_config.admin_only"))
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("admin_system_prompts.html", {**context, "request": request})
 
@@ -8292,10 +8643,12 @@ async def admin_system_prompts(request: Request, current_user: User = Depends(ge
 @app.get("/api/system-prompt-blocks")
 async def api_list_system_prompt_blocks(request: Request, current_user: User = Depends(get_current_user)):
     """List all system prompt blocks for admin UI, including virtual entries for missing system blocks."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     try:
         async with get_db_connection(readonly=True) as conn:
@@ -8350,10 +8703,12 @@ async def api_list_system_prompt_blocks(request: Request, current_user: User = D
 @app.post("/api/system-prompt-blocks")
 async def api_create_system_prompt_block(request: Request, current_user: User = Depends(get_current_user)):
     """Create a custom system prompt block."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     data = await request.json()
 
@@ -8363,23 +8718,23 @@ async def api_create_system_prompt_block(request: Request, current_user: User = 
 
     # Reject reserved system_key in body
     if data.get("system_key") in SYSTEM_BLOCK_METADATA:
-        return JSONResponse(status_code=422, content={"error": "Cannot use a reserved system key"})
+        return JSONResponse(status_code=422, content={"error": t("ai_config.reserved_key")})
 
     name = (data.get("name") or "").strip()
     if not name:
-        return JSONResponse(status_code=422, content={"error": "Name is required"})
+        return JSONResponse(status_code=422, content={"error": t("ai_config.name_required")})
 
     content = data.get("content", "")
     if len(content) > MAX_BLOCK_CONTENT_SIZE:
-        return JSONResponse(status_code=422, content={"error": f"Content exceeds {MAX_BLOCK_CONTENT_SIZE} byte limit"})
+        return JSONResponse(status_code=422, content={"error": t("ai_config.content_limit", limit=MAX_BLOCK_CONTENT_SIZE)})
 
     position = data.get("position", "post_prompt")
     if position not in VALID_POSITIONS:
-        return JSONResponse(status_code=422, content={"error": f"Invalid position. Must be one of: {', '.join(VALID_POSITIONS)}"})
+        return JSONResponse(status_code=422, content={"error": t("ai_config.invalid_position", values=", ".join(sorted(VALID_POSITIONS)))})
 
     condition = data.get("condition", "always")
     if condition not in VALID_CONDITIONS:
-        return JSONResponse(status_code=422, content={"error": f"Invalid condition. Must be one of: {', '.join(VALID_CONDITIONS)}"})
+        return JSONResponse(status_code=422, content={"error": t("ai_config.invalid_condition", values=", ".join(sorted(VALID_CONDITIONS)))})
 
     description = data.get("description", "")
     display_order = int(data.get("display_order", 0))
@@ -8419,10 +8774,12 @@ async def api_create_system_prompt_block(request: Request, current_user: User = 
 @app.put("/api/system-prompt-blocks/{block_id:int}")
 async def api_update_system_prompt_block(block_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Update an existing system prompt block."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     data = await request.json()
 
@@ -8433,19 +8790,19 @@ async def api_update_system_prompt_block(block_id: int, request: Request, curren
         )
         block = await cursor.fetchone()
         if not block:
-            return JSONResponse(status_code=404, content={"error": "Block not found"})
+            return JSONResponse(status_code=404, content={"error": t("ai_config.block_not_found")})
 
         block = dict(block)
         sk = block["system_key"]
 
         new_content = data.get("content", block["content"])
         if len(new_content) > MAX_BLOCK_CONTENT_SIZE:
-            return JSONResponse(status_code=422, content={"error": f"Content exceeds {MAX_BLOCK_CONTENT_SIZE} byte limit"})
+            return JSONResponse(status_code=422, content={"error": t("ai_config.content_limit", limit=MAX_BLOCK_CONTENT_SIZE)})
 
         if sk and sk in SYSTEM_BLOCK_METADATA:
             # System block: restricted updates
             if not new_content.strip():
-                return JSONResponse(status_code=422, content={"error": "System blocks cannot have empty content"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.system_empty")})
 
             new_is_enabled = data.get("is_enabled", block["is_enabled"])
             if isinstance(new_is_enabled, bool):
@@ -8453,16 +8810,16 @@ async def api_update_system_prompt_block(block_id: int, request: Request, curren
             new_is_enabled = int(new_is_enabled)
 
             if sk in MANDATORY_SYSTEM_KEYS and not new_is_enabled:
-                return JSONResponse(status_code=422, content={"error": "This block cannot be disabled"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.block_disable_forbidden")})
 
             canonical = SYSTEM_BLOCK_METADATA[sk]
             new_condition = data.get("condition", canonical["condition"])
             if new_condition != canonical["condition"]:
-                return JSONResponse(status_code=422, content={"error": f"Condition is frozen to '{canonical['condition']}'"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.condition_frozen", value=canonical["condition"])})
 
             new_position = data.get("position", canonical["position"])
             if new_position != canonical["position"]:
-                return JSONResponse(status_code=422, content={"error": f"Position is frozen to '{canonical['position']}'"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.position_frozen", value=canonical["position"])})
 
             new_name = data.get("name", block["name"])
             new_description = data.get("description", block["description"])
@@ -8478,15 +8835,15 @@ async def api_update_system_prompt_block(block_id: int, request: Request, curren
             # Custom block: all fields editable
             new_name = (data.get("name") or block["name"]).strip()
             if not new_name:
-                return JSONResponse(status_code=422, content={"error": "Name is required"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.name_required")})
 
             new_position = data.get("position", block["position"])
             if new_position not in VALID_POSITIONS:
-                return JSONResponse(status_code=422, content={"error": f"Invalid position. Must be one of: {', '.join(VALID_POSITIONS)}"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.invalid_position", values=", ".join(sorted(VALID_POSITIONS)))})
 
             new_condition = data.get("condition", block["condition"])
             if new_condition not in VALID_CONDITIONS:
-                return JSONResponse(status_code=422, content={"error": f"Invalid condition. Must be one of: {', '.join(VALID_CONDITIONS)}"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.invalid_condition", values=", ".join(sorted(VALID_CONDITIONS)))})
 
             new_description = data.get("description", block["description"])
             new_display_order = int(data.get("display_order", block["display_order"]))
@@ -8530,10 +8887,12 @@ async def api_update_system_prompt_block(block_id: int, request: Request, curren
 @app.post("/api/system-prompt-blocks/{block_id}/reset")
 async def api_reset_system_prompt_block(block_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Reset a system block to its default content."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     async with get_db_connection() as conn:
         cursor = await conn.execute(
@@ -8542,15 +8901,15 @@ async def api_reset_system_prompt_block(block_id: int, request: Request, current
         )
         block = await cursor.fetchone()
         if not block:
-            return JSONResponse(status_code=404, content={"error": "Block not found"})
+            return JSONResponse(status_code=404, content={"error": t("ai_config.block_not_found")})
 
         block = dict(block)
         if not block["is_system"]:
-            return JSONResponse(status_code=403, content={"error": "Only system blocks can be reset"})
+            return JSONResponse(status_code=403, content={"error": t("ai_config.reset_system_only")})
 
         sk = block["system_key"]
         if sk not in DEFAULT_SYSTEM_BLOCKS:
-            return JSONResponse(status_code=404, content={"error": "No default found for this system block"})
+            return JSONResponse(status_code=404, content={"error": t("ai_config.no_default")})
 
         default_content = DEFAULT_SYSTEM_BLOCKS[sk]["content"]
 
@@ -8584,13 +8943,15 @@ async def api_reset_system_prompt_block(block_id: int, request: Request, current
 @app.post("/api/system-prompt-blocks/restore/{system_key}")
 async def api_restore_system_prompt_block(system_key: str, request: Request, current_user: User = Depends(get_current_user)):
     """Restore a missing system block from code defaults."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     if system_key not in SYSTEM_BLOCK_METADATA:
-        return JSONResponse(status_code=404, content={"error": "Unknown system key"})
+        return JSONResponse(status_code=404, content={"error": t("ai_config.unknown_key")})
 
     default = DEFAULT_SYSTEM_BLOCKS[system_key]
     meta = SYSTEM_BLOCK_METADATA[system_key]
@@ -8602,7 +8963,7 @@ async def api_restore_system_prompt_block(system_key: str, request: Request, cur
         )
         existing = await cursor.fetchone()
         if existing:
-            return JSONResponse(status_code=409, content={"error": "Block already exists"})
+            return JSONResponse(status_code=409, content={"error": t("ai_config.already_exists")})
 
         cursor = await conn.execute(
             """INSERT INTO SYSTEM_PROMPT_BLOCKS
@@ -8638,10 +8999,12 @@ async def api_restore_system_prompt_block(system_key: str, request: Request, cur
 @app.delete("/api/system-prompt-blocks/{block_id}")
 async def api_delete_system_prompt_block(block_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Delete a custom system prompt block."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     async with get_db_connection() as conn:
         cursor = await conn.execute(
@@ -8650,11 +9013,11 @@ async def api_delete_system_prompt_block(block_id: int, request: Request, curren
         )
         block = await cursor.fetchone()
         if not block:
-            return JSONResponse(status_code=404, content={"error": "Block not found"})
+            return JSONResponse(status_code=404, content={"error": t("ai_config.block_not_found")})
 
         block = dict(block)
         if block["is_system"]:
-            return JSONResponse(status_code=403, content={"error": "System blocks cannot be deleted"})
+            return JSONResponse(status_code=403, content={"error": t("ai_config.system_delete_forbidden")})
 
         await conn.execute("DELETE FROM SYSTEM_PROMPT_BLOCKS WHERE id = ?", (block_id,))
         await conn.commit()
@@ -8677,30 +9040,32 @@ async def api_delete_system_prompt_block(block_id: int, request: Request, curren
 @app.put("/api/system-prompt-blocks/reorder")
 async def api_reorder_system_prompt_blocks(request: Request, current_user: User = Depends(get_current_user)):
     """Reorder custom system prompt blocks (system blocks have frozen order)."""
+    translator = get_translator(request, current_user)
+    t = translator.t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"error": "Admin access required"})
+        return JSONResponse(status_code=403, content={"error": t("ai_config.admin_only")})
 
     data = await request.json()
     if not isinstance(data, list):
-        return JSONResponse(status_code=422, content={"error": "Expected a list of {id, display_order}"})
+        return JSONResponse(status_code=422, content={"error": t("ai_config.reorder_list")})
 
     async with get_db_connection() as conn:
         for item in data:
             item_id = item.get("id")
             new_order = item.get("display_order")
             if item_id is None or new_order is None:
-                return JSONResponse(status_code=422, content={"error": "Each item must have 'id' and 'display_order'"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.reorder_fields")})
 
             cursor = await conn.execute(
                 "SELECT is_system FROM SYSTEM_PROMPT_BLOCKS WHERE id = ?", (item_id,)
             )
             row = await cursor.fetchone()
             if not row:
-                return JSONResponse(status_code=422, content={"error": f"Block {item_id} not found"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.reorder_missing", id=item_id)})
             if row[0]:
-                return JSONResponse(status_code=422, content={"error": f"Cannot reorder system block {item_id}"})
+                return JSONResponse(status_code=422, content={"error": t("ai_config.reorder_system", id=item_id)})
 
             await conn.execute(
                 "UPDATE SYSTEM_PROMPT_BLOCKS SET display_order = ? WHERE id = ?",
@@ -8726,11 +9091,12 @@ async def api_reorder_system_prompt_blocks(request: Request, current_user: User 
 
 @app.get("/admin/services", response_class=HTMLResponse)
 async def service_list(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
 
     async with get_db_connection(readonly=True) as conn:
         async with conn.execute("SELECT id, name, unit, cost_per_unit, type FROM SERVICES ORDER BY name DESC") as cursor:
@@ -8744,11 +9110,12 @@ async def service_list(request: Request, current_user: User = Depends(get_curren
 
 @app.get("/admin/services/new", response_class=HTMLResponse)
 async def create_service(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     service_types = ["TTS", "STT", "Phone", "Images", "Video", "Music"]
     context = await get_template_context(request, current_user)
     context["service_types"] = service_types
@@ -8756,11 +9123,14 @@ async def create_service(request: Request, current_user: User = Depends(get_curr
 
 @app.post("/admin/services/new")
 async def create_service_post(request: Request, current_user: User = Depends(get_current_user), name: str = Form(...), unit: str = Form(...), cost_per_unit: float = Form(...), type: str = Form(...)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
+    if not math.isfinite(cost_per_unit):
+        raise HTTPException(status_code=400, detail=translator.t("admin_services.error.invalid_cost"))
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         await cursor.execute("INSERT INTO SERVICES (name, unit, cost_per_unit, type) VALUES (?, ?, ?, ?)",
@@ -8771,11 +9141,12 @@ async def create_service_post(request: Request, current_user: User = Depends(get
 
 @app.get("/admin/services/edit/{service_id}", response_class=HTMLResponse)
 async def edit_service(request: Request, service_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
         await cursor.execute("SELECT name, unit, cost_per_unit, type FROM SERVICES WHERE id = ?", (service_id,))
@@ -8794,15 +9165,18 @@ async def edit_service(request: Request, service_id: int, current_user: User = D
             })
             return templates.TemplateResponse("services/edit_service.html", context)
         else:
-            raise HTTPException(status_code=404, detail="Service not found")
+            raise HTTPException(status_code=404, detail=translator.t('admin_services.error.not_found'))
 
 @app.post("/admin/services/update/{service_id}")
 async def update_service(request: Request, service_id: int, current_user: User = Depends(get_current_user), name: str = Form(...), unit: str = Form(...), cost_per_unit: float = Form(...), type: str = Form(...)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
+    if not math.isfinite(cost_per_unit):
+        raise HTTPException(status_code=400, detail=translator.t("admin_services.error.invalid_cost"))
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         await cursor.execute("UPDATE SERVICES SET name = ?, unit = ?, cost_per_unit = ?, type = ? WHERE id = ?",
@@ -8816,11 +9190,12 @@ async def update_service(request: Request, service_id: int, current_user: User =
 
 @app.delete("/admin/services/delete/{service_id}")
 async def delete_service(service_id: int, current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         try:
@@ -8828,7 +9203,7 @@ async def delete_service(service_id: int, current_user: User = Depends(get_curre
             await conn.commit()
         except Exception as e:
             await conn.rollback()
-            return JSONResponse(content={"error": str(e)}, status_code=500)
+            return JSONResponse(content={"error": translator.t("common.error.generic")}, status_code=500)
         finally:
             await conn.close()
 
@@ -8860,11 +9235,12 @@ async def get_voices(current_user: User = Depends(get_current_user)):
 
 @app.get("/admin/voices", response_class=HTMLResponse)
 async def list_voices(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
         await cursor.execute("""
@@ -8881,22 +9257,24 @@ async def list_voices(request: Request, current_user: User = Depends(get_current
 
 @app.get("/admin/voices/new", response_class=HTMLResponse)
 async def create_voice(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     # OpenAI voices only - ElevenLabs managed via Sync page
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("voices/create_voice.html", context)
 
 @app.post("/admin/voices/new")
 async def create_voice_post(request: Request, current_user: User = Depends(get_current_user), name: str = Form(...), voice_code: str = Form(...), tts_service: str = Form(...)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         await cursor.execute("INSERT INTO VOICES (name, voice_code, tts_service) VALUES (?, ?, ?)", (name, voice_code, tts_service))
@@ -8906,11 +9284,12 @@ async def create_voice_post(request: Request, current_user: User = Depends(get_c
 
 @app.get("/admin/voices/edit/{voice_id}", response_class=HTMLResponse)
 async def edit_voice(request: Request, voice_id: int, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
         await cursor.execute("SELECT name, voice_code FROM VOICES WHERE id = ?", (voice_id,))
@@ -8926,15 +9305,16 @@ async def edit_voice(request: Request, voice_id: int, current_user: User = Depen
             })
             return templates.TemplateResponse("voices/edit_voice.html", context)
         else:
-            raise HTTPException(status_code=404, detail="Voice not found")
+            raise HTTPException(status_code=404, detail=translator.t('admin_voices.error.not_found'))
 
 @app.post("/admin/voices/update/{voice_id}")
 async def update_voice(request: Request, voice_id: int, current_user: User = Depends(get_current_user), name: str = Form(...), voice_code: str = Form(...), tts_service: str = Form(...)):
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         await cursor.execute("UPDATE VOICES SET name = ?, voice_code = ?, tts_service = ? WHERE id = ?", (name, voice_code, tts_service, voice_id))
@@ -8944,11 +9324,12 @@ async def update_voice(request: Request, voice_id: int, current_user: User = Dep
 
 @app.delete("/admin/voices/delete/{voice_id}")
 async def delete_voice(voice_id: int, current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
         try:
@@ -8956,7 +9337,7 @@ async def delete_voice(voice_id: int, current_user: User = Depends(get_current_u
             await conn.commit()
         except Exception as e:
             await conn.rollback()
-            return JSONResponse(content={"error": str(e)}, status_code=500)
+            return JSONResponse(content={"error": translator.t("common.error.generic")}, status_code=500)
         finally:
             await conn.close()
 
@@ -8965,10 +9346,11 @@ async def delete_voice(voice_id: int, current_user: User = Depends(get_current_u
 
 @app.post("/admin/voices/set-default/{voice_id}")
 async def set_default_voice(voice_id: int, current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Access denied"}, status_code=403)
+        return JSONResponse(content={"error": translator.t('chat_errors.access_denied')}, status_code=403)
     async with get_db_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
         cursor = await conn.execute(
@@ -8983,7 +9365,7 @@ async def set_default_voice(voice_id: int, current_user: User = Depends(get_curr
         if await cursor.fetchone() is None:
             await conn.rollback()
             return JSONResponse(
-                content={"error": "Voice not found or unavailable"}, status_code=404
+                content={"error": translator.t('admin_voices.error.unavailable')}, status_code=404
             )
         await conn.execute("UPDATE VOICES SET is_default = 0 WHERE is_default = 1")
         await conn.execute("UPDATE VOICES SET is_default = 1 WHERE id = ?", (voice_id,))
@@ -9392,8 +9774,11 @@ async def get_messages_from_queue(queue_name):
 
 @app.get("/admin/task-manager", response_class=HTMLResponse)
 async def task_manager(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    if current_user is None:
+        return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this page")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     logger.debug("Accessing task manager")
 
@@ -9469,8 +9854,11 @@ async def task_manager(request: Request, current_user: User = Depends(get_curren
 
 @app.get("/admin/inspect-redis-key")
 async def inspect_redis_key(key: str, current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
+    if current_user is None:
+        return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     try:
         key_type = (await redis_client.type(key)).decode('utf-8')
@@ -9486,7 +9874,7 @@ async def inspect_redis_key(key: str, current_user: User = Depends(get_current_u
         elif key_type == 'hash':
             value = await redis_client.hgetall(key)
         else:
-            value = "Unsupported key type"
+            value = translator.t('management_operations_errors.unsupported_key')
 
         value = serialize_redis_data(value)
 
@@ -9497,12 +9885,15 @@ async def inspect_redis_key(key: str, current_user: User = Depends(get_current_u
         })
     except Exception as e:
         logger.error(f"Error inspecting Redis key {key}: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": translator.t("common.error.generic")}, status_code=500)
 
 @app.post("/admin/delete-task")
 async def delete_task(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    if current_user is None:
+        return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     data = await request.json()
     task_id = data.get("task_id")
@@ -9517,12 +9908,15 @@ async def delete_task(request: Request, current_user: User = Depends(get_current
         return JSONResponse({"success": True})
     except Exception as e:
         logger.error(f"Error deleting task {task_id}: {e}")
-        return JSONResponse({"success": False, "error": str(e)})
+        return JSONResponse({"success": False, "error": translator.t("common.error.generic")})
 
 @app.post("/admin/retry-task")
 async def retry_task(request: Request, current_user: User = Depends(get_current_user)):
+    translator = get_translator(request, current_user)
+    if current_user is None:
+        return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     data = await request.json()
     task_id = data.get("task_id")
@@ -9541,15 +9935,18 @@ async def retry_task(request: Request, current_user: User = Depends(get_current_
             return JSONResponse({"success": True})
         else:
             logger.warning(f"Task {task_id} not found in failed queue.")
-            return JSONResponse({"success": False, "error": "Task not found in failed queue."})
+            return JSONResponse({"success": False, "error": translator.t('management_operations_errors.task_not_found')})
     except Exception as e:
         logger.error(f"Error retrying task {task_id}: {e}")
-        return JSONResponse({"success": False, "error": str(e)})
+        return JSONResponse({"success": False, "error": translator.t("common.error.generic")})
 
 @app.post("/admin/clear-dramatiq")
 async def clear_dramatiq(current_user: User = Depends(get_current_user)):
+    translator = Translator(getattr(current_user, "ui_language", None))
+    if current_user is None:
+        return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     try:
         # Get all keys related to Dramatiq
@@ -9560,17 +9957,18 @@ async def clear_dramatiq(current_user: User = Depends(get_current_user)):
         return JSONResponse({"success": True})
     except Exception as e:
         logger.error(f"Error cleaning Dramatiq: {e}")
-        return JSONResponse({"success": False, "error": str(e)})
+        return JSONResponse({"success": False, "error": translator.t("common.error.generic")})
 
 
 @app.get("/admin/security", response_class=HTMLResponse)
 async def admin_security_page(request: Request, current_user: User = Depends(get_current_user)):
     """Admin security operations panel."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     context = await get_template_context(request, current_user)
     context.update({
@@ -9583,10 +9981,11 @@ async def admin_security_page(request: Request, current_user: User = Depends(get
 @app.get("/admin/security/stats")
 async def admin_security_stats(current_user: User = Depends(get_current_user)):
     """Security tracker telemetry (backend, counters, blocked IPs)."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     stats = await get_security_stats_async()
     return JSONResponse(stats)
 
@@ -9597,10 +9996,11 @@ async def admin_security_blocked_ips(
     current_user: User = Depends(get_current_user),
 ):
     """List currently blocked IPs with metadata and Cloudflare sync status."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     blocked_ips = await get_security_blocked_ips_async(limit=limit)
     return JSONResponse({"blocked_ips": blocked_ips, "count": len(blocked_ips)})
 
@@ -9611,10 +10011,11 @@ async def admin_security_events(
     current_user: User = Depends(get_current_user),
 ):
     """Recent security block events."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     events = await get_security_events_async(limit=limit)
     return JSONResponse({"events": events, "count": len(events)})
 
@@ -9625,14 +10026,15 @@ async def admin_security_ip_status(
     current_user: User = Depends(get_current_user),
 ):
     """Check if an IP is currently blocked by middleware tracker."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     try:
         blocked = await is_ip_blocked_async(ip)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=translator.t("management_operations_errors.invalid_ip"))
     return JSONResponse({"ip": ip, "blocked": blocked})
 
 
@@ -9643,10 +10045,11 @@ async def admin_security_block_ip(
     current_user: User = Depends(get_current_user),
 ):
     """Manually block an IP in security tracker."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     try:
         result = await manually_block_ip_async(
             ip=payload.ip,
@@ -9654,7 +10057,7 @@ async def admin_security_block_ip(
             reason=payload.reason,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=translator.t("management_operations_errors.invalid_ip"))
 
     await log_admin_action(
         admin_id=current_user.id,
@@ -9673,14 +10076,15 @@ async def admin_security_unblock_ip(
     current_user: User = Depends(get_current_user),
 ):
     """Manually unblock an IP in security tracker."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     try:
         result = await manually_unblock_ip_async(payload.ip)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=translator.t("management_operations_errors.invalid_ip"))
 
     await log_admin_action(
         admin_id=current_user.id,
@@ -9699,15 +10103,16 @@ async def admin_security_retry_sync(
     current_user: User = Depends(get_current_user),
 ):
     """Retry Cloudflare sync for a blocked IP."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
 
     try:
         result = await retry_cloudflare_sync_async(ip=payload.ip, reason=payload.reason)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=translator.t("management_operations_errors.invalid_ip"))
 
     await log_admin_action(
         admin_id=current_user.id,
@@ -9726,10 +10131,11 @@ async def admin_security_retry_sync(
 @app.get("/admin/security/reputation/stats")
 async def admin_security_reputation_stats(current_user: User = Depends(get_current_user)):
     """IP Reputation system summary stats."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     from middleware.ip_reputation import reputation_manager
     stats = await reputation_manager.get_stats()
     return JSONResponse(stats)
@@ -9741,10 +10147,11 @@ async def admin_security_reputation_top_ips(
     current_user: User = Depends(get_current_user),
 ):
     """Top scored IPs by reputation."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     from middleware.ip_reputation import reputation_manager
     top_ips = await reputation_manager.get_top_ips(limit=limit)
     return JSONResponse({"top_ips": top_ips, "count": len(top_ips)})
@@ -9756,16 +10163,17 @@ async def admin_security_reputation_ip_detail(
     current_user: User = Depends(get_current_user),
 ):
     """Full reputation record for a single IP."""
+    translator = Translator(getattr(current_user, "ui_language", None))
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     from middleware.ip_reputation import reputation_manager
     from middleware.security import _normalize_ip
     try:
         normalized_ip = _normalize_ip(ip)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=translator.t("management_operations_errors.invalid_ip"))
     detail = await reputation_manager.get_ip_detail(normalized_ip)
     if detail is None:
         return JSONResponse({"found": False, "ip": normalized_ip})
@@ -9779,10 +10187,11 @@ async def admin_security_reputation_reset_score(
     current_user: User = Depends(get_current_user),
 ):
     """Reset reputation score for an IP (keeps ban history)."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only administrators can access this function")
+        raise HTTPException(status_code=403, detail=translator.t('management_operations_errors.admin_required'))
     from middleware.ip_reputation import reputation_manager
     success = await reputation_manager.reset_ip_score(payload.ip)
 
@@ -9803,10 +10212,11 @@ async def admin_security_reputation_reset_score(
 @app.get("/admin/watchdog-events", response_class=HTMLResponse)
 async def admin_watchdog_events(request: Request, current_user: User = Depends(get_current_user)):
     """Admin panel to inspect watchdog evaluation events."""
+    translator = get_translator(request, current_user)
     if current_user is None:
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=translator.t('chat_errors.access_denied'))
 
     # Read optional filters from query params
     f_prompt_id = request.query_params.get("prompt_id", "").strip()
@@ -9929,6 +10339,7 @@ async def send_verification_code(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -9936,7 +10347,7 @@ async def send_verification_code(
         PURPOSE_CREATE_USER,
         PURPOSE_PROFILE_PHONE_CHANGE,
     }:
-        raise HTTPException(status_code=400, detail="Invalid phone verification purpose.")
+        raise HTTPException(status_code=400, detail=t("account.phone.purpose_invalid"))
 
     if (
         payload.purpose == PURPOSE_PROFILE_PHONE_CHANGE
@@ -9944,7 +10355,7 @@ async def send_verification_code(
     ):
         raise HTTPException(
             status_code=403,
-            detail="Please sign in again before changing your phone number.",
+            detail=t("account.profile.phone_reauthenticate"),
         )
 
     if payload.purpose == PURPOSE_CREATE_USER:
@@ -9953,7 +10364,7 @@ async def send_verification_code(
         if actor_role not in {"admin", "user"}:
             raise HTTPException(
                 status_code=403,
-                detail="You cannot verify a phone number for user creation.",
+                detail=t("account.phone.create_forbidden"),
             )
 
     try:
@@ -9972,7 +10383,7 @@ async def send_verification_code(
             if await cursor.fetchone():
                 raise HTTPException(
                     status_code=409,
-                    detail="Phone number already in use.",
+                    detail=t("account.profile.phone_in_use"),
                 )
 
         challenge = await request_phone_verification(
@@ -9996,7 +10407,7 @@ async def send_verification_code(
             headers = {"Retry-After": str(exc.retry_after)}
         raise HTTPException(
             status_code=exc.status_code,
-            detail=exc.detail,
+            detail=t("account.phone." + exc.code),
             headers=headers,
         ) from exc
 
@@ -10005,6 +10416,7 @@ async def verify_code(
     verification_request: VerificationCodeRequest,
     current_user: User = Depends(get_current_user),
 ):
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -10012,7 +10424,7 @@ async def verify_code(
         PURPOSE_CREATE_USER,
         PURPOSE_PROFILE_PHONE_CHANGE,
     }:
-        raise HTTPException(status_code=400, detail="Invalid phone verification purpose.")
+        raise HTTPException(status_code=400, detail=t("account.phone.purpose_invalid"))
 
     if (
         verification_request.purpose == PURPOSE_PROFILE_PHONE_CHANGE
@@ -10020,7 +10432,7 @@ async def verify_code(
     ):
         raise HTTPException(
             status_code=403,
-            detail="Please sign in again before changing your phone number.",
+            detail=t("account.profile.phone_reauthenticate"),
         )
 
     if verification_request.purpose == PURPOSE_CREATE_USER:
@@ -10029,7 +10441,7 @@ async def verify_code(
         if actor_role not in {"admin", "user"}:
             raise HTTPException(
                 status_code=403,
-                detail="You cannot verify a phone number for user creation.",
+                detail=t("account.phone.create_forbidden"),
             )
 
     try:
@@ -10055,7 +10467,7 @@ async def verify_code(
             headers = {"Retry-After": str(exc.retry_after)}
         raise HTTPException(
             status_code=exc.status_code,
-            detail=exc.detail,
+            detail=t("account.phone." + exc.code),
             headers=headers,
         ) from exc
 
@@ -10076,6 +10488,7 @@ async def select_prompt(
         return templates.TemplateResponse("login.html", {"request": request, "captcha": get_captcha_config(), "google_oauth_available": bool(GOOGLE_CLIENT_ID)})
 
 
+    t = get_translator(request, current_user).t
     async with get_db_connection() as conn:
         async with conn.cursor() as cursor:
             # Verify if prompt exists and get basic information
@@ -10087,7 +10500,7 @@ async def select_prompt(
             prompt = await cursor.fetchone()
 
             if not prompt:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t("management_errors.prompt.not_found"))
 
             prompt_id, prompt_name, is_public = prompt
 
@@ -10095,7 +10508,7 @@ async def select_prompt(
             has_access = await can_user_access_prompt(current_user, prompt_id, cursor)
 
             if not has_access:
-                raise HTTPException(status_code=403, detail="Access denied")
+                raise HTTPException(status_code=403, detail=t("management_errors.access.denied"))
 
             # Update user's current prompt selection in DB
             await cursor.execute(
@@ -10139,19 +10552,22 @@ async def custom_domain_register(request: Request):
     # Check if this is a custom domain request
     if not getattr(request.state, 'custom_domain', False):
         # Not a custom domain - use user registration
+        from auth_flows import remember_embed_registration_next
+
         response = templates.TemplateResponse("register_public.html", {
             "request": request,
             "target_role": "user",
             "prompt": None,
             "login_url": "/login",
             "captcha": get_captcha_config(),
-            "google_oauth_available": bool(GOOGLE_CLIENT_ID)
+            "google_oauth_available": bool(GOOGLE_CLIENT_ID),
+            **remember_embed_registration_next(request),
         })
         response.headers["X-Robots-Tag"] = "noindex"
         return response
 
     if not marketplace_public_landings_enabled():
-        return landing_404_response()
+        return landing_404_response(get_translator(request))
 
     try:
         return await render_custom_domain_register(
@@ -10164,7 +10580,7 @@ async def custom_domain_register(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error serving custom domain register: {e}")
-        raise HTTPException(status_code=500, detail="Registration error")
+        raise HTTPException(status_code=500, detail=get_translator(request).t("account.registration.failed"))
 
 
 @app.api_route("/login", methods=["GET", "POST"])
@@ -10192,7 +10608,7 @@ async def custom_domain_login(request: Request):
 
     # Custom domain — login for this specific prompt
     if not marketplace_public_landings_enabled():
-        return landing_404_response()
+        return landing_404_response(get_translator(request))
 
     try:
         response = await render_custom_domain_login(
@@ -10205,7 +10621,7 @@ async def custom_domain_login(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error serving custom domain login: {e}")
-        raise HTTPException(status_code=500, detail="Login error")
+        raise HTTPException(status_code=500, detail=get_translator(request).t("account.login_failed"))
 
 
 # =============================================================================
@@ -10251,11 +10667,11 @@ async def auth_google(request: Request, prompt_id: int = None, pack_id: int = No
 
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logger.error("Google OAuth not configured")
-        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+        raise HTTPException(status_code=500, detail=get_translator(request).t("account.oauth.unavailable"))
 
     if prompt_id is not None or pack_id is not None:
         if not marketplace_public_landings_enabled() or not marketplace_checkout_enabled():
-            raise HTTPException(status_code=404, detail="Not found")
+            raise HTTPException(status_code=404, detail=get_translator(request).t("account.not_found"))
 
     # If both pack_id and prompt_id provided, pack_id takes precedence
     if pack_id is not None and prompt_id is not None:
@@ -10290,6 +10706,7 @@ async def auth_google(request: Request, prompt_id: int = None, pack_id: int = No
     request.session["oauth_prompt_id"] = prompt_id
     request.session["oauth_pack_id"] = pack_id
     request.session["oauth_redirect_uri"] = redirect_uri
+    request.session["oauth_ui_language"] = get_translator(request).language
     if next and next.startswith("/") and not next.startswith("//"):
         request.session["oauth_next"] = next
     else:
@@ -10323,10 +10740,14 @@ async def auth_google_callback(request: Request, code: str = None, state: str = 
     - rate_limited: Too many attempts
     """
     try:
-        return await _auth_google_callback_inner(request, code, state, error)
+        response = await _auth_google_callback_inner(request, code, state, error)
     except Exception as e:
         logger.error(f"[OAUTH CALLBACK] Unhandled exception: {type(e).__name__}: {e}", exc_info=True)
-        return RedirectResponse(url="/login?error=oauth_failed")
+        response = RedirectResponse(url="/login?error=oauth_failed")
+    if getattr(request.state, "oauth_locale_resolved", False):
+        response.set_cookie("ui_language", get_translator(request).language, path="/",
+                            httponly=True, samesite="lax", secure=SECURE_COOKIES)
+    return response
 
 
 async def _auth_google_callback_inner(request: Request, code: str, state: str, error: str):
@@ -10362,7 +10783,16 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
     pack_id = request.session.pop("oauth_pack_id", None)
     redirect_uri = request.session.pop("oauth_redirect_uri", None)
     oauth_next = request.session.pop("oauth_next", None)
+    oauth_ui_language = normalize_language(request.session.pop("oauth_ui_language", None)) or "en"
     request.session.pop("oauth_state", None)
+    request.state.i18n = Translator(oauth_ui_language)
+    request.state.oauth_locale_resolved = True
+
+    # An embed authorization must not inherit a simultaneous landing/purchase
+    # hint or lose its restricted signup admission when discovery is disabled.
+    if isinstance(oauth_next, str) and oauth_next.startswith("/embed/"):
+        prompt_id = None
+        pack_id = None
 
     if (prompt_id or pack_id) and (
         not marketplace_public_landings_enabled() or not marketplace_checkout_enabled()
@@ -10406,6 +10836,7 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
 
         if user:
             # Check if account is enabled
+            get_translator(request, user)
             if not user.is_enabled:
                 logger.warning(f"Disabled user {user.id} attempted Google OAuth login")
                 record_failure(request, "oauth_callback")
@@ -10429,6 +10860,7 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
 
         if user:
             # Check if account is enabled
+            get_translator(request, user)
             if not user.is_enabled:
                 logger.warning(f"Disabled user {user.id} attempted Google OAuth via email linking")
                 record_failure(request, "oauth_callback")
@@ -10459,6 +10891,13 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
             return create_login_response(user_info, redirect_url=redirect_url, default_redirect=default_redirect)
 
         # === CASE 3: New user - create account ===
+        from integrations.embed.registration import create_scoped_account, resolve_signup_context
+        embed_signup = await resolve_signup_context(request, next_url=oauth_next)
+        if embed_signup:
+            # App admission uses its own restricted defaults, independent of landings.
+            prompt_id = None
+            pack_id = None
+            target_role = "customer"
         # Generate unique username
         username = await generate_unique_username(email)
 
@@ -10554,7 +10993,13 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
                 # Continue with defaults
 
         # Create user with pack config if available, otherwise with defaults
-        if landing_config:
+        if embed_signup:
+            user_id = await create_scoped_account(
+                embed_signup, add_user, username=username, email=email,
+                llm_id=default_llm_id, authentication_mode="magic_link_password",
+                ui_language=oauth_ui_language,
+            )
+        elif landing_config:
             # Prepare category_access
             category_access = landing_config.get("category_access")
             if isinstance(category_access, list):
@@ -10564,6 +11009,7 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
 
             user_id = await add_user(
                 username=username,
+                ui_language=oauth_ui_language,
                 prompt_id=prompt_id,
                 all_prompts_access=False,
                 public_prompts_access=landing_config.get("public_prompts_access", True),
@@ -10595,6 +11041,7 @@ async def _auth_google_callback_inner(request: Request, code: str, state: str, e
             # Original add_user call (no pack config)
             user_id = await add_user(
                 username=username,
+                ui_language=oauth_ui_language,
                 prompt_id=prompt_id,
                 all_prompts_access=False,
                 public_prompts_access=True,
@@ -10741,6 +11188,7 @@ async def verify_email(request: Request, token: str):
     """
     Verify email and create the user account.
     """
+    t = get_translator(request).t
     # Rate limiting
     rate_error = check_rate_limits(
         request,
@@ -10771,8 +11219,11 @@ async def verify_email(request: Request, token: str):
         return templates.TemplateResponse("verify_email.html", {
             "request": request,
             "success": False,
-            "error": "Invalid or expired verification link."
+            "error": t("account.verification.invalid")
         })
+
+    request.state.i18n = Translator(normalize_language(pending["ui_language"]) or "en")
+    t = get_translator(request).t
 
     # Check if expired
     if pending["expires_at"] < datetime.now():
@@ -10781,7 +11232,7 @@ async def verify_email(request: Request, token: str):
         return templates.TemplateResponse("verify_email.html", {
             "request": request,
             "success": False,
-            "error": "This verification link has expired. Please register again."
+            "error": t("account.verification.expired")
         })
 
     # Check again if email was registered in the meantime
@@ -10791,15 +11242,21 @@ async def verify_email(request: Request, token: str):
         return templates.TemplateResponse("verify_email.html", {
             "request": request,
             "success": False,
-            "error": "This email is already registered. Please log in."
+            "error": t("account.verification.already_registered")
         })
 
     # Create the user
     try:
+        from integrations.embed.registration import create_scoped_account, email_signup_context
+        embed_signup = await email_signup_context(token)
         # Determine settings based on role
         is_user = pending["target_role"] == "user"
         prompt_id = pending["prompt_id"]
         pack_id = pending.get("pack_id")
+        if embed_signup:
+            is_user = False
+            prompt_id = None
+            pack_id = None
 
         if not is_user and (prompt_id or pack_id) and (
             not marketplace_public_landings_enabled() or not marketplace_checkout_enabled()
@@ -10808,7 +11265,7 @@ async def verify_email(request: Request, token: str):
             return templates.TemplateResponse("verify_email.html", {
                 "request": request,
                 "success": False,
-                "error": "This registration link is no longer available."
+                "error": t("account.verification.unavailable")
             })
 
         # Get landing registration config if this is a landing page registration
@@ -10934,34 +11391,42 @@ async def verify_email(request: Request, token: str):
         if isinstance(category_access, list):
             category_access = orjson.dumps(category_access).decode('utf-8')
 
-        user_id = await add_user(
-            username=pending["username"],
-            email=pending["email"],
-            role_name=pending["target_role"],
-            authentication_mode="password_only",
-            initial_password=None,  # We'll set the hash directly
-            prompt_id=prompt_id if not is_user else None,
-            all_prompts_access=False,
-            public_prompts_access=landing_config.get("public_prompts_access", True) if not is_user else True,
-            llm_id=default_llm_id,
-            allow_file_upload=is_user or landing_config.get("allow_file_upload", False),
-            allow_image_generation=is_user or landing_config.get("allow_image_generation", False),
-            balance=landing_config.get("initial_balance", 0.0) if not is_user else 0.0,
-            phone=None,
-            current_user=None,
-            category_access=category_access if not is_user else None,
-            billing_account_id=prompt_owner_id if landing_config.get("billing_mode") == "user_pays" and not is_user else None,
-            billing_limit=landing_config.get("billing_limit") if landing_config.get("billing_mode") == "user_pays" and not is_user else None,
-            billing_limit_action=landing_config.get("billing_limit_action", "block") if landing_config.get("billing_mode") == "user_pays" and not is_user else "block",
-            billing_auto_refill_amount=landing_config.get("billing_auto_refill_amount", 10.0) if landing_config.get("billing_mode") == "user_pays" and not is_user else 10.0,
-            billing_max_limit=landing_config.get("billing_max_limit") if landing_config.get("billing_mode") == "user_pays" and not is_user else None,
-            initial_balance_funder_id=(
-                ucr_creator_id
-                if not is_user
-                and float(landing_config.get("initial_balance", 0.0)) > 0
-                else None
-            ),
-        )
+        if embed_signup:
+            user_id = await create_scoped_account(
+                embed_signup, add_user, username=pending["username"], email=pending["email"],
+                llm_id=default_llm_id, authentication_mode="password_only",
+                ui_language=pending["ui_language"],
+            )
+        else:
+            user_id = await add_user(
+                username=pending["username"],
+                ui_language=pending["ui_language"],
+                email=pending["email"],
+                role_name=pending["target_role"],
+                authentication_mode="password_only",
+                initial_password=None,  # We'll set the hash directly
+                prompt_id=prompt_id if not is_user else None,
+                all_prompts_access=False,
+                public_prompts_access=landing_config.get("public_prompts_access", True) if not is_user else True,
+                llm_id=default_llm_id,
+                allow_file_upload=is_user or landing_config.get("allow_file_upload", False),
+                allow_image_generation=is_user or landing_config.get("allow_image_generation", False),
+                balance=landing_config.get("initial_balance", 0.0) if not is_user else 0.0,
+                phone=None,
+                current_user=None,
+                category_access=category_access if not is_user else None,
+                billing_account_id=prompt_owner_id if landing_config.get("billing_mode") == "user_pays" and not is_user else None,
+                billing_limit=landing_config.get("billing_limit") if landing_config.get("billing_mode") == "user_pays" and not is_user else None,
+                billing_limit_action=landing_config.get("billing_limit_action", "block") if landing_config.get("billing_mode") == "user_pays" and not is_user else "block",
+                billing_auto_refill_amount=landing_config.get("billing_auto_refill_amount", 10.0) if landing_config.get("billing_mode") == "user_pays" and not is_user else 10.0,
+                billing_max_limit=landing_config.get("billing_max_limit") if landing_config.get("billing_mode") == "user_pays" and not is_user else None,
+                initial_balance_funder_id=(
+                    ucr_creator_id
+                    if not is_user
+                    and float(landing_config.get("initial_balance", 0.0)) > 0
+                    else None
+                ),
+            )
 
         if not user_id:
             raise Exception("add_user returned None")
@@ -11086,7 +11551,9 @@ async def verify_email(request: Request, token: str):
             elif paid_prompt_purchase_url:
                 redirect_url = paid_prompt_purchase_url
             else:
-                redirect_url = "/chat"
+                from auth_flows import consume_embed_registration_next
+
+                redirect_url = consume_embed_registration_next(request) or "/chat"
             response = RedirectResponse(url=redirect_url, status_code=303)
             response.set_cookie(
                 key=SESSION_COOKIE_NAME,
@@ -11105,7 +11572,7 @@ async def verify_email(request: Request, token: str):
             "request": request,
             "success": True,
             "error": None,
-            "message": "Your account has been created successfully! You can now log in."
+            "message": t("account.verification.created")
         })
 
     except Exception as e:
@@ -11113,7 +11580,7 @@ async def verify_email(request: Request, token: str):
         return templates.TemplateResponse("verify_email.html", {
             "request": request,
             "success": False,
-            "error": "An error occurred while creating your account. Please try again."
+            "error": t("account.verification.failed")
         })
 
 
@@ -11221,12 +11688,16 @@ async def register_submit(
     username: str = Form(None),
     prompt_id: int = Form(None),
     prompt_public_id: str = Form(None),
-    captcha_token: str = Form("")
+    embed_registration_transaction: str = Form(None),
+    captcha_token: str = Form(""),
+    ui_language: Annotated[Optional[str], Form()] = None,
 ):
     """
     Process registration form submission.
     Creates pending registration and sends verification email.
     """
+    t = get_translator(request).t
+
     # Clean up expired registrations occasionally
     await cleanup_expired_registrations()
 
@@ -11247,6 +11718,15 @@ async def register_submit(
     if fail_error:
         return JSONResponse(fail_error, status_code=429)
 
+    if ui_language is not None:
+        language = normalize_language(ui_language)
+        if language is None:
+            return JSONResponse({"status": "error", "message": t("account.language.invalid")}, status_code=400)
+        request.state.i18n = Translator(language)
+    else:
+        language = get_translator(request).language
+    t = get_translator(request).t
+
     # CAPTCHA verification
     client_ip = get_client_ip(request)
     captcha_ok, captcha_error = await verify_captcha(captcha_token, client_ip)
@@ -11254,15 +11734,26 @@ async def register_submit(
         record_failure(request, "register", email_clean)
         return JSONResponse({
             "status": "error",
-            "message": captcha_error
+            "message": t("account.captcha_failed")
         }, status_code=400)
+
+    from integrations.embed.models import EmbedError
+    from integrations.embed.registration import resolve_signup_context
+    try:
+        embed_signup = await resolve_signup_context(request, transaction=embed_registration_transaction)
+    except EmbedError as error:
+        return JSONResponse({"status": "error", "message": t("account.registration.restart"),
+                             "error": error.code}, status_code=error.status_code)
+    if embed_signup:
+        prompt_id = None
+        prompt_public_id = None
 
     # Validate passwords match
     if password != password_confirm:
         record_failure(request, "register", email_clean)
         return JSONResponse({
             "status": "error",
-            "message": "Passwords do not match"
+            "message": t("account.password.error.no_match")
         }, status_code=400)
 
     # Validate password strength
@@ -11270,7 +11761,7 @@ async def register_submit(
         record_failure(request, "register", email_clean)
         return JSONResponse({
             "status": "error",
-            "message": "Password must be at least 8 characters"
+            "message": t("account.password.error.min_length", count=8)
         }, status_code=400)
 
     # Validate email (format + disposable domain check + MX records)
@@ -11280,7 +11771,7 @@ async def register_submit(
         record_failure(request, "register", email_clean)
         return JSONResponse({
             "status": "error",
-            "message": email_error
+            "message": t("account.registration.email_invalid")
         }, status_code=400)
 
     # Check if email already exists
@@ -11292,15 +11783,16 @@ async def register_submit(
         if prompt_id and marketplace_public_landings_enabled() and marketplace_checkout_enabled():
             await send_entitlement_claim_email(
                 request, email, existing_user["id"],
-                prompt_id=prompt_id, pack_id=None
+                prompt_id=prompt_id, pack_id=None,
+                ui_language=existing_user.get("ui_language") or "en",
             )
         return JSONResponse({
             "status": "success",
-            "message": "If this email is not already registered, you will receive a verification email shortly."
+            "message": t("account.registration.pending")
         })
 
     # Determine role and get prompt info
-    target_role = "customer" if prompt_id else "user"
+    target_role = "customer" if prompt_id or embed_signup else "user"
     prompt_name = None
     prompt_owner_id = None
 
@@ -11309,7 +11801,7 @@ async def register_submit(
             record_failure(request, "register", email)
             return JSONResponse({
                 "status": "error",
-                "message": "Invalid prompt"
+                "message": t("account.registration.prompt_invalid")
             }, status_code=400)
 
         # prompt_public_id is mandatory when prompt_id is present
@@ -11317,7 +11809,7 @@ async def register_submit(
             record_failure(request, "register", email)
             return JSONResponse({
                 "status": "error",
-                "message": "Invalid prompt"
+                "message": t("account.registration.prompt_invalid")
             }, status_code=400)
 
         # Verify prompt exists, is public, and cross-validate with prompt_public_id
@@ -11331,14 +11823,14 @@ async def register_submit(
                 record_failure(request, "register", email)
                 return JSONResponse({
                     "status": "error",
-                    "message": "Invalid prompt"
+                    "message": t("account.registration.prompt_invalid")
                 }, status_code=400)
             # Prevent prompt_id manipulation: must match the public_id from the landing
             if result[2] != prompt_public_id:
                 record_failure(request, "register", email)
                 return JSONResponse({
                     "status": "error",
-                    "message": "Invalid prompt"
+                    "message": t("account.registration.prompt_invalid")
                 }, status_code=400)
             prompt_name = result[0]
             prompt_owner_id = result[1]
@@ -11352,7 +11844,7 @@ async def register_submit(
             record_failure(request, "register", email)
             return JSONResponse({
                 "status": "error",
-                "message": "Username can only contain letters, numbers, hyphens and underscores"
+                "message": t("account.registration.username_format")
             }, status_code=400)
 
         # Validate username length
@@ -11360,14 +11852,14 @@ async def register_submit(
             record_failure(request, "register", email)
             return JSONResponse({
                 "status": "error",
-                "message": "Username must be at least 3 characters"
+                "message": t("account.registration.username_short")
             }, status_code=400)
 
         if len(username) > 20:
             record_failure(request, "register", email)
             return JSONResponse({
                 "status": "error",
-                "message": "Username cannot exceed 20 characters"
+                "message": t("account.registration.username_long")
             }, status_code=400)
 
         # Check if username already exists
@@ -11380,7 +11872,7 @@ async def register_submit(
                 record_failure(request, "register", email)
                 return JSONResponse({
                     "status": "error",
-                    "message": "This username is already taken"
+                    "message": t("account.registration.username_taken")
                 }, status_code=400)
     else:
         # Generate username from email
@@ -11401,15 +11893,24 @@ async def register_submit(
         token=token,
         target_role=target_role,
         prompt_id=prompt_id,
-        expires_at=expires_at
+        expires_at=expires_at,
+        ui_language=language,
     )
 
     if not success:
         record_failure(request, "register", email)
         return JSONResponse({
             "status": "error",
-            "message": "Registration failed. Please try again."
+            "message": t("account.registration.failed")
         }, status_code=500)
+
+    if embed_signup:
+        from integrations.embed.registration import bind_email_registration
+        try:
+            await bind_email_registration(embed_signup, token)
+        except Exception:
+            await delete_pending_registration(token)
+            return JSONResponse({"status": "error", "message": t("account.registration.unavailable")}, status_code=503)
 
     # Build verification URL
     verification_url = f"{get_auth_base_url(request).rstrip('/')}/verify-email/{token}"
@@ -11428,6 +11929,7 @@ async def register_submit(
         is_user=(target_role == "user"),
         prompt_name=prompt_name,
         branding=branding,
+        ui_language=language,
     )
 
     if not email_sent:
@@ -11439,7 +11941,7 @@ async def register_submit(
 
     return JSONResponse({
         "status": "success",
-        "message": "If this email is not already registered, you will receive a verification email shortly."
+        "message": t("account.registration.pending")
     })
 
 
@@ -11723,8 +12225,10 @@ async def disable_cloudflare_cache(
     if current_user is None:
         return unauthenticated_response()
 
+    t = get_translator(request, current_user).t
+
     if not await is_admin(current_user.id):
-        return JSONResponse(content={"error": "Admin access required."}, status_code=403)
+        return JSONResponse(content={"error": t("dashboard.admin_required")}, status_code=403)
 
     from request_security import validate_mutation_request
 
@@ -11752,19 +12256,19 @@ async def disable_cloudflare_cache(
             )
         return {
             "success": True,
-            "message": "Cloudflare cache disabled successfully",
+            "message": t("dashboard.cloudflare_done"),
         }
     except subprocess.CalledProcessError:
-        raise HTTPException(status_code=500, detail="Error disabling Cloudflare cache")
+        raise HTTPException(status_code=500, detail=t("dashboard.error_disabling_cloudflare_cache"))
     except MaintenanceTaskBusy:
         raise HTTPException(
             status_code=409,
-            detail="Cloudflare cache maintenance is already running.",
+            detail=t("dashboard.cloudflare_busy"),
         )
     except MaintenanceTaskTimedOut:
         raise HTTPException(
             status_code=504,
-            detail="Cloudflare cache maintenance timed out.",
+            detail=t("dashboard.cloudflare_timeout"),
         )
 
 @app.post("/admin/clear-audio-cache")
@@ -11776,8 +12280,10 @@ async def clear_audio_cache(
     if current_user is None:
         return unauthenticated_response()
 
+    t = get_translator(request, current_user).t
+
     if not await is_admin(current_user.id):
-        return JSONResponse(content={"error": "Admin access required."}, status_code=403)
+        return JSONResponse(content={"error": t("dashboard.admin_required")}, status_code=403)
 
     try:
         requested_age = time_arg.get("time_arg")
@@ -11792,20 +12298,20 @@ async def clear_audio_cache(
             )
         except Exception as audit_error:
             logger.warning("Could not audit audio maintenance: %s", audit_error)
-        return {"success": True, "message": "Audio cache cleared successfully"}
+        return {"success": True, "message": t("dashboard.audio_done")}
     except (AttributeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=t("dashboard.audio_invalid")) from exc
     except subprocess.CalledProcessError:
-        raise HTTPException(status_code=500, detail="Error clearing audio cache")
+        raise HTTPException(status_code=500, detail=t("dashboard.error_clearing_audio_cache"))
     except MaintenanceTaskBusy:
         raise HTTPException(
             status_code=409,
-            detail="Audio cache maintenance is already running.",
+            detail=t("dashboard.audio_busy"),
         )
     except MaintenanceTaskTimedOut:
         raise HTTPException(
             status_code=504,
-            detail="Audio cache maintenance timed out.",
+            detail=t("dashboard.audio_timeout"),
         )
 
 
@@ -11815,8 +12321,10 @@ async def toggle_captcha(data: dict, current_user: User = Depends(get_current_us
     if current_user is None:
         return unauthenticated_response()
 
+    t = Translator(normalize_language(getattr(current_user, "ui_language", None)) or "en").t
+
     if not await current_user.is_admin:
-        return JSONResponse(content={"error": "Admin access required"}, status_code=403)
+        return JSONResponse(content={"error": t("dashboard.admin_required")}, status_code=403)
 
     enabled = data.get("enabled", True)
     set_captcha_enabled(enabled)
@@ -11866,8 +12374,9 @@ async def create_category(
     current_user: User = Depends(get_current_user)
 ):
     """Create a new category (admin only)."""
-    if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    t = get_translator(request, current_user).t
+    if current_user is None or not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail=t("admin_categories.error.admin_required"))
 
     data = await request.json()
     name = data.get("name", "").strip()
@@ -11877,7 +12386,7 @@ async def create_category(
     display_order = int(data.get("display_order", 0))
 
     if not name:
-        raise HTTPException(status_code=400, detail="Category name is required")
+        raise HTTPException(status_code=400, detail=t("admin_categories.error.name_required"))
 
     async with get_db_connection() as conn:
         try:
@@ -11893,7 +12402,7 @@ async def create_category(
                 row = await cursor.fetchone()
                 new_id = row[0]
 
-            return {"success": True, "id": new_id, "message": "Category created successfully"}
+            return {"success": True, "id": new_id, "message": t("admin_categories.notice.created")}
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=400, detail="Category with this name already exists")
 
@@ -11905,8 +12414,9 @@ async def update_category(
     current_user: User = Depends(get_current_user)
 ):
     """Update a category (admin only)."""
-    if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    t = get_translator(request, current_user).t
+    if current_user is None or not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail=t("admin_categories.error.admin_required"))
 
     data = await request.json()
     name = data.get("name", "").strip()
@@ -11916,13 +12426,13 @@ async def update_category(
     display_order = int(data.get("display_order", 0))
 
     if not name:
-        raise HTTPException(status_code=400, detail="Category name is required")
+        raise HTTPException(status_code=400, detail=t("admin_categories.error.name_required"))
 
     async with get_db_connection() as conn:
         # Check if category exists
         async with conn.execute("SELECT id FROM CATEGORIES WHERE id = ?", (category_id,)) as cursor:
             if not await cursor.fetchone():
-                raise HTTPException(status_code=404, detail="Category not found")
+                raise HTTPException(status_code=404, detail=t("admin_categories.error.not_found"))
 
         try:
             await conn.execute(
@@ -11932,7 +12442,7 @@ async def update_category(
                 (name, description, icon, 1 if is_age_restricted else 0, display_order, category_id)
             )
             await conn.commit()
-            return {"success": True, "message": "Category updated successfully"}
+            return {"success": True, "message": t("admin_categories.notice.updated")}
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=400, detail="Category with this name already exists")
 
@@ -11943,14 +12453,15 @@ async def delete_category(
     current_user: User = Depends(get_current_user)
 ):
     """Delete a category (admin only)."""
-    if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    t = Translator(getattr(current_user, "ui_language", None) or "en").t
+    if current_user is None or not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail=t("admin_categories.error.admin_required"))
 
     async with get_db_connection() as conn:
         # Check if category exists
         async with conn.execute("SELECT id FROM CATEGORIES WHERE id = ?", (category_id,)) as cursor:
             if not await cursor.fetchone():
-                raise HTTPException(status_code=404, detail="Category not found")
+                raise HTTPException(status_code=404, detail=t("admin_categories.error.not_found"))
 
         # Delete associations first
         await conn.execute("DELETE FROM PROMPT_CATEGORIES WHERE category_id = ?", (category_id,))
@@ -11958,7 +12469,7 @@ async def delete_category(
         await conn.execute("DELETE FROM CATEGORIES WHERE id = ?", (category_id,))
         await conn.commit()
 
-        return {"success": True, "message": "Category deleted successfully"}
+        return {"success": True, "message": t("admin_categories.notice.deleted")}
 
 
 @app.get("/api/prompts/{prompt_id}/categories")
@@ -11998,6 +12509,7 @@ async def update_prompt_categories(
     current_user: User = Depends(get_current_user)
 ):
     """Assign categories to a prompt."""
+    t = get_translator(request, current_user).t
     data = await request.json()
     category_ids = data.get("category_ids", [])
 
@@ -12007,7 +12519,7 @@ async def update_prompt_categories(
         async with conn.execute("SELECT id, public FROM PROMPTS WHERE id = ?", (prompt_id,)) as cursor:
             prompt = await cursor.fetchone()
             if not prompt:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t("prompt_editor_errors.prompt_not_found"))
 
         # Check permissions
         is_admin = await current_user.is_admin
@@ -12019,7 +12531,7 @@ async def update_prompt_categories(
             has_permission = perm is not None
 
         if not is_admin and not has_permission:
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=t("chat_errors.access_denied"))
 
         # Validate category IDs exist
         if category_ids:
@@ -12032,7 +12544,7 @@ async def update_prompt_categories(
 
             invalid_ids = set(category_ids) - set(valid_ids)
             if invalid_ids:
-                raise HTTPException(status_code=400, detail=f"Invalid category IDs: {list(invalid_ids)}")
+                raise HTTPException(status_code=400, detail=t("admin_categories.error.invalid_ids", ids=", ".join(str(value) for value in sorted(invalid_ids))))
 
         # Update categories
         await conn.execute("DELETE FROM PROMPT_CATEGORIES WHERE prompt_id = ?", (prompt_id,))
@@ -12044,7 +12556,7 @@ async def update_prompt_categories(
             )
 
         await conn.commit()
-        return {"success": True, "message": "Categories updated successfully"}
+        return {"success": True, "message": t("admin_categories.notice.assigned")}
 
 
 @app.get("/api/prompts/{prompt_id}/forced-llm")
@@ -12057,6 +12569,7 @@ async def get_prompt_forced_llm(
     Returns the forced_llm_id if the prompt has a forced model configured,
     otherwise returns null. Used by create_user.html to auto-select LLM.
     """
+    t = Translator(getattr(current_user, "ui_language", None) or "en").t
     async with get_db_connection(readonly=True) as conn:
         async with conn.execute(
             "SELECT forced_llm_id FROM PROMPTS WHERE id = ?",
@@ -12064,7 +12577,7 @@ async def get_prompt_forced_llm(
         ) as cursor:
             row = await cursor.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="Prompt not found")
+                raise HTTPException(status_code=404, detail=t("prompt_editor_errors.prompt_not_found"))
 
             return {"forced_llm_id": row[0]}
 
@@ -12072,11 +12585,12 @@ async def get_prompt_forced_llm(
 @app.get("/admin/categories", response_class=HTMLResponse)
 async def admin_categories(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for managing categories."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
 
-    if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    if current_user is None or not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail=t("admin_categories.error.admin_required"))
 
     async with get_db_connection(readonly=True) as conn:
         async with conn.execute(
@@ -12119,14 +12633,15 @@ async def reorder_categories(
     current_user: User = Depends(get_current_user)
 ):
     """Reorder categories (admin only)."""
-    if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    t = get_translator(request, current_user).t
+    if current_user is None or not await current_user.is_admin:
+        raise HTTPException(status_code=403, detail=t("admin_categories.error.admin_required"))
 
     data = await request.json()
     order = data.get("order", [])  # List of category IDs in new order
 
     if not order:
-        raise HTTPException(status_code=400, detail="Order list is required")
+        raise HTTPException(status_code=400, detail=t("admin_categories.error.order_required"))
 
     async with get_db_connection() as conn:
         for idx, cat_id in enumerate(order, start=1):
@@ -12136,7 +12651,7 @@ async def reorder_categories(
             )
         await conn.commit()
 
-    return {"success": True, "message": "Categories reordered successfully"}
+    return {"success": True, "message": t("admin_categories.notice.reordered")}
 
 
 
@@ -12144,11 +12659,12 @@ async def reorder_categories(
 @app.get("/admin/pricing", response_class=HTMLResponse)
 async def admin_pricing_page(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for configuring pricing margins and commissions."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
 
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(status_code=403, detail=t("management_billing_errors.admin_required"))
 
     # Get current pricing config
     pricing_config = {}
@@ -12169,11 +12685,12 @@ async def admin_pricing_page(request: Request, current_user: User = Depends(get_
 @app.get("/api/admin/pricing-config")
 async def get_pricing_config(request: Request, current_user: User = Depends(get_current_user)):
     """Get all pricing configuration values."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
 
     try:
         async with get_db_connection(readonly=True) as conn:
@@ -12191,17 +12708,18 @@ async def get_pricing_config(request: Request, current_user: User = Depends(get_
 
     except Exception as e:
         logger.error(f"Error getting pricing config: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("management_billing_errors.pricing.load_failed")})
 
 
 @app.put("/api/admin/pricing-config")
 async def update_pricing_config(request: Request, current_user: User = Depends(get_current_user)):
     """Update pricing configuration values."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
 
     try:
         data = await request.json()
@@ -12215,46 +12733,37 @@ async def update_pricing_config(request: Request, current_user: User = Depends(g
             'min_payout_amount'
         ]
 
+        if not isinstance(data, dict):
+            return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.pricing.invalid_request")})
+
+        # Validate the entire update before issuing any writes.
+        updates = []
+        for key, value in data.items():
+            if key not in valid_keys:
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError, OverflowError):
+                numeric_value = float("nan")
+            if isinstance(value, bool) or not math.isfinite(numeric_value):
+                return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.pricing.numeric", field=key)})
+            maximum = 1000 if key == "min_payout_amount" else 100
+            if not 0 <= numeric_value <= maximum:
+                error_key = "pricing.payout_range" if key == "min_payout_amount" else "pricing.percent_range"
+                return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors." + error_key, field=key)})
+            updates.append((str(value), key))
+
         async with get_db_connection() as conn:
             cursor = await conn.cursor()
-
-            for key, value in data.items():
-                if key not in valid_keys:
-                    continue
-
-                # Validate values are numeric and within reasonable range
-                try:
-                    numeric_value = float(value)
-                    if key == 'min_payout_amount':
-                        if numeric_value < 0 or numeric_value > 1000:
-                            return JSONResponse(
-                                status_code=400,
-                                content={"success": False, "message": f"Invalid value for {key}: must be 0-1000"}
-                            )
-                    else:
-                        if numeric_value < 0 or numeric_value > 100:
-                            return JSONResponse(
-                                status_code=400,
-                                content={"success": False, "message": f"Invalid value for {key}: must be 0-100%"}
-                            )
-                except ValueError:
-                    return JSONResponse(
-                        status_code=400,
-                        content={"success": False, "message": f"Invalid value for {key}: must be numeric"}
-                    )
-
-                await cursor.execute(
-                    "UPDATE SYSTEM_CONFIG SET value = ? WHERE key = ?",
-                    (str(value), key)
-                )
-
+            for value, key in updates:
+                await cursor.execute("UPDATE SYSTEM_CONFIG SET value = ? WHERE key = ?", (value, key))
             await conn.commit()
 
-        return JSONResponse(content={"success": True, "message": "Pricing configuration updated"})
+        return JSONResponse(content={"success": True, "message": t("management_billing_errors.pricing.updated")})
 
     except Exception as e:
         logger.error(f"Error updating pricing config: {e}")
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "message": t("management_billing_errors.pricing.save_failed")})
 
 
 # =============================================================================
@@ -12308,10 +12817,11 @@ async def _storage_quota_generated_by_user(conn):
 @app.get("/admin/storage-quotas", response_class=HTMLResponse)
 async def admin_storage_quotas_page(request: Request, current_user: User = Depends(get_current_user)):
     """Admin page for per-user storage quotas and the global default."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return RedirectResponse(url="/login", status_code=303)
     if not await current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(status_code=403, detail=t("management_billing_errors.admin_required"))
     context = await get_template_context(request, current_user)
     return templates.TemplateResponse("admin_storage_quotas.html", context)
 
@@ -12319,10 +12829,11 @@ async def admin_storage_quotas_page(request: Request, current_user: User = Depen
 @app.get("/api/admin/storage-quotas/config")
 async def get_storage_quota_config(current_user: User = Depends(get_current_user)):
     """Return the global default quota in bytes (0 = unlimited)."""
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
     async with get_db_connection(readonly=True) as conn:
         default_quota_bytes = await storage_quota.get_default_quota_bytes(conn)
     return JSONResponse(content={"success": True, "default_quota_bytes": default_quota_bytes})
@@ -12331,23 +12842,24 @@ async def get_storage_quota_config(current_user: User = Depends(get_current_user
 @app.put("/api/admin/storage-quotas/config")
 async def update_storage_quota_config(request: Request, current_user: User = Depends(get_current_user)):
     """Update the global default quota (bytes, integer >= 0; 0 = unlimited)."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
 
     data = await request.json()
     if not isinstance(data, dict) or "default_quota_bytes" not in data:
-        return JSONResponse(status_code=400, content={"success": False, "message": "Missing default_quota_bytes"})
+        return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.default_missing")})
     raw = data["default_quota_bytes"]
     if isinstance(raw, bool) or not isinstance(raw, (int, str)):
-        return JSONResponse(status_code=400, content={"success": False, "message": "default_quota_bytes must be an integer >= 0"})
+        return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.default_invalid")})
     try:
         new_value = int(raw)
     except (TypeError, ValueError):
-        return JSONResponse(status_code=400, content={"success": False, "message": "default_quota_bytes must be an integer >= 0"})
+        return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.default_invalid")})
     if new_value < 0 or new_value > storage_quota.MAX_QUOTA_BYTES:
-        return JSONResponse(status_code=400, content={"success": False, "message": "default_quota_bytes must be an integer >= 0"})
+        return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.default_invalid")})
 
     async with get_db_connection() as conn:
         cursor = await conn.execute(
@@ -12386,10 +12898,11 @@ async def get_storage_quota_users(
     Python against a single overrides query -- never N+1 per-user queries.
     percent is null for unlimited (quota 0), else total/quota*100 (1 decimal).
     """
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
 
     try:
         limit = int(limit)
@@ -12448,26 +12961,27 @@ async def get_storage_quota_users(
 @app.put("/api/admin/storage-quotas/users/{user_id}")
 async def update_storage_quota_user(user_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Set or clear a per-user quota override (bytes >= 0, or null to clear)."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
 
     data = await request.json()
     if not isinstance(data, dict) or "quota_bytes" not in data:
-        return JSONResponse(status_code=400, content={"success": False, "message": "Missing quota_bytes"})
+        return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.quota_missing")})
     raw = data["quota_bytes"]
     if raw is None:
         new_value = None
     else:
         if isinstance(raw, bool) or not isinstance(raw, (int, str)):
-            return JSONResponse(status_code=400, content={"success": False, "message": "quota_bytes must be an integer >= 0 or null"})
+            return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.quota_invalid")})
         try:
             new_value = int(raw)
         except (TypeError, ValueError):
-            return JSONResponse(status_code=400, content={"success": False, "message": "quota_bytes must be an integer >= 0 or null"})
+            return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.quota_invalid")})
         if new_value < 0 or new_value > storage_quota.MAX_QUOTA_BYTES:
-            return JSONResponse(status_code=400, content={"success": False, "message": "quota_bytes must be an integer >= 0 or null"})
+            return JSONResponse(status_code=400, content={"success": False, "message": t("management_billing_errors.storage.quota_invalid")})
 
     async with get_db_connection() as conn:
         cursor = await conn.execute(
@@ -12475,7 +12989,7 @@ async def update_storage_quota_user(user_id: int, request: Request, current_user
         )
         row = await cursor.fetchone()
         if row is None:
-            return JSONResponse(status_code=404, content={"success": False, "message": "User not found"})
+            return JSONResponse(status_code=404, content={"success": False, "message": t("management_billing_errors.user_not_found")})
         old_value = int(row[0]) if row[0] is not None else None
         await conn.execute(
             "UPDATE USER_DETAILS SET storage_quota_bytes = ? WHERE user_id = ?",
@@ -12496,10 +13010,11 @@ async def update_storage_quota_user(user_id: int, request: Request, current_user
 @app.get("/api/admin/storage-quotas/stats")
 async def get_storage_quota_stats(current_user: User = Depends(get_current_user)):
     """Global storage statistics (GROUP BY aggregation, no N+1)."""
+    t = Translator(getattr(current_user, "ui_language", "en")).t
     if current_user is None:
         return unauthenticated_response()
     if not await current_user.is_admin:
-        return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        return JSONResponse(status_code=403, content={"success": False, "message": t("management_billing_errors.admin_required")})
 
     async with get_db_connection(readonly=True) as conn:
         default_quota_bytes = await storage_quota.get_default_quota_bytes(conn)
@@ -12984,6 +13499,7 @@ async def get_home_data(request: Request, current_user: User = Depends(get_curre
 
 @app.put("/api/home/preferences")
 async def update_home_preferences(request: Request, current_user: User = Depends(get_current_user)):
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
@@ -12996,7 +13512,7 @@ async def update_home_preferences(request: Request, current_user: User = Depends
 
     # Validate show_stats is boolean
     if "show_stats" in updates and not isinstance(updates["show_stats"], bool):
-        return JSONResponse(content={"error": "show_stats must be boolean"}, status_code=400)
+        return JSONResponse(content={"error": t("account.preferences.show_stats_invalid")}, status_code=400)
 
     # Validate after_login is a known route
     if "after_login" in updates:
@@ -13004,13 +13520,13 @@ async def update_home_preferences(request: Request, current_user: User = Depends
         if marketplace_discovery_enabled():
             allowed_routes.add("/explore")
         if updates["after_login"] not in allowed_routes:
-            return JSONResponse(content={"error": "Invalid after_login route"}, status_code=400)
+            return JSONResponse(content={"error": t("account.preferences.after_login_invalid")}, status_code=400)
 
     # Validate minimized_windows is a list of known window IDs
     if "minimized_windows" in updates:
         mw = updates["minimized_windows"]
         if not isinstance(mw, list):
-            return JSONResponse(content={"error": "minimized_windows must be a list"}, status_code=400)
+            return JSONResponse(content={"error": t("account.preferences.windows_invalid")}, status_code=400)
         allowed_windows = {"welcome", "latest", "library"}
         updates["minimized_windows"] = sorted(set(mw) & allowed_windows)
 
@@ -13019,14 +13535,14 @@ async def update_home_preferences(request: Request, current_user: User = Depends
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.cursor()
             if not await can_user_access_prompt(current_user, int(updates["pinned_prompt_id"]), cursor):
-                return JSONResponse(content={"error": "Prompt not accessible"}, status_code=403)
+                return JSONResponse(content={"error": t("account.preferences.prompt_inaccessible")}, status_code=403)
 
     # Validate pinned_pack_id
     if "pinned_pack_id" in updates and updates["pinned_pack_id"] is not None:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.cursor()
             if not await can_user_access_pack(current_user, int(updates["pinned_pack_id"]), cursor):
-                return JSONResponse(content={"error": "Pack not accessible"}, status_code=403)
+                return JSONResponse(content={"error": t("account.preferences.pack_inaccessible")}, status_code=403)
 
     async with get_db_connection() as conn:
         cursor = await conn.cursor()
@@ -13450,21 +13966,22 @@ async def save_pack_welcome(pack_id: int, request: Request, current_user: User =
 @app.put("/api/home/prompt/{prompt_id}/welcome-message")
 async def save_prompt_welcome_message(prompt_id: int, request: Request, current_user: User = Depends(get_current_user)):
     """Save or update a DB-backed welcome message for a prompt."""
+    t = get_translator(request, current_user).t
     if current_user is None:
         return unauthenticated_response()
 
     is_admin_user = await is_admin(current_user.id)
     if not await can_manage_prompt(current_user.id, prompt_id, is_admin_user):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=t('prompt_editor_errors.access_denied'))
 
     body = await request.json()
     content = body.get("message", "")
     if not isinstance(content, str):
-        raise HTTPException(status_code=400, detail="message must be a string")
+        raise HTTPException(status_code=400, detail=t('prompt_editor_errors.welcome_message_must_be_text'))
 
     MAX_WELCOME_MSG_SIZE = 10 * 1024  # 10,240 characters
     if len(content) > MAX_WELCOME_MSG_SIZE:
-        raise HTTPException(status_code=413, detail="Welcome message exceeds maximum size (10 KB)")
+        raise HTTPException(status_code=413, detail=t('prompt_editor_errors.welcome_message_too_large'))
 
     sanitized = sanitize_welcome_message(content)
     is_active = 1 if sanitized.strip() else 0

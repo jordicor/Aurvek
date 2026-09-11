@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from clients import async_telegram, async_twilio
+from chat.services.localization import chat_error, chat_translator
 from common import PRIMARY_APP_DOMAIN
 from log_config import logger
 from tools.tts import handle_tts_request
@@ -96,33 +97,14 @@ async def deliver_to_platform(platform: str, ctx: dict, text: str):
     logger.error("deliver_to_platform: unknown platform %s", platform)
 
 
-async def send_platform_error(platform: str, ctx: dict, error_msg: str):
-    """Best-effort error delivery to an external channel."""
+async def send_platform_error(platform: str, ctx: dict, error_code: str, *, translator=None):
+    """Deliver localized service errors; provider diagnostics stay in server logs."""
     try:
-        try:
-            from ai_runtime.provider_health import append_external_error_note, provider_from_machine
-            from database import get_db_connection
-
-            conversation_id = ctx.get("conversation_id")
-            if conversation_id:
-                async with get_db_connection(readonly=True) as conn:
-                    cursor = await conn.execute(
-                        """
-                        SELECT l.machine, l.model
-                        FROM CONVERSATIONS c
-                        LEFT JOIN LLM l ON c.llm_id = l.id
-                        WHERE c.id = ?
-                        """,
-                        (conversation_id,),
-                    )
-                    row = await cursor.fetchone()
-                if row:
-                    error_msg = append_external_error_note(
-                        error_msg,
-                        provider_from_machine(row["machine"], row["model"]),
-                    )
-        except Exception as note_exc:
-            logger.warning("send_platform_error: provider-health note skipped: %s", note_exc)
+        tr = chat_translator(translator)
+        if isinstance(error_code, str) and error_code in {"gransabio_disabled", "gransabio_own_keys", "generation_stopped"}:
+            error_msg = tr.t("channel_notices." + error_code)
+        else:
+            error_msg = chat_error(tr, error_code)
         await deliver_to_platform(platform, ctx, error_msg)
     except Exception as exc:
         logger.warning(

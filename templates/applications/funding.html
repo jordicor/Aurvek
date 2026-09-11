@@ -1,0 +1,48 @@
+{% set i18n_domains = ['application_funding'] %}
+{% extends 'base_admin.html' %}
+{% block title %}{{ t('application_funding.title') }} - {{ funding_state.display_name }}{% endblock %}
+{% block page_title %}{{ funding_state.display_name }} · {{ t('application_funding.title') }}{% endblock %}
+{% block content %}
+<a href="/applications/manage">{{ t('application_funding.applications') }}</a>
+<div class="card my-3"><div class="card-body">
+  <h2 class="h5">{{ t('application_funding.who_pays') }}</h2>
+  {% if funding_state.payer %}
+  <p class="mb-1">{{ t('application_funding.payer', name=funding_state.payer.display_name) }}</p>
+  <p class="mb-2">{{ t('application_funding.balance') }}: <strong id="funding-balance">{{ format_currency(funding_state.payer.balance, 'USD') }}</strong></p>
+  {% else %}<p class="mb-2">{{ t('application_funding.error.application_payer_unconfigured') }}</p>{% endif %}
+  <p class="text-muted mb-0">{{ t('application_funding.limits_help') }}</p>
+</div></div>
+{% if funding_state.accounts %}
+<div class="mb-3"><label for="funding-account" class="form-label">{{ t('application_funding.account') }}</label>
+<select id="funding-account" class="form-select">
+{% for account in funding_state.accounts %}<option value="{{ loop.index0 }}">{{ account.display_name or t('application_funding.unnamed_account') }} · {{ account.external_user_id }}</option>{% endfor %}
+</select></div>
+{% for account in funding_state.accounts %}
+<form class="card funding-account-form mb-3{% if not loop.first %} d-none{% endif %}" data-account-index="{{ loop.index0 }}" data-account-id="{{ account.external_user_id }}" data-version="{{ account.funding.version }}" data-form-guard>
+<div class="card-body">
+  <h2 class="h5">{{ account.display_name or t('application_funding.unnamed_account') }}</h2>
+  <p class="small text-muted text-break">{{ t('application_funding.account_id') }}: {{ account.external_user_id }}</p>
+  {% if not account.active %}<p class="text-muted">{{ t('application_funding.account_inactive') }}</p>{% endif %}
+  <fieldset {% if not funding_state.payer %}disabled{% endif %}>
+  <div class="form-check form-switch mb-3">
+    <input name="active" id="funding-active-{{ loop.index0 }}" type="checkbox" class="form-check-input" {% if account.funding.active %}checked{% endif %}>
+    <label for="funding-active-{{ loop.index0 }}" class="form-check-label">{{ t('application_funding.allow_spending') }}</label>
+  </div>
+  <div class="mb-2"><label for="funding-limit-{{ loop.index0 }}" class="form-label">{{ t('application_funding.monthly_limit') }}</label>
+    <input name="monthly_limit" id="funding-limit-{{ loop.index0 }}" class="form-control" type="number" min="0" step="any" inputmode="decimal" value="{{ account.funding.monthly_limit if account.funding.monthly_limit is not none else '' }}" {% if account.funding.monthly_limit is none %}disabled{% else %}required{% endif %}>
+    <small class="text-muted">{{ t('application_funding.zero_help') }}</small>
+  </div>
+  <div class="form-check mb-3">
+    <input name="unlimited" id="funding-unlimited-{{ loop.index0 }}" type="checkbox" class="form-check-input" {% if account.funding.monthly_limit is none %}checked{% endif %}>
+    <label for="funding-unlimited-{{ loop.index0 }}" class="form-check-label">{{ t('application_funding.unlimited') }}</label>
+  </div>
+  {% if funding_state.payer %}<p class="small text-muted">{{ t('application_funding.save_help', name=funding_state.payer.display_name) }}</p>{% endif %}
+  <button class="btn btn-primary" type="submit">{{ t('application_funding.save') }}</button>
+  </fieldset>
+  <div class="funding-feedback alert d-none mt-3 mb-0" role="status" aria-live="polite"></div>
+</div></form>
+{% endfor %}
+{% else %}<p class="mt-3">{{ t('application_funding.no_accounts') }}</p>{% endif %}
+<script id="funding-page-config" type="application/json">{{ {'csrf': funding_csrf, 'configured': funding_state.payer is not none, 'base': '/applications/manage/' ~ funding_state.app_id ~ '/funding/accounts/', 'error': t('application_funding.error.generic'), 'saved': t('application_funding.saved')}|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ get_static_url('/static/js/application-funding.js') }}"></script>{% endblock %}

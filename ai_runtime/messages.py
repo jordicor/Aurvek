@@ -1,8 +1,10 @@
 import asyncio
 import inspect
 import math
+from integrations.embed.models import EmbedError as ApplicationRuntimeError
 
 from ai_runtime.dependencies import *
+from chat.services.message_requests import unavailable_model_response
 from billing.usage_reservations import (
     ai_reservation_provider_started,
     BillingReservationError,
@@ -51,7 +53,9 @@ from integrations.telephony.openai_realtime_billing import (
 from memory.health import get_user_memory_health_snapshot, should_surface_memory_health
 from ai_runtime.billing import assert_billable_claude_system_key
 from ai_runtime.config import (
+    LIVE_VOICE_INPUT_ORIGINS,
     NATIVE_SEARCH_PROVIDERS,
+    limit_live_voice_output,
     _log_output_limit_decision,
     _model_output_cap,
 )
@@ -71,10 +75,14 @@ from ai_runtime.context.formatting import (
 from ai_runtime.context.history import apply_no_memory_context_budget
 from ai_runtime.context.message_provenance import (
     merge_internal_turn_context,
-    prepare_trusted_history_context,
+    prepare_trusted_input_context,
     render_current_input_context,
 )
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
+from ai_runtime.context.user_language import load_user_language_context
+from ai_runtime.context.user_time import load_user_time_context, render_user_time_context
+from ai_runtime.context.user_language import render_user_language_context
+from integrations.applications.profile import conversation_profile, personal_context
 from ai_runtime.context.warmup import (
     _build_warmup_cache_key_from_state,
     _copy_warmup_context_messages,
@@ -266,7 +274,7 @@ def _storage_quota_skip_headers(exc: StorageQuotaExceededError) -> dict[str, str
     }
 
 
-def storage_quota_notice_from_response(response) -> str | None:
+def storage_quota_notice_from_response(response, *, translator=None) -> str | None:
     """Platform reply string if ``response`` carries the quota-skip header, else None.
 
     Lets the Telegram/WhatsApp handlers tell the user a file could not be
@@ -281,7 +289,7 @@ def storage_quota_notice_from_response(response) -> str | None:
         quota_bytes = int(headers.get(STORAGE_QUOTA_LIMIT_HEADER) or 0)
     except (TypeError, ValueError):
         return None
-    return platform_reply_quota_message(usage_bytes, quota_bytes)
+    return platform_reply_quota_message(usage_bytes, quota_bytes, translator=translator)
 
 
 def _resolve_tool_call_billing_usage(
@@ -403,6 +411,10 @@ async def _load_phone_runtime_llm(conn, llm_id: int) -> dict | None:
     }
 
 
+from integrations.applications.runtime import application_billing_turn
+
+
+@application_billing_turn
 async def process_save_message(
     request: Request | None,
     conversation_id: int,
@@ -430,6 +442,8 @@ async def process_save_message(
     No FastAPI dependencies (Form, File, Depends).
     """
     logger.debug("enters into process_save_message")
+    from chat.services.localization import chat_translator
+    ui_translator = chat_translator(current_user)
     if channel_context is None:
         channel_context = ChannelContext(
             channel="whatsapp" if is_whatsapp else "web",
@@ -474,7 +488,7 @@ async def process_save_message(
 
     if (files or attachment_refs) and not current_user.can_send_files:
         return JSONResponse(
-            content={'success': False, 'message': 'File uploads are not enabled for your account'},
+            content={'error_code': 'file_uploads_disabled', 'success': False, 'message': 'File uploads are not enabled for your account'},
             status_code=403
         )
 
@@ -514,7 +528,7 @@ async def process_save_message(
 
             # Check compressed size before decompression
             if len(text_compressed) > MAX_COMPRESSED_SIZE:
-                return JSONResponse(content={'success': False, 'message': 'Compressed message too large'}, status_code=400)
+                return JSONResponse(content={'error_code': 'compressed_message_too_large', 'success': False, 'message': 'Compressed message too large'}, status_code=400)
 
             # If no plain text, assume a compressed file was sent
             # Use decompressobj with max_length to prevent zip bombs
@@ -523,7 +537,7 @@ async def process_save_message(
 
             # Check if there's more data (indicates zip bomb attempt)
             if decompressor.unconsumed_tail:
-                return JSONResponse(content={'success': False, 'message': 'Decompressed message exceeds size limit'}, status_code=400)
+                return JSONResponse(content={'error_code': 'message_too_large', 'success': False, 'message': 'Decompressed message exceeds size limit'}, status_code=400)
 
             user_message = decompressed.decode('utf-8')
         else:
@@ -572,6 +586,20 @@ async def process_save_message(
 
     # Use read-only connection for SELECT queries
     async with get_db_connection(readonly=True) as conn_ro:
+        from integrations.applications.runtime import admit_application_turn
+        from integrations.embed.models import EmbedError
+
+        try:
+            channel_context = await admit_application_turn(
+                conn_ro, conversation_id=conversation_id, user_id=current_user.id,
+                channel_context=channel_context,
+                has_attachments=bool(files or attachment_refs),
+            )
+        except EmbedError as exc:
+            return JSONResponse(
+                content={"success": False, "error_code": exc.code, "message": exc.code},
+                status_code=exc.status_code,
+            )
         logger.info("right after get_db_connection")
         # Consolidate SQL queries into one
         async with conn_ro.execute('''
@@ -588,7 +616,8 @@ async def process_save_message(
                    COALESCE(ep.enable_moderation, 0) AS enable_moderation,
                    COALESCE(ep.is_paid, 0) AS is_paid,
                    COALESCE(ep.gransabio_enabled, 0) AS gransabio_enabled,
-                   COALESCE(c.is_incognito, 0) AS is_incognito
+                   COALESCE(c.is_incognito, 0) AS is_incognito,
+                   COALESCE(L.enabled, 1) AS llm_enabled
             FROM conversations c
             JOIN LLM L ON c.llm_id = L.id
             LEFT JOIN USER_DETAILS ud ON ud.user_id = c.user_id
@@ -597,7 +626,7 @@ async def process_save_message(
         ''', (conversation_id,)) as cursor:
             conversation_row = await cursor.fetchone()
             if not conversation_row:
-                return JSONResponse(content={'success': False, 'message': 'Conversation not found.'}, status_code=404)
+                return JSONResponse(content={'error_code': 'conversation_not_found', 'success': False, 'message': 'Conversation not found.'}, status_code=404)
 
             (
                 is_locked,
@@ -617,6 +646,7 @@ async def process_save_message(
                 prompt_is_paid,
                 gransabio_enabled_col,
                 conversation_incognito,
+                llm_enabled,
             ) = conversation_row
             conversation_model_fence_id = int(conversation_llm_id)
             perf_trace.mark(
@@ -632,7 +662,7 @@ async def process_save_message(
 
         if is_locked:
             logger.info(f"Ignored message to conversation ID {conversation_id}, Locked state: {is_locked}")
-            return JSONResponse(content={'success': False, 'message': 'Conversation is locked.'}, status_code=403)
+            return JSONResponse(content={'error_code': 'conversation_locked', 'success': False, 'message': 'Conversation is locked.'}, status_code=403)
 
         if not full_response and current_user.id != conversation_user_id:
             logger.info(f"You cannot save messages to another user's conversation. current_user.id: {current_user.id}, conversation_user_id: {conversation_user_id}")
@@ -658,6 +688,9 @@ async def process_save_message(
                 },
                 status_code=409,
             )
+
+        if not channel_context.ingest_only and runtime_llm_id is None and not llm_enabled:
+            return unavailable_model_response(conversation_llm_id, model)
 
         prompt_runtime_policy = await _load_prompt_runtime_policy(
             conn_ro,
@@ -1034,6 +1067,8 @@ async def process_save_message(
         current_balance = billing_availability["available"]
         billing_preflight_amount = 0.0
         model_output_cap, output_limit_fallback_used = _model_output_cap(llm_max_output_tokens)
+        if channel_context.input_origin in LIVE_VOICE_INPUT_ORIGINS:
+            model_output_cap = limit_live_voice_output(model_output_cap)
 
         # GranSabio early detection
         gransabio_enabled_early = (
@@ -1042,6 +1077,10 @@ async def process_save_message(
 
         # Reset stop_signals for non-GranSabio (deferred until after DB query).
         # GranSabio resets inside generate_via_gransabio() after lock acquisition.
+        # A delegated stop/revocation during the awaited preflight cannot be
+        # cleared by the ordinary new-turn reset. Native requests are unchanged.
+        from integrations.embed.activity import check_embed_generation_active
+        await check_embed_generation_active()
         if not gransabio_enabled_early:
             stop_signals[conversation_id] = False
 
@@ -1746,7 +1785,7 @@ async def process_save_message(
         if message_flagged:
             await discard_pending_attachments(pending_attachment_refs, "moderation_blocked")
             blocked_message = "[Blocked Message]"
-            rejection_message = "*Sorry, but your message has been blocked for violating our usage policies.*"
+            rejection_message = ui_translator.t("chat_errors.moderation_blocked")
             try:
                 user_message_id, bot_message_id = await save_content_to_db(
                     rejection_message,
@@ -1998,17 +2037,34 @@ async def get_ai_response(
     if runtime_kind not in {"standard", "openai_realtime"}:
         raise ValueError("Unsupported AI runtime kind")
     bound_input_turn = current_channel_turn()
-    internal_turn_context = merge_internal_turn_context(
-        internal_turn_context,
-        render_current_input_context(
-            bound_input_turn.context if bound_input_turn is not None else None
-        ),
+    if bound_input_turn is not None and bound_input_turn.context.input_origin in LIVE_VOICE_INPUT_ORIGINS:
+        max_tokens = limit_live_voice_output(max_tokens)
+    current_input_context = render_current_input_context(
+        bound_input_turn.context if bound_input_turn is not None else None
     )
+    if (
+        bound_input_turn is not None
+        and bound_input_turn.context.input_origin != "web.message"
+    ):
+        logger.info(
+            "[trusted_input] conversation_id=%s origin=%s perception=%s",
+            conversation_id,
+            bound_input_turn.context.input_origin,
+            bound_input_turn.context.input_perception,
+        )
     logger.info(f"*** Enters {machine}")
     logger.debug(f"Parameters received: conversation_id={conversation_id}, model={model}, max_tokens={max_tokens}")
     #logger.info(f"message en get_ai_response: {message}")
 
     user_id = current_user.id
+    async def _revalidate_application_provider_call():
+        from integrations.applications.billing import (
+            current_application_operation, revalidate_application_operation,
+        )
+        operation = current_application_operation(user_id)
+        if operation is not None:
+            await revalidate_application_operation(operation)
+
     ai_reservation_id = None
     ai_reserved_maximum = 0.0
     realtime_tool_pending = False
@@ -2114,6 +2170,14 @@ async def get_ai_response(
                         user_level = "customer"
 
                     # Check if user has selected an alter-ego
+                    from integrations.embed.runtime import is_embed_conversation
+
+                    embed_interview = await is_embed_conversation(conversation_id)
+                    app_profile = await conversation_profile(conn_ro, conversation_id) if embed_interview else None
+                    if embed_interview:
+                        user_info = personal_context(app_profile) if app_profile is not None else None
+                        current_alter_ego_id = None
+
                     if current_alter_ego_id:
                         # Get alter-ego information
                         await cursor_ro.execute("""
@@ -2176,9 +2240,16 @@ async def get_ai_response(
                                     )
                                     prompt_base += extensions_context
 
-                    # Trusted per-turn phone clock/deadline state is ephemeral
-                    # and must be identical for the pre-watchdog and main model.
-                    prompt_base, pre_watchdog_prompt_context = (
+                    # User-local time and channel state are trusted, ephemeral
+                    # inputs. Both must be identical for the pre-watchdog and
+                    # main model, including native OpenAI Realtime turns.
+                    internal_turn_context = merge_internal_turn_context(
+                        internal_turn_context,
+                        render_user_time_context(app_profile.timezone_name if app_profile else None) if embed_interview else await load_user_time_context(conn_ro, user_id),
+                        render_user_language_context(app_profile.preferred_languages) if app_profile is not None else (None if embed_interview else await load_user_language_context(conn_ro, user_id)),
+                        current_input_context,
+                    )
+                    _, pre_watchdog_prompt_context = (
                         prepare_pre_watchdog_and_model_prompt(
                             prompt_base or "",
                             internal_turn_context,
@@ -2238,9 +2309,10 @@ async def get_ai_response(
                                     if pre_action in ("takeover", "takeover_lock"):
                                         # Takeover: yield from watchdog_takeover_response, then return
                                         takeover_prompt, takeover_context = (
-                                            await prepare_trusted_history_context(
+                                            await prepare_trusted_input_context(
                                                 prompt_base,
                                                 context_messages,
+                                                current_turn_context=internal_turn_context,
                                             )
                                         )
                                         async for chunk in watchdog_takeover_response(
@@ -2326,9 +2398,10 @@ async def get_ai_response(
                                             can_lock_post = False
                                             logger.info("Lock Judge rejected takeover lock for conv=%d: %s", conversation_id, judge_reason)
                                     takeover_prompt, takeover_context = (
-                                        await prepare_trusted_history_context(
+                                        await prepare_trusted_input_context(
                                             prompt_base,
                                             context_messages,
+                                            current_turn_context=internal_turn_context,
                                         )
                                     )
                                     async for chunk in watchdog_takeover_response(
@@ -2397,10 +2470,19 @@ async def get_ai_response(
                         context_messages,
                         memory_decision,
                     )
+                    if bound_input_turn is not None and bound_input_turn.context.application is not None:
+                        from integrations.applications.handoff import handoff_context_message
+                        from integrations.applications.service import ApplicationService
+                        from integrations.embed.identity import get_embed_store
+                        handoff_note = await handoff_context_message(
+                            conn_ro, ApplicationService(get_embed_store()), user_id, conversation_id)
+                        if handoff_note is not None:
+                            context_messages = [*context_messages, handoff_note]
                     full_prompt, context_messages = (
-                        await prepare_trusted_history_context(
+                        await prepare_trusted_input_context(
                             full_prompt,
                             context_messages,
+                            current_turn_context=internal_turn_context,
                         )
                     )
                     memory_health = get_user_memory_health_snapshot(
@@ -2412,13 +2494,20 @@ async def get_ai_response(
                     )
                     if should_surface_memory_health(memory_health):
                         yield f"data: {orjson.dumps({'type': 'memory_health', 'memory_health': memory_health}).decode()}\n\n"
-                    if memory_decision.provider == "none":
+                    application_scope = (bound_input_turn.context.application if bound_input_turn else None)
+                    if application_scope is not None or not memory_decision.active:
+                        budget_tools = None
+                        if application_scope is not None:
+                            from integrations.applications.tools import application_tool_catalog
+                            _, budget_tools = await application_tool_catalog(user_id, conversation_id, list(tools))
                         context_messages = await apply_no_memory_context_budget(
                             context_messages,
                             llm_id=llm_id,
                             prompt_id=prompt_id,
                             full_prompt=full_prompt,
                             current_message=message,
+                            tools=budget_tools,
+                            output_tokens=max_tokens if application_scope is not None else 0,
                         )
                     if skip_context_pdfs:
                         context_messages = _drop_pdf_blocks_from_context(context_messages)
@@ -2677,13 +2766,13 @@ async def get_ai_response(
 
                     # Runtime fail-fast: catch incompatible flags
                     if force_web_search:
-                        yield f"data: {orjson.dumps({'error': 'Configuration conflict: force_web_search is incompatible with GranSabio. Disable one of them in the prompt settings.'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'Configuration conflict: force_web_search is incompatible with GranSabio. Disable one of them in the prompt settings.'}).decode()}\n\n"
                         return
 
                     admin_config = await get_gransabio_config()
 
                     if admin_config.get("gransabio_enabled") != "true":
-                        yield f"data: {orjson.dumps({'error': 'GranSabio is disabled globally by admin.'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'GranSabio is disabled globally by admin.'}).decode()}\n\n"
                         return
 
                     # Parse gransabio_config with error handling
@@ -2693,14 +2782,14 @@ async def get_ai_response(
                             prompt_config = {}
                     except orjson.JSONDecodeError:
                         logger.error(f"Invalid GranSabio config JSON for prompt {prompt_id}")
-                        yield f"data: {orjson.dumps({'error': 'Invalid GranSabio configuration for this prompt (corrupted JSON). Contact admin.'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'Invalid GranSabio configuration for this prompt (corrupted JSON). Contact admin.'}).decode()}\n\n"
                         return
 
                     if not await revalidate_user_billing(
                         current_user.id,
                         billing_preflight_amount,
                     ):
-                        yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                         return
 
                     async for chunk in generate_via_gransabio(
@@ -2780,6 +2869,18 @@ async def get_ai_response(
                 if not (extensions_enabled and extensions_auto_advance and has_extensions):
                     filtered_tools = [t for t in filtered_tools if t.get("function", {}).get("name") != "advanceExtension"]
 
+                from integrations.applications.tools import application_tool_catalog, application_search_catalog
+                application_tool_context, filtered_tools = await application_tool_catalog(
+                    current_user.id, conversation_id, filtered_tools)
+                if application_tool_context is not None and not (
+                        application_tool_context.capabilities.get("tools")
+                        and application_tool_context.capabilities.get("web_search")):
+                    web_search_mode = None
+
+                web_search_mode, filtered_tools = await application_search_catalog(
+                    current_user.id, conversation_id, machine, model, web_search_mode,
+                    application_tool_context, filtered_tools, tools)
+
                 if runtime_kind == "openai_realtime":
                     if machine != "GPT":
                         raise ValueError(
@@ -2825,11 +2926,11 @@ async def get_ai_response(
                         from subscription_auth import call_gptsub_api
                     except ImportError:
                         logger.error("GPTSub provider module unavailable")
-                        yield f"data: {orjson.dumps({'error': 'This option is temporarily unavailable.'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'provider_unavailable', 'error': 'This option is temporarily unavailable.'}).decode()}\n\n"
                         return
                     if call_gptsub_api is None:
                         logger.error("GPTSub provider failed to initialize")
-                        yield f"data: {orjson.dumps({'error': 'This option is temporarily unavailable.'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'provider_unavailable', 'error': 'This option is temporarily unavailable.'}).decode()}\n\n"
                         return
                     api_func = call_gptsub_api
                     provider_tools = None  # Chat-only: no Aurvek tools through GPTSub
@@ -2914,7 +3015,7 @@ async def get_ai_response(
                     # Authoritative fail-closed gate for the main chat path. gptsub_allowed
                     # already covers the kill-switch, so no separate flag read is needed.
                     if not await gptsub_allowed(current_user, model=model):
-                        yield f"data: {orjson.dumps({'error': 'This option is not available right now.'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'provider_unavailable', 'error': 'This option is not available right now.'}).decode()}\n\n"
                         return
                 else:
                     is_gptsub = False
@@ -2945,7 +3046,7 @@ async def get_ai_response(
                         # own_only mode without configured key - should have been caught earlier
                         # but double-check here for security
                         logger.error(f"User {current_user.id} in own_only mode without API key for {machine}")
-                        yield f"data: {orjson.dumps({'error': 'API key required', 'action': 'configure_api_keys'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'api_keys_required', 'error': 'API key required', 'action': 'configure_api_keys'}).decode()}\n\n"
                         return
 
                 if input_token_cost_per_million is None or output_token_cost_per_million is None:
@@ -2961,7 +3062,7 @@ async def get_ai_response(
                         )
                     cost_row = await cost_cursor.fetchone()
                     if not cost_row:
-                        yield f"data: {orjson.dumps({'error': 'LLM cost configuration is missing'}).decode()}\n\n"
+                        yield f"data: {orjson.dumps({'error_code': 'configuration_error', 'error': 'LLM cost configuration is missing'}).decode()}\n\n"
                         return
                     input_token_cost_per_million = float(cost_row[0] or 0)
                     output_token_cost_per_million = float(cost_row[1] or 0)
@@ -3018,9 +3119,9 @@ async def get_ai_response(
                 fresh_availability = await get_user_billing_availability(
                     current_user.id
                 )
-                if machine == "Claude":
-                    # Claude may make the initial request plus three pause_turn
-                    # continuations. Each continuation repeats the prior context.
+                if machine == "Claude" and web_search_mode == "native":
+                    # Server-side search may make three pause_turn continuations.
+                    # Client tools finish the request with tool_use instead.
                     maximum_input_charge = (
                         provider_input_tokens * 4 * billing_rates.input_per_token
                     )
@@ -3038,7 +3139,7 @@ async def get_ai_response(
                     fresh_availability["available"] - maximum_input_charge
                 )
                 if available_for_output < -1e-12:
-                    yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                     return
                 if maximum_output_rate > 0:
                     affordable_output = math.floor(
@@ -3046,7 +3147,7 @@ async def get_ai_response(
                     )
                     max_tokens = min(max_tokens, affordable_output)
                 if max_tokens < 1:
-                    yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                     return
                 billing_preflight_amount = (
                     maximum_input_charge + max_tokens * maximum_output_rate
@@ -3094,7 +3195,7 @@ async def get_ai_response(
                     current_user.id,
                     billing_preflight_amount,
                 ):
-                    yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                     return
 
                 try:
@@ -3104,11 +3205,11 @@ async def get_ai_response(
                         maximum_amount=billing_preflight_amount,
                     )
                 except InsufficientBalanceError:
-                    yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                     return
                 except BillingReservationError:
                     logger.exception("Could not reserve AI usage")
-                    yield f"data: {orjson.dumps({'error': 'AI billing is temporarily unavailable'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'error_code': 'billing_unavailable', 'error': 'AI billing is temporarily unavailable'}).decode()}\n\n"
                     return
                 kwargs["billing_reservation_id"] = ai_reservation_id
                 billing_preflight_amount = 0.0
@@ -3116,6 +3217,7 @@ async def get_ai_response(
                 # Peek at first chunk to detect image download errors
                 first_chunk = None
                 prefetched_chunks = []
+                await _revalidate_application_provider_call()
                 api_stream = api_func(**kwargs)
                 async for chunk in api_stream:
                     if _is_perf_trace_chunk(chunk):
@@ -3140,6 +3242,7 @@ async def get_ai_response(
                             kwargs["messages"] = api_messages_b64
                             first_chunk = None
                             prefetched_chunks = []
+                            await _revalidate_application_provider_call()
                             api_stream = api_func(**kwargs)
                             async for chunk in api_stream:
                                 if _is_perf_trace_chunk(chunk):
@@ -3197,9 +3300,28 @@ async def get_ai_response(
 
                 # If a tool call was collected, handle it
                 if collected_tool_call:
+                    if application_tool_context is not None:
+                        from integrations.applications.tools import authorize_application_tool
+                        from integrations.embed.models import EmbedError
+                        try:
+                            if collected_tool_call['name'] not in {
+                                    tool.get('function', {}).get('name') for tool in filtered_tools}:
+                                raise EmbedError("application_tool_denied", 403)
+                            await authorize_application_tool(current_user.id, conversation_id,
+                                collected_tool_call['name'], collected_tool_call['arguments'],
+                                offered_tools=filtered_tools)
+                        except EmbedError as exc:
+                            yield f"data: {orjson.dumps({'error': exc.code}).decode()}\n\n"
+                            return
                     realtime_tool_pending = runtime_kind == "openai_realtime"
                     function_name = collected_tool_call['name']
                     function_arguments = collected_tool_call['arguments']
+                    application_tool_budget = None
+                    if application_tool_context is not None and function_name != "transfer_to_assistant":
+                        from ai_runtime.tooling.context_budget import prepare_application_tool_budget
+                        application_tool_budget = await prepare_application_tool_budget(api_messages, collected_tool_call,
+                            machine=machine, full_prompt=full_prompt, llm_id=llm_id, prompt_id=prompt_id,
+                            max_tokens=max_tokens, provider_tools=provider_tools)
                     initial_tool_input_tokens, initial_tool_output_tokens = (
                         _resolve_tool_call_billing_usage(
                             collected_tool_call,
@@ -3215,7 +3337,17 @@ async def get_ai_response(
                     second_input_tokens = (
                         provider_input_tokens + TOOL_RESULT_MAX_BYTES + 2_048
                     )
-                    if machine == "Claude":
+                    if application_tool_budget is not None:
+                        # The tool call (including signed reasoning) is known.
+                        # App continuations bound the result and disable tools;
+                        # do not budget another maximum-size serialized call.
+                        second_input_tokens = application_tool_budget.maximum_input_tokens(
+                            full_prompt, provider_tools)
+                        second_call_maximum = (
+                            second_input_tokens * billing_rates.input_per_token
+                            + max_tokens * billing_rates.output_per_token
+                        )
+                    elif machine == "Claude" and web_search_mode == "native":
                         second_call_maximum = (
                             second_input_tokens
                             * 4
@@ -3281,7 +3413,7 @@ async def get_ai_response(
 
                         if not query.strip():
                             logger.warning("[get_ai_response] - Perplexity second pass: empty query")
-                            yield f"data: {orjson.dumps({'error': 'Web search query was empty'}).decode()}\n\n"
+                            yield f"data: {orjson.dumps({'error_code': 'web_search_failed', 'error': 'Web search query was empty'}).decode()}\n\n"
                             return
 
                         follow_up_error = await _extend_for_tool_follow_up()
@@ -3309,7 +3441,10 @@ async def get_ai_response(
                             return
 
                         # 3. Build tool response messages (appends to api_messages in-place)
-                        _build_tool_response_messages(api_messages, collected_tool_call, perplexity_result, machine)
+                        if application_tool_budget is not None:
+                            api_messages[:] = application_tool_budget.result_messages(perplexity_result)
+                        else:
+                            _build_tool_response_messages(api_messages, collected_tool_call, perplexity_result, machine)
 
                         # 4. Preserve Claude's declared tools so its signed tool_use
                         #    round-trip remains valid, but forbid another tool call.
@@ -3337,8 +3472,9 @@ async def get_ai_response(
                             current_user.id,
                             billing_preflight_amount,
                         ):
-                            yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                            yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                             return
+                        await _revalidate_application_provider_call()
                         async for chunk in api_func(**second_kwargs):
                             yield chunk
                         # api_func handles save_to_db internally
@@ -3350,9 +3486,11 @@ async def get_ai_response(
 
                         query = function_arguments.get('query', '') if isinstance(function_arguments, dict) else str(function_arguments)
                         category = function_arguments.get('category') if isinstance(function_arguments, dict) else None
+                        help_locale = function_arguments.get('locale', 'en') if isinstance(function_arguments, dict) else 'en'
+                        english_query = function_arguments.get('english_query') if isinstance(function_arguments, dict) else None
 
-                        if not query.strip():
-                            yield f"data: {orjson.dumps({'error': 'Platform help query was empty'}).decode()}\n\n"
+                        if not isinstance(query, str) or not query.strip():
+                            yield f"data: {orjson.dumps({'error_code': 'web_search_failed', 'error': 'Platform help query was empty'}).decode()}\n\n"
                             return
 
                         logger.info(f"[get_ai_response] - Platform help lookup (category={category})")
@@ -3371,7 +3509,9 @@ async def get_ai_response(
                         user_role = role_map.get(live_role_id, 'customer')
 
                         # 2. Query the KB
-                        help_result, results_count, top_article = await lookup_platform_help(conn_ro, query, category, user_role)
+                        help_result, results_count, top_article = await lookup_platform_help(
+                            conn_ro, query, category, user_role, locale=help_locale, english_query=english_query,
+                        )
 
                         # 3. Log the query for gap analysis (fire-and-forget)
                         asyncio.create_task(log_help_query(
@@ -3380,9 +3520,10 @@ async def get_ai_response(
                         ))
 
                         # 4. Build the provider-native tool response messages.
-                        _build_tool_response_messages(
-                            api_messages, collected_tool_call, help_result, machine
-                        )
+                        if application_tool_budget is not None:
+                            api_messages[:] = application_tool_budget.result_messages(help_result)
+                        else:
+                            _build_tool_response_messages(api_messages, collected_tool_call, help_result, machine)
 
                         # 5. Keep Claude's tool declaration for its signed
                         #    continuation, while forbidding another tool call.
@@ -3407,8 +3548,9 @@ async def get_ai_response(
                             current_user.id,
                             billing_preflight_amount,
                         ):
-                            yield f"data: {orjson.dumps({'error': 'Insufficient balance'}).decode()}\n\n"
+                            yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
                             return
+                        await _revalidate_application_provider_call()
                         async for chunk in api_func(**second_kwargs):
                             yield chunk
                         return
@@ -3452,6 +3594,7 @@ async def get_ai_response(
                             billing_first_call_accumulated=bool(ai_reservation_id),
                             billing_followup_hold_amount=additional_hold,
                             tool_call=collected_tool_call,
+                            application_tool_budget=application_tool_budget,
                             provider_tools=provider_tools,
                             api_func_override=(
                                 api_func
@@ -3461,6 +3604,8 @@ async def get_ai_response(
                         ):
                             yield chunk
 
+    except ApplicationRuntimeError as exc:
+        yield f"data: {orjson.dumps({'error': exc.code, 'error_code': exc.code}).decode()}\n\n"
     except StaleChannelTurnError:
         raise
     except ValueError as ve:
@@ -3486,3 +3631,15 @@ async def get_ai_response(
                 prompt_id=prompt_id,
                 byok=byok,
             )
+        # A transfer tool has no second provider call. Only after the source
+        # transcript and every reservation are committed can its session move.
+        import sys
+        if sys.exc_info()[0] is None:
+            from integrations.applications.tool_handoff import complete_tool_handoff
+            from integrations.embed.models import EmbedError
+            try:
+                transferred = await complete_tool_handoff(current_user.id, conversation_id)
+                if transferred is not None:
+                    yield f"data: {orjson.dumps({'application_handoff': transferred}).decode()}\n\n"
+            except EmbedError as exc:
+                yield f"data: {orjson.dumps({'application_handoff_failed': {'code': exc.code}}).decode()}\n\n"

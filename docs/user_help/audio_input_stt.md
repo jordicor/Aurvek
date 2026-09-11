@@ -12,10 +12,12 @@ keywords:
   - microfono
   - voz
   - dictado
+  - retranscribe
+  - voice note
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-22
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
@@ -38,8 +40,10 @@ You can use your microphone to record a voice message, which is automatically tr
 - The recording format is WebM with Opus codec.
 - Transcription uses your account balance. If you have insufficient balance, you will receive a notification.
 - Short or silent recordings may result in an empty transcription (204 response), and no message will be sent.
+- WhatsApp and Telegram voice notes use the external-channel flow. If their original audio was retained, you can later request a new transcription from the message, review it, and accept it before it replaces the visible text.
 
 ## Related
 
 - tts_listen_messages
 - chat_search
+- external_platforms_overview

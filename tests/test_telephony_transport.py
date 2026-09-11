@@ -91,6 +91,7 @@ async def test_canonical_phone_turn_waits_for_exact_audible_confirmation():
                 yield "data: " + orjson.dumps(
                     {"message_ids": {"user": result[0], "bot": result[1]}}
                 ).decode() + "\n\n"
+                yield 'data: {"application_handoff":{"conversation_id":8,"completed":true}}\n\n'
             finally:
                 await channel_turn_registry.unregister(handle.key, handle)
 
@@ -116,6 +117,7 @@ async def test_canonical_phone_turn_waits_for_exact_audible_confirmation():
     assert (await turn.wait_for_draft()).content == "Hello there."
     assert await turn.confirm_audible("Hello there.", played_ms=900) == (101, 102)
     assert turn.handle.committed is True
+    assert turn.handoff_result == {"conversation_id": 8, "completed": True}
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
+{% set i18n_domains = ['admin_models'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}LLM Management - AURVEK{% endblock %}
+{% block title %}{{ t('admin_models.catalog.llm_management_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -9,63 +10,80 @@
         font-family: monospace;
         font-size: 0.85rem;
     }
+    .model-bulk-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 0;
+        background: var(--bg-secondary, var(--bs-body-bg));
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border-color, var(--bs-border-color));
+    }
+    .model-bulk-toolbar small { flex-basis: 100%; }
+    .model-update-status { min-height: 1.5em; margin-left: auto; }
 </style>
 {% endblock %}
 
-{% block page_title %}LLM Management{% endblock %}
+{% block page_title %}{{ t('admin_models.catalog.llm_management') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Manage language models available in your application</p>
+<p class="page-subtitle">{{ t('admin_models.catalog.manage_language_models_available_in_your_application') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <a href="/admin/llm/new" class="btn btn-success">
-    <i class="fas fa-plus me-1"></i>Add New Model
+    <i class="fas fa-plus me-1"></i>{{ t('admin_models.catalog.add_new_model') }}
 </a>
 {% endblock %}
 
 {% block tabs %}
 <div class="internal-tabs">
-    <a href="/admin/llms" class="internal-tab active">All Models</a>
+    <a href="/admin/llms" class="internal-tab active">{{ t('admin_models.catalog.all_models') }}</a>
     <a href="/admin/models" class="internal-tab">
-        <i class="fas fa-sync me-1"></i> Provider Sync
+        <i class="fas fa-sync me-1"></i> {{ t('admin_models.catalog.provider_sync') }}
     </a>
 </div>
 {% endblock %}
 
 {% block content %}
+{% include 'llms/catalog_auto_update.html' %}
+<fieldset id="llmCatalogControls" class="border-0 p-0 m-0" style="min-width: 0;" disabled>
 <!-- Stats -->
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-robot"></i> <strong id="totalCount">{{ llms|length }}</strong> Total Models
+        <i class="fas fa-robot"></i> <strong id="totalCount">{{ format_number(llms|length) }}</strong> {{ t('admin_models.catalog.total_models') }}
     </span>
     <span class="stat-badge" id="statsFiltered" style="display: none;">
-        <i class="fas fa-filter"></i> <strong id="filteredCount">0</strong> Shown
+        <i class="fas fa-filter"></i> <strong id="filteredCount">0</strong> {{ t('admin_models.catalog.shown') }}
     </span>
     {% set vision_count = llms|selectattr('vision')|list|length %}
     <span class="stat-badge">
-        <i class="fas fa-eye"></i> <strong>{{ vision_count }}</strong> Vision Models
+        <i class="fas fa-eye"></i> <strong id="visionCount">{{ format_number(vision_count) }}</strong> {{ t('admin_models.catalog.vision_models') }}
     </span>
     {% set enabled_count = llms|selectattr('enabled')|list|length %}
     <span class="stat-badge">
-        <i class="fas fa-toggle-on"></i> <strong>{{ enabled_count }}</strong> Enabled
+        <i class="fas fa-toggle-on"></i> <strong id="enabledCount">{{ format_number(enabled_count) }}</strong> {{ t('admin_models.catalog.enabled') }}
     </span>
     <span class="stat-badge" id="statsSelected" style="display: none;">
-        <i class="fas fa-check-square"></i> <strong id="selectedCount">0</strong> Selected
+        <i class="fas fa-check-square"></i> <strong id="selectedCount">0</strong> {{ t('admin_models.catalog.selected') }}
     </span>
 </div>
 
 <!-- Filters Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-filter"></i> Filters
+        <i class="fas fa-filter"></i> {{ t('admin_models.catalog.filters') }}
     </div>
     <div class="flex-row">
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Provider</label>
+                <label class="form-label" for="providerFilter">{{ t('admin_models.field.provider') }}</label>
                 <select class="form-select" id="providerFilter" onchange="applyFilters()">
-                    <option value="">All Providers</option>
+                    <option value="">{{ t('admin_models.catalog.all_providers') }}</option>
                     {% for provider in providers %}
                     <option value="{{ provider }}">{{ provider }}</option>
                     {% endfor %}
@@ -74,39 +92,39 @@
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Search</label>
-                <input type="text" class="form-control" id="searchFilter" placeholder="Search by model name..." oninput="applyFilters()">
+                <label class="form-label" for="searchFilter">{{ t('admin_models.catalog.search') }}</label>
+                <input type="text" class="form-control" id="searchFilter" placeholder="{{ t('admin_models.catalog.search_by_model_name') }}" oninput="applyFilters()">
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Vision Capability</label>
+                <label class="form-label" for="visionFilter">{{ t('admin_models.field.vision') }}</label>
                 <select class="form-select" id="visionFilter" onchange="applyFilters()">
-                    <option value="">All Models</option>
-                    <option value="yes">Vision Only</option>
-                    <option value="no">No Vision</option>
+                    <option value="">{{ t('admin_models.catalog.all_models') }}</option>
+                    <option value="yes">{{ t('admin_models.catalog.vision_only') }}</option>
+                    <option value="no">{{ t('admin_models.catalog.no_vision') }}</option>
                 </select>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Availability</label>
+                <label class="form-label" for="enabledFilter">{{ t('admin_models.catalog.availability') }}</label>
                 <select class="form-select" id="enabledFilter" onchange="applyFilters()">
-                    <option value="">All</option>
-                    <option value="yes">Enabled</option>
-                    <option value="no">Disabled</option>
+                    <option value="">{{ t('admin_models.catalog.all') }}</option>
+                    <option value="yes">{{ t('admin_models.catalog.enabled') }}</option>
+                    <option value="no">{{ t('admin_models.catalog.disabled') }}</option>
                 </select>
             </div>
         </div>
         <div class="flex-column">
             <div class="mb-3">
-                <label class="form-label">Sort By</label>
+                <label class="form-label" for="sortBy">{{ t('admin_models.catalog.sort_by') }}</label>
                 <select class="form-select" id="sortBy" onchange="applyFilters()">
-                    <option value="model">Model Name (A-Z)</option>
-                    <option value="model-desc">Model Name (Z-A)</option>
-                    <option value="provider">Provider</option>
-                    <option value="input-price">Input Price (Low-High)</option>
-                    <option value="output-price">Output Price (Low-High)</option>
+                    <option value="model">{{ t('admin_models.catalog.model_name_a_z') }}</option>
+                    <option value="model-desc">{{ t('admin_models.catalog.model_name_z_a') }}</option>
+                    <option value="provider">{{ t('admin_models.field.provider') }}</option>
+                    <option value="input-price">{{ t('admin_models.catalog.input_price_low_high') }}</option>
+                    <option value="output-price">{{ t('admin_models.catalog.output_price_low_high') }}</option>
                 </select>
             </div>
         </div>
@@ -116,67 +134,78 @@
 <!-- Models Table Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-list"></i> Language Models
-        <span style="margin-left: auto; display: flex; gap: 8px;">
-            <button id="deleteSelectedButton" onclick="deleteSelectedLlms()" class="btn btn-sm btn-outline-danger" style="display:none;">
-                <i class="fas fa-trash"></i> Delete Selected
-            </button>
-            <button id="selectButton" onclick="toggleSelection()" class="btn btn-sm btn-outline-secondary">
-                <i class="fas fa-check-square"></i> Select
-            </button>
-        </span>
+        <i class="fas fa-list"></i> {{ t('admin_models.catalog.language_models') }}
+    </div>
+    <div class="model-bulk-toolbar">
+        <span id="bulkSelectionCount">{{ t('admin_models.catalog.none_selected') }}</span>
+        <button id="enableSelectedButton" onclick="setSelectedEnabled(true)" class="btn btn-sm btn-outline-success" disabled>
+            <i class="fas fa-toggle-on me-1"></i>{{ t('admin_models.catalog.enable_selected') }}
+        </button>
+        <button id="disableSelectedButton" onclick="setSelectedEnabled(false)" class="btn btn-sm btn-outline-secondary" disabled>
+            <i class="fas fa-toggle-off me-1"></i>{{ t('admin_models.catalog.disable_selected') }}
+        </button>
+        <button id="clearSelectionButton" onclick="clearSelection()" class="btn btn-sm btn-outline-secondary" disabled>{{ t('admin_models.catalog.clear_selection') }}</button>
+        <button id="deleteSelectedButton" onclick="deleteSelectedLlms()" class="btn btn-sm btn-outline-danger" disabled>
+            <i class="fas fa-trash me-1"></i>{{ t('admin_models.catalog.delete_selected') }}
+        </button>
+        <span id="modelUpdateStatus" class="model-update-status small" role="status" aria-live="polite"></span>
+        <small class="text-muted">{{ t('admin_models.catalog.select_models_to_update_together_models_hidden_by_a_filter_are_deselected_synced_mode') }}</small>
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
                     <th style="width: 40px;">
-                        <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" style="display:none; cursor:pointer; transform: scale(1.2);">
+                        <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" aria-label="{{ t('admin_models.catalog.select_all_shown_models') }}" title="{{ t('admin_models.catalog.select_all_shown_models') }}" class="form-check-input">
                     </th>
-                    <th>Enabled</th>
-                    <th>Provider</th>
-                    <th>Model</th>
-                    <th>Context</th>
-                    <th>Max Output</th>
-                    <th>Input Cost ($/1M)</th>
-                    <th>Output Cost ($/1M)</th>
-                    <th>Vision</th>
-                    <th>Status</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('admin_models.catalog.enabled') }}</th>
+                    <th>{{ t('admin_models.field.provider') }}</th>
+                    <th>{{ t('admin_models.catalog.model') }}</th>
+                    <th>{{ t('admin_models.catalog.context') }}</th>
+                    <th>{{ t('admin_models.catalog.max_output') }}</th>
+                    <th>{{ t('admin_models.catalog.input_cost_1m') }}</th>
+                    <th>{{ t('admin_models.catalog.output_cost_1m') }}</th>
+                    <th>{{ t('admin_models.catalog.vision') }}</th>
+                    <th>{{ t('admin_models.catalog.status') }}</th>
+                    <th class="text-end">{{ t('admin_models.catalog.actions') }}</th>
                 </tr>
             </thead>
             <tbody id="llmTableBody">
                 {% for llm in llms %}
+                {% set managed = llm.machine|lower == 'gptsub' or (llm.machine|lower == 'gransabio' and llm.model == 'gransabio-pipeline') %}
                 <tr class="llm-row"
                     data-provider="{{ llm.machine }}"
                     data-model="{{ (llm.display_name or llm.model)|lower }}"
+                    data-model-id="{{ llm.model|lower }}"
+                    data-managed="{{ 'yes' if managed else 'no' }}"
+                    data-deletable="{{ 'no' if llm.sync_managed or managed else 'yes' }}"
                     data-vision="{{ 'yes' if llm.vision else 'no' }}"
                     data-enabled="{{ 'yes' if llm.enabled else 'no' }}"
                     data-input-price="{{ llm.input_token_cost }}"
                     data-output-price="{{ llm.output_token_cost }}"
                     data-id="{{ llm.id }}">
                     <td>
-                        {% if llm.sync_managed %}
-                        <input type="checkbox" class="llm-checkbox" value="{{ llm.id }}" disabled title="Disable synced models instead of bulk deleting them" style="display:none; cursor:not-allowed; transform: scale(1.2); opacity: 0.4;">
-                        {% else %}
-                        <input type="checkbox" class="llm-checkbox" value="{{ llm.id }}" onclick="event.stopPropagation(); updateSelectedCount();" style="display:none; cursor:pointer; transform: scale(1.2);">
-                        {% endif %}
+                        <input type="checkbox" class="llm-checkbox form-check-input" value="{{ llm.id }}"
+                               aria-label="{{ t('admin_models.action.select_model', model=llm.display_name or llm.model) }}"
+                               {% if managed %}disabled title="{{ t('admin_models.catalog.availability_is_managed_automatically') }}"{% endif %}
+                               onchange="updateSelectedCount()">
                     </td>
                     <td>
-                        {% if llm.machine == 'GPTSub' %}
+                        {% if managed %}
                         <button type="button"
                                 class="btn btn-sm {{ 'btn-outline-success' if llm.enabled else 'btn-outline-secondary' }}"
                                 disabled
-                                title="Managed by linked-account catalog synchronization"
+                                title="{{ t('admin_models.catalog.availability_is_managed_automatically') }}"
                                 data-bs-toggle="tooltip">
                             <i class="fas {{ 'fa-toggle-on' if llm.enabled else 'fa-toggle-off' }}"></i>
                         </button>
                         {% else %}
                         <button type="button"
-                                class="btn btn-sm {{ 'btn-outline-success' if llm.enabled else 'btn-outline-secondary' }}"
-                                onclick="toggleLlmEnabled({{ llm.id }}, {{ 'false' if llm.enabled else 'true' }})"
-                                title="{{ 'Disable' if llm.enabled else 'Enable' }}"
-                                data-bs-toggle="tooltip">
+                                class="llm-toggle btn btn-sm {{ 'btn-outline-success' if llm.enabled else 'btn-outline-secondary' }}"
+                                onclick="toggleLlmEnabled({{ llm.id }})"
+                                title="{{ t('admin_models.catalog.disable' if llm.enabled else 'admin_models.catalog.enable') }}"
+                                aria-label="{{ t('admin_models.action.disable_model' if llm.enabled else 'admin_models.action.enable_model', model=llm.display_name or llm.model) }}"
+                                aria-pressed="{{ 'true' if llm.enabled else 'false' }}">
                             <i class="fas {{ 'fa-toggle-on' if llm.enabled else 'fa-toggle-off' }}"></i>
                         </button>
                         {% endif %}
@@ -190,28 +219,30 @@
                         <br><small class="text-muted">{{ llm.model }}</small>
                         {% endif %}
                     </td>
-                    <td>{{ "{:,}".format(llm.context_window_tokens) if llm.context_window_tokens else '-' }}</td>
-                    <td>{{ "{:,}".format(llm.max_output_tokens) if llm.max_output_tokens else '-' }}</td>
-                    <td class="price-cell">${{ "%.4f"|format(llm.input_token_cost) }}</td>
-                    <td class="price-cell">${{ "%.4f"|format(llm.output_token_cost) }}</td>
+                    <td>{{ format_number(llm.context_window_tokens) if llm.context_window_tokens else '-' }}</td>
+                    <td>{{ format_number(llm.max_output_tokens) if llm.max_output_tokens else '-' }}</td>
+                    <td class="price-cell">{{ format_currency(llm.input_token_cost, 'USD', 4) }}</td>
+                    <td class="price-cell">{{ format_currency(llm.output_token_cost, 'USD', 4) }}</td>
                     <td>
                         {% if llm.vision %}
-                        <span class="vision-badge"><i class="fas fa-eye me-1"></i>Vision</span>
+                        <span class="vision-badge"><i class="fas fa-eye me-1"></i>{{ t('admin_models.catalog.vision') }}</span>
                         {% else %}
                         <span class="text-muted">-</span>
                         {% endif %}
                     </td>
-                    <td><span class="badge bg-secondary">{{ llm.sync_status or 'manual' }}</span></td>
+                    <td><span class="badge bg-secondary">{{ t('admin_models.status.' ~ (llm.sync_status if llm.sync_status in ['manual', 'synced', 'stale', 'needs_review', 'new'] else 'unknown')) if llm.sync_status else t('admin_models.status.manual') }}</span></td>
                     <td class="text-end table-actions">
-                        {% if llm.machine == 'GPTSub' %}
-                        <span class="badge bg-secondary" title="Managed from Subscription Auth">Managed</span>
+                        {% if managed %}
+                        <span class="badge bg-secondary" title="{{ t('admin_models.catalog.managed_automatically') }}">{{ t('admin_models.catalog.managed') }}</span>
                         {% else %}
-                        <a href="/admin/llm/edit/{{ llm.id }}" class="btn btn-sm btn-outline-primary" title="Edit" data-bs-toggle="tooltip">
+                        <a href="/admin/llm/edit/{{ llm.id }}" class="btn btn-sm btn-outline-primary" title="{{ t('admin_models.catalog.edit') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-edit"></i>
                         </a>
-                        <button onclick="deleteLlm({{ llm.id }})" class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="tooltip">
+                        {% if not llm.sync_managed %}
+                        <button onclick="deleteLlm({{ llm.id }})" class="btn btn-sm btn-outline-danger" title="{{ t('admin_models.catalog.delete') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-trash"></i>
                         </button>
+                        {% endif %}
                         {% endif %}
                     </td>
                 </tr>
@@ -220,10 +251,15 @@
         </table>
     </div>
 </div>
+</fieldset>
 {% endblock %}
 
 {% block scripts_inline %}
 <script>
+    const modelText = (key, params) => AurvekI18n.t(`admin_models.${key}`, params);
+    let updatingModels = false;
+    const filterIds = ['providerFilter', 'searchFilter', 'visionFilter', 'enabledFilter', 'sortBy'];
+
     // --- Helper: transition modal in-place (avoids backdrop stacking) ---
     function transitionModal(type, title, message, allowHtml = false) {
         const el = NotificationModal._modalElement;
@@ -235,7 +271,7 @@
             message: message,
             showCancel: false,
             showConfirm: true,
-            confirmText: 'OK',
+            confirmText: modelText('catalog.ok'),
             allowHtml: allowHtml
         });
         const btn = document.getElementById('notificationModalConfirmBtn');
@@ -247,8 +283,8 @@
     // --- Single delete (with modal) ---
     function deleteLlm(llmId) {
         NotificationModal.confirm(
-            'Delete LLM',
-            'Are you sure you want to delete this model? This action cannot be undone.',
+            modelText('catalog.delete_llm'),
+            modelText('catalog.are_you_sure_you_want_to_delete_this_model_this_action_cannot_be_undone'),
             () => {
                 fetch(`/admin/llm/delete/${llmId}`, {
                     method: 'DELETE'
@@ -257,35 +293,37 @@
                         const row = document.querySelector(`tr[data-id="${llmId}"]`);
                         if (row) row.remove();
                         updateStats();
-                        transitionModal('success', 'Deleted', 'Model deleted successfully.');
+                        transitionModal('success', modelText('catalog.deleted'), modelText('catalog.model_deleted_successfully'));
                     } else {
-                        transitionModal('error', 'Delete Failed', 'Failed to delete LLM. Please try again.');
+                        transitionModal('error', modelText('catalog.delete_failed'), modelText('catalog.failed_to_delete_llm_please_try_again'));
                     }
                 }).catch(() => {
-                    transitionModal('error', 'Error', 'Network error. Please try again.');
+                    transitionModal('error', modelText('catalog.error'), modelText('catalog.network_error_please_try_again'));
                 });
             },
             null,
-            { confirmText: 'Delete', cancelText: 'Cancel', hideOnConfirm: false }
+            { confirmText: modelText('catalog.delete'), cancelText: modelText('action.cancel'), hideOnConfirm: false }
         );
     }
 
     // --- Bulk delete (with modal + loading) ---
     function deleteSelectedLlms() {
+        if (updatingModels) return;
         const checkboxes = document.querySelectorAll('.llm-checkbox:checked');
+        if (Array.from(checkboxes).some(cb => cb.closest('tr').dataset.deletable !== 'yes')) return;
         const idsToDelete = Array.from(checkboxes).map(cb => parseInt(cb.value));
 
         if (idsToDelete.length === 0) {
-            NotificationModal.warning('No Selection', 'Please select at least one model to delete.');
+            NotificationModal.warning(modelText('catalog.no_selection'), modelText('catalog.please_select_at_least_one_model_to_delete'));
             return;
         }
 
         NotificationModal.confirm(
-            'Delete Selected',
-            `Are you sure you want to delete ${idsToDelete.length} selected model(s)? This action cannot be undone.`,
+            modelText('catalog.delete_selected'),
+            modelText('delete.confirm', {count: idsToDelete.length, number: AurvekI18n.formatNumber(idsToDelete.length)}),
             () => {
                 // Transition to loading state in-place (same modal, no new backdrop)
-                transitionModal('info', 'Deleting...', '<div class="text-center py-3"><i class="fas fa-spinner fa-spin fa-2x"></i><div class="mt-2">Deleting selected models...</div></div>', true);
+                transitionModal('info', modelText('catalog.deleting'), modelText('delete.progress'));
                 const confirmBtn = document.getElementById('notificationModalConfirmBtn');
                 confirmBtn.style.display = 'none';
 
@@ -301,56 +339,24 @@
                             const row = document.querySelector(`tr[data-id="${id}"]`);
                             if (row) row.remove();
                         });
-                        toggleSelection();
+                        clearSelection();
                         updateStats();
-                        transitionModal('success', 'Deleted', `Successfully deleted ${data.deleted} model(s).`);
+                        transitionModal('success', modelText('catalog.deleted'), modelText('delete.success', {count: data.deleted, number: AurvekI18n.formatNumber(data.deleted)}));
                     } else {
-                        transitionModal('error', 'Delete Failed', data.detail || 'Failed to delete models. Please try again.');
+                        transitionModal('error', modelText('catalog.delete_failed'), data.detail || modelText('catalog.failed_to_delete_models_please_try_again'));
                     }
                 })
                 .catch(() => {
-                    transitionModal('error', 'Error', 'Network error. Please try again.');
+                    transitionModal('error', modelText('catalog.error'), modelText('catalog.network_error_please_try_again'));
                 });
             },
             null,
-            { confirmText: 'Delete', cancelText: 'Cancel', hideOnConfirm: false }
+            { confirmText: modelText('catalog.delete'), cancelText: modelText('action.cancel'), hideOnConfirm: false }
         );
     }
 
-    // --- Selection mode toggle ---
-    function toggleSelection() {
-        const checkboxes = document.querySelectorAll('.llm-checkbox');
-        const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-        const isHidden = checkboxes.length === 0 || checkboxes[0].style.display === 'none';
-        const selectButton = document.getElementById('selectButton');
-        const deleteButton = document.getElementById('deleteSelectedButton');
-        const statsSelected = document.getElementById('statsSelected');
-
-        if (isHidden) {
-            checkboxes.forEach(cb => {
-                cb.checked = false;
-                cb.style.display = 'inline';
-            });
-            selectAllCheckbox.style.display = 'inline';
-            selectAllCheckbox.checked = false;
-            selectButton.innerHTML = '<i class="fas fa-times"></i> Cancel';
-            selectButton.classList.remove('btn-outline-secondary');
-            selectButton.classList.add('btn-secondary');
-            deleteButton.style.display = 'inline-block';
-            statsSelected.style.display = 'inline-flex';
-        } else {
-            checkboxes.forEach(cb => {
-                cb.style.display = 'none';
-                cb.checked = false;
-            });
-            selectAllCheckbox.style.display = 'none';
-            selectAllCheckbox.checked = false;
-            selectButton.innerHTML = '<i class="fas fa-check-square"></i> Select';
-            selectButton.classList.remove('btn-secondary');
-            selectButton.classList.add('btn-outline-secondary');
-            deleteButton.style.display = 'none';
-            statsSelected.style.display = 'none';
-        }
+    function clearSelection() {
+        document.querySelectorAll('.llm-checkbox:checked').forEach(cb => { cb.checked = false; });
         updateSelectedCount();
     }
 
@@ -369,11 +375,22 @@
 
     // --- Update selected counter + sync selectAll state ---
     function updateSelectedCount() {
-        const checkedCount = document.querySelectorAll('.llm-checkbox:checked').length;
-        document.getElementById('selectedCount').textContent = checkedCount;
+        const checked = Array.from(document.querySelectorAll('.llm-checkbox:checked'));
+        const checkedCount = checked.length;
+        document.getElementById('selectedCount').textContent = AurvekI18n.formatNumber(checkedCount);
+        document.getElementById('bulkSelectionCount').textContent = modelText('selection.count', {number: AurvekI18n.formatNumber(checkedCount)});
+        document.getElementById('statsSelected').style.display = checkedCount ? 'inline-flex' : 'none';
+        document.getElementById('enableSelectedButton').disabled = updatingModels || !checked.some(cb => cb.closest('tr').dataset.enabled === 'no');
+        document.getElementById('disableSelectedButton').disabled = updatingModels || !checked.some(cb => cb.closest('tr').dataset.enabled === 'yes');
+        document.getElementById('clearSelectionButton').disabled = updatingModels || !checkedCount;
+        const deleteButton = document.getElementById('deleteSelectedButton');
+        const canDelete = checkedCount && checked.every(cb => cb.closest('tr').dataset.deletable === 'yes');
+        deleteButton.disabled = updatingModels || !canDelete;
+        deleteButton.title = checkedCount && !canDelete ? modelText('catalog.only_manual_models_can_be_deleted_use_disable_selected_for_synced_models') : modelText('catalog.delete_selected_manual_models');
 
         const selectableVisible = Array.from(document.querySelectorAll('.llm-checkbox:not(:disabled)')).filter(cb => cb.closest('tr').style.display !== 'none');
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+        selectAllCheckbox.disabled = updatingModels || !selectableVisible.length;
         if (selectableVisible.length > 0) {
             const visibleChecked = selectableVisible.filter(cb => cb.checked).length;
             selectAllCheckbox.checked = visibleChecked === selectableVisible.length;
@@ -385,7 +402,7 @@
     }
 
     // --- Filters & sorting ---
-    function applyFilters() {
+    function applyFilters(sortRows = true) {
         const providerFilter = document.getElementById('providerFilter').value;
         const searchFilter = document.getElementById('searchFilter').value.toLowerCase();
         const visionFilter = document.getElementById('visionFilter').value;
@@ -403,18 +420,19 @@
 
             let visible = true;
             if (providerFilter && provider !== providerFilter) visible = false;
-            if (searchFilter && !model.includes(searchFilter)) visible = false;
+            if (searchFilter && !(model + ' ' + row.dataset.modelId).includes(searchFilter)) visible = false;
             if (visionFilter && vision !== visionFilter) visible = false;
             if (enabledFilter && enabled !== enabledFilter) visible = false;
 
             row.style.display = visible ? '' : 'none';
+            if (!visible) row.querySelector('.llm-checkbox').checked = false;
             if (visible) visibleCount++;
         });
 
         const tbody = document.getElementById('llmTableBody');
         const visibleRows = rows.filter(r => r.style.display !== 'none');
 
-        visibleRows.sort((a, b) => {
+        if (sortRows) visibleRows.sort((a, b) => {
             switch (sortBy) {
                 case 'model':
                     return a.dataset.model.localeCompare(b.dataset.model);
@@ -432,48 +450,134 @@
             }
         });
 
-        visibleRows.forEach(row => tbody.appendChild(row));
-        rows.filter(r => r.style.display === 'none').forEach(row => tbody.appendChild(row));
+        if (sortRows) {
+            visibleRows.forEach(row => tbody.appendChild(row));
+            rows.filter(r => r.style.display === 'none').forEach(row => tbody.appendChild(row));
+        }
 
         const totalCount = rows.length;
         const statsFiltered = document.getElementById('statsFiltered');
         if (visibleCount !== totalCount) {
             statsFiltered.style.display = 'inline-flex';
-            document.getElementById('filteredCount').textContent = visibleCount;
+            document.getElementById('filteredCount').textContent = AurvekI18n.formatNumber(visibleCount);
         } else {
             statsFiltered.style.display = 'none';
         }
 
         // Sync selectAll checkbox when filters change
         updateSelectedCount();
+        try {
+            sessionStorage.setItem('aurvek.llmFilters', JSON.stringify(Object.fromEntries(
+                filterIds.map(id => [id, document.getElementById(id).value])
+            )));
+        } catch (_) { /* The controls still work when browser storage is unavailable. */ }
     }
 
     function updateStats() {
         const rows = document.querySelectorAll('.llm-row');
-        document.getElementById('totalCount').textContent = rows.length;
-        applyFilters();
+        document.getElementById('totalCount').textContent = AurvekI18n.formatNumber(rows.length);
+        document.getElementById('visionCount').textContent = AurvekI18n.formatNumber(Array.from(rows).filter(row => row.dataset.vision === 'yes').length);
+        document.getElementById('enabledCount').textContent = AurvekI18n.formatNumber(Array.from(rows).filter(row => row.dataset.enabled === 'yes').length);
+        applyFilters(false);
     }
 
-    async function toggleLlmEnabled(llmId, enabled) {
+    function toggleLlmEnabled(llmId) {
+        const row = document.querySelector(`.llm-row[data-id="${llmId}"]`);
+        return updateEnabled([llmId], row.dataset.enabled !== 'yes');
+    }
+
+    function setSelectedEnabled(enabled) {
+        const ids = Array.from(document.querySelectorAll('.llm-checkbox:checked'))
+            .filter(cb => cb.closest('tr').dataset.enabled !== (enabled ? 'yes' : 'no'))
+            .map(cb => Number(cb.value));
+        return updateEnabled(ids, enabled);
+    }
+
+    function setUpdatingModels(updating) {
+        updatingModels = updating;
+        document.querySelectorAll('.llm-row').forEach(row => {
+            row.querySelector('.llm-checkbox').disabled = updating || row.dataset.managed === 'yes';
+            const toggle = row.querySelector('.llm-toggle');
+            if (toggle) toggle.disabled = updating;
+        });
+        updateSelectedCount();
+    }
+
+    async function updateEnabled(llmIds, enabled) {
+        if (updatingModels || !llmIds.length) return;
+        setUpdatingModels(true);
+        const status = document.getElementById('modelUpdateStatus');
+        status.textContent = modelText('catalog.saving_changes');
         try {
-            const response = await fetch(`/api/admin/llms/${llmId}/enabled`, {
+            const response = await fetch('/api/admin/llms/enabled', {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled })
+                body: JSON.stringify({ llm_ids: llmIds, enabled })
             });
             const data = await response.json();
             if (!response.ok || data.error) {
-                throw new Error(data.error || data.detail || 'Failed to update model');
+                throw new Error(data.error || data.detail || modelText('catalog.failed_to_update_model'));
             }
-            window.location.reload();
+            const scrollX = window.scrollX;
+            const scrollY = window.scrollY;
+            data.models.forEach(model => {
+                const row = document.querySelector(`.llm-row[data-id="${model.id}"]`);
+                if (!row) return;
+                row.dataset.enabled = model.enabled ? 'yes' : 'no';
+                const toggle = row.querySelector('.llm-toggle');
+                toggle.classList.toggle('btn-outline-success', Boolean(model.enabled));
+                toggle.classList.toggle('btn-outline-secondary', !model.enabled);
+                toggle.title = model.enabled ? modelText('catalog.disable') : modelText('catalog.enable');
+                toggle.setAttribute('aria-label', modelText(model.enabled ? 'action.disable_model' : 'action.enable_model', {model: row.querySelector('td strong').textContent}));
+                toggle.setAttribute('aria-pressed', model.enabled ? 'true' : 'false');
+                toggle.querySelector('i').className = 'fas ' + (model.enabled ? 'fa-toggle-on' : 'fa-toggle-off');
+            });
+            updateStats();
+            window.scrollTo(scrollX, scrollY);
+            status.textContent = modelText(enabled ? 'selection.enabled' : 'selection.disabled', {count: data.models.length, number: AurvekI18n.formatNumber(data.models.length)});
         } catch (error) {
-            NotificationModal.error('Update Failed', error.message);
+            status.textContent = modelText('selection.failed', {error: error.message});
+        } finally {
+            setUpdatingModels(false);
         }
     }
 
     // Initialize
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const savedFilters = JSON.parse(sessionStorage.getItem('aurvek.llmFilters') || '{}');
+            filterIds.forEach(id => {
+                const control = document.getElementById(id);
+                if (typeof savedFilters[id] === 'string') control.value = savedFilters[id];
+            });
+        } catch (_) { /* Use the initial filters if no valid saved state exists. */ }
         applyFilters();
+        try {
+            const result = await autoUpdateLlmCatalog();
+            if (result?.freshPage) {
+                const scrollX = window.scrollX;
+                const scrollY = window.scrollY;
+                const providerFilter = document.getElementById('providerFilter');
+                const selectedProvider = providerFilter.value;
+                document.querySelectorAll('#llmTableBody [data-bs-toggle="tooltip"]').forEach(element => {
+                    bootstrap.Tooltip.getInstance(element)?.dispose();
+                });
+                document.getElementById('llmTableBody').replaceChildren(
+                    ...result.freshPage.getElementById('llmTableBody').children
+                );
+                providerFilter.replaceChildren(...result.freshPage.getElementById('providerFilter').children);
+                providerFilter.value = selectedProvider;
+                applyFilters();
+                updateStats();
+                document.querySelectorAll('#llmTableBody [data-bs-toggle="tooltip"]').forEach(element => {
+                    new bootstrap.Tooltip(element);
+                });
+                window.scrollTo(scrollX, scrollY);
+            }
+        } finally {
+            document.getElementById('llmCatalogControls').disabled = false;
+            updateSelectedCount();
+        }
     });
 </script>
 {% endblock %}

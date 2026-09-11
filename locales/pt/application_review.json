@@ -1,0 +1,16 @@
+{
+  "title": "Rever conversas",
+  "read_only": "Acesso apenas de leitura. As consultas ficam registadas no registo de auditoria.",
+  "back": "Voltar às conversas",
+  "untitled": "Conversa sem título",
+  "older_messages": "Mensagens anteriores",
+  "client": "Cliente",
+  "assistant": "Assistente",
+  "unavailable": "Este ficheiro não está disponível.",
+  "audio": "Áudio conservado",
+  "empty_messages": "Não há mensagens.",
+  "applications": "Aplicações",
+  "open": "Abrir histórico",
+  "empty_conversations": "Não há conversas desta aplicação.",
+  "more": "Mais conversas"
+}

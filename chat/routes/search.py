@@ -7,6 +7,7 @@ from models import User
 
 from chat.services.privacy import ensure_conversation_privacy_schema
 from chat.services.search import build_fts_query, execute_search
+from chat.services.localization import chat_translator
 
 router = APIRouter()
 
@@ -34,6 +35,9 @@ async def search_messages(
     has_more = len(items) > limit
     if has_more:
         items = items[:limit]
+    translator = chat_translator(current_user)
+    for item in items:
+        item["chat_name"] = item["chat_name"] or translator.t("chat.chat_id", id=item["conversation_id"])
 
     return JSONResponse(content={
         "query": q,

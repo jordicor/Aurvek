@@ -16,6 +16,9 @@ from typing import Any, Literal
 from ai_runtime.channel_turns import (
     ChannelCommit,
     ChannelContext,
+    PhoneDirection,
+    PhoneRequestSource,
+    PhoneRequestTiming,
     StaleChannelTurnError,
     TurnKey,
 )
@@ -27,6 +30,11 @@ from integrations.telephony.clock import CallEndController
 from integrations.telephony.memory_outbox import (
     enqueue_phone_memory_in_transaction,
 )
+from integrations.telephony.message_audio import (
+    PhoneMessageAudioRange,
+    persist_message_audio_range_in_transaction,
+)
+from integrations.telephony.tooling import CallSchedulePolicy
 
 
 _TURN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -37,9 +45,26 @@ class PhoneTurnLinkState:
     """Mutable playback outcome shared with the transaction callback."""
 
     interrupted: bool = False
+    caller_audio_range: PhoneMessageAudioRange | None = None
+    assistant_audio_range: PhoneMessageAudioRange | None = None
 
     def mark_interrupted(self) -> None:
         self.interrupted = True
+
+    def set_audio_range(
+        self,
+        participant: Literal["caller", "assistant"],
+        audio_range: PhoneMessageAudioRange,
+    ) -> None:
+        if participant not in {"caller", "assistant"}:
+            raise ValueError("participant must be caller or assistant")
+        if not isinstance(audio_range, PhoneMessageAudioRange):
+            raise TypeError("audio_range must be a PhoneMessageAudioRange")
+        attribute = f"{participant}_audio_range"
+        existing = getattr(self, attribute)
+        if existing is not None and existing != audio_range:
+            raise RuntimeError("Phone turn audio range changed after capture")
+        setattr(self, attribute, audio_range)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +84,15 @@ def create_phone_channel_turn(
     end_controller: CallEndController | None = None,
     internal_turn_context: str | None = None,
     openai_realtime_bridge: Any | None = None,
+    ai_initiation_mode: (
+        Literal["on_request", "proactive", "disabled"] | None
+    ) = None,
+    phone_direction: PhoneDirection | None = None,
+    phone_request_source: PhoneRequestSource | None = None,
+    phone_request_timing: PhoneRequestTiming | None = None,
+    prompt_id: int | None = None,
     persistence: Literal["deferred", "ingest_only"] = "deferred",
+    application_channel=None,
 ) -> PhoneChannelTurn:
     """Create one deferred, call-fenced phone context.
 
@@ -85,6 +118,10 @@ def create_phone_channel_turn(
         is not True
     ):
         raise ValueError("phone realtime bridge is invalid")
+    if ai_initiation_mode not in {None, "on_request", "proactive", "disabled"}:
+        raise ValueError("phone AI initiation mode is invalid")
+    if prompt_id is not None and int(prompt_id) <= 0:
+        raise ValueError("phone prompt id must be positive")
 
     state = link_state or PhoneTurnLinkState()
     active_end_controller = end_controller or CallEndController()
@@ -98,6 +135,11 @@ def create_phone_channel_turn(
         raise ValueError("internal_turn_context contains unsupported controls")
 
     async def commit_guard(_context: ChannelContext, conn: Any) -> bool:
+        if application_channel is not None:
+            from integrations.applications.channels import get_application_channel_service
+            await get_application_channel_service().revalidate(
+                conn, application_channel, require_current_route=False,
+                require_current_identity=True, capability='phone')
         return await assert_commit_guard_in_transaction(conn, guard)
 
     async def link_messages(commit: ChannelCommit, conn: Any) -> None:
@@ -124,6 +166,7 @@ def create_phone_channel_turn(
             ),
             played_ms=None,
             confirmed_text=None,
+            audio_range=state.caller_audio_range,
         )
         if persistence == "ingest_only" and not commit.persistence_only:
             await enqueue_phone_memory_in_transaction(
@@ -149,6 +192,7 @@ def create_phone_channel_turn(
                 interrupted=state.interrupted,
                 played_ms=commit.played_ms,
                 confirmed_text=commit.confirmed_text,
+                audio_range=state.assistant_audio_range,
             )
         elif commit.confirmed_text or (commit.played_ms not in {None, 0}):
             raise RuntimeError(
@@ -157,6 +201,8 @@ def create_phone_channel_turn(
 
     context = ChannelContext(
         channel="phone",
+        application=application_channel.scope if application_channel else None,
+        application_channel=application_channel,
         persistence=persistence,
         input_origin="phone.live_call",
         input_perception=(
@@ -164,6 +210,9 @@ def create_phone_channel_turn(
             if openai_realtime_bridge is not None
             else "transcript_only"
         ),
+        phone_direction=phone_direction,
+        phone_request_source=phone_request_source,
+        phone_request_timing=phone_request_timing,
         turn_key=TurnKey(call_id=guard.call_id, turn_id=normalized_turn_id),
         commit_guard=commit_guard,
         on_commit_in_transaction=link_messages,
@@ -173,6 +222,16 @@ def create_phone_channel_turn(
             "turn_id": normalized_turn_id,
             "end_call_controller": active_end_controller,
             "phone_memory_outbox": persistence == "ingest_only",
+            **(
+                {
+                    "call_schedule_policy": CallSchedulePolicy(
+                        ai_initiation_mode,
+                        prompt_id=prompt_id,
+                    )
+                }
+                if ai_initiation_mode in {"on_request", "proactive"}
+                else {}
+            ),
             **(
                 {"openai_realtime_bridge": openai_realtime_bridge}
                 if openai_realtime_bridge is not None
@@ -202,6 +261,7 @@ async def _insert_compatible_link(
     interrupted: bool,
     played_ms: int | None,
     confirmed_text: str | None,
+    audio_range: PhoneMessageAudioRange | None,
 ) -> None:
     """Insert exactly once, rejecting an incompatible pre-existing link."""
 
@@ -244,10 +304,19 @@ async def _insert_compatible_link(
     )
     if row is None or tuple(row) != expected:
         raise RuntimeError("Phone message is already linked incompatibly")
+    if audio_range is not None:
+        await persist_message_audio_range_in_transaction(
+            conn,
+            call_id=call_id,
+            message_id=message_id,
+            participant=participant,
+            audio_range=audio_range,
+        )
 
 
 __all__ = [
     "PhoneChannelTurn",
+    "PhoneMessageAudioRange",
     "PhoneTurnLinkState",
     "create_phone_channel_turn",
 ]

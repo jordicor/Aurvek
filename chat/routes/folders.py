@@ -7,6 +7,8 @@ from log_config import logger
 from models import User
 from chat.services.privacy import ensure_conversation_privacy_schema
 
+from chat.services.localization import chat_text, chat_error
+
 router = APIRouter()
 
 
@@ -49,7 +51,7 @@ async def get_chat_folders(current_user: User = Depends(get_current_user)):
                 })
     except Exception as exc:
         logger.error("Error getting chat folders: %s", exc)
-        return JSONResponse(content={"error": "Failed to get folders"}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "folders_load_failed")}, status_code=500)
 
 
 @router.post("/api/chat-folders")
@@ -62,7 +64,7 @@ async def create_chat_folder(request: Request, current_user: User = Depends(get_
         name = body.get("name", "").strip()
         color = body.get("color", "#3B82F6")
         if not name:
-            return JSONResponse(content={"error": "Folder name is required"}, status_code=400)
+            return JSONResponse(content={"error": chat_text(current_user, "folder_name_required")}, status_code=400)
 
         async with get_db_connection() as conn:
             async with conn.cursor() as cursor:
@@ -71,7 +73,7 @@ async def create_chat_folder(request: Request, current_user: User = Depends(get_
                     (current_user.id, name),
                 )
                 if await cursor.fetchone():
-                    return JSONResponse(content={"error": "Folder name already exists"}, status_code=400)
+                    return JSONResponse(content={"error": chat_text(current_user, "folder_name_exists")}, status_code=400)
 
                 await cursor.execute(
                     """
@@ -81,10 +83,10 @@ async def create_chat_folder(request: Request, current_user: User = Depends(get_
                     (name, current_user.id, color),
                 )
                 await conn.commit()
-                return JSONResponse(content={"message": "Folder created successfully"}, status_code=201)
+                return JSONResponse(content={"message": chat_text(current_user, "folder_created")}, status_code=201)
     except Exception as exc:
         logger.error("Error creating chat folder: %s", exc)
-        return JSONResponse(content={"error": "Failed to create folder"}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "folder_create_failed")}, status_code=500)
 
 
 @router.put("/api/chat-folders/{folder_id}")
@@ -97,7 +99,7 @@ async def update_chat_folder(folder_id: int, request: Request, current_user: Use
         name = body.get("name", "").strip()
         color = body.get("color", "#3B82F6")
         if not name:
-            return JSONResponse(content={"error": "Folder name is required"}, status_code=400)
+            return JSONResponse(content={"error": chat_text(current_user, "folder_name_required")}, status_code=400)
 
         async with get_db_connection() as conn:
             async with conn.cursor() as cursor:
@@ -106,14 +108,14 @@ async def update_chat_folder(folder_id: int, request: Request, current_user: Use
                     (folder_id, current_user.id),
                 )
                 if not await cursor.fetchone():
-                    return JSONResponse(content={"error": "Folder not found"}, status_code=404)
+                    return JSONResponse(content={"error": chat_text(current_user, "folder_not_found")}, status_code=404)
 
                 await cursor.execute(
                     "SELECT id FROM CHAT_FOLDERS WHERE user_id = ? AND name = ? AND id != ?",
                     (current_user.id, name, folder_id),
                 )
                 if await cursor.fetchone():
-                    return JSONResponse(content={"error": "Folder name already exists"}, status_code=400)
+                    return JSONResponse(content={"error": chat_text(current_user, "folder_name_exists")}, status_code=400)
 
                 await cursor.execute(
                     """
@@ -124,10 +126,10 @@ async def update_chat_folder(folder_id: int, request: Request, current_user: Use
                     (name, color, folder_id, current_user.id),
                 )
                 await conn.commit()
-                return JSONResponse(content={"message": "Folder updated successfully"})
+                return JSONResponse(content={"message": chat_text(current_user, "folder_updated")})
     except Exception as exc:
         logger.error("Error updating chat folder: %s", exc)
-        return JSONResponse(content={"error": "Failed to update folder"}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "folder_update_failed")}, status_code=500)
 
 
 @router.delete("/api/chat-folders/{folder_id}")
@@ -144,7 +146,7 @@ async def delete_chat_folder(folder_id: int, current_user: User = Depends(get_cu
                 )
                 folder = await cursor.fetchone()
                 if not folder:
-                    return JSONResponse(content={"error": "Folder not found"}, status_code=404)
+                    return JSONResponse(content={"error": chat_text(current_user, "folder_not_found")}, status_code=404)
 
                 await cursor.execute(
                     "UPDATE CONVERSATIONS SET folder_id = NULL WHERE folder_id = ?",
@@ -155,10 +157,10 @@ async def delete_chat_folder(folder_id: int, current_user: User = Depends(get_cu
                     (folder_id, current_user.id),
                 )
                 await conn.commit()
-                return JSONResponse(content={"message": f"Folder '{folder[1]}' deleted successfully"})
+                return JSONResponse(content={"message": chat_text(current_user, "folder_deleted", name=folder[1])})
     except Exception as exc:
         logger.error("Error deleting chat folder: %s", exc)
-        return JSONResponse(content={"error": "Failed to delete folder"}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "folder_delete_failed")}, status_code=500)
 
 
 @router.post("/api/conversations/{conversation_id}/move-to-folder")
@@ -181,7 +183,7 @@ async def move_conversation_to_folder(
                     (conversation_id, current_user.id),
                 )
                 if not await cursor.fetchone():
-                    return JSONResponse(content={"error": "Conversation not found"}, status_code=404)
+                    return JSONResponse(content={"error": chat_text(current_user, "conversation_not_found")}, status_code=404)
 
                 if folder_id is not None:
                     await cursor.execute(
@@ -189,15 +191,15 @@ async def move_conversation_to_folder(
                         (folder_id, current_user.id),
                     )
                     if not await cursor.fetchone():
-                        return JSONResponse(content={"error": "Folder not found"}, status_code=404)
+                        return JSONResponse(content={"error": chat_text(current_user, "folder_not_found")}, status_code=404)
 
                 await cursor.execute(
                     "UPDATE CONVERSATIONS SET folder_id = ? WHERE id = ? AND user_id = ?",
                     (folder_id, conversation_id, current_user.id),
                 )
                 await conn.commit()
-                message = "Chat moved to folder successfully" if folder_id else "Chat removed from folder successfully"
+                message = chat_text(current_user, "folder_moved" if folder_id else "folder_removed")
                 return JSONResponse(content={"message": message})
     except Exception as exc:
         logger.error("Error moving conversation to folder: %s", exc)
-        return JSONResponse(content={"error": "Failed to move conversation"}, status_code=500)
+        return JSONResponse(content={"error": chat_text(current_user, "folder_move_failed")}, status_code=500)

@@ -1,0 +1,12 @@
+{
+  "curation.access": "Nur Konten vom Typ Benutzer oder Administrator können auf die Kurationseinstellungen zugreifen",
+  "curation.update_access": "Nur Konten vom Typ Benutzer oder Administrator können Kurationseinstellungen ändern",
+  "curation.load_failed": "Die Kurationseinstellungen konnten nicht geladen werden. Versuche es erneut.",
+  "curation.save_failed": "Die Kurationseinstellungen konnten nicht gespeichert werden. Versuche es erneut.",
+  "curation.negative": "Der Aufschlag darf nicht negativ sein",
+  "curation.maximum": "Der Aufschlag darf {amount} pro Million Tokens nicht überschreiten",
+  "curation.saved": "Kurationseinstellungen aktualisiert",
+  "curation.invalid": "Ungültiger Aufschlagswert",
+  "prompt.not_found": "Prompt nicht gefunden",
+  "access.denied": "Zugriff verweigert"
+}

@@ -62,11 +62,11 @@ test('future scheduled calls appear above history and can be canceled safely', (
     assert.match(app, /"telephony_csrf_token": ensure_csrf_token\(request\)/);
     assert.match(callsSource, /job\.status \|\| ''\)\.toLowerCase\(\) === 'scheduled'/);
     assert.match(callsSource, /!job.call_id/);
-    assert.match(callsSource, /Scheduled for/);
+    assert.match(callsSource, /t\('calls\.scheduled_for'/);
     assert.ok(callsSource.includes('/api/phone-call-jobs/'));
     assert.match(callsSource, /method: 'POST'/);
     assert.match(callsSource, /'X-GPTSub-CSRF': csrfToken/);
-    assert.match(callsSource, /cancel\.textContent = 'Cancel'/);
+    assert.match(callsSource, /cancel\.textContent = t\('action\.cancel'\)/);
 });
 
 test('Calls history aborts and rejects superseded list responses', () => {

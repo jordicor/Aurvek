@@ -1,11 +1,12 @@
 {% extends 'base.html' %}
 
-{% block title %}Home - AURVEK{% endblock %}
+{% block title %}{{ t('dashboard.home_aurvek') }}{% endblock %}
 
 {% block head_extra %}
 <meta name="aurvek-admin-csrf-token" content="{{ admin_csrf_token }}">
 {% endblock %}
 
+{% set i18n_domains = ['dashboard'] %}
 {% block styles %}
 {# Theme CSS loaded by theme-loader.js #}
 <style>
@@ -89,7 +90,7 @@
 {% block header %}
 <div class="page-header" style="border-bottom: none;">
     <div class="page-header-text">
-        <h1 class="page-title">Dashboard</h1>
+        <h1 class="page-title">{{ t('dashboard.dashboard') }}</h1>
     </div>
 </div>
 {% endblock %}
@@ -103,27 +104,27 @@
         {% if is_user or is_admin %}
         <div class="col-md-12 mb-4">
             <div class="d-flex align-items-center justify-content-center gap-2 mb-4">
-                <h5 class="fw-bold mb-0" style="font-size:1rem;">Business Tools</h5>
-                <span class="dashboard-badge-role dashboard-badge-user">User</span>
+                <h5 class="fw-bold mb-0" style="font-size:1rem;">{{ t('dashboard.business_tools') }}</h5>
+                <span class="dashboard-badge-role dashboard-badge-user">{{ t('dashboard.user') }}</span>
             </div>
             <div class="row">
                 <!-- Content card -->
                 <div class="col-md-4 mb-4">
                     <div class="section-container h-100">
-                        <div class="section-title"><i class="fas fa-file-alt"></i> Content</div>
+                        <div class="section-title"><i class="fas fa-file-alt"></i> {{ t('dashboard.content') }}</div>
                         <div class="d-flex flex-column">
-                            <a href="/prompts" class="dashboard-card-link"><i class="fas fa-magic"></i> Prompts Management</a>
+                            <a href="/prompts" class="dashboard-card-link"><i class="fas fa-magic"></i> {{ t('dashboard.prompts_management') }}</a>
                             {% if marketplace.creator_tools_enabled|default(false) %}
-                            <a href="/admin/packs" class="dashboard-card-link"><i class="fas fa-box-open"></i> Manage Packs</a>
+                            <a href="/admin/packs" class="dashboard-card-link"><i class="fas fa-box-open"></i> {{ t('dashboard.manage_packs') }}</a>
                             {% endif %}
-                            <a href="/admin/elevenlabs-agents" class="dashboard-card-link"><i class="fas fa-headset"></i> ElevenLabs Agents</a>
+                            <a href="/admin/elevenlabs-agents" class="dashboard-card-link"><i class="fas fa-headset"></i> {{ t('dashboard.elevenlabs_agents') }}</a>
                             <!-- Landing Pages subsection -->
                             {% if marketplace.creator_tools_enabled|default(false) %}
                             <hr class="my-2">
                             <div class="section-title" style="font-size: 0.9rem; margin-bottom: 0.5rem;">
-                                <i class="fas fa-globe"></i> Landing Pages
+                                <i class="fas fa-globe"></i> {{ t('dashboard.landing_pages') }}
                                 <span class="info-icon ms-auto" data-bs-toggle="tooltip" data-bs-placement="top"
-                                      title="Create a public landing page for your AI assistant. Use it to showcase your prompt, attract users, or present your AI companion.">
+                                      title="{{ t('dashboard.create_a_public_landing_page_for_your_ai_assistant_use_it_to_showcase_yo') }}">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                                         <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
                                         <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
@@ -138,17 +139,17 @@
                                         <option value="{{ prompt.id }}" data-created-by="{{ prompt.created_by_username }}" data-public-id="{{ prompt.public_id }}" data-name="{{ prompt.name }}" data-custom-domain="{{ prompt.custom_domain or '' }}">{{ prompt.text }}</option>
                                         {% endfor %}
                                     </select>
-                                    <button type="button" class="btn btn-outline-secondary" style="height: 100%;" onclick="viewPublicProfile()" title="View public landing page">
+                                    <button type="button" class="btn btn-outline-secondary" style="height: 100%;" onclick="viewPublicProfile()" title="{{ t('dashboard.view_public_landing_page') }}">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                                             <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8zM1.173 8a13.133 13.133 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5c2.12 0 3.879 1.168 5.168 2.457A13.133 13.133 0 0 1 14.828 8c-.058.087-.122.183-.195.288-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5c-2.12 0-3.879-1.168-5.168-2.457A13.134 13.134 0 0 1 1.172 8z"/>
                                             <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0z"/>
                                         </svg>
                                     </button>
                                 </div>
-                                <button type="button" class="btn btn-outline-primary btn-sm w-100" onclick="configurePublicProfile()">Configure Landing Page</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm w-100" onclick="configurePublicProfile()">{{ t('dashboard.configure_landing_page') }}</button>
                             </div>
                             {% else %}
-                            <p class="text-muted mb-0" style="font-size:0.85rem;">You don't have any prompts to configure. <a href="/prompts/new">Create your first prompt</a>.</p>
+                            <p class="text-muted mb-0" style="font-size:0.85rem;">{{ t('dashboard.you_don_t_have_any_prompts_to_configure') }} <a href="/prompts/new">{{ t('dashboard.create_your_first_prompt') }}</a>.</p>
                             {% endif %}
                             {% endif %}
                         </div>
@@ -157,18 +158,18 @@
                 <!-- Business card -->
                 <div class="col-md-4 mb-4">
                     <div class="section-container h-100">
-                        <div class="section-title"><i class="fas fa-chart-line"></i> Business</div>
+                        <div class="section-title"><i class="fas fa-chart-line"></i> {{ t('dashboard.business') }}</div>
                         <div class="d-flex flex-column">
                             {% if marketplace.creator_tools_enabled|default(false) %}
-                            <a href="/my-earnings" class="dashboard-card-link"><i class="fas fa-dollar-sign"></i> My Earnings</a>
-                            <a href="/curation-settings" class="dashboard-card-link"><i class="fas fa-star"></i> Curation Settings</a>
+                            <a href="/my-earnings" class="dashboard-card-link"><i class="fas fa-dollar-sign"></i> {{ t('dashboard.my_earnings') }}</a>
+                            <a href="/curation-settings" class="dashboard-card-link"><i class="fas fa-star"></i> {{ t('dashboard.curation_settings') }}</a>
                             {% endif %}
-                            <a href="/my-branding" class="dashboard-card-link"><i class="fas fa-paint-brush"></i> My Branding</a>
+                            <a href="/my-branding" class="dashboard-card-link"><i class="fas fa-paint-brush"></i> {{ t('dashboard.my_branding') }}</a>
                             {% if marketplace.storefronts_enabled|default(false) %}
-                            <a href="/my-storefront" class="dashboard-card-link"><i class="fas fa-store"></i> My Storefront</a>
+                            <a href="/my-storefront" class="dashboard-card-link"><i class="fas fa-store"></i> {{ t('dashboard.my_storefront') }}</a>
                             {% endif %}
                             {% if marketplace.creator_tools_enabled|default(false) %}
-                            <a href="/user/landing-analytics" class="dashboard-card-link"><i class="fas fa-chart-area"></i> Landing Analytics</a>
+                            <a href="/user/landing-analytics" class="dashboard-card-link"><i class="fas fa-chart-area"></i> {{ t('dashboard.landing_analytics') }}</a>
                             {% endif %}
                         </div>
                     </div>
@@ -176,11 +177,11 @@
                 <!-- User Management card -->
                 <div class="col-md-4 mb-4">
                     <div class="section-container h-100">
-                        <div class="section-title"><i class="fas fa-users"></i> User Management</div>
+                        <div class="section-title"><i class="fas fa-users"></i> {{ t('dashboard.user_management') }}</div>
                         <div class="d-flex flex-column">
-                            <a href="/create-user" class="dashboard-card-link"><i class="fas fa-user-plus"></i> Create User</a>
-                            <a href="/users-list" class="dashboard-card-link"><i class="fas fa-users-cog"></i> Manage Users</a>
-                            <a href="/user/team-billing" class="dashboard-card-link"><i class="fas fa-file-invoice-dollar"></i> Team Billing</a>
+                            <a href="/create-user" class="dashboard-card-link"><i class="fas fa-user-plus"></i> {{ t('dashboard.create_user') }}</a>
+                            <a href="/users-list" class="dashboard-card-link"><i class="fas fa-users-cog"></i> {{ t('dashboard.manage_users') }}</a>
+                            <a href="/user/team-billing" class="dashboard-card-link"><i class="fas fa-file-invoice-dollar"></i> {{ t('dashboard.team_billing') }}</a>
                         </div>
                     </div>
                 </div>
@@ -192,25 +193,25 @@
         {% if is_admin %}
         <div class="col-md-12">
             <div class="d-flex align-items-center justify-content-center gap-2 mb-4">
-                <h5 class="fw-bold mb-0" style="font-size:1rem;">Platform</h5>
-                <span class="dashboard-badge-role dashboard-badge-admin">Admin</span>
+                <h5 class="fw-bold mb-0" style="font-size:1rem;">{{ t('dashboard.platform') }}</h5>
+                <span class="dashboard-badge-role dashboard-badge-admin">{{ t('dashboard.admin') }}</span>
             </div>
             <div class="row">
                 <!-- AI & Models card -->
                 <div class="col-md-4 mb-4">
                     <div class="section-container h-100">
-                        <div class="section-title"><i class="fas fa-robot"></i> AI & Models</div>
+                        <div class="section-title"><i class="fas fa-robot"></i> {{ t('dashboard.ai_models') }}</div>
                         <div class="d-flex flex-column">
-                            <a href="/admin/llms" class="dashboard-card-link"><i class="fas fa-brain"></i> LLM Management</a>
-                            <a href="/admin/models" class="dashboard-card-link"><i class="fas fa-route"></i> Provider Model Sync</a>
-                            <a href="/admin/voices" class="dashboard-card-link"><i class="fas fa-microphone-alt"></i> Voices Management</a>
-                            <a href="/admin/elevenlabs-tts" class="dashboard-card-link"><i class="fas fa-sliders-h"></i> ElevenLabs TTS Settings</a>
-                            <a href="/admin/system-prompts" class="dashboard-card-link"><i class="fas fa-shield-alt"></i> System Prompts</a>
-                            <a href="/admin/services" class="dashboard-card-link"><i class="fas fa-server"></i> Service Management</a>
-                            <a href="/admin/memory" class="dashboard-card-link"><i class="fas fa-database"></i> System Memory</a>
+                            <a href="/admin/llms" class="dashboard-card-link"><i class="fas fa-brain"></i> {{ t('dashboard.llm_management') }}</a>
+                            <a href="/admin/models" class="dashboard-card-link"><i class="fas fa-route"></i> {{ t('dashboard.provider_model_sync') }}</a>
+                            <a href="/admin/voices" class="dashboard-card-link"><i class="fas fa-microphone-alt"></i> {{ t('dashboard.voices_management') }}</a>
+                            <a href="/admin/elevenlabs-tts" class="dashboard-card-link"><i class="fas fa-sliders-h"></i> {{ t('dashboard.elevenlabs_tts_settings') }}</a>
+                            <a href="/admin/system-prompts" class="dashboard-card-link"><i class="fas fa-shield-alt"></i> {{ t('dashboard.system_prompts') }}</a>
+                            <a href="/admin/services" class="dashboard-card-link"><i class="fas fa-server"></i> {{ t('dashboard.service_management') }}</a>
+                            <a href="/admin/memory" class="dashboard-card-link"><i class="fas fa-database"></i> {{ t('dashboard.system_memory') }}</a>
                             <a href="/admin/gransabio" class="dashboard-card-link"><i class="fas fa-brain"></i> GranSabio</a>
                             {% if subscription_auth_available %}
-                            <a href="/admin/subscription-auth" class="dashboard-card-link"><i class="fas fa-id-card"></i> Subscription Auth</a>
+                            <a href="/admin/subscription-auth" class="dashboard-card-link"><i class="fas fa-id-card"></i> {{ t('dashboard.subscription_auth') }}</a>
                             {% endif %}
                         </div>
                     </div>
@@ -218,43 +219,43 @@
                 <!-- Operations card -->
                 <div class="col-md-4 mb-4">
                     <div class="section-container h-100">
-                        <div class="section-title"><i class="fas fa-cogs"></i> Operations</div>
+                        <div class="section-title"><i class="fas fa-cogs"></i> {{ t('dashboard.operations') }}</div>
                         <div class="d-flex flex-column">
-                            <a href="/admin/task-manager" class="dashboard-card-link"><i class="fas fa-tasks"></i> Task Manager</a>
-                            <a href="/admin/chat" class="dashboard-card-link"><i class="fas fa-comments"></i> Admin Chat</a>
-                            <a href="/admin/usage" class="dashboard-card-link"><i class="fas fa-chart-pie"></i> Platform Usage</a>
-                            <a href="/admin/session-health" class="dashboard-card-link"><i class="fas fa-heart-pulse"></i> Session Health</a>
-                            <a href="/admin/storage-quotas" class="dashboard-card-link"><i class="fas fa-hard-drive"></i> Storage Quotas</a>
-                            <a href="/admin/security" class="dashboard-card-link" style="color:var(--danger);"><i class="fas fa-shield-alt" style="color:var(--danger);"></i> Security Operations</a>
-                            <a href="/admin/security-guard" class="dashboard-card-link" style="color:var(--danger);"><i class="fas fa-user-shield" style="color:var(--danger);"></i> Security Guard</a>
-                            <a href="/admin/geo" class="dashboard-card-link" style="color:var(--danger);"><i class="fas fa-globe" style="color:var(--danger);"></i> Geo-Blocking</a>
-                            <a href="/admin/watchdog-events" class="dashboard-card-link" style="color:var(--warning);"><i class="fas fa-dog" style="color:var(--warning);"></i> Watchdog Events</a>
-                            <a href="/admin/categories" class="dashboard-card-link"><i class="fas fa-tags"></i> Manage Categories</a>
+                            <a href="/admin/task-manager" class="dashboard-card-link"><i class="fas fa-tasks"></i> {{ t('dashboard.task_manager') }}</a>
+                            <a href="/admin/chat" class="dashboard-card-link"><i class="fas fa-comments"></i> {{ t('dashboard.admin_chat') }}</a>
+                            <a href="/admin/usage" class="dashboard-card-link"><i class="fas fa-chart-pie"></i> {{ t('dashboard.platform_usage') }}</a>
+                            <a href="/admin/session-health" class="dashboard-card-link"><i class="fas fa-heart-pulse"></i> {{ t('dashboard.session_health') }}</a>
+                            <a href="/admin/storage-quotas" class="dashboard-card-link"><i class="fas fa-hard-drive"></i> {{ t('dashboard.storage_quotas') }}</a>
+                            <a href="/admin/security" class="dashboard-card-link" style="color:var(--danger);"><i class="fas fa-shield-alt" style="color:var(--danger);"></i> {{ t('dashboard.security_operations') }}</a>
+                            <a href="/admin/security-guard" class="dashboard-card-link" style="color:var(--danger);"><i class="fas fa-user-shield" style="color:var(--danger);"></i> {{ t('dashboard.security_guard') }}</a>
+                            <a href="/admin/geo" class="dashboard-card-link" style="color:var(--danger);"><i class="fas fa-globe" style="color:var(--danger);"></i> {{ t('dashboard.geo_blocking') }}</a>
+                            <a href="/admin/watchdog-events" class="dashboard-card-link" style="color:var(--warning);"><i class="fas fa-dog" style="color:var(--warning);"></i> {{ t('dashboard.watchdog_events') }}</a>
+                            <a href="/admin/categories" class="dashboard-card-link"><i class="fas fa-tags"></i> {{ t('dashboard.manage_categories') }}</a>
                             <!-- Clean Audio Cache -->
                             <div class="mt-2">
-                                <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="toggleCacheOptions()"><i class="fas fa-broom me-1"></i> Clean Audio Cache</button>
+                                <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="toggleCacheOptions()"><i class="fas fa-broom me-1"></i> {{ t('dashboard.clean_audio_cache') }}</button>
                                 <div id="cacheOptions" class="cache-options">
                                     <div class="form-check mb-2">
                                         <input class="form-check-input" type="radio" name="cacheOption" id="deleteAll" value="all">
                                         <label class="form-check-label" for="deleteAll">
-                                            Delete Everything
+                                            {{ t('dashboard.delete_everything') }}
                                         </label>
                                     </div>
                                     <div class="form-check mb-2">
                                         <input class="form-check-input" type="radio" name="cacheOption" id="deleteOlder" value="older" checked>
                                         <label class="form-check-label" for="deleteOlder">
-                                            Delete older than:
+                                            {{ t('dashboard.delete_older_than') }}
                                         </label>
                                     </div>
                                     <div class="input-group mb-3">
                                         <input type="number" class="form-control" id="cacheTime" value="1" min="1" max="999999" step="1">
                                         <select class="form-select" id="cacheTimeUnit">
-                                            <option value="h">Hours</option>
-                                            <option value="d">Days</option>
-                                            <option value="w">Weeks</option>
-                                            <option value="m">Months</option>
+                                            <option value="h">{{ t('dashboard.hours') }}</option>
+                                            <option value="d">{{ t('dashboard.days') }}</option>
+                                            <option value="w">{{ t('dashboard.weeks') }}</option>
+                                            <option value="m">{{ t('dashboard.months') }}</option>
                                         </select>
-                                        <button class="btn btn-outline-secondary" id="clearAudioCacheButton" type="button" onclick="clearAudioCache()">Clean</button>
+                                        <button class="btn btn-outline-secondary" id="clearAudioCacheButton" type="button" onclick="clearAudioCache()">{{ t('dashboard.clean') }}</button>
                                     </div>
                                 </div>
                             </div>
@@ -264,20 +265,20 @@
                 <!-- Infrastructure card -->
                 <div class="col-md-4 mb-4">
                     <div class="section-container h-100">
-                        <div class="section-title"><i class="fas fa-cloud"></i> Infrastructure</div>
+                        <div class="section-title"><i class="fas fa-cloud"></i> {{ t('dashboard.infrastructure') }}</div>
                         <div class="d-flex flex-column">
                             <a href="/admin/whatsapp" class="dashboard-card-link" style="color: #25D366;"><i class="fab fa-whatsapp" style="color: #25D366;"></i> WhatsApp</a>
                             <a href="/admin/telegram" class="dashboard-card-link" style="color: #0088cc;"><i class="fab fa-telegram" style="color: #0088cc;"></i> Telegram</a>
-                            <a href="/admin/telephony" class="dashboard-card-link"><i class="fas fa-phone-alt"></i> Phone Calls</a>
-                            <a href="/admin/devices" class="dashboard-card-link"><i class="fas fa-microchip"></i> Devices</a>
-                            <a href="/admin/pricing" class="dashboard-card-link"><i class="fas fa-tags"></i> Admin Pricing</a>
-                            <a href="/admin/ranking" class="dashboard-card-link"><i class="fas fa-sort-amount-down"></i> Ranking Config</a>
-                            <a href="/admin/marketplace" class="dashboard-card-link"><i class="fas fa-store-slash"></i> Marketplace Controls</a>
-                            <a href="/admin/discount-list" class="dashboard-card-link"><i class="fas fa-percent"></i> Manage Discounts</a>
+                            <a href="/admin/telephony" class="dashboard-card-link"><i class="fas fa-phone-alt"></i> {{ t('dashboard.phone_calls') }}</a>
+                            <a href="/admin/devices" class="dashboard-card-link"><i class="fas fa-microchip"></i> {{ t('dashboard.devices') }}</a>
+                            <a href="/admin/pricing" class="dashboard-card-link"><i class="fas fa-tags"></i> {{ t('dashboard.admin_pricing') }}</a>
+                            <a href="/admin/ranking" class="dashboard-card-link"><i class="fas fa-sort-amount-down"></i> {{ t('dashboard.ranking_config') }}</a>
+                            <a href="/admin/marketplace" class="dashboard-card-link"><i class="fas fa-store-slash"></i> {{ t('dashboard.marketplace_controls') }}</a>
+                            <a href="/admin/discount-list" class="dashboard-card-link"><i class="fas fa-percent"></i> {{ t('dashboard.manage_discounts') }}</a>
                             <!-- Dev Mode toggle -->
                             <div class="d-flex justify-content-between align-items-center mb-2 px-1">
                                 <span class="dashboard-toggle-label">
-                                    <i class="fas fa-code me-1"></i> Dev Mode
+                                    <i class="fas fa-code me-1"></i> {{ t('dashboard.dev_mode') }}
                                 </span>
                                 <div class="form-check form-switch mb-0">
                                     <input class="form-check-input" type="checkbox" role="switch" id="devModeToggle" onchange="toggleDevMode()">
@@ -292,10 +293,10 @@
                                     <input class="form-check-input" type="checkbox" role="switch" id="captchaToggle" {% if captcha_enabled %}checked{% endif %} onchange="toggleCaptcha(this.checked)">
                                 </div>
                             </div>
-                            <small class="text-muted px-1">Disable for development/testing</small>
+                            <small class="text-muted px-1">{{ t('dashboard.disable_for_development_testing') }}</small>
                             <!-- Cloudflare -->
                             <div class="mt-2 mb-2">
-                                <button type="button" id="cloudflareCacheButton" class="btn btn-outline-warning btn-sm w-100" onclick="disableCloudflareCache()"><i class="fas fa-exclamation-triangle me-1"></i> Disable Cloudflare Cache</button>
+                                <button type="button" id="cloudflareCacheButton" class="btn btn-outline-warning btn-sm w-100" onclick="disableCloudflareCache()"><i class="fas fa-exclamation-triangle me-1"></i> {{ t('dashboard.disable_cloudflare_cache') }}</button>
                             </div>
                         </div>
                     </div>
@@ -333,7 +334,7 @@
         const customDomain = selectedOption.dataset.customDomain;
 
         if (!publicId || !name) {
-            NotificationModal.warning('No Landing Page', 'This prompt does not have a public landing page configured.');
+            NotificationModal.warning(AurvekI18n.t('dashboard.no_landing_page'), AurvekI18n.t('dashboard.this_prompt_does_not_have_a_public_landing_page_configured'));
             return;
         }
 
@@ -356,8 +357,8 @@
 
     function disableCloudflareCache() {
         NotificationModal.confirm(
-            'Disable Cloudflare Cache',
-            'Enable Cloudflare development mode for all configured zones?',
+            AurvekI18n.t('dashboard.disable_cloudflare_cache'),
+            AurvekI18n.t('dashboard.enable_cloudflare_development_mode_for_all_configured_zones'),
             async () => {
                 const button = document.getElementById('cloudflareCacheButton');
                 const csrfToken = document.querySelector(
@@ -365,8 +366,8 @@
                 )?.content;
                 if (!csrfToken) {
                     NotificationModal.error(
-                        'Cloudflare Cache',
-                        'Request security is unavailable. Reload the page and try again.'
+                        AurvekI18n.t('dashboard.cloudflare_cache'),
+                        AurvekI18n.t('dashboard.request_security_is_unavailable_reload_the_page_and_try_again')
                     );
                     return;
                 }
@@ -380,15 +381,15 @@
                     const data = await response.json();
                     if (!response.ok) {
                         NotificationModal.error(
-                            'Cloudflare Cache',
-                            data.error || data.detail || 'Could not disable Cloudflare cache.'
+                            AurvekI18n.t('dashboard.cloudflare_cache'),
+                            data.error || data.detail || AurvekI18n.t('dashboard.could_not_disable_cloudflare_cache')
                         );
                         return;
                     }
-                    NotificationModal.info('Cloudflare Cache', data.message);
+                    NotificationModal.info(AurvekI18n.t('dashboard.cloudflare_cache'), data.message);
                 } catch (error) {
                     console.error('Error:', error);
-                    NotificationModal.error('Error', 'Error disabling Cloudflare cache');
+                    NotificationModal.error(AurvekI18n.t('dashboard.error'), AurvekI18n.t('dashboard.error_disabling_cloudflare_cache'));
                 } finally {
                     button.disabled = false;
                 }
@@ -401,10 +402,10 @@
         const enabled = toggle.checked;
         if (enabled) {
             document.cookie = 'devMode=true; path=/; max-age=86400';
-            NotificationModal.info('Dev Mode', 'Dev mode enabled. Reload the page to get fresh files from nginx.');
+            NotificationModal.info(AurvekI18n.t('dashboard.dev_mode'), AurvekI18n.t('dashboard.dev_mode_enabled_reload_the_page_to_get_fresh_files_from_nginx'));
         } else {
             document.cookie = 'devMode=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
-            NotificationModal.info('Dev Mode', 'Dev mode disabled. Browser will use cached files.');
+            NotificationModal.info(AurvekI18n.t('dashboard.dev_mode'), AurvekI18n.t('dashboard.dev_mode_disabled_browser_will_use_cached_files'));
         }
     }
 
@@ -436,14 +437,14 @@
                 const status = enabled ? 'enabled' : 'disabled';
                 console.log('CAPTCHA ' + status);
             } else {
-                NotificationModal.error('Error', 'Error: ' + (data.message || data.error));
+                NotificationModal.error(AurvekI18n.t('dashboard.error'), AurvekI18n.t('dashboard.error_toggling_captcha'));
                 // Revert toggle on error
                 document.getElementById('captchaToggle').checked = !enabled;
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            NotificationModal.error('Error', 'Error toggling CAPTCHA');
+            NotificationModal.error(AurvekI18n.t('dashboard.error'), AurvekI18n.t('dashboard.error_toggling_captcha'));
             document.getElementById('captchaToggle').checked = !enabled;
         });
     }
@@ -469,8 +470,8 @@
             const time = Number(timeInput.value);
             if (!Number.isInteger(time) || time < 1 || time > 999999) {
                 NotificationModal.warning(
-                    'Invalid Age',
-                    'Enter a whole number between 1 and 999999.'
+                    AurvekI18n.t('dashboard.invalid_age'),
+                    AurvekI18n.t('dashboard.enter_a_whole_number_between_1_and_999999')
                 );
                 return;
             }
@@ -480,11 +481,15 @@
             timeArg = '0h';
         }
 
+        const age = option === 'all' ? '' : new Intl.NumberFormat(AurvekI18n.locale, {
+            style: 'unit', unit: {h: 'hour', d: 'day', w: 'week', m: 'month'}[timeArg.slice(-1)],
+            unitDisplay: 'long',
+        }).format(Number(timeArg.slice(0, -1)));
         const confirmation = option === 'all'
-            ? 'Delete every file in the audio cache?'
-            : `Delete audio cache files older than ${timeArg}?`;
+            ? AurvekI18n.t('dashboard.delete_every_file_in_the_audio_cache')
+            : AurvekI18n.t('dashboard.audio_confirm_older', {age});
 
-        NotificationModal.confirm('Clean Audio Cache', confirmation, async () => {
+        NotificationModal.confirm(AurvekI18n.t('dashboard.clean_audio_cache'), confirmation, async () => {
             const button = document.getElementById('clearAudioCacheButton');
             button.disabled = true;
             try {
@@ -499,15 +504,15 @@
                 const data = await response.json();
                 if (!response.ok) {
                     NotificationModal.error(
-                        'Audio Cache',
-                        data.error || data.detail || 'Could not clear the audio cache.'
+                        AurvekI18n.t('dashboard.audio_cache'),
+                        data.error || data.detail || AurvekI18n.t('dashboard.could_not_clear_the_audio_cache')
                     );
                     return;
                 }
-                NotificationModal.info('Audio Cache', data.message);
+                NotificationModal.info(AurvekI18n.t('dashboard.audio_cache'), data.message);
             } catch (error) {
                 console.error('Error:', error);
-                NotificationModal.error('Error', 'Error clearing audio cache');
+                NotificationModal.error(AurvekI18n.t('dashboard.error'), AurvekI18n.t('dashboard.error_clearing_audio_cache'));
             } finally {
                 button.disabled = false;
             }

@@ -142,6 +142,27 @@ async def test_legacy_gransabio_job_without_epoch_fails_closed(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_gransabio_early_service_notice_resolves_user_once(monkeypatch):
+    import auth
+    from types import SimpleNamespace
+    from ai_runtime.context import assembly
+    coordinator = SimpleNamespace(commit_guard_is_current=AsyncMock(return_value=True))
+    monkeypatch.setattr(foreground_module, "ForegroundCoordinator", lambda: coordinator)
+    user_lookup = AsyncMock(return_value=SimpleNamespace(ui_language="fr"))
+    monkeypatch.setattr(auth, "get_user_by_id", user_lookup)
+    monkeypatch.setattr(assembly, "check_own_only_gransabio", AsyncMock(return_value="internal own-key diagnostic"))
+    transport = AsyncMock()
+    monkeypatch.setattr(gransabio_service, "_send_platform_error", transport)
+    await gransabio_service._process_gransabio_external_inner(
+        conversation_id=10, user_id=7, user_message="literal user text",
+        platform="telegram", platform_context={}, foreground_epoch=4,
+    )
+    user_lookup.assert_awaited_once_with(7)
+    assert transport.await_args.args[2] == "gransabio_own_keys"
+    assert transport.await_args.kwargs["translator"].language == "fr"
+
+
+@pytest.mark.asyncio
 async def test_gransabio_checks_epoch_before_pipeline_and_recovers_stale_inbound(
     monkeypatch,
 ) -> None:
@@ -183,6 +204,10 @@ async def test_gransabio_checks_epoch_before_pipeline_and_recovers_stale_inbound
 async def test_gransabio_moderation_race_recovers_only_blocked_marker(
     monkeypatch,
 ) -> None:
+    import auth
+    from types import SimpleNamespace
+    monkeypatch.setattr(auth, "get_user_by_id", AsyncMock(return_value=SimpleNamespace(ui_language="es")))
+
     class RacingCoordinator:
         def __init__(self):
             self.checks = 0

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from common import STRIPE_SECRET_KEY
 from database import get_db_connection
 from log_config import logger
+from i18n import Translator
 
 
 MIN_CREATOR_PAYOUT_USD = 50
@@ -32,6 +33,7 @@ async def _complete_reserved_payout(
     connect_account_id: str,
     payout_tx_id: int,
     idempotency_key: str,
+    translator: Translator,
 ) -> JSONResponse:
     async with get_db_connection() as processing_conn:
         await processing_conn.execute("BEGIN IMMEDIATE")
@@ -49,7 +51,7 @@ async def _complete_reserved_payout(
             return JSONResponse(
                 content={
                     "success": False,
-                    "message": "A payout is already being processed. Please wait for it to complete.",
+                    "message": translator.t('marketplace_earnings.a_payout_is_already_being_processed_please_wait_for_it_to_complete'),
                 },
                 status_code=409,
             )
@@ -95,10 +97,7 @@ async def _complete_reserved_payout(
         return JSONResponse(
             content={
                 "success": True,
-                "message": (
-                    f"Payout of ${pending:.2f} has been sent to your bank account. "
-                    "It may take 2-3 business days to arrive."
-                ),
+                "message": translator.t('marketplace_earnings.payout_delivered', amount=translator.format_currency(pending)),
                 "amount": pending,
                 "transfer_id": transfer.id,
             }
@@ -123,10 +122,7 @@ async def _complete_reserved_payout(
             return JSONResponse(
                 content={
                     "success": False,
-                    "message": (
-                        "Payout status is still being confirmed. "
-                        "Please wait before trying again."
-                    ),
+                    "message": translator.t('marketplace_earnings.payout_confirming'),
                 },
                 status_code=503,
             )
@@ -147,7 +143,7 @@ async def _complete_reserved_payout(
                 return JSONResponse(
                     content={
                         "success": False,
-                        "message": "Payout attempt was already resolved. Please refresh and try again.",
+                        "message": translator.t('marketplace_earnings.payout_attempt_was_already_resolved_please_refresh_and_try_again'),
                     },
                     status_code=409,
                 )
@@ -160,16 +156,17 @@ async def _complete_reserved_payout(
         return JSONResponse(
             content={
                 "success": False,
-                "message": f"Payout failed: {str(exc)}. Your pending earnings have been preserved.",
+                "message": translator.t('marketplace_earnings.payout_preserved'),
             },
             status_code=400,
         )
 
 
-async def request_creator_payout_response(current_user):
+async def request_creator_payout_response(current_user, *, translator=None):
+    translator = translator or Translator(getattr(current_user, 'ui_language', None) or 'en')
     if not STRIPE_SECRET_KEY:
         return JSONResponse(
-            content={"success": False, "message": "Payment system not configured"},
+            content={"success": False, "message": translator.t('marketplace_earnings.payment_system_not_configured')},
             status_code=503,
         )
 
@@ -196,10 +193,7 @@ async def request_creator_payout_response(current_user):
                     return JSONResponse(
                         content={
                             "success": False,
-                            "message": (
-                                "A previous payout attempt needs manual review before "
-                                "another payout can be requested."
-                            ),
+                            "message": translator.t('marketplace_earnings.payout_review'),
                         },
                         status_code=409,
                     )
@@ -209,7 +203,7 @@ async def request_creator_payout_response(current_user):
                     return JSONResponse(
                         content={
                             "success": False,
-                            "message": "A payout is already being processed. Please wait for it to complete.",
+                            "message": translator.t('marketplace_earnings.a_payout_is_already_being_processed_please_wait_for_it_to_complete'),
                         },
                         status_code=409,
                     )
@@ -227,11 +221,12 @@ async def request_creator_payout_response(current_user):
                     return JSONResponse(
                         content={
                             "success": False,
-                            "message": "Your payout is pending, but your bank account setup is not currently complete.",
+                            "message": translator.t('marketplace_earnings.your_payout_is_pending_but_your_bank_account_setup_is_not_currently_complete'),
                         },
                         status_code=409,
                     )
                 return await _complete_reserved_payout(
+                    translator=translator,
                     current_user=current_user,
                     pending=float(pending_tx[1] or 0),
                     connect_account_id=connect_result[0],
@@ -251,7 +246,7 @@ async def request_creator_payout_response(current_user):
             if not result:
                 await conn.rollback()
                 return JSONResponse(
-                    content={"success": False, "message": "User details not found"},
+                    content={"success": False, "message": translator.t('marketplace_earnings.user_details_not_found')},
                     status_code=400,
                 )
 
@@ -264,7 +259,7 @@ async def request_creator_payout_response(current_user):
                 return JSONResponse(
                     content={
                         "success": False,
-                        "message": f"Minimum withdrawal is $50. You have ${pending:.2f} pending.",
+                        "message": translator.t('marketplace_earnings.payout_minimum', minimum=translator.format_currency(MIN_CREATOR_PAYOUT_USD), pending=translator.format_currency(pending)),
                     },
                     status_code=400,
                 )
@@ -274,7 +269,7 @@ async def request_creator_payout_response(current_user):
                 return JSONResponse(
                     content={
                         "success": False,
-                        "message": "Please connect your bank account first to receive payouts.",
+                        "message": translator.t('marketplace_earnings.please_connect_your_bank_account_first_to_receive_payouts'),
                     },
                     status_code=400,
                 )
@@ -284,7 +279,7 @@ async def request_creator_payout_response(current_user):
                 return JSONResponse(
                     content={
                         "success": False,
-                        "message": "Your bank account setup is not complete. Please finish onboarding in Stripe.",
+                        "message": translator.t('marketplace_earnings.your_bank_account_setup_is_not_complete_please_finish_onboarding_in_stripe'),
                     },
                     status_code=400,
                 )
@@ -307,6 +302,7 @@ async def request_creator_payout_response(current_user):
             await conn.commit()
 
             return await _complete_reserved_payout(
+                translator=translator,
                 current_user=current_user,
                 pending=pending,
                 connect_account_id=connect_account_id,

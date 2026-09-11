@@ -1,6 +1,7 @@
+{% set i18n_domains = ['admin_categories'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}Prompt Categories - AURVEK{% endblock %}
+{% block title %}{{ t('admin_categories.title.page') }} - AURVEK{% endblock %}
 
 {% block styles %}
 <style>
@@ -77,17 +78,17 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Prompt Categories{% endblock %}
+{% block page_title %}{{ t('admin_categories.title.page') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Manage categories for organizing prompts</p>
+<p class="page-subtitle">{{ t('admin_categories.subtitle') }}</p>
 {% endblock %}
 
 {% block content %}
 <!-- Add/Edit Category Section -->
 <div class="section-container">
     <div class="section-title" id="formCardHeader">
-        <i class="fas fa-plus-circle"></i> Add New Category
+        <i class="fas fa-plus-circle"></i> {{ t('admin_categories.title.add') }}
     </div>
     <form id="categoryForm" data-form-guard>
         <input type="hidden" id="editCategoryId" value="">
@@ -95,19 +96,19 @@
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="categoryName">Name *</label>
+                    <label class="form-label" for="categoryName">{{ t('admin_categories.field.name') }} *</label>
                     <input class="form-control" id="categoryName" name="name" required maxlength="100">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label">Icon</label>
+                    <label class="form-label">{{ t('admin_categories.field.icon') }}</label>
                     <div class="d-flex align-items-center">
                         <div class="selected-icon-preview" id="selectedIconPreview">
                             <i class="fas fa-tag"></i>
                         </div>
                         <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#iconPickerModal">
-                            <i class="fas fa-icons me-1"></i> Choose Icon
+                            <i class="fas fa-icons me-1"></i> {{ t('admin_categories.action.choose_icon') }}
                         </button>
                         <input type="hidden" id="categoryIcon" name="icon" value="fa-tag">
                     </div>
@@ -118,7 +119,7 @@
         <div class="flex-row">
             <div class="flex-column" style="flex: 2;">
                 <div class="mb-3">
-                    <label class="form-label" for="categoryDescription">Description</label>
+                    <label class="form-label" for="categoryDescription">{{ t('admin_categories.field.description') }}</label>
                     <textarea class="form-control" id="categoryDescription" name="description" rows="2" maxlength="500"></textarea>
                 </div>
             </div>
@@ -127,7 +128,7 @@
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="displayOrder">Display Order</label>
+                    <label class="form-label" for="displayOrder">{{ t('admin_categories.field.order') }}</label>
                     <input type="number" class="form-control" id="displayOrder" name="display_order" value="0" min="0">
                 </div>
             </div>
@@ -136,7 +137,7 @@
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="isAgeRestricted" name="is_age_restricted">
                         <label class="form-check-label" for="isAgeRestricted">
-                            <i class="fas fa-user-lock me-1"></i> Age Restricted (18+)
+                            <i class="fas fa-user-lock me-1"></i> {{ t('admin_categories.field.age_restricted') }}
                         </label>
                     </div>
                 </div>
@@ -144,10 +145,10 @@
             <div class="flex-column d-flex align-items-end justify-content-end">
                 <div class="mb-3">
                     <button type="button" class="btn btn-secondary me-2" id="cancelEditBtn" style="display:none;" onclick="cancelEdit()">
-                        Cancel
+                        {{ t('admin_categories.action.cancel') }}
                     </button>
                     <button type="submit" class="btn btn-primary" id="submitBtn">
-                        <i class="fas fa-save me-1"></i> Save Category
+                        <i class="fas fa-save me-1"></i> {{ t('admin_categories.action.save') }}
                     </button>
                 </div>
             </div>
@@ -158,20 +159,20 @@
 <!-- Categories List Section -->
 <div class="section-container">
     <div class="section-title d-flex justify-content-between align-items-center">
-        <span><i class="fas fa-list"></i> Categories</span>
-        <span class="drag-info"><i class="fas fa-grip-vertical me-1"></i> Drag to reorder</span>
+        <span><i class="fas fa-list"></i> {{ t('admin_categories.title.list') }}</span>
+        <span class="drag-info"><i class="fas fa-grip-vertical me-1"></i> {{ t('admin_categories.help.reorder') }}</span>
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
                     <th style="width: 40px;"></th>
-                    <th style="width: 50px;">Icon</th>
-                    <th>Name</th>
-                    <th>Description</th>
-                    <th style="width: 80px;" class="text-center">Prompts</th>
-                    <th style="width: 80px;" class="text-center">Order</th>
-                    <th class="text-end">Actions</th>
+                    <th style="width: 50px;">{{ t('admin_categories.field.icon') }}</th>
+                    <th>{{ t('admin_categories.field.name') }}</th>
+                    <th>{{ t('admin_categories.field.description') }}</th>
+                    <th style="width: 80px;" class="text-center">{{ t('admin_categories.label.prompts') }}</th>
+                    <th style="width: 80px;" class="text-center">{{ t('admin_categories.field.order') }}</th>
+                    <th class="text-end">{{ t('admin_categories.label.actions') }}</th>
                 </tr>
             </thead>
             <tbody id="categoriesTableBody">
@@ -191,14 +192,14 @@
                     </td>
                     <td class="text-muted small">{{ category.description or '-' }}</td>
                     <td class="text-center">
-                        <span class="badge bg-secondary">{{ category.prompt_count }}</span>
+                        <span class="badge bg-secondary">{{ format_number(category.prompt_count) }}</span>
                     </td>
-                    <td class="text-center">{{ category.display_order }}</td>
+                    <td class="text-center">{{ format_number(category.display_order) }}</td>
                     <td class="text-end table-actions">
-                        <button class="btn btn-sm btn-outline-primary" onclick="editCategory({{ category.id }}, '{{ category.name }}', '{{ category.description|e }}', '{{ category.icon }}', {{ category.is_age_restricted|lower }}, {{ category.display_order }})" title="Edit" data-bs-toggle="tooltip">
+                        <button class="btn btn-sm btn-outline-primary" data-category="{{ category|tojson|forceescape }}" onclick="editCategoryData(this)" title="{{ t('admin_categories.action.edit') }}" aria-label="{{ t('admin_categories.action.edit') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-edit"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteCategory({{ category.id }}, '{{ category.name }}')" title="Delete" data-bs-toggle="tooltip">
+                        <button class="btn btn-sm btn-outline-danger" data-id="{{ category.id }}" data-name="{{ category.name }}" onclick="deleteCategory(Number(this.dataset.id), this.dataset.name)" title="{{ t('admin_categories.action.delete') }}" aria-label="{{ t('admin_categories.action.delete') }}" data-bs-toggle="tooltip">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
@@ -207,7 +208,7 @@
                 <tr id="emptyRow">
                     <td colspan="7" class="text-center text-muted py-4">
                         <i class="fas fa-folder-open fa-2x mb-2 d-block"></i>
-                        No categories found. Create one above!
+                        {{ t('admin_categories.empty') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -221,12 +222,12 @@
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="fas fa-icons me-2"></i>Choose an Icon</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title"><i class="fas fa-icons me-2"></i>{{ t('admin_categories.action.choose_icon') }}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('admin_categories.action.close') }}"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
-                    <input type="text" class="form-control" id="iconSearch" placeholder="Search icons...">
+                    <input type="text" class="form-control" id="iconSearch" placeholder="{{ t('admin_categories.placeholder.search_icons') }}">
                 </div>
                 <div class="icon-picker-grid" id="iconGrid">
                     <!-- Icons will be populated by JavaScript -->
@@ -243,6 +244,7 @@
 
 {% block scripts_inline %}
 <script>
+    const categoryText = (key, params) => AurvekI18n.t(`admin_categories.${key}`, params);
     // Common FontAwesome icons for categories
     const availableIcons = [
         'fa-tag', 'fa-tags', 'fa-folder', 'fa-bullhorn', 'fa-briefcase', 'fa-code',
@@ -287,7 +289,7 @@
     function selectIcon(icon) {
         selectedIcon = icon;
         document.getElementById('categoryIcon').value = icon;
-        document.getElementById('selectedIconPreview').innerHTML = `<i class="fas ${icon}"></i>`;
+        showCategoryIcon(icon);
 
         // Update visual selection
         document.querySelectorAll('.icon-picker-item').forEach(item => {
@@ -328,16 +330,16 @@
                     });
 
                     if (response.ok) {
-                        showAlert('Categories reordered successfully', 'success');
+                        showAlert(categoryText('notice.reordered'), 'success');
                         // Update display order numbers
                         tableBody.querySelectorAll('tr[data-id]').forEach((row, idx) => {
-                            row.querySelector('td:nth-child(6)').textContent = idx + 1;
+                            row.querySelector('td:nth-child(6)').textContent = AurvekI18n.formatNumber(idx + 1);
                         });
                     } else {
-                        showAlert('Failed to reorder categories', 'danger');
+                        showAlert(categoryText('error.reorder'), 'danger');
                     }
                 } catch (error) {
-                    showAlert('Error: ' + error.message, 'danger');
+                    showAlert(AurvekI18n.t('common.error.generic'), 'danger');
                 }
             }
         });
@@ -347,10 +349,13 @@
         const container = document.getElementById('alertContainer');
         const alert = document.createElement('div');
         alert.className = `alert alert-${type} alert-dismissible fade show`;
-        alert.innerHTML = `
-            ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        `;
+        alert.textContent = message;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'btn-close';
+        close.dataset.bsDismiss = 'alert';
+        close.setAttribute('aria-label', categoryText('action.close'));
+        alert.appendChild(close);
         container.appendChild(alert);
 
         setTimeout(() => alert.remove(), 5000);
@@ -385,29 +390,40 @@
 
             if (response.ok) {
                 FormGuard.markClean(document.getElementById('categoryForm'));
-                showAlert(result.message || 'Category saved successfully', 'success');
+                showAlert(result.message || categoryText('notice.saved'), 'success');
                 setTimeout(() => location.reload(), 1000);
             } else {
-                showAlert(result.detail || 'Failed to save category', 'danger');
+                showAlert(result.detail || categoryText('error.save'), 'danger');
             }
         } catch (error) {
-            showAlert('Error: ' + error.message, 'danger');
+            showAlert(AurvekI18n.t('common.error.generic'), 'danger');
         }
     });
+
+    function showCategoryIcon(icon) {
+        const element = document.createElement('i');
+        element.className = `fas ${icon}`;
+        document.getElementById('selectedIconPreview').replaceChildren(element);
+    }
+
+    function editCategoryData(button) {
+        const category = JSON.parse(button.dataset.category);
+        editCategory(category.id, category.name, category.description || '', category.icon, category.is_age_restricted, category.display_order);
+    }
 
     function editCategory(id, name, description, icon, isAgeRestricted, displayOrder) {
         document.getElementById('editCategoryId').value = id;
         document.getElementById('categoryName').value = name;
         document.getElementById('categoryDescription').value = description;
         document.getElementById('categoryIcon').value = icon;
-        document.getElementById('selectedIconPreview').innerHTML = `<i class="fas ${icon}"></i>`;
+        showCategoryIcon(icon);
         document.getElementById('isAgeRestricted').checked = isAgeRestricted;
         document.getElementById('displayOrder').value = displayOrder;
 
         selectedIcon = icon;
 
-        document.getElementById('formCardHeader').innerHTML = '<i class="fas fa-edit"></i> Edit Category';
-        document.getElementById('submitBtn').innerHTML = '<i class="fas fa-save me-1"></i> Update Category';
+        document.getElementById('formCardHeader').innerHTML = '<i class="fas fa-edit"></i> ' + categoryText('title.edit');
+        document.getElementById('submitBtn').innerHTML = '<i class="fas fa-save me-1"></i> ' + categoryText('action.update');
         document.getElementById('cancelEditBtn').style.display = 'inline-block';
 
         // Scroll to form
@@ -421,15 +437,15 @@
         document.getElementById('selectedIconPreview').innerHTML = '<i class="fas fa-tag"></i>';
         selectedIcon = 'fa-tag';
 
-        document.getElementById('formCardHeader').innerHTML = '<i class="fas fa-plus-circle"></i> Add New Category';
-        document.getElementById('submitBtn').innerHTML = '<i class="fas fa-save me-1"></i> Save Category';
+        document.getElementById('formCardHeader').innerHTML = '<i class="fas fa-plus-circle"></i> ' + categoryText('title.add');
+        document.getElementById('submitBtn').innerHTML = '<i class="fas fa-save me-1"></i> ' + categoryText('action.save');
         document.getElementById('cancelEditBtn').style.display = 'none';
     }
 
     async function deleteCategory(id, name) {
         NotificationModal.confirm(
-            'Delete Category',
-            `Are you sure you want to delete the category "${name}"? This will remove the category from all associated prompts.`,
+            categoryText('dialog.delete_title'),
+            categoryText('dialog.delete_message', { name }),
             async () => {
                 try {
                     const response = await fetch(`/api/categories/${id}`, {
@@ -439,17 +455,17 @@
                     const result = await response.json();
 
                     if (response.ok) {
-                        showAlert('Category deleted successfully', 'success');
+                        showAlert(categoryText('notice.deleted'), 'success');
                         setTimeout(() => location.reload(), 1000);
                     } else {
-                        showAlert(result.detail || 'Failed to delete category', 'danger');
+                        showAlert(result.detail || categoryText('error.delete'), 'danger');
                     }
                 } catch (error) {
-                    showAlert('Error: ' + error.message, 'danger');
+                    showAlert(AurvekI18n.t('common.error.generic'), 'danger');
                 }
             },
             null,
-            { type: 'error', confirmText: 'Delete' }
+            { type: 'error', confirmText: categoryText('action.delete') }
         );
     }
 </script>

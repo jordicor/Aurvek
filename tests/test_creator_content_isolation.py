@@ -119,7 +119,7 @@ def test_injected_landing_helpers_work_from_the_isolated_origin(isolated_origin_
 async def test_purchase_bridge_returns_to_trusted_login_with_safe_next(monkeypatch):
     from marketplace.routes import checkout
 
-    monkeypatch.setattr(checkout, "require_checkout_enabled", lambda: None)
+    monkeypatch.setattr(checkout, "require_checkout_enabled", lambda translator=None: None)
     response = await checkout.prompt_purchase_bridge(
         _request("aurvek.example", "/purchase/prompt/17"),
         17,
@@ -423,7 +423,7 @@ async def test_custom_pack_html_is_served_only_on_isolated_origin(
     async def pack_data(public_id):
         return cached
 
-    monkeypatch.setattr(packs, "require_public_landings_enabled", lambda: None)
+    monkeypatch.setattr(packs, "require_public_landings_enabled", lambda translator=None: None)
     monkeypatch.setattr(packs, "get_pack_landing_cached", pack_data)
 
     primary = await packs.pack_landing_page(

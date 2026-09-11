@@ -7,7 +7,7 @@ import json
 import re
 import secrets
 import sqlite3
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from database import get_db_connection
+from integrations.telephony.call_context import active_call
 from integrations.telephony.schemas import (
     CALL_INCOMPATIBLE_STATUSES,
     CALL_TERMINAL_STATUSES,
@@ -455,7 +456,8 @@ async def reconcile_phone_hangup_provider_absent_in_transaction(
 
     cursor = await conn.execute(
         """
-        SELECT c.status AS call_status,c.job_id,c.conversation_id,
+        SELECT c.status AS call_status,c.job_id,
+               COALESCE(c.active_conversation_id,c.conversation_id) AS conversation_id,
                h.attempt_count,h.attempt_token,h.origin,h.reason,h.target_status
         FROM PHONE_CALLS c
         JOIN PHONE_HANGUP_ATTEMPTS h ON h.call_id=c.id
@@ -581,7 +583,7 @@ class TelephonyRepository:
                 SELECT id,e164,friendly_name,inbound_enabled,is_outbound_default,
                        capabilities_json
                 FROM TELEPHONY_NUMBERS
-                WHERE enabled=1 AND synced_at=?
+                WHERE enabled=1 AND synced_at=? AND integration_id IS NULL
                 ORDER BY is_outbound_default DESC,lower(COALESCE(friendly_name,e164)),id
                 """,
                 (inventory_marker,),
@@ -605,7 +607,11 @@ class TelephonyRepository:
             return result
 
     @asynccontextmanager
-    async def _write(self) -> AsyncIterator[Any]:
+    async def _write(self, connection=None) -> AsyncIterator[Any]:
+        if connection is not None:
+            # Internal composition: the inbound call owns the surrounding TX.
+            yield connection
+            return
         async with self._connection_factory() as conn:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
@@ -628,6 +634,7 @@ class TelephonyRepository:
         *,
         owner_user_id: int,
         expected_e164: str | None = None,
+        conversation_id: int | None = None,
     ) -> dict[str, Any]:
         """Require an eligible live profile number, optionally matching a route."""
 
@@ -636,6 +643,7 @@ class TelephonyRepository:
                 conn,
                 int(owner_user_id),
                 expected_e164=expected_e164,
+                conversation_id=conversation_id,
             )
 
     async def get_active_profile_binding(
@@ -669,6 +677,7 @@ class TelephonyRepository:
         e164: str,
         timezone_name: str,
         enforce_profile_phone: bool = False,
+        connection=None,
     ) -> dict[str, Any]:
         phone = _validate_e164(e164)
         name = str(display_name or "").strip()
@@ -677,7 +686,7 @@ class TelephonyRepository:
             raise ValueError("Contact name and IANA timezone are required")
         if len(name) > 200 or any(ord(character) < 32 for character in name):
             raise ValueError("Contact name is invalid")
-        async with self._write() as conn:
+        async with self._write(connection) as conn:
             if enforce_profile_phone:
                 await self._require_profile_phone(
                     conn, int(owner_user_id), expected_e164=phone
@@ -872,12 +881,14 @@ class TelephonyRepository:
         allow_outbound: bool = True,
         enforce_profile_phone: bool = False,
         preserve_existing_direction_flags: bool = False,
+        application_admission=None,
+        connection=None,
     ) -> dict[str, Any]:
         """Assign one active E.164 route, moving same-owner bindings atomically."""
         owner_id = int(owner_user_id)
         conv_id = int(conversation_id)
         contact_id = int(contact_id)
-        async with self._write() as conn:
+        async with self._write(connection) as conn:
             conversation = await self._owned_conversation(conn, owner_id, conv_id)
             if bool(conversation.get("locked")):
                 raise TelephonyConflictError("Conversation is locked")
@@ -891,6 +902,10 @@ class TelephonyRepository:
             contact = _row_dict(await cursor.fetchone())
             if contact is None:
                 raise TelephonyNotFoundError("Contact not found")
+            from integrations.applications.phone import validate_binding_assignment
+            await validate_binding_assignment(
+                conn, owner_id, conv_id, str(contact['e164']),
+                preferred_number_id, application_admission)
             if enforce_profile_phone:
                 await self._require_profile_phone(
                     conn, owner_id, expected_e164=str(contact["e164"])
@@ -902,7 +917,7 @@ class TelephonyRepository:
                 "SELECT * FROM PHONE_ACTIVE_ROUTES WHERE e164 = ?",
                 (contact["e164"],),
             )
-            route = _row_dict(await cursor.fetchone())
+            route = _row_dict(await cursor.fetchone()) if application_admission is None else None
             if route is not None and int(route["owner_user_id"]) != owner_id:
                 raise TelephonyConflictError("Phone participant is already assigned")
 
@@ -955,6 +970,9 @@ class TelephonyRepository:
                     "UPDATE PHONE_ACTIVE_ROUTES SET updated_at = CURRENT_TIMESTAMP WHERE binding_id = ?",
                     (conversation_binding["id"],),
                 )
+                if application_admission is not None:
+                    await conn.execute('UPDATE PHONE_CONVERSATION_BINDINGS SET application_channel_json=? WHERE id=?',
+                        (_json(application_admission.as_dict()), conversation_binding['id']))
                 if outbound_changed:
                     await self._cancel_unstarted_binding_jobs(
                         conn,
@@ -974,12 +992,16 @@ class TelephonyRepository:
                 await self._deactivate_binding(conn, old_binding_id)
 
             try:
+                application_column = ', application_channel_json' if application_admission is not None else ''
+                application_value = ', ?' if application_admission is not None else ''
+                application_params = ((_json(application_admission.as_dict()),)
+                                      if application_admission is not None else ())
                 cursor = await conn.execute(
-                    """
+                    f"""
                     INSERT INTO PHONE_CONVERSATION_BINDINGS (
                         owner_user_id, conversation_id, contact_id,
-                        preferred_number_id, allow_inbound, allow_outbound
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        preferred_number_id, allow_inbound, allow_outbound{application_column}
+                    ) VALUES (?, ?, ?, ?, ?, ?{application_value})
                     RETURNING id
                     """,
                     (
@@ -989,17 +1011,18 @@ class TelephonyRepository:
                         preferred_number_id,
                         int(bool(allow_inbound)),
                         int(bool(allow_outbound)),
-                    ),
+                    ) + application_params,
                 )
                 binding_id = int((await cursor.fetchone())[0])
-                await conn.execute(
-                    """
-                    INSERT INTO PHONE_ACTIVE_ROUTES
-                        (e164, owner_user_id, binding_id, contact_id, conversation_id)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (contact["e164"], owner_id, binding_id, contact_id, conv_id),
-                )
+                if application_admission is None:
+                    await conn.execute(
+                        """INSERT INTO PHONE_ACTIVE_ROUTES
+                            (e164, owner_user_id, binding_id, contact_id, conversation_id)
+                        VALUES (?, ?, ?, ?, ?)""",
+                        (contact["e164"], owner_id, binding_id, contact_id, conv_id))
+                else:
+                    await conn.execute('UPDATE PHONE_CONVERSATION_BINDINGS SET application_channel_json=? WHERE id=?',
+                        (_json(application_admission.as_dict()), binding_id))
             except sqlite3.IntegrityError as exc:
                 raise TelephonyConflictError("Phone participant is already assigned") from exc
             return await self._binding_by_id(conn, binding_id)
@@ -1013,8 +1036,7 @@ class TelephonyRepository:
             )
             cursor = await conn.execute(
                 """
-                SELECT b.id,b.conversation_id,b.contact_id,b.preferred_number_id,
-                       b.allow_inbound,b.allow_outbound,b.created_at,b.updated_at,
+                SELECT b.*,
                        c.display_name,c.e164,c.timezone_name,
                        n.e164 AS preferred_number_e164
                 FROM PHONE_CONVERSATION_BINDINGS b
@@ -1055,7 +1077,30 @@ class TelephonyRepository:
             binding = _row_dict(await cursor.fetchone())
             if binding is None:
                 raise TelephonyNotFoundError("Active phone binding not found")
-            if enforce_profile_phone:
+            from integrations.applications.phone import phone_scope, validate_binding_assignment
+            application_scope = await phone_scope(conn, owner_user_id, conversation_id)
+            if application_scope is None and preferred_number_id is not None:
+                from integrations.telephony.integrations import snapshot_for_number
+                await snapshot_for_number(conn, preferred_number_id, app_id=None)
+            if application_scope is not None:
+                from integrations.applications.channel_models import ChannelAdmission, ReceiverConfig
+                from integrations.embed.models import EmbedError
+                try:
+                    admission = ChannelAdmission.from_dict(json.loads(binding.get('application_channel_json') or '{}'))
+                except (TypeError, ValueError, KeyError):
+                    raise EmbedError('application_phone_link_required', 403) from None
+                contact_cursor = await conn.execute('SELECT e164 FROM PHONE_CONTACTS WHERE id=? AND active=1', (binding['contact_id'],))
+                contact = await contact_cursor.fetchone()
+                if contact is None:
+                    raise TelephonyNotFoundError('Active phone contact not found')
+                await validate_binding_assignment(conn, owner_user_id, conversation_id,
+                    str(contact[0]), preferred_number_id, admission)
+                receiver_cursor = await conn.execute('SELECT config_json FROM APPLICATION_CHANNEL_RECEIVERS WHERE receiver_id=?',
+                                                     (admission.receiver_id,))
+                receiver = ReceiverConfig.model_validate_json((await receiver_cursor.fetchone())[0])
+                if allow_outbound and not receiver.allow_outbound:
+                    raise EmbedError('channel_outbound_disabled', 403)
+            if enforce_profile_phone and application_scope is None:
                 contact_cursor = await conn.execute(
                     "SELECT e164 FROM PHONE_CONTACTS WHERE id=? AND active=1",
                     (int(binding["contact_id"]),),
@@ -1173,8 +1218,11 @@ class TelephonyRepository:
         expected_destination_e164: str | None = None,
         future_schedule: bool = False,
         future_cutoff_utc: str | None = None,
+        transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         async with self._write() as conn:
+            if transaction_guard is not None:
+                await transaction_guard(conn)
             return await self.create_call_job_in_transaction(
                 conn,
                 job_id=job_id,
@@ -1230,6 +1278,7 @@ class TelephonyRepository:
             raise ValueError("future_cutoff_utc is required for a future schedule")
         if future_schedule and scheduled_text <= str(cutoff_text):
             raise ValueError("scheduled_at must be in the future")
+        request_timing = "scheduled" if future_schedule else "immediate"
         timezone = _validate_timezone_name(timezone_name)
         expected_destination = (
             _validate_e164(expected_destination_e164)
@@ -1245,6 +1294,8 @@ class TelephonyRepository:
             raise TelephonyConflictError("Conversation is locked")
         if await self._conversation_is_incognito(conn, int(conversation_id)):
             raise TelephonyConflictError("Incognito conversations cannot schedule calls")
+        from integrations.applications.phone import job_key, job_scope, snapshot_job_funding
+        idempotency_key = await job_key(conn, owner_user_id, conversation_id, idempotency_key)
         cursor = await conn.execute(
             """
             SELECT * FROM PHONE_CALL_JOBS
@@ -1254,6 +1305,9 @@ class TelephonyRepository:
         )
         existing = _row_dict(await cursor.fetchone())
         if existing is not None and expected_destination is None:
+            if (int(existing['conversation_id']) != int(conversation_id)
+                    or int(existing['binding_id']) != int(binding_id)):
+                raise TelephonyConflictError('Idempotency key belongs to another phone-call request')
             return existing, False
 
         binding = await self._binding_snapshot(
@@ -1266,6 +1320,7 @@ class TelephonyRepository:
             conn,
             int(owner_user_id),
             expected_e164=binding.contact_e164,
+            conversation_id=int(conversation_id),
         )
         if not binding.allow_outbound:
             raise TelephonyConflictError(
@@ -1302,17 +1357,16 @@ class TelephonyRepository:
         if future_schedule:
             cursor = await conn.execute(
                 """
-                SELECT id FROM PHONE_CALL_JOBS
+                SELECT id,conversation_id FROM PHONE_CALL_JOBS
                 WHERE owner_user_id=?
                   AND status='scheduled' AND scheduled_at_utc>?
-                LIMIT 1
                 """,
                 (int(owner_user_id), str(cutoff_text)),
             )
-            if await cursor.fetchone() is not None:
-                raise TelephonyConflictError(
-                    "You already have a future scheduled call"
-                )
+            bucket = await job_scope(conn, conversation_id)
+            for scheduled in await cursor.fetchall():
+                if await job_scope(conn, int(scheduled['conversation_id'])) == bucket:
+                    raise TelephonyConflictError('You already have a future scheduled call')
         number_id = await self._resolve_outbound_number(
             conn, binding.preferred_number_id
         )
@@ -1325,14 +1379,17 @@ class TelephonyRepository:
                 "to_e164": binding.contact_e164,
             }
         )
+        config_snapshot = await snapshot_job_funding(conn, owner_user_id, conversation_id, config_snapshot,
+            number_id=number_id)
         cursor = await conn.execute(
             """
             INSERT INTO PHONE_CALL_JOBS (
                 id, owner_user_id, conversation_id, binding_id, contact_id,
                 telephony_number_id, scheduled_at_utc, timezone_name, origin,
                 origin_message_id, idempotency_key, recording_override,
-                amd_override, binding_snapshot_json, config_snapshot_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                amd_override, binding_snapshot_json, config_snapshot_json,
+                request_timing
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *
             """,
             (
@@ -1351,6 +1408,7 @@ class TelephonyRepository:
                 None if amd_override is None else int(amd_override),
                 _json(binding_snapshot),
                 _json(config_snapshot),
+                request_timing,
             ),
         )
         return dict(await cursor.fetchone()), True
@@ -1532,21 +1590,23 @@ class TelephonyRepository:
                 return False
             cursor = await conn.execute(
                 """
-                SELECT id FROM PHONE_CALL_JOBS
+                SELECT id,conversation_id FROM PHONE_CALL_JOBS
                 WHERE owner_user_id=? AND id<>?
                   AND status='scheduled' AND scheduled_at_utc>?
-                LIMIT 1
                 """,
                 (int(owner_user_id), job_id, cutoff_text),
             )
-            if await cursor.fetchone() is not None:
-                raise TelephonyConflictError(
-                    "You already have a future scheduled call"
-                )
+            from integrations.applications.phone import job_scope, authorize_binding
+            await authorize_binding(conn, owner_user_id, int(job['conversation_id']))
+            bucket = await job_scope(conn, int(job['conversation_id']))
+            for scheduled in await cursor.fetchall():
+                if await job_scope(conn, int(scheduled['conversation_id'])) == bucket:
+                    raise TelephonyConflictError('You already have a future scheduled call')
             cursor = await conn.execute(
                 """
                 UPDATE PHONE_CALL_JOBS
-                SET scheduled_at_utc=?, timezone_name=?, updated_at=CURRENT_TIMESTAMP
+                SET scheduled_at_utc=?, timezone_name=?, request_timing='scheduled',
+                    updated_at=CURRENT_TIMESTAMP
                 WHERE id=? AND owner_user_id=? AND status='scheduled'
                 """,
                 (
@@ -1980,7 +2040,7 @@ class TelephonyRepository:
                 WHERE conversation_id=? AND epoch=? AND current_call_id IS NULL
                   AND EXISTS (
                       SELECT 1 FROM PHONE_CALLS c
-                      WHERE c.id=? AND c.conversation_id=?
+                      WHERE c.id=? AND COALESCE(c.active_conversation_id,c.conversation_id)=?
                   )
                 RETURNING epoch
                 """,
@@ -1999,7 +2059,7 @@ class TelephonyRepository:
                 UPDATE PHONE_CALLS SET foreground_fencing_token=?,
                     foreground_lease_owner=?, foreground_lease_until=?,
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND conversation_id=?
+                WHERE id=? AND COALESCE(active_conversation_id,conversation_id)=?
                 """,
                 (epoch, lease_owner, lease_until, call_id, int(conversation_id)),
             )
@@ -2025,6 +2085,102 @@ class TelephonyRepository:
                 (int(conversation_id), call_id, int(epoch), lease_owner, now),
             )
             return await cursor.fetchone() is not None
+
+    async def move_call_context(
+        self,
+        connection: Any,
+        *,
+        call_id: str,
+        source_conversation_id: int,
+        destination_conversation_id: int,
+        expected_epoch: int,
+        lease_owner: str,
+        config_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Move a live call inside the caller's transaction without changing history."""
+        if not connection.in_transaction:
+            raise TelephonyStateError("Call context transfer requires an open transaction")
+        source_id = int(source_conversation_id)
+        destination_id = int(destination_conversation_id)
+        if source_id == destination_id:
+            raise ValueError("Call context destination must differ from its source")
+        snapshot_json = _json(config_snapshot)
+        now = _utc_now_text()
+        cursor = await connection.execute(
+            """
+            SELECT c.* FROM PHONE_CALLS c
+            JOIN PHONE_CONVERSATION_FOREGROUND f
+              ON f.conversation_id=COALESCE(c.active_conversation_id,c.conversation_id)
+            WHERE c.id=? AND c.deleted_at IS NULL AND c.status='in_progress'
+              AND f.conversation_id=? AND f.current_call_id=c.id
+              AND f.epoch=? AND f.lease_owner=? AND f.lease_until>=?
+              AND c.foreground_fencing_token=f.epoch
+              AND c.foreground_lease_owner=f.lease_owner
+              AND c.foreground_lease_until>=?
+            """,
+            (str(call_id), source_id, int(expected_epoch), str(lease_owner), now, now),
+        )
+        call = _row_dict(await cursor.fetchone())
+        if call is None:
+            raise TelephonyStateError("Phone call context or foreground lease is stale")
+        await self._owned_conversation(
+            connection, int(call["owner_user_id"]), destination_id
+        )
+        if await self._conversation_has_incompatible_call(connection, destination_id):
+            raise TelephonyConflictError("Destination conversation already has a live call")
+        cursor = await connection.execute(
+            "SELECT epoch,current_call_id FROM PHONE_CONVERSATION_FOREGROUND "
+            "WHERE conversation_id=?",
+            (destination_id,),
+        )
+        destination = await cursor.fetchone()
+        if destination is not None and destination["current_call_id"] is not None:
+            raise TelephonyConflictError("Destination conversation foreground is already owned")
+        # A destination can have a lower epoch. Never reuse an old call fence.
+        epoch = max(int(expected_epoch), int(destination["epoch"]) if destination else 0) + 1
+        await connection.execute("SAVEPOINT move_phone_call_context")
+        try:
+            await connection.execute(
+                """
+                UPDATE PHONE_CALLS
+                SET active_conversation_id=?,active_config_snapshot_json=?,
+                    foreground_fencing_token=?,updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (destination_id, snapshot_json, epoch, str(call_id)),
+            )
+            await connection.execute(
+                """
+                UPDATE PHONE_CONVERSATION_FOREGROUND
+                SET epoch=epoch+1,current_call_id=NULL,lease_owner=NULL,
+                    lease_until=NULL,updated_at=CURRENT_TIMESTAMP
+                WHERE conversation_id=? AND current_call_id=? AND epoch=?
+                """,
+                (source_id, str(call_id), int(expected_epoch)),
+            )
+            await connection.execute(
+                """
+                INSERT INTO PHONE_CONVERSATION_FOREGROUND(
+                    conversation_id,epoch,current_call_id,lease_owner,lease_until
+                ) VALUES(?,?,?,?,?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    epoch=excluded.epoch,current_call_id=excluded.current_call_id,
+                    lease_owner=excluded.lease_owner,lease_until=excluded.lease_until,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (destination_id, epoch, str(call_id), str(lease_owner), call["foreground_lease_until"]),
+            )
+        except BaseException:
+            await connection.execute("ROLLBACK TO move_phone_call_context")
+            await connection.execute("RELEASE move_phone_call_context")
+            raise
+        await connection.execute("RELEASE move_phone_call_context")
+        call.update(
+            active_conversation_id=destination_id,
+            active_config_snapshot_json=snapshot_json,
+            foreground_fencing_token=epoch,
+        )
+        return active_call(call)
 
     async def release_conversation_foreground(
         self,
@@ -2112,7 +2268,7 @@ class TelephonyRepository:
             JOIN PHONE_CALLS c ON c.id=f.current_call_id
             JOIN MESSAGES m ON m.id=? AND m.conversation_id=f.conversation_id
             WHERE f.conversation_id=? AND f.current_call_id=? AND f.epoch=?
-              AND c.conversation_id=f.conversation_id
+              AND COALESCE(c.active_conversation_id,c.conversation_id)=f.conversation_id
             """,
             (int(message_id), int(conversation_id), call_id, int(expected_epoch)),
         )
@@ -2169,9 +2325,10 @@ class TelephonyRepository:
                 JOIN MESSAGES m ON m.id=l.message_id
                 WHERE l.call_id=? AND l.participant='other_channel'
                   AND l.delivery_state='queued'
+                  AND m.conversation_id=?
                 ORDER BY l.message_id ASC, l.id ASC
                 """,
-                (call_id,),
+                (call_id, int(conversation_id)),
             )
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -2196,8 +2353,9 @@ class TelephonyRepository:
                 """
                 SELECT delivery_state, turn_id FROM PHONE_CALL_MESSAGE_LINKS
                 WHERE call_id=? AND message_id=? AND participant='other_channel'
+                  AND message_id IN (SELECT id FROM MESSAGES WHERE conversation_id=?)
                 """,
-                (call_id, int(message_id)),
+                (call_id, int(message_id), int(conversation_id)),
             )
             durable = await cursor.fetchone()
             if durable is not None and durable[0] == "consumed":
@@ -2208,6 +2366,7 @@ class TelephonyRepository:
                 SET delivery_state='consumed', turn_id=?
                 WHERE call_id=? AND message_id=? AND participant='other_channel'
                   AND delivery_state='queued'
+                  AND message_id IN (SELECT id FROM MESSAGES WHERE conversation_id=?)
                   AND EXISTS (
                       SELECT 1 FROM PHONE_CONVERSATION_FOREGROUND f
                       WHERE f.conversation_id=? AND f.current_call_id=? AND f.epoch=?
@@ -2215,7 +2374,7 @@ class TelephonyRepository:
                   )
                 """,
                 (
-                    claim_turn_id, call_id, int(message_id), int(conversation_id), call_id,
+                    claim_turn_id, call_id, int(message_id), int(conversation_id), int(conversation_id), call_id,
                     int(epoch), lease_owner, now,
                 ),
             )
@@ -2235,8 +2394,9 @@ class TelephonyRepository:
                 """
                 SELECT delivery_state, turn_id FROM PHONE_CALL_MESSAGE_LINKS
                 WHERE call_id=? AND message_id=? AND participant='other_channel'
+                  AND message_id IN (SELECT id FROM MESSAGES WHERE conversation_id=?)
                 """,
-                (call_id, int(message_id)),
+                (call_id, int(message_id), int(conversation_id)),
             )
             row = await cursor.fetchone()
             return bool(row and row[0] == "consumed" and row[1] == claim_turn_id)
@@ -2267,7 +2427,7 @@ class TelephonyRepository:
                     """
                     SELECT f.current_call_id, f.epoch, c.status
                     FROM PHONE_CONVERSATION_FOREGROUND f
-                    JOIN PHONE_CALLS c ON c.id=? AND c.conversation_id=f.conversation_id
+                    JOIN PHONE_CALLS c ON c.id=? AND COALESCE(c.active_conversation_id,c.conversation_id)=f.conversation_id
                     WHERE f.conversation_id=?
                     """,
                     (call_id, int(conversation_id)),
@@ -2300,7 +2460,7 @@ class TelephonyRepository:
                 """
                 UPDATE PHONE_CALLS SET foreground_lease_owner=NULL,
                     foreground_lease_until=NULL, updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND conversation_id=?
+                WHERE id=? AND COALESCE(active_conversation_id,conversation_id)=?
                 """,
                 (call_id, int(conversation_id)),
             )
@@ -2379,6 +2539,7 @@ class TelephonyRepository:
                     conn,
                     int(job["owner_user_id"]),
                     expected_e164=str(job["contact_e164"]),
+                    conversation_id=int(job['conversation_id']),
                 )
             except TelephonyConflictError:
                 if job["provider_request_started_at"] is not None:
@@ -2503,10 +2664,12 @@ class TelephonyRepository:
             )
             existing = _row_dict(await cursor.fetchone())
             if existing is not None:
+                from integrations.applications.phone import call_operation
+                await call_operation(conn, existing)
                 if recover_existing_foreground:
                     epoch = await self._transfer_foreground_for_call(
                         conn,
-                        conversation_id=int(job["conversation_id"]),
+                        conversation_id=int(active_call(existing)["conversation_id"]),
                         call_id=str(existing["id"]),
                         lease_owner=foreground_lease_owner,
                         lease_until=foreground_until,
@@ -2515,7 +2678,14 @@ class TelephonyRepository:
                     existing["foreground_lease_owner"] = foreground_lease_owner
                     existing["foreground_lease_until"] = foreground_until
                 return existing, False
-            config_snapshot = json.loads(job["config_snapshot_json"] or "{}")
+            from integrations.applications.phone import dispatch_job_funding
+            from integrations.embed.models import EmbedError
+            try:
+                config_snapshot = await dispatch_job_funding(conn, job)
+            except EmbedError as exc:
+                await self._reject_unstarted_job_for_binding(conn, job)
+                await conn.commit()
+                raise TelephonyConflictError(exc.code) from None
             recording_enabled = (
                 bool(job["recording_override"])
                 if job["recording_override"] is not None
@@ -2559,7 +2729,7 @@ class TelephonyRepository:
                         snapshot_to_e164,
                         dispatch_token,
                         job["binding_snapshot_json"],
-                        job["config_snapshot_json"],
+                        _json(config_snapshot),
                         foreground_lease_owner,
                         foreground_until,
                         int(recording_enabled),
@@ -2674,7 +2844,7 @@ class TelephonyRepository:
                     FROM PHONE_CALLS c
                     JOIN PHONE_CALL_JOBS j ON j.id=c.job_id
                     JOIN PHONE_CONVERSATION_FOREGROUND f
-                      ON f.conversation_id=c.conversation_id
+                      ON f.conversation_id=COALESCE(c.active_conversation_id,c.conversation_id)
                     WHERE c.id=? AND c.dispatch_token=? AND c.status='created'
                       AND c.provider_request_started_at IS NULL
                       AND c.foreground_lease_owner=?
@@ -2710,6 +2880,17 @@ class TelephonyRepository:
                     if _parse_utc_text(now) > deadline:
                         await self._miss_unstarted_dispatch(conn, state)
                         return False
+            from integrations.applications.phone import call_operation
+            from integrations.embed.models import EmbedError
+            candidate = await conn.execute('SELECT * FROM PHONE_CALLS WHERE id=? AND dispatch_token=? AND deleted_at IS NULL',
+                                           (call_id, dispatch_token))
+            candidate = _row_dict(await candidate.fetchone())
+            application_authorized = False
+            if candidate is not None:
+                try:
+                    application_authorized = await call_operation(conn, candidate) is not None
+                except EmbedError:
+                    return False
             cursor = await conn.execute(
                 """
                 UPDATE PHONE_CALLS
@@ -2731,7 +2912,7 @@ class TelephonyRepository:
                   )
                   AND EXISTS (
                       SELECT 1 FROM PHONE_CONVERSATION_FOREGROUND f
-                      WHERE f.conversation_id=PHONE_CALLS.conversation_id
+                      WHERE f.conversation_id=COALESCE(PHONE_CALLS.active_conversation_id,PHONE_CALLS.conversation_id)
                         AND f.current_call_id=PHONE_CALLS.id
                         AND f.lease_owner=? AND f.epoch=?
                         AND f.lease_until IS NOT NULL AND f.lease_until>=?
@@ -2740,7 +2921,7 @@ class TelephonyRepository:
                       SELECT 1 FROM USERS owner
                       WHERE owner.id=PHONE_CALLS.owner_user_id
                         AND COALESCE(owner.is_enabled,0)=1
-                        AND owner.phone_number=PHONE_CALLS.to_e164
+                        AND (?=1 OR (owner.phone_number=PHONE_CALLS.to_e164
                         AND (
                           COALESCE(owner.phone_verified,0)=1
                           OR EXISTS (
@@ -2748,7 +2929,7 @@ class TelephonyRepository:
                             WHERE owner_role.id=owner.role_id
                               AND lower(owner_role.role_name)='admin'
                           )
-                        )
+                        )))
                   )
                 """,
                 (
@@ -2764,6 +2945,7 @@ class TelephonyRepository:
                     foreground_lease_owner,
                     int(foreground_fencing_token),
                     now,
+                    int(application_authorized),
                 ),
             )
             if cursor.rowcount != 1:
@@ -3546,7 +3728,13 @@ class TelephonyRepository:
     ) -> dict[str, Any] | None:
         async with self._connection_factory(readonly=True) as conn:
             cursor = await conn.execute(
-                "SELECT * FROM PHONE_CALLS WHERE dispatch_token=? AND deleted_at IS NULL",
+                """
+                SELECT c.*, j.origin AS job_origin,
+                       j.request_timing AS job_request_timing
+                FROM PHONE_CALLS AS c
+                LEFT JOIN PHONE_CALL_JOBS AS j ON j.id=c.job_id
+                WHERE c.dispatch_token=? AND c.deleted_at IS NULL
+                """,
                 (str(dispatch_token),),
             )
             return _row_dict(await cursor.fetchone())
@@ -3863,7 +4051,7 @@ class TelephonyRepository:
             await self._owned_conversation(conn, int(owner_user_id), int(conversation_id))
             cursor = await conn.execute(
                 """
-                SELECT id AS call_id, provider_call_sid FROM PHONE_CALLS
+                SELECT id AS call_id, provider_call_sid, config_snapshot_json FROM PHONE_CALLS
                 WHERE id=? AND owner_user_id=? AND conversation_id=?
                 """,
                 (call_id, int(owner_user_id), int(conversation_id)),
@@ -3890,6 +4078,7 @@ class TelephonyRepository:
             selected_recording = recordings[0] if purge_scope == "recording" else None
             snapshot = {
                 "provider_call_sid": source["provider_call_sid"],
+                "config_snapshot_json": source["config_snapshot_json"],
                 "recordings": recordings,
             }
             cursor = await conn.execute(
@@ -4105,7 +4294,19 @@ class TelephonyRepository:
         owner_id: int,
         *,
         expected_e164: str | None = None,
+        conversation_id: int | None = None,
     ) -> dict[str, Any]:
+        if conversation_id is not None:
+            from integrations.applications.phone import authorize_binding
+            from integrations.embed.models import EmbedError
+            try:
+                admission = await authorize_binding(conn, owner_id, conversation_id, expected_e164=expected_e164)
+            except EmbedError as exc:
+                raise TelephonyConflictError(exc.code) from None
+            if admission is not None:
+                return {'e164': admission.provider_identity, 'configured': True,
+                        'canonical': True, 'eligible': True, 'is_enabled': True,
+                        'application_channel': admission.as_dict()}
         state = await self._profile_phone_state(conn, int(owner_id))
         if not state["is_enabled"]:
             raise TelephonyConflictError("Conversation owner is disabled")
@@ -4192,7 +4393,7 @@ class TelephonyRepository:
         placeholders = ",".join("?" for _ in CALL_INCOMPATIBLE_STATUSES)
         statuses = sorted(status.value for status in CALL_INCOMPATIBLE_STATUSES)
         cursor = await conn.execute(
-            f"SELECT 1 FROM PHONE_CALLS WHERE conversation_id=? "
+            f"SELECT 1 FROM PHONE_CALLS WHERE COALESCE(active_conversation_id,conversation_id)=? "
             f"AND deleted_at IS NULL AND status IN ({placeholders}) LIMIT 1",
             (int(conversation_id), *statuses),
         )
@@ -4342,7 +4543,7 @@ class TelephonyRepository:
             UPDATE PHONE_CALLS
             SET foreground_fencing_token=?, foreground_lease_owner=?,
                 foreground_lease_until=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND conversation_id=?
+            WHERE id=? AND COALESCE(active_conversation_id,conversation_id)=?
             """,
             (epoch, lease_owner, lease_until, call_id, conversation_id),
         )
@@ -4558,6 +4759,13 @@ class TelephonyRepository:
             (number_id,),
         )
         row = _row_dict(await cursor.fetchone())
+        if row is not None and row.get('integration_id'):
+            integration = await conn.execute('''SELECT 1 FROM APPLICATION_TWILIO_INTEGRATIONS
+                WHERE integration_id=? AND enabled=1 AND selected_number_id=?''',
+                (row['integration_id'], number_id))
+            if await integration.fetchone() is None or not _has_voice_capability(row.get('capabilities_json')):
+                raise TelephonyConflictError('Preferred telephony integration is not enabled')
+            return row
         if (
             row is None
             or inventory_marker is None
@@ -4577,7 +4785,7 @@ class TelephonyRepository:
         cursor = await conn.execute(
             """
             SELECT * FROM TELEPHONY_NUMBERS
-            WHERE enabled=1 AND is_outbound_default=1 AND synced_at=?
+            WHERE enabled=1 AND is_outbound_default=1 AND synced_at=? AND integration_id IS NULL
             """,
             (inventory_marker,),
         )
@@ -4653,6 +4861,8 @@ class TelephonyRepository:
             ),
             allow_inbound=bool(row["allow_inbound"]),
             allow_outbound=bool(row["allow_outbound"]),
+            application_channel=(json.loads(row['application_channel_json'])
+                                 if row.get('application_channel_json') else None),
         )
 
     async def _binding_has_incompatible_call(self, conn: Any, binding_id: int) -> bool:

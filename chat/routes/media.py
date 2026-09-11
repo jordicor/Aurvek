@@ -43,9 +43,43 @@ from prompts import get_user_directory
 from save_images import get_or_generate_img_token
 from storage_quota import delete_generated_file_rows
 from chat.services.message_rendering import process_message
+from chat.services.generated_media import generated_media_path
+from integrations.applications.runtime import authorize_application_read
+from integrations.embed.models import EmbedError
 from chat.services.privacy import ensure_conversation_privacy_schema
 
+from chat.services.localization import chat_text, chat_error
+
 router = APIRouter()
+
+
+@router.get("/api/conversations/{conversation_id}/media/content")
+async def generated_media_content(
+    conversation_id: int, media_id: int, current_user: User = Depends(get_current_user),
+):
+    if current_user is None:
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
+    async with get_db_connection(readonly=True) as connection:
+        try:
+            await authorize_application_read(connection, conversation_id, current_user.id)
+        except EmbedError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=chat_error(current_user, exc.code)) from exc
+        cursor = await connection.execute(
+            "SELECT g.id,g.kind,g.rel_path FROM GENERATED_MEDIA_FILES g "
+            "JOIN CONVERSATIONS c ON c.id=g.conversation_id AND c.user_id=g.user_id "
+            "WHERE g.id=? AND g.conversation_id=? AND g.user_id=? AND g.kind IN ('image','video')",
+            (media_id, conversation_id, current_user.id),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "attachment_not_found"))
+    try:
+        path = generated_media_path(dict(row))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "attachment_not_found")) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "attachment_not_found"))
+    return FileResponse(path, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 async def scan_pdf_directory(base_path: Path, conversation_id: int) -> List[Dict[str, str]]:
@@ -213,7 +247,7 @@ async def media_gallery(request: Request, current_user: User = Depends(get_curre
         logger.error("Error in media_gallery: %s", exc)
         return templates.TemplateResponse("error.html", {
             "request": request,
-            "error_message": "Error loading the gallery",
+            "error_message": chat_text(current_user, "request_failed"),
             "marketplace": _get_marketplace_template_flags(),
         })
 
@@ -293,7 +327,7 @@ async def get_pdfs(request: Request, current_user: User = Depends(get_current_us
         return JSONResponse(content={"pdfs": pdfs, "pdf_token": pdf_token})
     except Exception as exc:
         logger.error("Error in get_pdfs: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Error loading PDFs"})
+        return JSONResponse(status_code=500, content={"error": chat_text(current_user, "pdf_load_failed")})
 
 
 @router.get("/get-mp3s")
@@ -337,22 +371,22 @@ async def get_mp3s(request: Request, current_user: User = Depends(get_current_us
         return JSONResponse(content={"mp3s": mp3s, "mp3_token": mp3_token})
     except Exception as exc:
         logger.error("Error in get_mp3s: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Error loading MP3s"})
+        return JSONResponse(status_code=500, content={"error": chat_text(current_user, "mp3_load_failed")})
 
 
 @router.get("/download-pdf")
 async def download_pdf(path: str, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     decoded_path = urllib.parse.unquote(path)
     if not decoded_path.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Invalid file type")
+        raise HTTPException(status_code=400, detail=chat_text(current_user, "file_type_invalid"))
 
     user_base_path = Path(get_user_directory(current_user.username))
     validated_path = validate_path_within_directory(decoded_path, user_base_path)
     if not validated_path.is_file():
-        raise HTTPException(status_code=404, detail="PDF not found")
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "pdf_not_found"))
 
     return FileResponse(
         path=validated_path,
@@ -364,16 +398,16 @@ async def download_pdf(path: str, current_user: User = Depends(get_current_user)
 @router.get("/download-mp3")
 async def download_mp3(path: str, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     decoded_path = urllib.parse.unquote(path).replace("/", os.path.sep)
     if not decoded_path.lower().endswith(".mp3"):
-        raise HTTPException(status_code=400, detail="Invalid file type")
+        raise HTTPException(status_code=400, detail=chat_text(current_user, "file_type_invalid"))
 
     user_base_path = Path(get_user_directory(current_user.username))
     validated_path = validate_path_within_directory(decoded_path, user_base_path)
     if not validated_path.is_file():
-        raise HTTPException(status_code=404, detail="MP3 not found")
+        raise HTTPException(status_code=404, detail=chat_text(current_user, "mp3_not_found"))
 
     return FileResponse(
         path=validated_path,
@@ -416,21 +450,23 @@ async def auth_file(request: Request, request_uri: str, token: str):
     import jwt
     from fastapi.exceptions import HTTPException as FastAPIHTTPException
 
+    from i18n import get_translator
+    current_user = get_translator(request)
     if not token:
         logger.error("[auth_file] No token provided")
-        raise HTTPException(status_code=401, detail="No token provided")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "token_required"))
 
     try:
         logger.info("request_uri: %s", request_uri)
         payload = decode_jwt_cached(token, SECRET_KEY)
         if not verify_token_expiration(payload):
             logger.warning("[auth_file] Token expired")
-            raise HTTPException(status_code=401, detail="Token expired")
+            raise HTTPException(status_code=401, detail=chat_text(current_user, "token_expired"))
 
         username = payload.get("username")
         if not username:
             logger.error("[auth_file] No username in token")
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail=chat_text(current_user, "token_invalid"))
 
         hash_prefix1, hash_prefix2, user_hash = generate_user_hash(username)
         user_base = Path(f"data/users/{hash_prefix1}/{hash_prefix2}/{user_hash}")
@@ -443,7 +479,7 @@ async def auth_file(request: Request, request_uri: str, token: str):
         if request_uri.startswith("users/"):
             if not request_uri.startswith(expected_prefix):
                 logger.warning("[auth_file] Token user does not match requested file path")
-                raise HTTPException(status_code=403, detail="Access denied")
+                raise HTTPException(status_code=403, detail=chat_text(current_user, "access_denied"))
             relative_path = request_uri[len(expected_prefix):]
         else:
             relative_path = request_uri
@@ -453,18 +489,18 @@ async def auth_file(request: Request, request_uri: str, token: str):
 
     except jwt.PyJWTError as exc:
         logger.error("[auth_file] JWT Error: %s", str(exc))
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "token_invalid"))
     except FastAPIHTTPException:
         raise
     except Exception as exc:
         logger.error("[auth_file] Unexpected error: %s", str(exc))
-        raise HTTPException(status_code=500, detail="An unexpected error occurred")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "request_failed"))
 
 
 @router.post("/delete-pdf")
 async def delete_pdf(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     try:
         body = await request.json()
@@ -472,13 +508,13 @@ async def delete_pdf(request: Request, current_user: User = Depends(get_current_
         pdf_path = Path(decoded_path)
 
         if pdf_path.suffix != ".pdf":
-            raise HTTPException(status_code=400, detail="Invalid PDF path")
+            raise HTTPException(status_code=400, detail=chat_text(current_user, "pdf_path_invalid"))
         if not pdf_path.exists():
-            raise HTTPException(status_code=404, detail="PDF not found")
+            raise HTTPException(status_code=404, detail=chat_text(current_user, "pdf_not_found"))
 
         user_base_path = Path(get_user_directory(current_user.username))
         if not pdf_path.resolve().is_relative_to(user_base_path.resolve()):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=chat_text(current_user, "access_denied"))
 
         os.remove(str(pdf_path))
 
@@ -499,20 +535,20 @@ async def delete_pdf(request: Request, current_user: User = Depends(get_current_
                 logger.error("Error removing empty directories: %s", exc)
 
         return JSONResponse(
-            content={"message": "PDF deleted successfully", "path": str(pdf_path)},
+            content={"message": chat_text(current_user, "pdf_deleted"), "path": str(pdf_path)},
             background=BackgroundTask(remove_empty_dirs, pdf_path.parent),
         )
     except orjson.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail=chat_text(current_user, "invalid_json"))
     except Exception as exc:
         logger.error("Error deleting PDF: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Error deleting PDF: {str(exc)}")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "request_failed"))
 
 
 @router.post("/delete-mp3")
 async def delete_mp3(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     try:
         body = await request.json()
@@ -522,13 +558,13 @@ async def delete_mp3(request: Request, current_user: User = Depends(get_current_
         mp3_path = Path(decoded_path.replace("/", os.path.sep))
         logger.info("Attempting to delete MP3 at path: %s", mp3_path)
         if not mp3_path or mp3_path.suffix != ".mp3":
-            raise HTTPException(status_code=400, detail="Invalid MP3 path")
+            raise HTTPException(status_code=400, detail=chat_text(current_user, "mp3_path_invalid"))
         if not os.path.exists(str(mp3_path)):
-            raise HTTPException(status_code=404, detail="MP3 not found")
+            raise HTTPException(status_code=404, detail=chat_text(current_user, "mp3_not_found"))
 
         user_base_path = Path(get_user_directory(current_user.username))
         if not mp3_path.resolve().is_relative_to(user_base_path.resolve()):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=chat_text(current_user, "access_denied"))
 
         os.remove(str(mp3_path))
 
@@ -549,20 +585,20 @@ async def delete_mp3(request: Request, current_user: User = Depends(get_current_
                 logger.error("Error removing empty directories: %s", exc)
 
         return JSONResponse(
-            content={"message": "MP3 deleted successfully", "path": str(mp3_path)},
+            content={"message": chat_text(current_user, "mp3_deleted"), "path": str(mp3_path)},
             background=BackgroundTask(remove_empty_dirs, mp3_path.parent),
         )
     except orjson.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail=chat_text(current_user, "invalid_json"))
     except Exception as exc:
         logger.error("Error deleting MP3: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Error deleting MP3: {str(exc)}")
+        raise HTTPException(status_code=500, detail=chat_text(current_user, "request_failed"))
 
 
 @router.post("/delete-pdfs")
 async def delete_pdfs(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     try:
         body = await request.json()
@@ -570,7 +606,7 @@ async def delete_pdfs(request: Request, current_user: User = Depends(get_current
         attachment_refs = body.get("attachment_refs", [])
 
         if not pdf_paths and not attachment_refs:
-            raise HTTPException(status_code=400, detail="No PDF paths provided")
+            raise HTTPException(status_code=400, detail=chat_text(current_user, "pdf_paths_required"))
 
         user_base_path = Path(get_user_directory(current_user.username))
         deleted_count = 0
@@ -632,22 +668,22 @@ async def delete_pdfs(request: Request, current_user: User = Depends(get_current
         if attachment_refs:
             await prune_unreferenced_blobs()
 
-        return {"message": f"Successfully deleted: {deleted_count}, Failed: {failed_count}"}
+        return {"message": chat_text(current_user, "media_delete_result", deleted=deleted_count, failed=failed_count)}
     except Exception as exc:
         logger.error("Error in bulk PDF deletion: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=chat_error(current_user, getattr(exc, "code", None)))
 
 
 @router.post("/delete-mp3s")
 async def delete_mp3s(request: Request, current_user: User = Depends(get_current_user)):
     if current_user is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=chat_text(current_user, "unauthenticated"))
 
     try:
         body = await request.json()
         mp3_paths = body.get("mp3_paths", [])
         if not mp3_paths:
-            raise HTTPException(status_code=400, detail="No MP3 paths provided")
+            raise HTTPException(status_code=400, detail=chat_text(current_user, "mp3_paths_required"))
 
         user_base_path = Path(get_user_directory(current_user.username))
         deleted_count = 0
@@ -686,7 +722,7 @@ async def delete_mp3s(request: Request, current_user: User = Depends(get_current
                 await delete_generated_file_rows(conn, removed_mp3_paths)
                 await conn.commit()
 
-        return {"message": f"Successfully deleted: {deleted_count}, Failed: {failed_count}"}
+        return {"message": chat_text(current_user, "media_delete_result", deleted=deleted_count, failed=failed_count)}
     except Exception as exc:
         logger.error("Error in bulk MP3 deletion: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=chat_error(current_user, getattr(exc, "code", None)))

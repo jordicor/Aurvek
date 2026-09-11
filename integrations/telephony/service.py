@@ -7,7 +7,7 @@ follow exactly the same dispatcher path as scheduled calls.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -142,6 +142,7 @@ class OutboundCallService:
         origin_message_id: int | None = None,
         recording_override: bool | None = None,
         amd_override: bool | None = None,
+        transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create a one-shot future job, storing both UTC and its IANA zone."""
 
@@ -163,6 +164,7 @@ class OutboundCallService:
             amd_override=amd_override,
             future_schedule=True,
             future_cutoff_utc=now_text,
+            transaction_guard=transaction_guard,
         )
 
     async def cancel_call(
@@ -217,6 +219,7 @@ class OutboundCallService:
         expected_destination_e164: str | None = None,
         future_schedule: bool = False,
         future_cutoff_utc: str | None = None,
+        transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         job_id = self._next_job_id()
         return await self.repository.create_call_job(
@@ -235,6 +238,7 @@ class OutboundCallService:
             expected_destination_e164=expected_destination_e164,
             future_schedule=future_schedule,
             future_cutoff_utc=future_cutoff_utc,
+            transaction_guard=transaction_guard,
         )
 
     def _next_job_id(self) -> str:

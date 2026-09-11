@@ -14,15 +14,23 @@ from tools.download_mp3 import generate_and_save_mp3
 
 # Define task to generate PDFs
 @dramatiq.actor
-def generate_pdf_task(conversation_id: int, user_id: int, is_admin: bool):
+def generate_pdf_task(conversation_id: int, user_id: int, is_admin: bool, ui_language: str = "en",
+                      application_job_id: str | None = None):
     import asyncio
-    asyncio.run(generate_and_save_pdf(conversation_id, user_id, is_admin))
+    if application_job_id is not None:
+        from integrations.applications.web_exports import run_export_job
+        return asyncio.run(run_export_job("pdf", application_job_id, conversation_id, user_id, ui_language))
+    asyncio.run(generate_and_save_pdf(conversation_id, user_id, is_admin, ui_language=ui_language))
 
 # Define task to generate MP3s
 @dramatiq.actor
-def generate_mp3_task(conversation_id: int, user_id: int, is_admin: bool):
+def generate_mp3_task(conversation_id: int, user_id: int, is_admin: bool, ui_language: str = "en",
+                      application_job_id: str | None = None):
     import asyncio
-    asyncio.run(generate_and_save_mp3(conversation_id, user_id, is_admin))
+    if application_job_id is not None:
+        from integrations.applications.web_exports import run_export_job
+        return asyncio.run(run_export_job("mp3", application_job_id, conversation_id, user_id, ui_language))
+    asyncio.run(generate_and_save_mp3(conversation_id, user_id, is_admin, ui_language=ui_language))
 
 
 @dramatiq.actor(max_retries=5, min_backoff=10_000, max_backoff=300_000)

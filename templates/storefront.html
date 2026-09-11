@@ -1,12 +1,13 @@
+{% set i18n_domains = ['marketplace_storefront'] %}
 {% extends 'base.html' %}
 
-{% block title %}{{ storefront.profile.display_name }} - Storefront{% endblock %}
+{% block title %}{{ t('marketplace_storefront.title', name=storefront.profile.display_name) }}{% endblock %}
 
 {% block styles %}
 <link rel="stylesheet" href="{{ get_static_url('/static/css/storefront.css') }}">
 {% endblock %}
 
-{% block meta_description %}<meta name="description" content="{{ storefront.profile.bio[:160] if storefront.profile.bio else storefront.profile.display_name ~ ' - Creator Storefront' }}">{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ storefront.profile.bio[:160] if storefront.profile.bio else t('marketplace_storefront.creator_title', name=storefront.profile.display_name) }}">{% endblock %}
 
 {% block head_extra %}
 {% set _scheme = request.headers.get('x-forwarded-proto', request.url.scheme) %}
@@ -14,8 +15,8 @@
 {% set _base = _scheme ~ '://' ~ _host %}
 <link rel="canonical" href="{{ _base }}/store/{{ storefront.profile.slug }}">
 <!-- Open Graph -->
-<meta property="og:title" content="{{ storefront.profile.display_name }} - Storefront">
-<meta property="og:description" content="{{ storefront.profile.bio[:200] if storefront.profile.bio else 'Browse products from ' ~ storefront.profile.display_name }}">
+<meta property="og:title" content="{{ t('marketplace_storefront.title', name=storefront.profile.display_name) }}">
+<meta property="og:description" content="{{ storefront.profile.bio[:200] if storefront.profile.bio else t('marketplace_storefront.browse', name=storefront.profile.display_name) }}">
 <meta property="og:type" content="profile">
 <meta property="og:url" content="{{ _base }}/store/{{ storefront.profile.slug }}">
 {% if storefront.avatar_url %}
@@ -25,8 +26,8 @@
 {% endif %}
 <!-- Twitter Card -->
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="{{ storefront.profile.display_name }} - Storefront">
-<meta name="twitter:description" content="{{ storefront.profile.bio[:200] if storefront.profile.bio else 'Creator storefront on AURVEK' }}">
+<meta name="twitter:title" content="{{ t('marketplace_storefront.title', name=storefront.profile.display_name) }}">
+<meta name="twitter:description" content="{{ storefront.profile.bio[:200] if storefront.profile.bio else t('marketplace_storefront.meta') }}">
 {% if storefront.avatar_url %}
 <meta name="twitter:image" content="{{ _abs_img }}">
 {% endif %}
@@ -45,23 +46,23 @@
             {% endif %}
         </div>
         <h1 class="storefront-name">{{ storefront.profile.display_name }}
-            {% if storefront.profile.is_verified %}<i class="fas fa-check-circle storefront-verified" title="Verified Creator"></i>{% endif %}
+            {% if storefront.profile.is_verified %}<i class="fas fa-check-circle storefront-verified" title="{{ t('marketplace_storefront.verified_creator') }}"></i>{% endif %}
         </h1>
         {% if storefront.profile.bio %}
         <p class="storefront-bio">{{ storefront.profile.bio }}</p>
         {% endif %}
         <div class="storefront-stats">
-            <span><strong>{{ storefront.stats.prompt_count }}</strong> {{ 'product' if storefront.stats.prompt_count == 1 else 'products' }}</span>
+            <span>{{ t('marketplace_storefront.count_products', count=storefront.stats.prompt_count, number=format_number(storefront.stats.prompt_count)) }}</span>
             {% if storefront.stats.pack_count > 0 %}
             <span class="storefront-stat-sep">|</span>
-            <span><strong>{{ storefront.stats.pack_count }}</strong> {{ 'pack' if storefront.stats.pack_count == 1 else 'packs' }}</span>
+            <span>{{ t('marketplace_storefront.count_packs', count=storefront.stats.pack_count, number=format_number(storefront.stats.pack_count)) }}</span>
             {% endif %}
         </div>
         {% if storefront.profile.social_links %}
         <div class="storefront-social">
             {% set icon_map = {'website': 'fas fa-globe', 'twitter': 'fab fa-x-twitter', 'linkedin': 'fab fa-linkedin', 'youtube': 'fab fa-youtube', 'instagram': 'fab fa-instagram', 'github': 'fab fa-github'} %}
             {% for key, url in storefront.profile.social_links.items() %}
-            <a href="{{ url }}" target="_blank" rel="noopener noreferrer" class="storefront-social-link" title="{{ key|capitalize }}">
+            <a href="{{ url }}" target="_blank" rel="noopener noreferrer" class="storefront-social-link" title="{{ t('marketplace_storefront.website') if key == 'website' else {'twitter': 'X', 'linkedin': 'LinkedIn', 'youtube': 'YouTube', 'instagram': 'Instagram', 'github': 'GitHub'}.get(key, key) }}">
                 <i class="{{ icon_map.get(key, 'fas fa-link') }}"></i>
             </a>
             {% endfor %}
@@ -75,7 +76,7 @@
 <div class="storefront-content">
     {% if storefront.packs %}
     <section class="storefront-section">
-        <h2 class="storefront-section-title"><i class="fas fa-layer-group"></i> Packs</h2>
+        <h2 class="storefront-section-title"><i class="fas fa-layer-group"></i> {{ t('marketplace_storefront.packs') }}</h2>
         <div class="storefront-grid">
             {% for pack in storefront.packs %}
             <div class="storefront-card">
@@ -90,18 +91,18 @@
                     <p class="storefront-card-desc">{{ pack.description[:120] }}{% if pack.description|length > 120 %}...{% endif %}</p>
                     {% endif %}
                     <div class="storefront-card-meta">
-                        <span class="storefront-card-count">{{ pack.item_count }} {{ 'item' if pack.item_count == 1 else 'items' }}</span>
+                        <span class="storefront-card-count">{{ t('marketplace_storefront.count_items', count=pack.item_count, number=format_number(pack.item_count)) }}</span>
                         {% if pack.is_paid %}
-                        <span class="storefront-badge storefront-badge-paid">${{ "%.2f"|format(pack.price) }}</span>
+                        <span class="storefront-badge storefront-badge-paid">{{ format_currency(pack.price) }}</span>
                         {% else %}
-                        <span class="storefront-badge storefront-badge-free">Free</span>
+                        <span class="storefront-badge storefront-badge-free">{{ t('marketplace_storefront.store.free') }}</span>
                         {% endif %}
                         {% if pack.id in storefront.viewer_access.pack_ids %}
-                        <span class="storefront-badge storefront-badge-owned">Owned</span>
+                        <span class="storefront-badge storefront-badge-owned">{{ t('marketplace_storefront.store.owned') }}</span>
                         {% endif %}
                     </div>
                 </div>
-                <a href="/pack/{{ pack.public_id }}/{{ pack.slug }}/" class="storefront-card-link"></a>
+                <a href="/pack/{{ pack.public_id }}/{{ pack.slug }}/" class="storefront-card-link" aria-label="{{ pack.name }}"></a>
             </div>
             {% endfor %}
         </div>
@@ -110,7 +111,7 @@
 
     {% if storefront.prompts %}
     <section class="storefront-section">
-        <h2 class="storefront-section-title"><i class="fas fa-wand-magic-sparkles"></i> Products</h2>
+        <h2 class="storefront-section-title"><i class="fas fa-wand-magic-sparkles"></i> {{ t('marketplace_storefront.products') }}</h2>
         <div class="storefront-grid">
             {% for prompt in storefront.prompts %}
             <div class="storefront-card">
@@ -126,16 +127,16 @@
                     {% endif %}
                     <div class="storefront-card-meta">
                         {% if prompt.is_paid and prompt.purchase_price and prompt.purchase_price > 0 %}
-                        <span class="storefront-badge storefront-badge-vip">VIP</span>
+                        <span class="storefront-badge storefront-badge-vip">{{ t('marketplace_storefront.tier.vip') }}</span>
                         {% elif prompt.is_paid %}
-                        <span class="storefront-badge storefront-badge-premium">Premium</span>
+                        <span class="storefront-badge storefront-badge-premium">{{ t('marketplace_storefront.tier.premium') }}</span>
                         {% endif %}
                         {% if prompt.id in storefront.viewer_access.prompt_ids %}
-                        <span class="storefront-badge storefront-badge-owned">Owned</span>
+                        <span class="storefront-badge storefront-badge-owned">{{ t('marketplace_storefront.store.owned') }}</span>
                         {% endif %}
                     </div>
                 </div>
-                <a href="/p/{{ prompt.public_id }}/{{ prompt.slug }}/" class="storefront-card-link"></a>
+                <a href="/p/{{ prompt.public_id }}/{{ prompt.slug }}/" class="storefront-card-link" aria-label="{{ prompt.name }}"></a>
             </div>
             {% endfor %}
         </div>
@@ -145,7 +146,7 @@
     {% if not storefront.prompts and not storefront.packs %}
     <div class="storefront-empty">
         <i class="fas fa-store" style="font-size: 3rem; opacity: 0.3;"></i>
-        <p>This creator hasn't published any products yet.</p>
+        <p>{{ t('marketplace_storefront.store.empty') }}</p>
     </div>
     {% endif %}
 </div>

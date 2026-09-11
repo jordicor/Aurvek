@@ -41,6 +41,7 @@ async def send_entitlement_claim_email(
     user_id: int,
     prompt_id: int | None = None,
     pack_id: int | None = None,
+    ui_language: str = "en",
 ) -> bool:
     """Create a pending entitlement and send the claim email to the existing user."""
     token = await create_pending_entitlement(user_id, prompt_id, pack_id)
@@ -83,6 +84,7 @@ async def send_entitlement_claim_email(
         claim_url=claim_url,
         product_name=product_name,
         branding=branding,
+        ui_language=ui_language,
     )
     if email_sent:
         logger.info("Claim entitlement email sent to %s for user %s", email, user_id)

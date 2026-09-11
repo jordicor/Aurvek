@@ -1,6 +1,7 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_usage'] %}
 
-{% block title %}Pricing Configuration - AURVEK{% endblock %}
+{% block title %}{{ t('admin_usage.pricing_configuration_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -26,10 +27,10 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Pricing Configuration{% endblock %}
+{% block page_title %}{{ t('admin_usage.pricing_configuration') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Configure platform margins, commissions, and payout settings for the pricing system.</p>
+<p class="page-subtitle">{{ t('admin_usage.configure_platform_margins_commissions_and_payout_settings_for_the_prici') }}</p>
 {% endblock %}
 
 {% block content %}
@@ -39,13 +40,13 @@
         <form id="pricingForm" data-form-guard>
             <!-- Margins Section -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-percentage me-2"></i>Platform Margins</div>
-                <p class="help-text mb-3">Margins are added on top of API costs. Higher margins = more platform revenue.</p>
+                <div class="section-title"><i class="fas fa-percentage me-2"></i>{{ t('admin_usage.platform_margins') }}</div>
+                <p class="help-text mb-3">{{ t('admin_usage.margins_are_added_on_top_of_api_costs_higher_margins_more_platform_reven') }}</p>
 
                 <div class="mb-3">
                     <label for="pricing_margin_free" class="form-label">
-                        Free Prompts Margin
-                        <span class="badge bg-secondary ms-1">Default: 20%</span>
+                        {{ t('admin_usage.free_prompts_margin') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_usage.default_20') }}</span>
                     </label>
                     <div class="input-group">
                         <input type="number" class="form-control" id="pricing_margin_free" name="pricing_margin_free"
@@ -53,13 +54,13 @@
                                value="{{ pricing_config.get('pricing_margin_free', {}).get('value', '20') }}">
                         <span class="input-group-text">%</span>
                     </div>
-                    <small class="help-text">Applied to prompts that don't have a creator markup.</small>
+                    <small class="help-text">{{ t('admin_usage.applied_to_prompts_that_don_t_have_a_creator_markup') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="pricing_margin_paid" class="form-label">
-                        Paid Prompts Margin
-                        <span class="badge bg-secondary ms-1">Default: 10%</span>
+                        {{ t('admin_usage.paid_prompts_margin') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_usage.default_10') }}</span>
                     </label>
                     <div class="input-group">
                         <input type="number" class="form-control" id="pricing_margin_paid" name="pricing_margin_paid"
@@ -67,13 +68,13 @@
                                value="{{ pricing_config.get('pricing_margin_paid', {}).get('value', '10') }}">
                         <span class="input-group-text">%</span>
                     </div>
-                    <small class="help-text">Applied to prompts with creator markup (lower to encourage paid prompts).</small>
+                    <small class="help-text">{{ t('admin_usage.applied_to_prompts_with_creator_markup_lower_to_encourage_paid_prompts') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="pricing_margin_personal" class="form-label">
-                        Personal Use Margin
-                        <span class="badge bg-secondary ms-1">Default: 15%</span>
+                        {{ t('admin_usage.personal_use_margin') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_usage.default_15') }}</span>
                     </label>
                     <div class="input-group">
                         <input type="number" class="form-control" id="pricing_margin_personal" name="pricing_margin_personal"
@@ -81,18 +82,18 @@
                                value="{{ pricing_config.get('pricing_margin_personal', {}).get('value', '15') }}">
                         <span class="input-group-text">%</span>
                     </div>
-                    <small class="help-text">Applied when creators use their own paid prompts (no markup charged).</small>
+                    <small class="help-text">{{ t('admin_usage.applied_when_creators_use_their_own_paid_prompts_no_markup_charged') }}</small>
                 </div>
             </div>
 
             <!-- Commission Section -->
             <div class="section-container">
-                <div class="section-title"><i class="fas fa-hand-holding-usd me-2"></i>Commission & Payouts</div>
+                <div class="section-title"><i class="fas fa-hand-holding-usd me-2"></i>{{ t('admin_usage.commission_payouts') }}</div>
 
                 <div class="mb-3">
                     <label for="pricing_commission" class="form-label">
-                        Platform Commission
-                        <span class="badge bg-secondary ms-1">Default: 30%</span>
+                        {{ t('admin_usage.platform_commission') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_usage.default_30') }}</span>
                     </label>
                     <div class="input-group">
                         <input type="number" class="form-control" id="pricing_commission" name="pricing_commission"
@@ -100,26 +101,26 @@
                                value="{{ pricing_config.get('pricing_commission', {}).get('value', '30') }}">
                         <span class="input-group-text">%</span>
                     </div>
-                    <small class="help-text">Percentage taken from creator/curator markup. They keep the rest.</small>
+                    <small class="help-text">{{ t('admin_usage.percentage_taken_from_creator_curator_markup_they_keep_the_rest') }}</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="min_payout_amount" class="form-label">
-                        Minimum Payout Amount
-                        <span class="badge bg-secondary ms-1">Default: $50</span>
+                        {{ t('admin_usage.minimum_payout_amount') }}
+                        <span class="badge bg-secondary ms-1">{{ t('admin_usage.pricing.default_value', value=format_currency(50, 'USD', fraction_digits=0)) }}</span>
                     </label>
                     <div class="input-group">
-                        <span class="input-group-text">$</span>
+                        <span class="input-group-text">USD</span>
                         <input type="number" class="form-control" id="min_payout_amount" name="min_payout_amount"
                                min="0" max="1000" step="1"
                                value="{{ pricing_config.get('min_payout_amount', {}).get('value', '50') }}">
                     </div>
-                    <small class="help-text">Minimum balance required for creators/curators to request withdrawal.</small>
+                    <small class="help-text">{{ t('admin_usage.minimum_balance_required_for_creators_curators_to_request_withdrawal') }}</small>
                 </div>
             </div>
 
             <button type="submit" class="btn btn-primary btn-lg" id="saveBtn">
-                <i class="fas fa-save me-1"></i> Save Configuration
+                <i class="fas fa-save me-1"></i> {{ t('admin_usage.save_configuration') }}
             </button>
         </form>
     </div>
@@ -127,84 +128,84 @@
     <!-- Live Preview -->
     <div class="col-lg-5">
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-calculator me-2"></i>Live Pricing Preview</div>
-            <p class="help-text mb-3">Example calculation for $10/Mtokens API cost with $6 creator markup + $3 curator markup:</p>
+            <div class="section-title"><i class="fas fa-calculator me-2"></i>{{ t('admin_usage.live_pricing_preview') }}</div>
+            <p class="help-text mb-3">{{ t('admin_usage.pricing.example', api=format_currency(10, 'USD', fraction_digits=0), creator=format_currency(6, 'USD', fraction_digits=0), curator=format_currency(3, 'USD', fraction_digits=0)) }}</p>
 
             <div class="preview-card mb-3">
-                <h6 class="mb-3">Scenario A: FREE Prompt</h6>
+                <h6 class="mb-3">{{ t('admin_usage.scenario_a_free_prompt') }}</h6>
                 <div class="preview-item">
-                    <span>API Cost:</span>
-                    <span>$10.00</span>
+                    <span>{{ t('admin_usage.api_cost') }}</span>
+                    <span>{{ format_currency(10.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item">
-                    <span>Margin (<span id="previewMarginFree">20</span>%):</span>
-                    <span id="previewFreeMarginAmount">$2.00</span>
+                    <span id="previewMarginFree"></span>
+                    <span id="previewFreeMarginAmount">{{ format_currency(2.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item fw-bold">
-                    <span>User Pays:</span>
-                    <span id="previewFreeTotag">$12.00</span>
+                    <span>{{ t('admin_usage.user_pays') }}</span>
+                    <span id="previewFreeTotag">{{ format_currency(12.00, 'USD') }}</span>
                 </div>
             </div>
 
             <div class="preview-card mb-3">
-                <h6 class="mb-3">Scenario B: PAID Prompt (External User)</h6>
+                <h6 class="mb-3">{{ t('admin_usage.scenario_b_paid_prompt_external_user') }}</h6>
                 <div class="preview-item">
-                    <span>API Cost:</span>
-                    <span>$10.00</span>
+                    <span>{{ t('admin_usage.api_cost') }}</span>
+                    <span>{{ format_currency(10.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item">
-                    <span>Margin (<span id="previewMarginPaid">10</span>%):</span>
-                    <span id="previewPaidMarginAmount">$1.00</span>
+                    <span id="previewMarginPaid"></span>
+                    <span id="previewPaidMarginAmount">{{ format_currency(1.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item">
-                    <span>Creator Markup:</span>
-                    <span>$6.00</span>
+                    <span>{{ t('admin_usage.creator_markup') }}</span>
+                    <span>{{ format_currency(6.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item fw-bold">
-                    <span>User Pays:</span>
-                    <span id="previewPaidTotal">$17.00</span>
+                    <span>{{ t('admin_usage.user_pays') }}</span>
+                    <span id="previewPaidTotal">{{ format_currency(17.00, 'USD') }}</span>
                 </div>
                 <hr class="my-2 opacity-50">
                 <div class="preview-item text-success">
-                    <span>Creator Earns (<span id="previewCreatorPercent">70</span>%):</span>
-                    <span id="previewCreatorEarnings">$4.20</span>
+                    <span id="previewCreatorPercent"></span>
+                    <span id="previewCreatorEarnings">{{ format_currency(4.20, 'USD') }}</span>
                 </div>
                 <div class="preview-item text-warning">
-                    <span>Platform Commission:</span>
-                    <span id="previewPlatformCommission">$1.80</span>
+                    <span>{{ t('admin_usage.platform_commission_2') }}</span>
+                    <span id="previewPlatformCommission">{{ format_currency(1.80, 'USD') }}</span>
                 </div>
             </div>
 
             <div class="preview-card">
-                <h6 class="mb-3">Scenario D: With Curator Markup</h6>
+                <h6 class="mb-3">{{ t('admin_usage.scenario_d_with_curator_markup') }}</h6>
                 <div class="preview-item">
-                    <span>Base (API + Margin):</span>
-                    <span id="previewReferralBase">$11.00</span>
+                    <span>{{ t('admin_usage.base_api_margin') }}</span>
+                    <span id="previewReferralBase">{{ format_currency(11.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item">
-                    <span>Creator Markup:</span>
-                    <span>$6.00</span>
+                    <span>{{ t('admin_usage.creator_markup') }}</span>
+                    <span>{{ format_currency(6.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item">
-                    <span>Curator Markup:</span>
-                    <span>$3.00</span>
+                    <span>{{ t('admin_usage.curator_markup') }}</span>
+                    <span>{{ format_currency(3.00, 'USD') }}</span>
                 </div>
                 <div class="preview-item fw-bold">
-                    <span>User Pays:</span>
-                    <span id="previewReferralTotal">$20.00</span>
+                    <span>{{ t('admin_usage.user_pays') }}</span>
+                    <span id="previewReferralTotal">{{ format_currency(20.00, 'USD') }}</span>
                 </div>
                 <hr class="my-2 opacity-50">
                 <div class="preview-item text-success">
-                    <span>Creator Earns:</span>
-                    <span id="previewReferralCreator">$4.20</span>
+                    <span>{{ t('admin_usage.creator_earns_2') }}</span>
+                    <span id="previewReferralCreator">{{ format_currency(4.20, 'USD') }}</span>
                 </div>
                 <div class="preview-item text-info">
-                    <span>Curator Earns:</span>
-                    <span id="previewReferralEarning">$2.10</span>
+                    <span>{{ t('admin_usage.curator_earns') }}</span>
+                    <span id="previewReferralEarning">{{ format_currency(2.10, 'USD') }}</span>
                 </div>
                 <div class="preview-item text-warning">
-                    <span>Total Platform:</span>
-                    <span id="previewReferralPlatform">$3.70</span>
+                    <span>{{ t('admin_usage.total_platform') }}</span>
+                    <span id="previewReferralPlatform">{{ format_currency(3.70, 'USD') }}</span>
                 </div>
             </div>
         </div>
@@ -218,6 +219,10 @@
     const CREATOR_MARKUP = 6;  // Example $6/Mtokens
     const REFERRAL_MARKUP = 3;  // Example $3/Mtokens
 
+    function formatPercent(value) {
+        return AurvekI18n.formatNumber(value / 100, {style: 'percent', maximumFractionDigits: 20});
+    }
+
     function updatePreview() {
         const marginFree = parseFloat(document.getElementById('pricing_margin_free').value) || 0;
         const marginPaid = parseFloat(document.getElementById('pricing_margin_paid').value) || 0;
@@ -229,9 +234,9 @@
         const freeMargin = API_COST * (marginFree / 100);
         const freeTotal = API_COST + freeMargin;
 
-        document.getElementById('previewMarginFree').textContent = marginFree;
-        document.getElementById('previewFreeMarginAmount').textContent = `$${freeMargin.toFixed(2)}`;
-        document.getElementById('previewFreeTotag').textContent = `$${freeTotal.toFixed(2)}`;
+        document.getElementById('previewMarginFree').textContent = AurvekI18n.t('admin_usage.pricing.margin_label', {percent: formatPercent(marginFree)});
+        document.getElementById('previewFreeMarginAmount').textContent = `${AurvekI18n.formatCurrency(freeMargin, 'USD', 2)}`;
+        document.getElementById('previewFreeTotag').textContent = `${AurvekI18n.formatCurrency(freeTotal, 'USD', 2)}`;
 
         // Scenario B: Paid prompt
         const paidMargin = API_COST * (marginPaid / 100);
@@ -239,12 +244,12 @@
         const creatorEarnings = CREATOR_MARKUP * (creatorPercent / 100);
         const platformCommission = CREATOR_MARKUP * (commission / 100);
 
-        document.getElementById('previewMarginPaid').textContent = marginPaid;
-        document.getElementById('previewPaidMarginAmount').textContent = `$${paidMargin.toFixed(2)}`;
-        document.getElementById('previewPaidTotal').textContent = `$${paidTotal.toFixed(2)}`;
-        document.getElementById('previewCreatorPercent').textContent = creatorPercent;
-        document.getElementById('previewCreatorEarnings').textContent = `$${creatorEarnings.toFixed(2)}`;
-        document.getElementById('previewPlatformCommission').textContent = `$${platformCommission.toFixed(2)}`;
+        document.getElementById('previewMarginPaid').textContent = AurvekI18n.t('admin_usage.pricing.margin_label', {percent: formatPercent(marginPaid)});
+        document.getElementById('previewPaidMarginAmount').textContent = `${AurvekI18n.formatCurrency(paidMargin, 'USD', 2)}`;
+        document.getElementById('previewPaidTotal').textContent = `${AurvekI18n.formatCurrency(paidTotal, 'USD', 2)}`;
+        document.getElementById('previewCreatorPercent').textContent = AurvekI18n.t('admin_usage.pricing.creator_label', {percent: formatPercent(creatorPercent)});
+        document.getElementById('previewCreatorEarnings').textContent = `${AurvekI18n.formatCurrency(creatorEarnings, 'USD', 2)}`;
+        document.getElementById('previewPlatformCommission').textContent = `${AurvekI18n.formatCurrency(platformCommission, 'USD', 2)}`;
 
         // Scenario D: With referral
         const referralBase = API_COST + paidMargin;
@@ -253,11 +258,11 @@
         const referralEarnings = REFERRAL_MARKUP * (creatorPercent / 100);
         const totalPlatform = paidMargin + (CREATOR_MARKUP + REFERRAL_MARKUP) * (commission / 100);
 
-        document.getElementById('previewReferralBase').textContent = `$${referralBase.toFixed(2)}`;
-        document.getElementById('previewReferralTotal').textContent = `$${referralTotal.toFixed(2)}`;
-        document.getElementById('previewReferralCreator').textContent = `$${referralCreatorEarnings.toFixed(2)}`;
-        document.getElementById('previewReferralEarning').textContent = `$${referralEarnings.toFixed(2)}`;
-        document.getElementById('previewReferralPlatform').textContent = `$${totalPlatform.toFixed(2)}`;
+        document.getElementById('previewReferralBase').textContent = `${AurvekI18n.formatCurrency(referralBase, 'USD', 2)}`;
+        document.getElementById('previewReferralTotal').textContent = `${AurvekI18n.formatCurrency(referralTotal, 'USD', 2)}`;
+        document.getElementById('previewReferralCreator').textContent = `${AurvekI18n.formatCurrency(referralCreatorEarnings, 'USD', 2)}`;
+        document.getElementById('previewReferralEarning').textContent = `${AurvekI18n.formatCurrency(referralEarnings, 'USD', 2)}`;
+        document.getElementById('previewReferralPlatform').textContent = `${AurvekI18n.formatCurrency(totalPlatform, 'USD', 2)}`;
     }
 
     // Initial preview update
@@ -277,7 +282,7 @@
         const originalText = saveBtn.innerHTML;
 
         saveBtn.disabled = true;
-        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + AurvekI18n.t('admin_usage.saving') + '';
 
         const data = {
             pricing_margin_free: document.getElementById('pricing_margin_free').value,
@@ -300,7 +305,7 @@
 
             if (result.success) {
                 FormGuard.markClean(document.getElementById('pricingForm'));
-                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> ' + AurvekI18n.t('admin_usage.saved') + '';
                 saveBtn.classList.remove('btn-primary');
                 saveBtn.classList.add('btn-success');
 
@@ -311,13 +316,13 @@
                     saveBtn.disabled = false;
                 }, 2000);
             } else {
-                NotificationModal.error('Save Failed', result.message || 'Error saving configuration');
+                NotificationModal.error(AurvekI18n.t('admin_usage.save_failed'), result.message || AurvekI18n.t('admin_usage.error_saving_configuration'));
                 saveBtn.innerHTML = originalText;
                 saveBtn.disabled = false;
             }
         } catch (error) {
             console.error('Error:', error);
-            NotificationModal.error('Save Error', 'An error occurred while saving configuration');
+            NotificationModal.error(AurvekI18n.t('admin_usage.save_error'), AurvekI18n.t('admin_usage.an_error_occurred_while_saving_configuration'));
             saveBtn.innerHTML = originalText;
             saveBtn.disabled = false;
         }

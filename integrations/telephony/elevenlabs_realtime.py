@@ -183,9 +183,26 @@ class ElevenLabsRealtimeOptions:
 
     language: str = "multi"
     endpointing_ms: int = 700
+    secondary_languages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         language_code = _normalize_language(self.language)
+        if not isinstance(self.secondary_languages, (list, tuple)):
+            raise ValueError(
+                "secondary_languages must be a list of ISO locales"
+            )
+        normalized_secondary: list[str] = []
+        seen = {language_code} if language_code is not None else set()
+        for secondary_language in self.secondary_languages:
+            normalized = _normalize_language(secondary_language)
+            if normalized is None:
+                raise ValueError(
+                    "secondary_languages must contain only ISO locales"
+                )
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_secondary.append(normalized)
         if (
             not isinstance(self.endpointing_ms, int)
             or isinstance(self.endpointing_ms, bool)
@@ -200,6 +217,11 @@ class ElevenLabsRealtimeOptions:
                 if language_code is not None
                 else self.language.strip().lower()
             ),
+        )
+        object.__setattr__(
+            self,
+            "secondary_languages",
+            tuple(normalized_secondary),
         )
 
     @property
@@ -216,6 +238,10 @@ class ElevenLabsRealtimeOptions:
         ]
         if self.language_code is not None:
             items.append(("language_code", self.language_code))
+        items.extend(
+            ("secondary_languages", language)
+            for language in self.secondary_languages
+        )
         return tuple(items)
 
     def websocket_url(self) -> str:

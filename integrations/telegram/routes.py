@@ -1,21 +1,25 @@
 import re
+import os
+import secrets
 import time
 
 import orjson
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from auth import get_user_from_phone_number, get_user_from_telegram_chat_id
+from auth import get_user_from_phone_number, get_user_from_telegram_chat_id, get_user_by_id
 from billing.usage_reservations import serialize_user_billing_response
 from clients import async_telegram
 from common import (
     TELEGRAM_RATE_LIMIT_GLOBAL,
     TELEGRAM_RATE_LIMIT_PER_USER,
-    TELEGRAM_WEBHOOK_SECRET,
+    TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN,
 )
 from database import get_db_connection
 from file_storage import create_pending_audio_attachment, discard_pending_attachments
+from chat.services.localization import chat_translator
 from integrations.conversations import (
+    escape_markdown,
     can_use_platform,
     change_response_mode,
     create_new_platform_conversation,
@@ -36,6 +40,11 @@ from prompts import can_user_access_prompt
 from storage_quota import StorageQuotaExceededError
 from tools.tts import handle_tts_request
 
+from integrations.applications.messaging import (
+    resolve_messaging, application_command, application_messaging_turn,
+    check_messaging, AdmittedMessagingClient, messaging_tts_billing,
+)
+from integrations.embed.models import EmbedError
 from ai_runtime.channel_turns import StaleChannelTurnError
 from ai_runtime.messages import process_save_message, storage_quota_notice_from_response
 
@@ -50,13 +59,15 @@ _telegram_global_timestamps: list[float] = []
 
 
 def _telegram_external_message_id(
-    *, update_id: int | None, chat_id: int | str, message_id: int | None
+    *, update_id: int | None, chat_id: int | str, message_id: int | None, receiver_key="native"
 ) -> str | None:
     """Return an idempotency key that is unique across every Telegram chat."""
     if update_id is not None:
-        return f"update:{int(update_id)}"
+        key = f"update:{int(update_id)}"
+        return key if receiver_key == "native" else f"{receiver_key}:{key}"
     if message_id is not None:
-        return f"chat:{chat_id}:message:{int(message_id)}"
+        key = f"chat:{chat_id}:message:{int(message_id)}"
+        return key if receiver_key == "native" else f"{receiver_key}:{key}"
     return None
 
 
@@ -83,6 +94,7 @@ async def _prepare_telegram_voice(
     conversation_id: int,
     audio_content: bytes,
     mime_type: str,
+    application_state=None,
 ) -> tuple[str, dict]:
     """Optionally retain and transcribe one Telegram voice message."""
     attachment_ref = None
@@ -90,6 +102,7 @@ async def _prepare_telegram_voice(
 
     if await get_voice_note_retention_enabled("telegram"):
         try:
+            await check_messaging(application_state, "stt")
             pending = await create_pending_audio_attachment(
                 user_id=int(user_id),
                 conversation_id=int(conversation_id),
@@ -115,6 +128,7 @@ async def _prepare_telegram_voice(
             retention_status = "stored"
 
     try:
+        await check_messaging(application_state, "stt")
         transcription = await transcribe_external_audio_detailed(
             user_id=int(user_id),
             audio_content=audio_content,
@@ -138,23 +152,23 @@ async def _prepare_telegram_voice(
     return transcription.text, voice_note
 
 
-async def _release_telegram_retry_marker(update_id: int | None) -> None:
+async def _release_telegram_retry_marker(update_id: int | None, *, receiver_key="native") -> None:
     """Let Telegram retry an update whose inbound turn was not persisted."""
     if update_id is None:
         return
     try:
         async with get_db_connection() as conn:
             await conn.execute(
-                "DELETE FROM TELEGRAM_PROCESSED_UPDATES WHERE update_id = ?",
-                (update_id,),
+                "DELETE FROM TELEGRAM_PROCESSED_UPDATES WHERE receiver_key = ? AND update_id = ?",
+                (receiver_key, update_id),
             )
             await conn.commit()
     except Exception:
         logger.exception("Could not release Telegram retry marker %s", update_id)
 
 
-async def _telegram_retry_response(update_id: int | None) -> JSONResponse:
-    await _release_telegram_retry_marker(update_id)
+async def _telegram_retry_response(update_id: int | None, *, receiver_key="native") -> JSONResponse:
+    await _release_telegram_retry_marker(update_id, receiver_key=receiver_key)
     return JSONResponse(
         content={"ok": False, "error": "inbound_not_persisted"},
         status_code=503,
@@ -231,43 +245,104 @@ async def _log_telegram(
 
 @router.post("/telegram")
 async def telegram_webhook(request: Request):
-    """Handle incoming Telegram Bot API updates."""
     if async_telegram is None:
-        logger.warning("Telegram webhook called but bot is not configured")
         return JSONResponse(content={"ok": True})
+    bot_id = str(TELEGRAM_BOT_TOKEN or "").split(":", 1)[0]
+    return await _authenticated_telegram_webhook(request, async_telegram,
+        TELEGRAM_WEBHOOK_SECRET, bot_id)
 
-    # Validate secret token
-    received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if received_secret != TELEGRAM_WEBHOOK_SECRET:
-        logger.warning(f"Invalid Telegram webhook secret from {request.client.host}")
-        raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
+@router.post("/telegram/{receiver_id}")
+async def telegram_receiver_webhook(receiver_id: str, request: Request):
+    from integrations.applications.channels import get_application_channel_service
+    from telegram_async import AsyncTelegramClient
+    receiver = await get_application_channel_service().get_receiver(receiver_id)
+    if receiver is None or receiver.channel != "telegram" or not receiver.enabled:
+        raise HTTPException(status_code=404, detail="Receiver unavailable")
+    token = os.environ.get(receiver.telegram_token_env or "", "")
+    secret = os.environ.get(receiver.telegram_webhook_secret_env or "", "")
+    if not token or not secret or token.split(":", 1)[0] != receiver.receiver_key:
+        raise HTTPException(status_code=503, detail="Receiver authentication unavailable")
+    client = AsyncTelegramClient(token)
     try:
-        update = await request.json()
+        return await _authenticated_telegram_webhook(request, client, secret, receiver.receiver_key)
+    finally:
+        await client.close()
+
+
+async def _authenticated_telegram_webhook(request, client, webhook_secret, bot_id):
+    received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not webhook_secret or not secrets.compare_digest(received, webhook_secret):
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+    try:
+        from integrations.embed.api import read_bounded_body
+        update = orjson.loads(await read_bounded_body(request, max_bytes=32768))
     except Exception:
         return JSONResponse(content={"ok": True})
-
-    # Only process message updates
     message = update.get("message")
-    if not message:
+    if not isinstance(message, dict):
+        return JSONResponse(content={"ok": True})
+    chat = message.get("chat") or {}
+    sender = message.get("from") or {}
+    # Private numeric identity is the authenticated Bot API sender, never username/contact.
+    if chat.get("type") != "private" or type(sender.get("id")) is not int or sender["id"] != chat.get("id"):
+        return JSONResponse(content={"ok": True})
+    from integrations.applications.channel_models import VerifiedChannelEnvelope
+    try:
+        event_id = _telegram_external_message_id(update_id=update.get("update_id"),
+            chat_id=chat["id"], message_id=message.get("message_id"))
+        envelope = VerifiedChannelEnvelope(channel="telegram", provider="telegram",
+            receiver_key=str(bot_id), provider_identity=str(sender["id"]),
+            session_key="messaging", event_id=event_id or "")
+        from integrations.applications.channels import get_application_channel_service
+        service = get_application_channel_service()
+        async with service.store.transaction() as connection:
+            receiver = await service._receiver(connection, envelope)
+            if receiver:
+                # Control replies share the ordinary provider deduplication gate.
+                if type(update.get('update_id')) is not int:
+                    return JSONResponse(content={'ok': True})
+                await connection.execute("DELETE FROM TELEGRAM_PROCESSED_UPDATES WHERE created_at < datetime('now', '-1 day')")
+                cursor = await connection.execute('INSERT OR IGNORE INTO TELEGRAM_PROCESSED_UPDATES (receiver_key,update_id) VALUES (?,?)',
+                    (f'telegram:{bot_id}', update['update_id']))
+                if cursor.rowcount == 0:
+                    return JSONResponse(content={'ok': True})
+        state, reply = await resolve_messaging(envelope, str(message.get("text") or ""), contact=message.get('contact'))
+        if reply is not None:
+            if receiver:
+                async with service.store.transaction() as connection:
+                    if not await service._proof_attempt(connection, receiver, envelope):
+                        return JSONResponse(content={'ok': True})
+            options = {}
+            if receiver and state is None:
+                tr = chat_translator()
+                options['reply_markup'] = {'keyboard': [[{'text': tr.t('channel_notices.share_phone_button'), 'request_contact': True}]],
+                                           'resize_keyboard': True, 'one_time_keyboard': True}
+            await client.send_message(chat["id"], reply, **options)
+            return JSONResponse(content={"ok": True})
+        receiver_key = f"telegram:{bot_id}" if state is not None else "native"
+        async with application_messaging_turn(state):
+            return await _process_telegram_message(request, update, message,
+                application_state=state, telegram_client=AdmittedMessagingClient(client, state),
+                receiver_key=receiver_key, deduplicated=bool(receiver))
+    except (EmbedError, ValueError):
         return JSONResponse(content={"ok": True})
 
+
+async def _process_telegram_message(request, update, message, *, application_state=None,
+                                    telegram_client, receiver_key="native", deduplicated=False):
     update_id = update.get("update_id")
-    chat_id = message.get("chat", {}).get("id")
-    text = (message.get("text") or "").strip()
-
-    if not chat_id:
-        return JSONResponse(content={"ok": True})
-
+    chat_id = message["chat"]["id"]
+    text = str(message.get("text") or "").strip()
     # --- Idempotency: deduplicate by update_id ---
-    if update_id:
+    if update_id is not None and not deduplicated:
         async with get_db_connection() as conn:
             await conn.execute(
                 "DELETE FROM TELEGRAM_PROCESSED_UPDATES WHERE created_at < datetime('now', '-1 day')"
             )
             cursor = await conn.execute(
-                "INSERT OR IGNORE INTO TELEGRAM_PROCESSED_UPDATES (update_id) VALUES (?)",
-                (update_id,),
+                "INSERT OR IGNORE INTO TELEGRAM_PROCESSED_UPDATES (receiver_key,update_id) VALUES (?,?)",
+                (receiver_key, update_id),
             )
             await conn.commit()
             if cursor.rowcount == 0:
@@ -285,8 +360,10 @@ async def telegram_webhook(request: Request):
         return JSONResponse(content={"ok": True})
     _telegram_global_timestamps.append(now)
 
+    tr = chat_translator()
+
     # Per-user
-    user_key = str(chat_id)
+    user_key = f"{receiver_key}:{chat_id}"
     user_timestamps = _telegram_rate_limits.get(user_key, [])
     user_timestamps = [t for t in user_timestamps if now - t < 60]
     _telegram_rate_limits[user_key] = user_timestamps
@@ -296,9 +373,12 @@ async def telegram_webhook(request: Request):
         if now - last_notice > 300:
             _telegram_rate_limit_notices[user_key] = now
             try:
-                await async_telegram.send_message(
+                current_user = (await get_user_by_id(application_state.admission.scope.user_id)
+                        if application_state is not None else await get_user_from_telegram_chat_id(chat_id))
+                tr = chat_translator(current_user)
+                await telegram_client.send_message(
                     chat_id,
-                    "You're sending too many messages. Please wait a moment.",
+                    tr.t("channel_notices.rate_limit"),
                 )
             except Exception:
                 pass
@@ -310,7 +390,9 @@ async def telegram_webhook(request: Request):
     # --- User lookup ---
     voice_note_metadata = None
     try:
-        current_user = await get_user_from_telegram_chat_id(chat_id)
+        current_user = (await get_user_by_id(application_state.admission.scope.user_id)
+                        if application_state is not None else await get_user_from_telegram_chat_id(chat_id))
+        tr = chat_translator(current_user)
 
         # If not linked, check if this is a contact-sharing message
         if current_user is None:
@@ -320,13 +402,12 @@ async def telegram_webhook(request: Request):
                 sender_id = message.get("from", {}).get("id")
                 contact_user_id = contact.get("user_id")
                 if not contact_user_id or contact_user_id != sender_id:
-                    await async_telegram.send_message(
+                    await telegram_client.send_message(
                         chat_id,
-                        "Please share YOUR OWN phone number using the button below, "
-                        "not someone else's contact.",
+                        tr.t("channel_notices.share_own_phone"),
                         reply_markup={
                             "keyboard": [
-                                [{"text": "Share my phone number", "request_contact": True}]
+                                [{"text": tr.t("channel_notices.share_phone_button"), "request_contact": True}]
                             ],
                             "one_time_keyboard": True,
                             "resize_keyboard": True,
@@ -342,11 +423,12 @@ async def telegram_webhook(request: Request):
 
                 linked_user = await get_user_from_phone_number(phone)
                 if linked_user:
+                    tr = chat_translator(linked_user)
                     # Check if account is enabled before linking
                     if not linked_user.is_enabled:
-                        await async_telegram.send_message(
+                        await telegram_client.send_message(
                             chat_id,
-                            "Your account is currently disabled. Contact support.",
+                            tr.t("channel_notices.account_disabled"),
                         )
                         return JSONResponse(content={"ok": True})
 
@@ -360,14 +442,14 @@ async def telegram_webhook(request: Request):
                             await conn.commit()
                     except Exception as link_err:
                         if "UNIQUE" in str(link_err).upper():
-                            await async_telegram.send_message(
+                            await telegram_client.send_message(
                                 chat_id,
-                                "This Telegram account is already linked to another user.",
+                                tr.t("channel_notices.already_linked"),
                             )
                         else:
-                            await async_telegram.send_message(
+                            await telegram_client.send_message(
                                 chat_id,
-                                "An error occurred linking your account. Please try again.",
+                                tr.t("channel_notices.link_failed"),
                             )
                             logger.error(f"Telegram link error: {link_err}")
                         return JSONResponse(content={"ok": True})
@@ -383,12 +465,8 @@ async def telegram_webhook(request: Request):
                             "{username}", linked_user.username
                         )
                         if not welcome:
-                            welcome = (
-                                f"Account linked! Welcome, {linked_user.username}.\n\n"
-                                "You can now send messages and I'll respond with AI. "
-                                "Type !help to see available commands."
-                            )
-                        await async_telegram.send_message(chat_id, welcome)
+                            welcome = tr.t("channel_notices.account_linked", username=linked_user.username)
+                        await telegram_client.send_message(chat_id, welcome)
                     except Exception as e:
                         logger.error(f"Failed to send Telegram welcome: {e}")
 
@@ -396,7 +474,7 @@ async def telegram_webhook(request: Request):
                     return JSONResponse(content={"ok": True})
                 else:
                     # Phone not found in our system
-                    msg = "This phone number is not registered on the platform."
+                    msg = tr.t("channel_notices.phone_unknown")
                     try:
                         async with get_db_connection(readonly=True) as conn:
                             cursor = await conn.execute(
@@ -408,18 +486,18 @@ async def telegram_webhook(request: Request):
                     except Exception as e:
                         logger.error(f"Failed to load telegram_unknown_user_message from SYSTEM_CONFIG: {e}")
                     try:
-                        await async_telegram.send_message(chat_id, msg)
+                        await telegram_client.send_message(chat_id, msg)
                     except Exception as e:
                         logger.error(f"Failed to send 'phone not found' message to Telegram chat {chat_id}: {e}")
                     return JSONResponse(content={"ok": True})
             else:
                 # Not linked and didn't share contact -- ask them to share
-                await async_telegram.send_message(
+                await telegram_client.send_message(
                     chat_id,
-                    "Welcome! Please share your phone number to link your account.",
+                    tr.t("channel_notices.share_phone_welcome"),
                     reply_markup={
                         "keyboard": [
-                            [{"text": "Share my phone number", "request_contact": True}]
+                            [{"text": tr.t("channel_notices.share_phone_button"), "request_contact": True}]
                         ],
                         "one_time_keyboard": True,
                         "resize_keyboard": True,
@@ -430,320 +508,329 @@ async def telegram_webhook(request: Request):
         if not current_user.is_enabled:
             return JSONResponse(content={"ok": True})
 
-        text_lower = text.lower()
+        if application_state is not None:
+            command_reply = await application_command(application_state, text, update_id, translator=tr)
+            if command_reply is not None:
+                await telegram_client.send_message(chat_id, command_reply)
+                return JSONResponse(content={"ok": True})
+            conversation_id = application_state.admission.scope.conversation_id
+            answer_mode = application_state.admission.response_mode
+        else:
+            text_lower = text.lower()
 
-        if text_lower == "!help":
-            help_text = (
-                "*Available commands:*\n\n"
-                "`!help` - Show this help message\n"
-                "`!text` - Switch to text responses\n"
-                "`!voice` - Switch to voice responses\n"
-                "`!chats` - List your recent conversations\n"
-                "`!set <id> [platform]` - Switch to a conversation\n"
-                "`!prompt list` - List available prompts\n"
-                "`!prompt <name|id>` - Switch prompt\n"
-                "`!new` - Start a new conversation\n"
-                "`!unlink` - Unlink Telegram from your account"
-            )
-            await async_telegram.send_message(chat_id, help_text, parse_mode="Markdown")
-            return JSONResponse(content={"ok": True})
-
-        if text_lower == "!unlink":
-            async with get_db_connection() as conn:
-                await conn.execute(
-                    "UPDATE USERS SET telegram_chat_id = NULL WHERE id = ?",
-                    (current_user.id,),
+            if text_lower == "!help":
+                help_text = (
+                    tr.t("channel_notices.help_telegram")
                 )
-                await conn.execute(
-                    "UPDATE USER_DETAILS SET external_platforms = json_remove(COALESCE(NULLIF(external_platforms, ''), '{}'), '$.telegram') WHERE user_id = ?",
-                    (current_user.id,),
-                )
-                await conn.commit()
-            await async_telegram.send_message(
-                chat_id,
-                "Your Telegram has been unlinked from your account.",
-            )
-            return JSONResponse(content={"ok": True})
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
-                (current_user.id,),
-            )
-            result = await cursor.fetchone()
-            platforms = orjson.loads(result[0]) if result and result[0] else {}
-            telegram_data = platforms.get("telegram") or {}
-            if not isinstance(telegram_data, dict):
-                telegram_data = {}
-            is_first_telegram = not telegram_data
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            ok, _, err_msg = await can_use_platform(current_user.id, "telegram", cursor)
-            if not ok:
-                await async_telegram.send_message(chat_id, err_msg)
+                await telegram_client.send_message(chat_id, help_text, parse_mode="Markdown")
                 return JSONResponse(content={"ok": True})
 
-        if text_lower == "!chats":
+            if text_lower == "!unlink":
+                async with get_db_connection() as conn:
+                    await conn.execute(
+                        "UPDATE USERS SET telegram_chat_id = NULL WHERE id = ?",
+                        (current_user.id,),
+                    )
+                    await conn.execute(
+                        "UPDATE USER_DETAILS SET external_platforms = json_remove(COALESCE(NULLIF(external_platforms, ''), '{}'), '$.telegram') WHERE user_id = ?",
+                        (current_user.id,),
+                    )
+                    await conn.commit()
+                await telegram_client.send_message(
+                    chat_id,
+                    tr.t("channel_notices.unlinked"),
+                )
+                return JSONResponse(content={"ok": True})
+
             async with get_db_connection(readonly=True) as conn:
-                chats_message = await get_chats_list(
-                    current_user.id,
-                    "telegram",
-                    conn,
-                    markdown=False,
+                cursor = await conn.cursor()
+                await cursor.execute(
+                    "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
+                    (current_user.id,),
                 )
-            await async_telegram.send_message(chat_id, chats_message)
-            return JSONResponse(content={"ok": True})
+                result = await cursor.fetchone()
+                platforms = orjson.loads(result[0]) if result and result[0] else {}
+                telegram_data = platforms.get("telegram") or {}
+                if not isinstance(telegram_data, dict):
+                    telegram_data = {}
+                is_first_telegram = not telegram_data
 
-        if text_lower == "!set" or text_lower.startswith("!set "):
-            parts = text[4:].strip().split() if len(text) > 4 else []
-            if not parts or len(parts) > 2:
-                await async_telegram.send_message(
-                    chat_id,
-                    "Usage: !set <conversation_id> [whatsapp|telegram]",
-                )
+            async with get_db_connection(readonly=True) as conn:
+                cursor = await conn.cursor()
+                ok, _, err_msg = await can_use_platform(current_user.id, "telegram", cursor, translator=tr)
+                if not ok:
+                    await telegram_client.send_message(chat_id, err_msg)
+                    return JSONResponse(content={"ok": True})
+
+            if text_lower == "!chats":
+                async with get_db_connection(readonly=True) as conn:
+                    chats_message = await get_chats_list(
+                        current_user.id,
+                        "telegram",
+                        conn,
+                        markdown=False,
+                        translator=tr,
+                    )
+                await telegram_client.send_message(chat_id, chats_message)
                 return JSONResponse(content={"ok": True})
 
-            raw_id = parts[0]
-            clean_id = raw_id[1:] if raw_id.startswith("#") else raw_id
-            if not clean_id.isdigit() or int(clean_id) <= 0:
-                await async_telegram.send_message(
-                    chat_id,
-                    "Usage: !set <conversation_id> [whatsapp|telegram]",
-                )
-                return JSONResponse(content={"ok": True})
-
-            target_platform = "telegram"
-            if len(parts) == 2:
-                platform_map = {
-                    "whatsapp": "whatsapp",
-                    "wa": "whatsapp",
-                    "telegram": "telegram",
-                    "tg": "telegram",
-                }
-                target_platform = platform_map.get(parts[1].lower())
-                if target_platform is None:
-                    await async_telegram.send_message(
+            if text_lower == "!set" or text_lower.startswith("!set "):
+                parts = text[4:].strip().split() if len(text) > 4 else []
+                if not parts or len(parts) > 2:
+                    await telegram_client.send_message(
                         chat_id,
-                        "Invalid platform. Use: whatsapp (wa) or telegram (tg).",
+                        tr.t("channel_notices.set_usage"),
                     )
                     return JSONResponse(content={"ok": True})
 
-            result = await set_external_conversation(
+                raw_id = parts[0]
+                clean_id = raw_id[1:] if raw_id.startswith("#") else raw_id
+                if not clean_id.isdigit() or int(clean_id) <= 0:
+                    await telegram_client.send_message(
+                        chat_id,
+                        tr.t("channel_notices.set_usage"),
+                    )
+                    return JSONResponse(content={"ok": True})
+
+                target_platform = "telegram"
+                if len(parts) == 2:
+                    platform_map = {
+                        "whatsapp": "whatsapp",
+                        "wa": "whatsapp",
+                        "telegram": "telegram",
+                        "tg": "telegram",
+                    }
+                    target_platform = platform_map.get(parts[1].lower())
+                    if target_platform is None:
+                        await telegram_client.send_message(
+                            chat_id,
+                            tr.t("channel_notices.invalid_platform"),
+                        )
+                        return JSONResponse(content={"ok": True})
+
+                result = await set_external_conversation(
+                    current_user.id,
+                    int(clean_id),
+                    target_platform,
+                    "telegram",
+                    translator=tr,
+                )
+                await telegram_client.send_message(chat_id, result["message"])
+                return JSONResponse(content={"ok": True})
+
+            if text_lower in ("!text", "text_mode"):
+                async with get_db_connection() as conn:
+                    confirmation = await change_response_mode(
+                        current_user.id,
+                        "text",
+                        platform="telegram",
+                        conn=conn,
+                        translator=tr,
+                    )
+                await telegram_client.send_message(chat_id, confirmation)
+                return JSONResponse(content={"ok": True})
+
+            if text_lower in ("!voice", "voice_mode"):
+                async with get_db_connection() as conn:
+                    confirmation = await change_response_mode(
+                        current_user.id,
+                        "voice",
+                        platform="telegram",
+                        conn=conn,
+                        translator=tr,
+                    )
+                await telegram_client.send_message(chat_id, confirmation)
+                return JSONResponse(content={"ok": True})
+
+            if text_lower == "!prompt list":
+                async with get_db_connection(readonly=True) as conn:
+                    cursor = await conn.cursor()
+                    ud_cursor = await conn.execute(
+                        "SELECT all_prompts_access, public_prompts_access, category_access FROM USER_DETAILS WHERE user_id = ?",
+                        (current_user.id,),
+                    )
+                    ud_row = await ud_cursor.fetchone()
+                    prompts_list = await get_user_accessible_prompts(
+                        current_user,
+                        cursor,
+                        all_prompts_access=ud_row[0] if ud_row else False,
+                        public_prompts_access=ud_row[1] if ud_row else False,
+                        category_access=ud_row[2] if ud_row else None,
+                    )
+
+                if not prompts_list:
+                    await telegram_client.send_message(chat_id, tr.t("channel_notices.no_prompts"))
+                    return JSONResponse(content={"ok": True})
+
+                prompt_lines = [f"*{p['id']}* - {escape_markdown(p['name'])}" for p in prompts_list[:20]]
+                msg = tr.t("channel_notices.prompts_header") + "\n".join(prompt_lines)
+                if len(prompts_list) > 20:
+                    msg += tr.t("channel_notices.prompts_more", count=len(prompts_list) - 20)
+                msg += tr.t("channel_notices.prompts_footer")
+
+                await telegram_client.send_message(chat_id, msg, parse_mode="Markdown")
+                return JSONResponse(content={"ok": True})
+
+            if text_lower == "!new":
+                await create_new_platform_conversation(current_user.id, "telegram", current_user)
+                await telegram_client.send_message(
+                    chat_id,
+                    tr.t("channel_notices.new_conversation"),
+                )
+                return JSONResponse(content={"ok": True})
+
+            telegram_data, created_binding = await ensure_platform_conversation(
                 current_user.id,
-                int(clean_id),
-                target_platform,
                 "telegram",
+                current_user,
             )
-            await async_telegram.send_message(chat_id, result["message"])
-            return JSONResponse(content={"ok": True})
+            if created_binding and is_first_telegram:
+                try:
+                    async with get_db_connection(readonly=True) as conn:
+                        cursor = await conn.execute(
+                            "SELECT value FROM SYSTEM_CONFIG WHERE key = 'telegram_welcome_message'"
+                        )
+                        row = await cursor.fetchone()
+                    welcome = (row[0] if row and row[0] else "").replace(
+                        "{username}",
+                        current_user.username,
+                    )
+                    if welcome:
+                        await telegram_client.send_message(chat_id, welcome)
+                except Exception as welcome_err:
+                    logger.error(f"Failed to send Telegram welcome: {welcome_err}")
 
-        if text_lower in ("!text", "text_mode"):
-            async with get_db_connection() as conn:
-                confirmation = await change_response_mode(
-                    current_user.id,
-                    "text",
-                    platform="telegram",
-                    conn=conn,
-                )
-            await async_telegram.send_message(chat_id, confirmation)
-            return JSONResponse(content={"ok": True})
+            conversation_id = telegram_data["conversation_id"]
+            answer_mode = telegram_data.get("answer", "text")
 
-        if text_lower in ("!voice", "voice_mode"):
-            async with get_db_connection() as conn:
-                confirmation = await change_response_mode(
-                    current_user.id,
-                    "voice",
-                    platform="telegram",
-                    conn=conn,
-                )
-            await async_telegram.send_message(chat_id, confirmation)
-            return JSONResponse(content={"ok": True})
-
-        if text_lower == "!prompt list":
             async with get_db_connection(readonly=True) as conn:
                 cursor = await conn.cursor()
-                ud_cursor = await conn.execute(
-                    "SELECT all_prompts_access, public_prompts_access, category_access FROM USER_DETAILS WHERE user_id = ?",
+                await cursor.execute(
+                    "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
+                    (conversation_id, current_user.id),
+                )
+                lock_row = await cursor.fetchone()
+                if not lock_row:
+                    await telegram_client.send_message(
+                        chat_id,
+                        tr.t("channel_notices.conversation_missing_new"),
+                    )
+                    return JSONResponse(content={"ok": True})
+                if lock_row[0]:
+                    await _log_telegram('in', current_user.id, chat_id, 'text', answer_mode)
+                    logger.info(
+                        f"Telegram message blocked: conversation {conversation_id} locked for user {current_user.id}"
+                    )
+                    await telegram_client.send_message(
+                        chat_id,
+                        tr.t("channel_notices.conversation_locked_new"),
+                    )
+                    return JSONResponse(content={"ok": True})
+
+            async with get_db_connection(readonly=True) as conn:
+                cursor = await conn.cursor()
+                await cursor.execute(
+                    "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
                     (current_user.id,),
                 )
-                ud_row = await ud_cursor.fetchone()
-                prompts_list = await get_user_accessible_prompts(
-                    current_user,
-                    cursor,
-                    all_prompts_access=ud_row[0] if ud_row else False,
-                    public_prompts_access=ud_row[1] if ud_row else False,
-                    category_access=ud_row[2] if ud_row else None,
-                )
-
-            if not prompts_list:
-                await async_telegram.send_message(chat_id, "No prompts available.")
-                return JSONResponse(content={"ok": True})
-
-            prompt_lines = [f"*{p['id']}* - {p['name']}" for p in prompts_list[:20]]
-            msg = "*Available prompts:*\n\n" + "\n".join(prompt_lines)
-            if len(prompts_list) > 20:
-                msg += f"\n\n_...and {len(prompts_list) - 20} more_"
-            msg += "\n\nUse *!prompt <id or name>* to switch."
-
-            await async_telegram.send_message(chat_id, msg, parse_mode="Markdown")
-            return JSONResponse(content={"ok": True})
-
-        if text_lower == "!new":
-            await create_new_platform_conversation(current_user.id, "telegram", current_user)
-            await async_telegram.send_message(
-                chat_id,
-                "New conversation started. Previous conversation saved and accessible from the web.",
-            )
-            return JSONResponse(content={"ok": True})
-
-        telegram_data, created_binding = await ensure_platform_conversation(
-            current_user.id,
-            "telegram",
-            current_user,
-        )
-        if created_binding and is_first_telegram:
-            try:
-                async with get_db_connection(readonly=True) as conn:
-                    cursor = await conn.execute(
-                        "SELECT value FROM SYSTEM_CONFIG WHERE key = 'telegram_welcome_message'"
-                    )
-                    row = await cursor.fetchone()
-                welcome = (row[0] if row and row[0] else "").replace(
-                    "{username}",
-                    current_user.username,
-                )
-                if welcome:
-                    await async_telegram.send_message(chat_id, welcome)
-            except Exception as welcome_err:
-                logger.error(f"Failed to send Telegram welcome: {welcome_err}")
-
-        conversation_id = telegram_data["conversation_id"]
-        answer_mode = telegram_data.get("answer", "text")
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
-                (conversation_id, current_user.id),
-            )
-            lock_row = await cursor.fetchone()
-            if not lock_row:
-                await async_telegram.send_message(
-                    chat_id,
-                    "Conversation not found. Send !new to start a fresh one.",
-                )
-                return JSONResponse(content={"ok": True})
-            if lock_row[0]:
-                await _log_telegram('in', current_user.id, chat_id, 'text', answer_mode)
-                logger.info(
-                    f"Telegram message blocked: conversation {conversation_id} locked for user {current_user.id}"
-                )
-                await async_telegram.send_message(
-                    chat_id,
-                    "This conversation is locked. Send !new to start a new one.",
-                )
-                return JSONResponse(content={"ok": True})
-
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT external_platforms FROM USER_DETAILS WHERE user_id = ?",
-                (current_user.id,),
-            )
-            row = await cursor.fetchone()
-            if row and row[0]:
-                fresh_platforms = orjson.loads(row[0])
-                fresh_conv_id = (fresh_platforms.get("telegram", {}) or {}).get("conversation_id")
-                if fresh_conv_id and fresh_conv_id != conversation_id:
-                    conversation_id = fresh_conv_id
-                    await cursor.execute(
-                        "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
-                        (conversation_id, current_user.id),
-                    )
-                    lock_row = await cursor.fetchone()
-                    if not lock_row:
-                        await async_telegram.send_message(
-                            chat_id,
-                            "Conversation not found. Send !new to start a fresh one.",
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    fresh_platforms = orjson.loads(row[0])
+                    fresh_conv_id = (fresh_platforms.get("telegram", {}) or {}).get("conversation_id")
+                    if fresh_conv_id and fresh_conv_id != conversation_id:
+                        conversation_id = fresh_conv_id
+                        await cursor.execute(
+                            "SELECT locked FROM CONVERSATIONS WHERE id = ? AND user_id = ?",
+                            (conversation_id, current_user.id),
                         )
-                        return JSONResponse(content={"ok": True})
-                    if lock_row[0]:
-                        await _log_telegram('in', current_user.id, chat_id, 'text', answer_mode)
-                        logger.info(
-                            f"Telegram message blocked: conversation {conversation_id} locked for user {current_user.id}"
+                        lock_row = await cursor.fetchone()
+                        if not lock_row:
+                            await telegram_client.send_message(
+                                chat_id,
+                                tr.t("channel_notices.conversation_missing_new"),
+                            )
+                            return JSONResponse(content={"ok": True})
+                        if lock_row[0]:
+                            await _log_telegram('in', current_user.id, chat_id, 'text', answer_mode)
+                            logger.info(
+                                f"Telegram message blocked: conversation {conversation_id} locked for user {current_user.id}"
+                            )
+                            await telegram_client.send_message(
+                                chat_id,
+                                tr.t("channel_notices.conversation_locked_new"),
+                            )
+                            return JSONResponse(content={"ok": True})
+
+            if text_lower.startswith("!prompt ") and text_lower != "!prompt list":
+                prompt_query = text[8:].strip()
+
+                async with get_db_connection() as conn:
+                    cursor = await conn.cursor()
+                    target_prompt = None
+                    if prompt_query.isdigit():
+                        p_cursor = await conn.execute(
+                            "SELECT id, name FROM PROMPTS WHERE id = ?",
+                            (int(prompt_query),),
                         )
-                        await async_telegram.send_message(
+                        target_prompt = await p_cursor.fetchone()
+
+                    if not target_prompt:
+                        p_cursor = await conn.execute(
+                            "SELECT id, name FROM PROMPTS WHERE LOWER(name) = LOWER(?)",
+                            (prompt_query,),
+                        )
+                        target_prompt = await p_cursor.fetchone()
+
+                    if not target_prompt:
+                        p_cursor = await conn.execute(
+                            "SELECT id, name FROM PROMPTS WHERE LOWER(name) LIKE LOWER(?)",
+                            (f"%{prompt_query}%",),
+                        )
+                        target_prompt = await p_cursor.fetchone()
+
+                    if not target_prompt:
+                        await telegram_client.send_message(
                             chat_id,
-                            "This conversation is locked. Send !new to start a new one.",
+                            tr.t("channel_notices.prompt_missing", name=escape_markdown(prompt_query)),
+                            parse_mode="Markdown",
                         )
                         return JSONResponse(content={"ok": True})
 
-        if text_lower.startswith("!prompt ") and text_lower != "!prompt list":
-            prompt_query = text[8:].strip()
+                    if not await can_user_access_prompt(current_user, target_prompt[0], cursor):
+                        await telegram_client.send_message(chat_id, tr.t("channel_notices.prompt_denied"))
+                        return JSONResponse(content={"ok": True})
 
-            async with get_db_connection() as conn:
-                cursor = await conn.cursor()
-                target_prompt = None
-                if prompt_query.isdigit():
-                    p_cursor = await conn.execute(
-                        "SELECT id, name FROM PROMPTS WHERE id = ?",
-                        (int(prompt_query),),
+                    update_cursor = await cursor.execute(
+                        """
+                        UPDATE CONVERSATIONS
+                        SET role_id = ?
+                        WHERE id = ? AND user_id = ? AND COALESCE(locked, 0) = 0
+                        """,
+                        (target_prompt[0], conversation_id, current_user.id),
                     )
-                    target_prompt = await p_cursor.fetchone()
+                    if update_cursor.rowcount == 0:
+                        await conn.rollback()
+                        await telegram_client.send_message(
+                            chat_id,
+                            tr.t("channel_notices.conversation_locked_new"),
+                        )
+                        return JSONResponse(content={"ok": True})
 
-                if not target_prompt:
-                    p_cursor = await conn.execute(
-                        "SELECT id, name FROM PROMPTS WHERE LOWER(name) = LOWER(?)",
-                        (prompt_query,),
-                    )
-                    target_prompt = await p_cursor.fetchone()
+                    await conn.commit()
 
-                if not target_prompt:
-                    p_cursor = await conn.execute(
-                        "SELECT id, name FROM PROMPTS WHERE LOWER(name) LIKE LOWER(?)",
-                        (f"%{prompt_query}%",),
-                    )
-                    target_prompt = await p_cursor.fetchone()
-
-                if not target_prompt:
-                    await async_telegram.send_message(
+                    await telegram_client.send_message(
                         chat_id,
-                        f"Prompt not found: '{prompt_query}'. Use *!prompt list* to see available prompts.",
+                        tr.t("channel_notices.prompt_changed", name=escape_markdown(target_prompt[1])),
                         parse_mode="Markdown",
                     )
-                    return JSONResponse(content={"ok": True})
+                return JSONResponse(content={"ok": True})
 
-                if not await can_user_access_prompt(current_user, target_prompt[0], cursor):
-                    await async_telegram.send_message(chat_id, "You don't have access to this prompt.")
-                    return JSONResponse(content={"ok": True})
-
-                update_cursor = await cursor.execute(
-                    """
-                    UPDATE CONVERSATIONS
-                    SET role_id = ?
-                    WHERE id = ? AND user_id = ? AND COALESCE(locked, 0) = 0
-                    """,
-                    (target_prompt[0], conversation_id, current_user.id),
-                )
-                if update_cursor.rowcount == 0:
-                    await conn.rollback()
-                    await async_telegram.send_message(
-                        chat_id,
-                        "This conversation is locked. Send !new to start a new one.",
-                    )
-                    return JSONResponse(content={"ok": True})
-
-                await conn.commit()
-
-                await async_telegram.send_message(
-                    chat_id,
-                    f"Switched to prompt: *{target_prompt[1]}*",
-                    parse_mode="Markdown",
-                )
-            return JSONResponse(content={"ok": True})
-
+        if answer_mode == "voice":
+            await check_messaging(application_state, "tts")
+        if message.get("voice"):
+            await check_messaging(application_state, "stt")
+        if message.get("photo"):
+            await check_messaging(application_state, "attachments")
         # --- Media processing ---
         transcribed_text = ""
         files_list = []
@@ -752,19 +839,22 @@ async def telegram_webhook(request: Request):
         voice = message.get("voice")
         if voice:
             try:
-                file_info = await async_telegram.get_file(voice["file_id"])
-                media_bytes = await async_telegram.download_file(file_info["file_path"])
+                await check_messaging(application_state, "stt")
+                file_info = await telegram_client.get_file(voice["file_id"])
+                await check_messaging(application_state, "stt")
+                media_bytes = await telegram_client.download_file(file_info["file_path"])
                 transcribed_text, voice_note_metadata = await _prepare_telegram_voice(
                     user_id=current_user.id,
                     conversation_id=conversation_id,
                     audio_content=media_bytes,
                     mime_type=str(voice.get("mime_type") or "audio/ogg"),
+                    application_state=application_state,
                 )
             except Exception as e:
                 logger.error(f"Error transcribing Telegram voice: {e}")
-                await async_telegram.send_message(
+                await telegram_client.send_message(
                     chat_id,
-                    "Sorry, there was a problem processing the audio. Please try sending your message as text.",
+                    tr.t("channel_notices.audio_failed"),
                 )
                 return JSONResponse(content={"ok": True})
 
@@ -772,9 +862,11 @@ async def telegram_webhook(request: Request):
         photos = message.get("photo")
         if photos:
             try:
+                await check_messaging(application_state, "attachments")
                 largest = photos[-1]  # Telegram sends sizes in ascending order
-                file_info = await async_telegram.get_file(largest["file_id"])
-                media_bytes = await async_telegram.download_file(file_info["file_path"])
+                file_info = await telegram_client.get_file(largest["file_id"])
+                await check_messaging(application_state, "attachments")
+                media_bytes = await telegram_client.download_file(file_info["file_path"])
                 files_list.append({
                     'data': media_bytes,
                     'content_type': "image/jpeg",
@@ -802,6 +894,7 @@ async def telegram_webhook(request: Request):
             update_id=update_id,
             chat_id=chat_id,
             message_id=message.get("message_id"),
+            receiver_key=receiver_key,
         )
         message_provenance = {
             "channel": "telegram",
@@ -814,6 +907,10 @@ async def telegram_webhook(request: Request):
         if voice_note_metadata is not None:
             message_provenance["voice_note"] = voice_note_metadata
 
+        if application_state is not None:
+            message_provenance["application_channel"] = application_state.admission.as_dict()
+            if application_state.operation is not None:
+                message_provenance["application_operation_id"] = application_state.operation.operation_id
         # Log incoming message
         msg_type = "audio" if transcribed_text else ("image" if files_list else "text")
         await _log_telegram('in', current_user.id, chat_id, msg_type, answer_mode)
@@ -828,6 +925,9 @@ async def telegram_webhook(request: Request):
             message_provenance,
         )
 
+        if application_state is not None:
+            channel_context = application_state.attach(channel_context)
+
         # --- GranSabio check: if enabled, process in background ---
         async with get_db_connection(readonly=True) as conn_gs:
             gs_row = await conn_gs.execute(
@@ -840,6 +940,7 @@ async def telegram_webhook(request: Request):
         is_gransabio = (
             bool((gs_result or [0])[0])
             and not foreground_turn.decision.phone_active
+            and application_state is None
         )
 
         if is_gransabio:
@@ -850,13 +951,13 @@ async def telegram_webhook(request: Request):
                         voice_note_metadata,
                         "telegram_stale_before_gransabio",
                     )
-                    return await _telegram_retry_response(update_id)
+                    return await _telegram_retry_response(update_id, receiver_key=receiver_key)
                 await _discard_voice_note_attachment(
                     voice_note_metadata,
                     "telegram_gransabio_file_rejected",
                 )
-                await async_telegram.send_message(
-                    chat_id, "File attachments are not supported with GranSabio mode. Please send text only."
+                await telegram_client.send_message(
+                    chat_id, tr.t("channel_notices.gransabio_files")
                 )
                 return JSONResponse(content={"ok": True})
 
@@ -873,12 +974,12 @@ async def telegram_webhook(request: Request):
                         voice_note_metadata,
                         "telegram_stale_before_gransabio",
                     )
-                    return await _telegram_retry_response(update_id)
+                    return await _telegram_retry_response(update_id, receiver_key=receiver_key)
                 await _discard_voice_note_attachment(
                     voice_note_metadata,
                     "telegram_gransabio_disabled",
                 )
-                await async_telegram.send_message(chat_id, "GranSabio is currently disabled.")
+                await telegram_client.send_message(chat_id, tr.t("channel_notices.gransabio_disabled"))
                 return JSONResponse(content={"ok": True})
 
             prompt_config = await load_prompt_gransabio_config(conversation_id)
@@ -924,6 +1025,7 @@ async def telegram_webhook(request: Request):
 
         # --- Normal (non-GranSabio) path continues below ---
         files = files_list if files_list else None
+        await check_messaging(application_state)
         response = await serialize_user_billing_response(
             current_user.id,
             process_save_message(
@@ -939,7 +1041,7 @@ async def telegram_webhook(request: Request):
             ),
         )
 
-        quota_notice = storage_quota_notice_from_response(response)
+        quota_notice = storage_quota_notice_from_response(response, translator=tr)
 
         if isinstance(response, StreamingResponse):
             (
@@ -961,43 +1063,45 @@ async def telegram_webhook(request: Request):
                     voice_note_metadata,
                     "telegram_message_not_persisted",
                 )
-                return await _telegram_retry_response(update_id)
+                return await _telegram_retry_response(update_id, receiver_key=receiver_key)
 
             # Send the accumulated response
             if accumulated_text.strip() and not persistence_error:
                 if answer_mode == "voice":
                     try:
+                        await check_messaging(application_state, "tts", delivery=True)
                         audio_path, error = await handle_tts_request(
                             None,
                             {"text": accumulated_text, "author": "bot", "conversationId": conversation_id},
                             current_user,
                             is_whatsapp=True,
-                            tts_context="external"
+                            tts_context="external",
+                            billing_adapter=messaging_tts_billing(application_state),
                         )
                         if error:
                             # Fallback to text
                             for chunk in _chunk_telegram_response(accumulated_text):
-                                await async_telegram.send_message(chat_id, chunk)
+                                await telegram_client.send_message(chat_id, chunk)
                         else:
                             # Read the audio file and send as voice
                             from pathlib import Path
                             audio_file_path = Path(audio_path)
                             if audio_file_path.exists():
                                 voice_bytes = audio_file_path.read_bytes()
-                                await async_telegram.send_voice(chat_id, voice_bytes)
+                                await telegram_client.send_voice(chat_id, voice_bytes)
                             else:
                                 for chunk in _chunk_telegram_response(accumulated_text):
-                                    await async_telegram.send_message(chat_id, chunk)
+                                    await telegram_client.send_message(chat_id, chunk)
                     except Exception as tts_err:
                         logger.error(f"Telegram TTS error: {tts_err}")
                         for chunk in _chunk_telegram_response(accumulated_text):
-                            await async_telegram.send_message(chat_id, chunk)
+                            await telegram_client.send_message(chat_id, chunk)
                 else:
                     for chunk in _chunk_telegram_response(accumulated_text):
-                        await async_telegram.send_message(chat_id, chunk)
+                        await telegram_client.send_message(chat_id, chunk)
 
             if quota_notice and not persistence_error:
-                await async_telegram.send_message(chat_id, quota_notice)
+                await telegram_client.send_message(chat_id, quota_notice)
         else:
             await _discard_voice_note_attachment(
                 voice_note_metadata,
@@ -1006,22 +1110,25 @@ async def telegram_webhook(request: Request):
             # Handle non-streaming responses (rate limit, insufficient balance, etc.)
             if quota_notice:
                 # Media-only message rejected for lack of storage: tell the user.
-                await async_telegram.send_message(chat_id, quota_notice)
+                await telegram_client.send_message(chat_id, quota_notice)
             else:
                 status_code = response.status_code if hasattr(response, 'status_code') else 500
                 error_messages = {
-                    429: "You've sent too many messages. Please wait a moment.",
-                    402: "Insufficient balance. Please top up your account.",
-                    403: "This conversation is not available.",
+                    429: tr.t("channel_notices.message_limit"),
+                    402: tr.t("channel_notices.insufficient_balance"),
+                    403: tr.t("channel_notices.conversation_unavailable"),
                 }
-                user_msg = error_messages.get(status_code, "Sorry, your message could not be processed. Please try again.")
-                await async_telegram.send_message(chat_id, user_msg)
+                user_msg = error_messages.get(status_code, tr.t("channel_notices.message_failed"))
+                await telegram_client.send_message(chat_id, user_msg)
 
         # Log outgoing response
         await _log_telegram('out', current_user.id, chat_id, 'text', answer_mode)
 
         return JSONResponse(content={"ok": True})
 
+    except EmbedError:
+        await _discard_voice_note_attachment(voice_note_metadata, "application_channel_denied")
+        return JSONResponse(content={"ok": True})
     except StaleChannelTurnError:
         await _discard_voice_note_attachment(
             voice_note_metadata,
@@ -1031,7 +1138,7 @@ async def telegram_webhook(request: Request):
             "Telegram response suppressed because phone foreground changed for conversation %s",
             conversation_id,
         )
-        return await _telegram_retry_response(update_id)
+        return await _telegram_retry_response(update_id, receiver_key=receiver_key)
     except Exception as e:
         await _discard_voice_note_attachment(
             voice_note_metadata,
@@ -1039,9 +1146,9 @@ async def telegram_webhook(request: Request):
         )
         logger.error(f"Telegram webhook error: {e}", exc_info=True)
         try:
-            await async_telegram.send_message(
+            await telegram_client.send_message(
                 chat_id,
-                "An error occurred processing your message. Please try again.",
+                tr.t("channel_notices.processing_failed"),
             )
         except Exception:
             pass

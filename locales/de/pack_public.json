@@ -1,0 +1,30 @@
+{
+  "description": "KI-Paket auf AURVEK",
+  "twitter_description": "KI-Prompt-Paket auf AURVEK",
+  "cover": "Titelbild für {name}",
+  "by_creator": "von {creator}",
+  "get_started": "Loslegen",
+  "create_first": "Erstellen Sie zuerst ein Konto und kaufen Sie dann dieses Paket.",
+  "minimum_password": "Mind. 8 Zeichen",
+  "repeat_password": "Passwort wiederholen",
+  "sign_up": "Registrieren",
+  "sign_up_access": "Registrieren und Zugriff erhalten",
+  "login_purchase": "Anmelden und kaufen",
+  "login_add": "Anmelden und Paket hinzufügen",
+  "purchase_price": "Kaufen – {price}",
+  "already_owned": "Sie besitzen dieses Paket bereits!",
+  "start_chatting": "Chat starten",
+  "get_free_pack": "Dieses Paket kostenlos erhalten",
+  "already_have": "Sie haben dieses Paket bereits!",
+  "powered_by": "Bereitgestellt von {brand}",
+  "fields_required": "Bitte füllen Sie alle Felder aus.",
+  "account_created_paid": "Konto erstellt! Bestätigen Sie es über Ihre E-Mail und kehren Sie dann zum Kauf zurück.",
+  "account_created": "Konto erstellt! Bestätigen Sie es über Ihre E-Mail.",
+  "claiming": "Paket wird hinzugefügt…",
+  "not_found": "Seite nicht gefunden",
+  "access_denied": "Zugriff verweigert",
+  "inside": {
+    "one": "Inhalt ({number} Prompt)",
+    "other": "Inhalt ({number} Prompts)"
+  }
+}

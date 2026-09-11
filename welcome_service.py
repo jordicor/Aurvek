@@ -9,7 +9,6 @@ managing the product switcher data.
 import os
 import json
 import logging
-import re
 from html import escape
 from fastapi.responses import HTMLResponse
 from database import get_db_connection
@@ -23,13 +22,10 @@ from marketplace.services.entitlements import active_entitlement_condition
 from marketplace.services.entitlements import user_has_pack_access as user_has_pack_entitlement_access
 from marketplace.services.entitlements import user_has_prompt_access as user_has_prompt_entitlement_access
 from prompts import get_prompt_info, get_prompt_path, get_pack_path
+from common import templates
+from i18n import get_translator, template_context
 
 logger = logging.getLogger(__name__)
-
-_NAVBAR_TEMPLATE_PATH = os.path.join(
-    os.path.dirname(__file__), "templates", "aurvek_world_navbar.html"
-)
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -233,6 +229,7 @@ async def serve_welcome_world(request, user, world: dict) -> HTMLResponse:
     Returns an HTMLResponse with the welcome HTML enriched with the
     product switcher data and navbar overlay.
     """
+    translator = get_translator(request, user)
     access_token = sign_content_token(
         {
             "purpose": "welcome",
@@ -242,25 +239,25 @@ async def serve_welcome_world(request, user, world: dict) -> HTMLResponse:
         ttl_seconds=8 * 60 * 60,
     )
     if not access_token:
-        return creator_content_unavailable_response()
+        return creator_content_unavailable_response(translator)
 
     isolated_path = (
         f"/_aurvek/welcome/{world['type']}/{int(world['id'])}/{access_token}/"
     )
     iframe_url = build_creator_content_url(isolated_path)
     if not iframe_url:
-        return creator_content_unavailable_response()
+        return creator_content_unavailable_response(translator)
 
     # Build navbar HTML
-    navbar_html = render_aurvek_world_navbar(world)
+    navbar_html = render_aurvek_world_navbar(request)
 
     # Build switcher data
     switcher_data = await get_world_switcher_data(user, world)
     switcher_json = json.dumps(switcher_data).replace("</", "<\\/")
     switcher_script = f"<script>window.__aurvekWorlds = {switcher_json};</script>"
-    title = escape(str(world.get("name") or "Welcome"))
+    title = escape(str(world.get("name") or translator.t("public_shell.welcome")))
     wrapper = f"""<!doctype html>
-<html lang="en">
+<html lang="{translator.language}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -279,22 +276,13 @@ async def serve_welcome_world(request, user, world: dict) -> HTMLResponse:
     {navbar_html}
 </body>
 </html>"""
-    return HTMLResponse(wrapper, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(wrapper, headers={"Cache-Control": "no-store", "Content-Language": translator.language})
 
 
-def render_aurvek_world_navbar(world: dict) -> str:
-    """
-    Read and return the static navbar template HTML.
-
-    The template is self-contained with its own CSS/JS references
-    and does not require Jinja2 rendering.
-    """
-    with open(_NAVBAR_TEMPLATE_PATH, "r", encoding="utf-8") as f:
-        html = f.read()
-    return re.sub(
-        r"\{\{\s*get_static_url\('([^']+)'\)\s*\}\}",
-        r"\1",
-        html,
+def render_aurvek_world_navbar(request) -> str:
+    """Evaluate the owned shell only; the creator document stays in its iframe."""
+    return templates.env.get_template("aurvek_world_navbar.html").render(
+        request=request, **template_context(request), i18n_domains=["public_shell"]
     )
 
 

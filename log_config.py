@@ -5,6 +5,40 @@ import os
 import sys
 from uvicorn.logging import ColourizedFormatter
 import time
+from contextlib import contextmanager, redirect_stdout
+from urllib.parse import unquote, urlsplit
+
+
+def sanitize_auth_request_target(target: str) -> str:
+    """Keep access diagnostics without recording browser auth credentials."""
+    try:
+        parsed = urlsplit(target)
+    except ValueError:
+        return target
+    path = unquote(parsed.path)
+    if path == "/verify-email" or path.startswith("/verify-email/"):
+        return "/verify-email/[redacted]"
+    sensitive = (
+        path.rstrip("/") in {"/login", "/register", "/magic-link-recovery"}
+        or path.startswith("/auth/google")
+        or path == "/embed" or path.startswith("/embed/")
+        or path == "/api/embed/v1" or path.startswith("/api/embed/v1/")
+    )
+    if sensitive:
+        return parsed.path
+    return target
+
+
+class AuthAccessLogFilter(logging.Filter):
+    """Sanitize Uvicorn's structured request-target argument before formatting."""
+
+    def filter(self, record):
+        if (record.name == "uvicorn.access" and isinstance(record.args, tuple)
+                and len(record.args) == 5 and isinstance(record.args[2], str)):
+            args = list(record.args)
+            args[2] = sanitize_auth_request_target(args[2])
+            record.args = tuple(args)
+        return True
 
 class CustomColourizedFormatter(ColourizedFormatter):
     def format(self, record):
@@ -24,6 +58,9 @@ def setup_logging():
     uvicorn_error = logging.getLogger("uvicorn.error")
     uvicorn_access = logging.getLogger("uvicorn.access")
     uvicorn_asgi = logging.getLogger("uvicorn.asgi")
+    # Keep this on the logger so every handler receives the sanitized record.
+    if not any(isinstance(item, AuthAccessLogFilter) for item in uvicorn_access.filters):
+        uvicorn_access.addFilter(AuthAccessLogFilter())
 
     # Clear existing handlers
     for log in [logger, uvicorn_error, uvicorn_access, uvicorn_asgi]:
@@ -59,3 +96,21 @@ def setup_logging():
 
 # Create and configure the logger
 logger = setup_logging()
+
+
+@contextmanager
+def cli_diagnostics_to_stderr():
+    """Keep JSON CLI stdout clean without changing normal application logging."""
+    stdout = sys.stdout
+    loggers = [logging.getLogger(), *(item for item in logging.Logger.manager.loggerDict.values()
+                                     if isinstance(item, logging.Logger))]
+    handlers = {handler for log in loggers for handler in log.handlers
+                if getattr(handler, "stream", None) is stdout}
+    for handler in handlers:
+        handler.setStream(sys.stderr)
+    try:
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        for handler in handlers:
+            handler.setStream(stdout)

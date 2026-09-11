@@ -20,7 +20,7 @@ def get_signed_bot_avatar_urls(
     current_time: Optional[datetime] = None,
 ) -> dict[str, Optional[str]]:
     """Build independently signed URLs for every bot avatar variant."""
-    if not image_base_path:
+    if not image_base_path or getattr(current_user, "embed_principal", None):
         return {field: None for field in BOT_AVATAR_VARIANTS}
 
     if current_time is None:

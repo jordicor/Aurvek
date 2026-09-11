@@ -242,6 +242,7 @@ async def test_all_required_client_commands_have_exact_ga_shapes():
     await client.cancel_response()
     await client.create_response()
     await client.create_response("Use the refreshed Aurvek context.")
+    await client.create_response(tool_choice="none")
 
     assert websocket.sent_json == [
         {
@@ -262,6 +263,10 @@ async def test_all_required_client_commands_have_exact_ga_shapes():
         {
             "type": "response.create",
             "response": {"instructions": "Use the refreshed Aurvek context."},
+        },
+        {
+            "type": "response.create",
+            "response": {"tool_choice": "none"},
         },
     ]
 

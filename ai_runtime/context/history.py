@@ -72,6 +72,8 @@ async def apply_no_memory_context_budget(
     prompt_id: int | str | None,
     full_prompt: str,
     current_message: Any,
+    tools: list | None = None,
+    output_tokens: int = 0,
 ) -> list[dict[str, Any]]:
     configured_budget, source = await resolve_no_memory_context_max_tokens(
         llm_id=llm_id,
@@ -79,12 +81,14 @@ async def apply_no_memory_context_budget(
     )
     prompt_tokens = estimate_message_tokens(full_prompt or "")
     current_tokens = estimate_message_tokens(_text_for_token_estimate(current_message))
+    tool_tokens = estimate_message_tokens(_text_for_token_estimate(tools)) if tools else 0
+    reserved_output = max(0, int(output_tokens))
     input_limit = await model_input_token_limit(llm_id)
     effective_budget = configured_budget
     if input_limit > 0:
         effective_budget = min(
             configured_budget,
-            max(0, input_limit - prompt_tokens - current_tokens),
+            max(0, input_limit - prompt_tokens - current_tokens - tool_tokens - reserved_output),
         )
 
     trimmed = trim_context_messages_by_token_budget(

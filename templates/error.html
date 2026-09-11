@@ -1,11 +1,11 @@
 {% extends 'base.html' %}
 
-{% block title %}Error - Aurvek{% endblock %}
+{% block title %}{{ t('auth.error_page.title') }} - Aurvek{% endblock %}
 
-{% block page_title %}Error {{ error_code }}{% endblock %}
+{% block page_title %}{{ t('auth.error_page.with_code', code=error_code) }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
-{% block back_title %}Return to Home{% endblock %}
+{% block back_title %}{{ t('auth.error_page.return_home') }}{% endblock %}
 
 {% block toolbar %}{% endblock %}
 
@@ -14,12 +14,12 @@
     <div class="col-md-8">
         <div class="card border-danger">
             <div class="card-header bg-danger text-white">
-                <h4 class="mb-0">Error {{ error_code }}</h4>
+                <h4 class="mb-0">{{ t('auth.error_page.with_code', code=error_code) }}</h4>
             </div>
             <div class="card-body">
-                <h5 class="card-title">Sorry, an error has occurred</h5>
+                <h5 class="card-title">{{ t('auth.error_page.message') }}</h5>
                 <p class="card-text">{{ error_message }}</p>
-                <a href="/" class="btn btn-primary">Return to home</a>
+                <a href="/" class="btn btn-primary">{{ t('auth.error_page.return_home') }}</a>
             </div>
         </div>
     </div>

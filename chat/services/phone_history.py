@@ -115,20 +115,42 @@ def _safe_purge_payload(row: Any) -> dict[str, Any] | None:
     }
 
 
-def _message_payload(row: dict[str, Any]) -> dict[str, Any]:
+def _message_payload(
+    row: dict[str, Any],
+    *,
+    owner_user_id: int,
+) -> dict[str, Any]:
     origin_channel = str(row["origin_channel"])
     linked_at = row.get("link_created_at")
+    provenance = {
+        "phone_call_id": str(row["call_id"]),
+        "channel": "phone",
+        "origin_channel": origin_channel,
+        "participant": row.get("participant"),
+        "turn_id": row.get("turn_id"),
+    }
+    if (
+        origin_channel == "phone"
+        and row.get("participant") in {"caller", "assistant"}
+        and int(row.get("call_owner_user_id") or 0) == int(owner_user_id)
+        and bool(row.get("message_audio_available"))
+    ):
+        participant = str(row["participant"])
+        provenance["audio"] = {
+            "available": True,
+            "url": f"/api/phone-messages/{int(row['message_id'])}/audio",
+            "mime_type": "audio/wav",
+            "label": (
+                "Phone caller audio"
+                if participant == "caller"
+                else "Phone assistant audio"
+            ),
+        }
     return {
         "phone_call_id": str(row["call_id"]),
         "channel": origin_channel,
         "participant": row.get("participant"),
-        "provenance": {
-            "phone_call_id": str(row["call_id"]),
-            "channel": "phone",
-            "origin_channel": origin_channel,
-            "participant": row.get("participant"),
-            "turn_id": row.get("turn_id"),
-        },
+        "provenance": provenance,
         "interrupted": bool(row.get("interrupted")),
         "played_ms": row.get("played_ms"),
         "delivery_state": row.get("delivery_state"),
@@ -165,6 +187,53 @@ async def load_phone_history_page(
 
     try:
         async with connection_factory(readonly=True) as conn:
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('PHONE_CALL_MESSAGE_AUDIO_RANGES','PHONE_RECORDING_TOMBSTONES')"
+            )
+            optional_tables = {str(row[0]) for row in await cursor.fetchall()}
+            recording_tombstone_guard = (
+                "AND NOT EXISTS (SELECT 1 FROM PHONE_RECORDING_TOMBSTONES t "
+                "WHERE t.call_id_snapshot=r.call_id)"
+                if "PHONE_RECORDING_TOMBSTONES" in optional_tables
+                else ""
+            )
+            message_audio_schema_ready = (
+                "PHONE_CALL_MESSAGE_AUDIO_RANGES" in optional_tables
+            )
+            if message_audio_schema_ready:
+                tombstone_guard = (
+                    "AND NOT EXISTS (SELECT 1 FROM PHONE_RECORDING_TOMBSTONES t "
+                    "WHERE t.call_id_snapshot=l.call_id)"
+                    if "PHONE_RECORDING_TOMBSTONES" in optional_tables
+                    else ""
+                )
+                audio_columns = """
+                    ,a.start_byte AS audio_start_byte,
+                     a.end_byte AS audio_end_byte,
+                     CASE WHEN a.message_id IS NOT NULL AND EXISTS (
+                         SELECT 1 FROM PHONE_RECORDINGS r
+                         WHERE r.call_id=l.call_id AND r.status='available'
+                           AND (
+                               (l.participant='caller'
+                                AND r.participant_path IS NOT NULL)
+                               OR
+                               (l.participant='assistant'
+                                AND r.assistant_path IS NOT NULL)
+                           )
+                           {tombstone_guard}
+                     ) THEN 1 ELSE 0 END AS message_audio_available
+                """.format(tombstone_guard=tombstone_guard)
+                audio_join = """
+                    LEFT JOIN PHONE_CALL_MESSAGE_AUDIO_RANGES a
+                      ON a.call_id=l.call_id AND a.message_id=l.message_id
+                """
+            else:
+                audio_columns = """
+                    ,NULL AS audio_start_byte,NULL AS audio_end_byte,
+                     0 AS message_audio_available
+                """
+                audio_join = ""
             link_rows: list[dict[str, Any]] = []
             if normalized_ids:
                 placeholders = ",".join("?" for _ in normalized_ids)
@@ -173,10 +242,13 @@ async def load_phone_history_page(
                     SELECT l.call_id,l.message_id,l.participant,l.turn_id,
                            l.origin_channel,l.interrupted,l.played_ms,
                            l.delivery_state,l.created_at AS link_created_at,
+                           c.owner_user_id AS call_owner_user_id
+                           {audio_columns},
                            COALESCE(c.initiated_at,c.created_at) AS call_started_at,
                            c.answered_at AS call_answered_at,c.ended_at AS call_ended_at
                     FROM PHONE_CALL_MESSAGE_LINKS l
                     JOIN PHONE_CALLS c ON c.id=l.call_id
+                    {audio_join}
                     WHERE c.conversation_id=? AND c.deleted_at IS NULL
                       AND l.message_id IN ({placeholders}){scope_sql}
                     ORDER BY l.message_id,l.id
@@ -187,7 +259,7 @@ async def load_phone_history_page(
                 for row in link_rows:
                     result.message_metadata.setdefault(
                         int(row["message_id"]),
-                        _message_payload(row),
+                        _message_payload(row, owner_user_id=owner_user_id),
                     )
 
             boundaries: list[dict[str, Any]] = []
@@ -564,10 +636,12 @@ async def load_phone_history_page(
 
             cursor = await conn.execute(
                 f"""
-                SELECT call_id,status,participant_path,assistant_path,mixed_path
-                FROM PHONE_RECORDINGS
-                WHERE call_id IN ({placeholders})
-                ORDER BY call_id,id DESC
+                SELECT r.call_id,r.status,r.participant_path,
+                       r.assistant_path,r.mixed_path
+                FROM PHONE_RECORDINGS r
+                WHERE r.call_id IN ({placeholders})
+                  {recording_tombstone_guard}
+                ORDER BY r.call_id,r.id DESC
                 """,
                 tuple(call_ids),
             )

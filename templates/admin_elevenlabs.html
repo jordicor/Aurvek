@@ -1,24 +1,25 @@
+{% set i18n_domains = ['admin_voice_integrations'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}ElevenLabs Agents - AURVEK{% endblock %}
+{% block title %}{{ t('admin_voice_integrations.ui.elevenlabs_agents_aurvek') }}{% endblock %}
 
-{% block page_title %}ElevenLabs Agents{% endblock %}
+{% block page_title %}{{ t('admin_voice_integrations.ui.elevenlabs_agents') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Configure AI voice agents for real-time conversations</p>
+<p class="page-subtitle">{{ t('admin_voice_integrations.ui.configure_ai_voice_agents_for_real_time_conversations') }}</p>
 {% endblock %}
 
 {% block alerts %}
 {% if message %}
 <div class="alert alert-success alert-dismissible fade show" role="alert">
     <i class="fas fa-check-circle me-2"></i>{{ message }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_voice_integrations.ui.close') }}"></button>
 </div>
 {% endif %}
 {% if error %}
 <div class="alert alert-danger alert-dismissible fade show" role="alert">
     <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="{{ t('admin_voice_integrations.ui.close') }}"></button>
 </div>
 {% endif %}
 {% endblock %}
@@ -26,12 +27,10 @@
 {% block content %}
 {% if voice_canonicalization_conflicts %}
 <div class="alert alert-warning" role="alert">
-    <strong>Canonical voice migration needs attention.</strong>
+    <strong>{{ t('admin_voice_integrations.ui.canonical_voice_migration_needs_attention') }}</strong>
     {% for conflict in voice_canonicalization_conflicts %}
     <div>
-        Prompt {{ conflict.prompt_name or conflict.prompt_id_snapshot }}:
-        legacy voice <code>{{ conflict.legacy_voice_code }}</code>
-        ({{ conflict.reason }}).
+        {{ t('admin_voice_integrations.ui.migration_conflict', prompt=conflict.prompt_name or conflict.prompt_id_snapshot, voice=conflict.legacy_voice_code, reason=conflict.reason_label) }}
     </div>
     {% endfor %}
 </div>
@@ -39,30 +38,30 @@
 <!-- Stats -->
 <div class="stats-row">
     <span class="stat-badge">
-        <i class="fas fa-robot"></i> <strong>{{ agents|length }}</strong> Agents
+        <i class="fas fa-robot"></i> <strong>{{ format_number(agents|length) }}</strong> {{ t('admin_voice_integrations.ui.agents') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-link"></i> <strong>{{ mappings|length }}</strong> Prompt Agent Mappings
+        <i class="fas fa-link"></i> <strong>{{ format_number(mappings|length) }}</strong> {{ t('admin_voice_integrations.ui.prompt_agent_mappings') }}
     </span>
 </div>
 
 <!-- Add/Update Agent Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-plus-circle"></i> Add or Update Agent
+        <i class="fas fa-plus-circle"></i> {{ t('admin_voice_integrations.ui.add_or_update_agent') }}
     </div>
     <form method="post" action="/admin/elevenlabs-agents" data-form-guard>
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="agent_id">Agent ID</label>
-                    <input class="form-control" id="agent_id" name="agent_id" required placeholder="Enter ElevenLabs agent ID">
+                    <label class="form-label" for="agent_id">{{ t('admin_voice_integrations.ui.agent_id') }}</label>
+                    <input class="form-control" id="agent_id" name="agent_id" required placeholder="{{ t('admin_voice_integrations.ui.enter_elevenlabs_agent_id') }}">
                 </div>
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="agent_name">Display Name</label>
-                    <input class="form-control" id="agent_name" name="agent_name" placeholder="Optional display name">
+                    <label class="form-label" for="agent_name">{{ t('admin_voice_integrations.ui.display_name') }}</label>
+                    <input class="form-control" id="agent_name" name="agent_name" placeholder="{{ t('admin_voice_integrations.ui.optional_display_name') }}">
                 </div>
             </div>
             <div class="flex-column">
@@ -70,14 +69,14 @@
                     <label class="form-label">&nbsp;</label>
                     <div class="form-check mt-2">
                         <input class="form-check-input" type="checkbox" id="make_default" name="make_default">
-                        <label class="form-check-label" for="make_default">Set as default</label>
+                        <label class="form-check-label" for="make_default">{{ t('admin_voice_integrations.ui.set_as_default') }}</label>
                     </div>
                 </div>
             </div>
         </div>
         <div class="mt-2">
             <button type="submit" class="btn btn-primary">
-                <i class="fas fa-save me-1"></i> Save Agent
+                <i class="fas fa-save me-1"></i> {{ t('admin_voice_integrations.ui.save_agent') }}
             </button>
         </div>
     </form>
@@ -86,16 +85,16 @@
 <!-- Registered Agents Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-list"></i> Registered Agents
+        <i class="fas fa-list"></i> {{ t('admin_voice_integrations.ui.registered_agents') }}
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Agent ID</th>
-                    <th>Display Name</th>
-                    <th>Default</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('admin_voice_integrations.ui.agent_id') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.display_name') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.default') }}</th>
+                    <th class="text-end">{{ t('admin_voice_integrations.ui.actions') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -105,10 +104,10 @@
                     <td>{{ agent.agent_name or '-' }}</td>
                     <td>
                         {% if agent.is_default %}
-                        <span class="badge bg-success"><i class="fas fa-check me-1"></i>Default</span>
+                        <span class="badge bg-success"><i class="fas fa-check me-1"></i>{{ t('admin_voice_integrations.ui.default') }}</span>
                         {% else %}
                         <form method="post" action="/admin/elevenlabs-agents/{{ agent.agent_id }}/set-default" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Set as default" data-bs-toggle="tooltip">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary" title="{{ t('admin_voice_integrations.ui.set_as_default') }}" data-bs-toggle="tooltip">
                                 <i class="fas fa-star"></i>
                             </button>
                         </form>
@@ -116,7 +115,7 @@
                     </td>
                     <td class="text-end table-actions">
                         <form method="post" action="/admin/elevenlabs-agents/{{ agent.agent_id }}/delete" class="d-inline elevenlabs-delete-form">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="tooltip">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="{{ t('admin_voice_integrations.ui.delete') }}" data-bs-toggle="tooltip">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </form>
@@ -126,7 +125,7 @@
                 <tr>
                     <td colspan="4" class="text-center text-muted py-4">
                         <i class="fas fa-robot fa-2x mb-2 d-block opacity-50"></i>
-                        No agents configured yet.
+                        {{ t('admin_voice_integrations.ui.no_agents_configured_yet') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -138,13 +137,13 @@
 <!-- Prompt Agent Mappings Section -->
 <div class="section-container">
     <div class="section-title">
-        <i class="fas fa-sliders-h"></i> Prompt Agent Mappings
+        <i class="fas fa-sliders-h"></i> {{ t('admin_voice_integrations.ui.prompt_agent_mappings') }}
     </div>
     <form method="post" action="/admin/elevenlabs-agents/mapping">
         <div class="flex-row">
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="prompt_id">Prompt</label>
+                    <label class="form-label" for="prompt_id">{{ t('admin_voice_integrations.ui.prompt') }}</label>
                     <select class="form-select" id="prompt_id" name="prompt_id" required>
                         {% for prompt in prompts %}
                         <option value="{{ prompt.id }}">{{ prompt.name }}</option>
@@ -154,9 +153,9 @@
             </div>
             <div class="flex-column">
                 <div class="mb-3">
-                    <label class="form-label" for="mapping_agent_id">Agent</label>
+                    <label class="form-label" for="mapping_agent_id">{{ t('admin_voice_integrations.ui.agent') }}</label>
                     <select class="form-select" id="mapping_agent_id" name="agent_id">
-                        <option value="">Use default agent</option>
+                        <option value="">{{ t('admin_voice_integrations.ui.use_default_agent') }}</option>
                         {% for agent in agents %}
                         <option value="{{ agent.agent_id }}">{{ agent.agent_name or agent.agent_id }}</option>
                         {% endfor %}
@@ -164,10 +163,10 @@
                 </div>
             </div>
         </div>
-        <p class="form-text">Voice always comes from the prompt's canonical voice setting.</p>
+        <p class="form-text">{{ t('admin_voice_integrations.ui.voice_always_comes_from_the_prompt_s_canonical_voice_setting') }}</p>
         <div class="mt-2">
             <button type="submit" class="btn btn-primary">
-                <i class="fas fa-save me-1"></i> Save Mapping
+                <i class="fas fa-save me-1"></i> {{ t('admin_voice_integrations.ui.save_mapping') }}
             </button>
         </div>
     </form>
@@ -178,28 +177,28 @@
         <table class="table">
             <thead>
                 <tr>
-                    <th>Prompt</th>
-                    <th>Agent</th>
-                    <th>Canonical Voice</th>
-                    <th class="text-end">Actions</th>
+                    <th>{{ t('admin_voice_integrations.ui.prompt') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.agent') }}</th>
+                    <th>{{ t('admin_voice_integrations.ui.canonical_voice') }}</th>
+                    <th class="text-end">{{ t('admin_voice_integrations.ui.actions') }}</th>
                 </tr>
             </thead>
             <tbody>
                 {% for mapping in mappings %}
                 <tr>
-                    <td><strong>{{ mapping.prompt_name or ('Prompt ' ~ mapping.prompt_id) }}</strong></td>
+                    <td><strong>{{ mapping.prompt_name or t('admin_voice_integrations.ui.prompt_id', id=mapping.prompt_id) }}</strong></td>
                     <td><code>{{ mapping.agent_id }}</code></td>
                     <td>
                         {% if mapping.canonical_voice_code %}
                         <code>{{ mapping.canonical_voice_code }}</code>
                         <small class="text-muted d-block">
-                            {{ mapping.canonical_voice_provider }}{% if mapping.canonical_voice_inherited %} · inherited global default{% endif %}
+                            {{ mapping.canonical_voice_provider }}{% if mapping.canonical_voice_inherited %} {{ t('admin_voice_integrations.ui.inherited_global_default') }}{% endif %}
                         </small>
                         {% else %}
-                        <span class="text-muted">Canonical voice unresolved</span>
+                        <span class="text-muted">{{ t('admin_voice_integrations.ui.canonical_voice_unresolved') }}</span>
                         {% endif %}
                         <span class="badge {{ 'bg-success' if mapping.webrtc_compatible else 'bg-danger' }} mt-1">
-                            {{ 'WebRTC compatible' if mapping.webrtc_compatible else 'WebRTC incompatible' }}
+                            {{ t('admin_voice_integrations.ui.webrtc_compatible') if mapping.webrtc_compatible else t('admin_voice_integrations.ui.webrtc_incompatible') }}
                         </span>
                         <small class="d-block mt-1 {{ 'text-muted' if mapping.webrtc_compatible else 'text-danger' }}">
                             {{ mapping.compatibility_reason }}
@@ -208,7 +207,7 @@
                     <td class="text-end table-actions">
                         <form method="post" action="/admin/elevenlabs-agents/mapping" class="d-inline">
                             <input type="hidden" name="prompt_id" value="{{ mapping.prompt_id }}">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove mapping" data-bs-toggle="tooltip">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="{{ t('admin_voice_integrations.ui.remove_mapping') }}" data-bs-toggle="tooltip">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </form>
@@ -218,7 +217,7 @@
                 <tr>
                     <td colspan="4" class="text-center text-muted py-4">
                         <i class="fas fa-link fa-2x mb-2 d-block opacity-50"></i>
-                        No overrides configured.
+                        {{ t('admin_voice_integrations.ui.no_overrides_configured') }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -230,13 +229,14 @@
 
 {% block scripts_inline %}
 <script>
+const voiceAdminT = (key, params) => AurvekI18n.t(key, params);
 document.querySelectorAll('.elevenlabs-delete-form').forEach(function(form) {
     form.addEventListener('submit', function(e) {
         e.preventDefault();
         const f = this;
-        NotificationModal.confirm('Delete Agent', 'Delete this agent?', function() {
+        NotificationModal.confirm(voiceAdminT('admin_voice_integrations.ui.delete_agent'), voiceAdminT('admin_voice_integrations.ui.delete_this_agent'), function() {
             f.submit();
-        }, null, { type: 'error', confirmText: 'Delete' });
+        }, null, { type: 'error', confirmText: voiceAdminT('admin_voice_integrations.ui.delete') });
     });
 });
 </script>

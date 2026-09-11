@@ -1,6 +1,6 @@
 ---
 id: external_platforms_overview
-title: Using WhatsApp and Telegram with Aurvek
+title: Using external channels with Aurvek
 category: chat
 keywords:
   - external platforms
@@ -11,6 +11,10 @@ keywords:
   - mensajeria
   - whatsapp y telegram
   - whatsapp and telegram
+  - phone calls
+  - telephone
+  - retranscribe voice note
+  - retranscribir audio
   - both platforms
   - ambas plataformas
   - assign conversation
@@ -18,30 +22,30 @@ keywords:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-03-31
+last_reviewed: 2026-09-03
 ---
 
 ## Short answer
 
-You can continue your Aurvek conversations on WhatsApp or Telegram. Each conversation can only be assigned to one external platform at a time. Assigning a conversation to WhatsApp automatically removes it from Telegram, and vice versa.
+You can continue Aurvek conversations through WhatsApp, Telegram and telephone calls. WhatsApp and Telegram are alternative messaging assignments: a conversation can use only one of them at a time. Telephone assignment is independent, so it may coexist with either messaging app.
 
 ## Steps
 
 1. Open the chat sidebar and find the conversation you want to use externally.
 2. Click the three-dot menu on the conversation.
-3. Select **Use for WhatsApp** or assign it to Telegram (via the Telegram bot).
-4. Messages you send from the external app will go to that conversation, and everything stays synced with the web.
-5. To stop using an external platform, open the same menu and remove the assignment.
+3. Select **Use for WhatsApp**, assign it through the Telegram bot, or open **+ > Call me** for telephone calls.
+4. Messages and telephone-call transcripts are added to the assigned conversation and stay synced with the web.
+5. To stop using a channel, open its controls and remove the assignment.
 
 ## Notes
 
-- **One platform per conversation.** A conversation cannot be on both WhatsApp and Telegram simultaneously. Assigning it to one removes it from the other.
-- **One conversation per platform.** You can only have one active conversation per external platform. Assigning a new conversation to WhatsApp replaces the previous WhatsApp assignment.
+- **One messaging app per conversation.** Assigning WhatsApp removes Telegram from that conversation, and vice versa. This does not remove its telephone assignment.
+- **One conversation per channel.** WhatsApp, Telegram and telephone each have one active conversation. A conversation with multiple compatible channels appears once under **External**, with multiple badges.
 - **Phone number required for WhatsApp.** You need a verified phone number in Settings before using WhatsApp.
 - **Telegram linking.** To use Telegram, link your account through the Aurvek Telegram bot first (see telegram_setup).
 - Both platforms support text messages, images, and voice messages. Document attachments (Word, spreadsheets, etc.) are not supported on external platforms.
+- When original WhatsApp or Telegram voice-note audio was retained, its web message can play that audio and offer **Retranscribe original voice note**. A new transcript is only used after you review and accept it, and retranscription may use balance or provider credits.
 - Commands like `!help`, `!new`, `!text`, `!voice`, `!prompt`, `!chats`, and `!set` work on both WhatsApp and Telegram.
-- `!chats` and `!set` let you list and switch conversations directly from the messaging app without opening the web interface.
 
 ## Related
 
@@ -50,3 +54,4 @@ You can continue your Aurvek conversations on WhatsApp or Telegram. Each convers
 - telegram_setup
 - telegram_commands
 - external_manage_conversations
+- phone_calls_usage

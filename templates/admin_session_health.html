@@ -1,6 +1,7 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_operations'] %}
 
-{% block title %}Session Health - Admin - AURVEK{% endblock %}
+{% block title %}{{ t('admin_operations.session_health_admin_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -76,15 +77,15 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Session Health{% endblock %}
+{% block page_title %}{{ t('admin_operations.session_health') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Continuous-session metrics, break reminder policy, and reminder events</p>
+<p class="page-subtitle">{{ t('admin_operations.continuous_session_metrics_break_reminder_policy_and_reminder_events') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <button class="btn btn-outline-secondary btn-sm" onclick="refreshSessionHealth()">
-    <i class="fas fa-sync-alt me-1"></i> Refresh
+    <i class="fas fa-sync-alt me-1"></i> {{ t('admin_operations.refresh') }}
 </button>
 {% endblock %}
 
@@ -92,205 +93,205 @@
 <div class="row mb-4">
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card info">
-            <div class="label">Active Sessions</div>
+            <div class="label">{{ t('admin_operations.active_sessions') }}</div>
             <div class="amount" id="overviewActive">-</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card warning">
-            <div class="label">Intense Sessions</div>
+            <div class="label">{{ t('admin_operations.intense_sessions') }}</div>
             <div class="amount" id="overviewIntense">-</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card success">
-            <div class="label">Reminders Shown</div>
+            <div class="label">{{ t('admin_operations.reminders_shown') }}</div>
             <div class="amount" id="overviewReminders">-</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card danger">
-            <div class="label">Events Last 7 Days</div>
+            <div class="label">{{ t('admin_operations.events_last_7_days') }}</div>
             <div class="amount" id="overviewEvents">-</div>
         </div>
     </div>
 </div>
 
 <div class="section-container mb-4">
-    <div class="section-title"><i class="fas fa-sliders-h me-2"></i>Policy</div>
+    <div class="section-title"><i class="fas fa-sliders-h me-2"></i>{{ t('admin_operations.policy') }}</div>
     <form id="sessionHealthPolicyForm">
         <div class="policy-grid">
             <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="wellbeing_enabled">
-                <label class="form-check-label" for="wellbeing_enabled">Break reminders enabled</label>
+                <label class="form-check-label" for="wellbeing_enabled">{{ t('admin_operations.break_reminders_enabled') }}</label>
             </div>
             <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="wellbeing_allow_snooze">
-                <label class="form-check-label" for="wellbeing_allow_snooze">Allow snooze</label>
+                <label class="form-check-label" for="wellbeing_allow_snooze">{{ t('admin_operations.allow_snooze') }}</label>
             </div>
             <div>
-                <label class="form-label" for="wellbeing_mode">Mode</label>
+                <label class="form-label" for="wellbeing_mode">{{ t('admin_operations.mode') }}</label>
                 <select class="form-select" id="wellbeing_mode">
-                    <option value="informational">Informational</option>
-                    <option value="strict">Strict at strong threshold</option>
+                    <option value="informational">{{ t('admin_operations.informational') }}</option>
+                    <option value="strict">{{ t('admin_operations.strict_at_strong_threshold') }}</option>
                 </select>
             </div>
             <div>
-                <label class="form-label" for="wellbeing_idle_gap_minutes">Idle gap minutes</label>
+                <label class="form-label" for="wellbeing_idle_gap_minutes">{{ t('admin_operations.idle_gap_minutes') }}</label>
                 <input class="form-control" type="number" min="5" max="240" id="wellbeing_idle_gap_minutes">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_soft_minutes">Soft minutes</label>
+                <label class="form-label" for="wellbeing_soft_minutes">{{ t('admin_operations.soft_minutes') }}</label>
                 <input class="form-control" type="number" min="5" id="wellbeing_soft_minutes">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_soft_user_messages">Soft user messages</label>
+                <label class="form-label" for="wellbeing_soft_user_messages">{{ t('admin_operations.soft_user_messages') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_soft_user_messages">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_soft_user_words">Soft user words</label>
+                <label class="form-label" for="wellbeing_soft_user_words">{{ t('admin_operations.soft_user_words') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_soft_user_words">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_intense_minutes">Intense minutes</label>
+                <label class="form-label" for="wellbeing_intense_minutes">{{ t('admin_operations.intense_minutes') }}</label>
                 <input class="form-control" type="number" min="10" id="wellbeing_intense_minutes">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_intense_user_messages">Intense user messages</label>
+                <label class="form-label" for="wellbeing_intense_user_messages">{{ t('admin_operations.intense_user_messages') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_intense_user_messages">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_intense_user_words">Intense user words</label>
+                <label class="form-label" for="wellbeing_intense_user_words">{{ t('admin_operations.intense_user_words') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_intense_user_words">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_strong_minutes">Strong minutes</label>
+                <label class="form-label" for="wellbeing_strong_minutes">{{ t('admin_operations.strong_minutes') }}</label>
                 <input class="form-control" type="number" min="15" id="wellbeing_strong_minutes">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_strong_user_messages">Strong user messages</label>
+                <label class="form-label" for="wellbeing_strong_user_messages">{{ t('admin_operations.strong_user_messages') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_strong_user_messages">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_cooldown_minutes">Cooldown minutes</label>
+                <label class="form-label" for="wellbeing_cooldown_minutes">{{ t('admin_operations.cooldown_minutes') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_cooldown_minutes">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_snooze_minutes">Snooze minutes</label>
+                <label class="form-label" for="wellbeing_snooze_minutes">{{ t('admin_operations.snooze_minutes') }}</label>
                 <input class="form-control" type="number" min="1" id="wellbeing_snooze_minutes">
             </div>
             <div>
-                <label class="form-label" for="wellbeing_notice_text_soft">Soft reminder text</label>
+                <label class="form-label" for="wellbeing_notice_text_soft">{{ t('admin_operations.soft_reminder_text') }}</label>
                 <textarea class="form-control" id="wellbeing_notice_text_soft"></textarea>
             </div>
             <div>
-                <label class="form-label" for="wellbeing_notice_text_intense">Intense reminder text</label>
+                <label class="form-label" for="wellbeing_notice_text_intense">{{ t('admin_operations.intense_reminder_text') }}</label>
                 <textarea class="form-control" id="wellbeing_notice_text_intense"></textarea>
             </div>
             <div>
-                <label class="form-label" for="wellbeing_notice_text_strong">Strong reminder text</label>
+                <label class="form-label" for="wellbeing_notice_text_strong">{{ t('admin_operations.strong_reminder_text') }}</label>
                 <textarea class="form-control" id="wellbeing_notice_text_strong"></textarea>
             </div>
         </div>
         <div class="mt-3">
             <button type="submit" class="btn btn-primary">
-                <i class="fas fa-save me-1"></i> Save Policy
+                <i class="fas fa-save me-1"></i> {{ t('admin_operations.save_policy') }}
             </button>
         </div>
     </form>
 </div>
 
 <div class="section-container mb-4">
-    <div class="section-title"><i class="fas fa-heart-pulse me-2"></i>Live Session Health</div>
+    <div class="section-title"><i class="fas fa-heart-pulse me-2"></i>{{ t('admin_operations.live_session_health') }}</div>
     <div class="filters-row">
         <div class="filter-group">
-            <label>Search User</label>
-            <input type="text" id="liveSearch" placeholder="Username or user id">
+            <label>{{ t('admin_operations.search_user') }}</label>
+            <input type="text" id="liveSearch" placeholder="{{ t('admin_operations.username_or_user_id') }}">
         </div>
         <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadLiveSessions()">
-            <i class="fas fa-search me-1"></i> Apply
+            <i class="fas fa-search me-1"></i> {{ t('admin_operations.apply') }}
         </button>
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>User</th>
-                    <th>Started</th>
-                    <th>Last Activity</th>
-                    <th class="text-end">Minutes</th>
-                    <th class="text-end">User Msgs</th>
-                    <th class="text-end">Words</th>
-                    <th class="text-end">Convs</th>
-                    <th class="text-end">Voice</th>
-                    <th class="text-end">Reminders</th>
-                    <th>Status</th>
+                    <th>{{ t('admin_operations.user') }}</th>
+                    <th>{{ t('admin_operations.started') }}</th>
+                    <th>{{ t('admin_operations.last_activity') }}</th>
+                    <th class="text-end">{{ t('admin_operations.minutes') }}</th>
+                    <th class="text-end">{{ t('admin_operations.user_msgs') }}</th>
+                    <th class="text-end">{{ t('admin_operations.words') }}</th>
+                    <th class="text-end">{{ t('admin_operations.convs') }}</th>
+                    <th class="text-end">{{ t('admin_operations.voice') }}</th>
+                    <th class="text-end">{{ t('admin_operations.reminders') }}</th>
+                    <th>{{ t('admin_operations.status') }}</th>
                 </tr>
             </thead>
             <tbody id="liveSessionsTable">
-                <tr><td colspan="10" class="text-center text-muted py-4">Loading...</td></tr>
+                <tr><td colspan="10" class="text-center text-muted py-4">{{ t('admin_operations.loading') }}</td></tr>
             </tbody>
         </table>
     </div>
 </div>
 
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-list-check me-2"></i>Reminder Events</div>
+    <div class="section-title"><i class="fas fa-list-check me-2"></i>{{ t('admin_operations.reminder_events') }}</div>
     <div class="filters-row">
         <div class="filter-group">
-            <label>Event Type</label>
+            <label>{{ t('admin_operations.event_type') }}</label>
             <select id="eventTypeFilter">
-                <option value="">All events</option>
-                <option value="reminder_shown">Reminder shown</option>
-                <option value="reminder_dismissed">Dismissed</option>
-                <option value="reminder_snoozed">Snoozed</option>
-                <option value="pause_started">Pause started</option>
-                <option value="pause_completed">Pause completed</option>
-                <option value="session_started">Session started</option>
-                <option value="session_closed">Session closed</option>
-                <option value="severity_changed">Severity changed</option>
+                <option value="">{{ t('admin_operations.all_events') }}</option>
+                <option value="reminder_shown">{{ t('admin_operations.reminder_shown') }}</option>
+                <option value="reminder_dismissed">{{ t('admin_operations.dismissed') }}</option>
+                <option value="reminder_snoozed">{{ t('admin_operations.snoozed') }}</option>
+                <option value="pause_started">{{ t('admin_operations.pause_started') }}</option>
+                <option value="pause_completed">{{ t('admin_operations.pause_completed') }}</option>
+                <option value="session_started">{{ t('admin_operations.session_started') }}</option>
+                <option value="session_closed">{{ t('admin_operations.session_closed') }}</option>
+                <option value="severity_changed">{{ t('admin_operations.severity_changed') }}</option>
             </select>
         </div>
         <div class="filter-group">
-            <label>Severity</label>
+            <label>{{ t('admin_operations.severity') }}</label>
             <select id="severityFilter">
-                <option value="">All severities</option>
-                <option value="normal">Normal</option>
-                <option value="soft">Soft</option>
-                <option value="intense">Intense</option>
-                <option value="strong">Strong</option>
+                <option value="">{{ t('admin_operations.all_severities') }}</option>
+                <option value="normal">{{ t('admin_operations.normal') }}</option>
+                <option value="soft">{{ t('admin_operations.soft') }}</option>
+                <option value="intense">{{ t('admin_operations.intense') }}</option>
+                <option value="strong">{{ t('admin_operations.strong') }}</option>
             </select>
         </div>
         <div class="filter-group">
-            <label>Search User</label>
-            <input type="text" id="eventSearch" placeholder="Username or user id">
+            <label>{{ t('admin_operations.search_user') }}</label>
+            <input type="text" id="eventSearch" placeholder="{{ t('admin_operations.username_or_user_id') }}">
         </div>
         <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadReminderEvents(1)">
-            <i class="fas fa-filter me-1"></i> Apply
+            <i class="fas fa-filter me-1"></i> {{ t('admin_operations.apply') }}
         </button>
     </div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Date</th>
-                    <th>User</th>
-                    <th>Event</th>
-                    <th>Severity</th>
-                    <th>Threshold</th>
-                    <th class="text-end">Observed</th>
-                    <th class="text-end">Conversation</th>
+                    <th>{{ t('admin_operations.date') }}</th>
+                    <th>{{ t('admin_operations.user') }}</th>
+                    <th>{{ t('admin_operations.event') }}</th>
+                    <th>{{ t('admin_operations.severity') }}</th>
+                    <th>{{ t('admin_operations.threshold') }}</th>
+                    <th class="text-end">{{ t('admin_operations.observed') }}</th>
+                    <th class="text-end">{{ t('admin_operations.conversation') }}</th>
                 </tr>
             </thead>
             <tbody id="eventsTable">
-                <tr><td colspan="7" class="text-center text-muted py-4">Loading...</td></tr>
+                <tr><td colspan="7" class="text-center text-muted py-4">{{ t('admin_operations.loading') }}</td></tr>
             </tbody>
         </table>
     </div>
     <div class="d-flex justify-content-between align-items-center mt-3">
-        <button class="btn btn-outline-secondary btn-sm" id="eventsPrev" onclick="changeEventsPage(-1)">Previous</button>
-        <span class="text-muted" id="eventsPageInfo">Page 1</span>
-        <button class="btn btn-outline-secondary btn-sm" id="eventsNext" onclick="changeEventsPage(1)">Next</button>
+        <button class="btn btn-outline-secondary btn-sm" id="eventsPrev" onclick="changeEventsPage(-1)">{{ t('admin_operations.previous') }}</button>
+        <span class="text-muted" id="eventsPageInfo">{{ t('admin_operations.page_1') }}</span>
+        <button class="btn btn-outline-secondary btn-sm" id="eventsNext" onclick="changeEventsPage(1)">{{ t('admin_operations.next') }}</button>
     </div>
 </div>
 {% endblock %}
@@ -348,7 +349,7 @@
     async function loadPolicy() {
         try {
             const response = await apiFetch('/api/admin/session-health/config');
-            if (!response.ok) throw new Error('Failed to load policy');
+            if (!response.ok) throw new Error(AurvekI18n.t('admin_operations.failed_to_load_policy'));
             const data = await response.json();
             for (const key of policyKeys) {
                 const input = document.getElementById(key);
@@ -361,7 +362,7 @@
                 }
             }
         } catch (error) {
-            NotificationModal.error('Error', 'Failed to load session health policy');
+            NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('admin_operations.failed_to_load_session_health_policy'));
         }
     }
 
@@ -378,11 +379,11 @@
                 method: 'PUT',
                 body: JSON.stringify(payload)
             });
-            if (!response.ok) throw new Error('Failed to save policy');
-            NotificationModal.success('Saved', 'Session health policy updated');
+            if (!response.ok) throw new Error(AurvekI18n.t('admin_operations.failed_to_save_policy'));
+            NotificationModal.success(AurvekI18n.t('admin_operations.saved'), AurvekI18n.t('admin_operations.session_health_policy_updated'));
             await loadPolicy();
         } catch (error) {
-            NotificationModal.error('Error', 'Failed to save session health policy');
+            NotificationModal.error(AurvekI18n.t('admin_operations.error_2'), AurvekI18n.t('admin_operations.failed_to_save_session_health_policy'));
         }
     }
 
@@ -393,12 +394,12 @@
         params.set('limit', '100');
         try {
             const response = await apiFetch('/api/admin/session-health/live?' + params.toString());
-            if (!response.ok) throw new Error('Failed to load live sessions');
+            if (!response.ok) throw new Error(AurvekI18n.t('admin_operations.failed_to_load_live_sessions'));
             const data = await response.json();
             updateOverview(data.overview || {});
             renderLiveSessions(data.sessions || []);
         } catch (error) {
-            document.getElementById('liveSessionsTable').innerHTML = '<tr><td colspan="10" class="text-center text-danger py-4">Failed to load live sessions</td></tr>';
+            document.getElementById('liveSessionsTable').innerHTML = '<tr><td colspan="10" class="text-center text-danger py-4">' + AurvekI18n.t('admin_operations.failed_to_load_live_sessions') + '</td></tr>';
         }
     }
 
@@ -412,12 +413,12 @@
     function renderLiveSessions(sessions) {
         const tbody = document.getElementById('liveSessionsTable');
         if (!sessions.length) {
-            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">No active sessions</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">' + AurvekI18n.t('admin_operations.no_active_sessions') + '</td></tr>';
             return;
         }
         tbody.innerHTML = sessions.map(session => `
             <tr>
-                <td>${escapeHtml(session.username || ('User #' + session.user_id))}</td>
+                <td>${escapeHtml(session.username || AurvekI18n.t('admin_operations.user_id', {id: session.user_id}))}</td>
                 <td>${formatDateTime(session.started_at)}</td>
                 <td>${formatDateTime(session.last_activity_at)}</td>
                 <td class="text-end">${formatNumber(session.active_minutes || 0)}</td>
@@ -445,30 +446,30 @@
 
         try {
             const response = await apiFetch('/api/admin/session-health/events?' + params.toString());
-            if (!response.ok) throw new Error('Failed to load events');
+            if (!response.ok) throw new Error(AurvekI18n.t('admin_operations.failed_to_load_events'));
             const data = await response.json();
             eventsTotal = data.total || 0;
             eventsPerPage = data.per_page || 50;
             renderEvents(data.events || []);
             updateEventsPager();
         } catch (error) {
-            document.getElementById('eventsTable').innerHTML = '<tr><td colspan="7" class="text-center text-danger py-4">Failed to load events</td></tr>';
+            document.getElementById('eventsTable').innerHTML = '<tr><td colspan="7" class="text-center text-danger py-4">' + AurvekI18n.t('admin_operations.failed_to_load_events') + '</td></tr>';
         }
     }
 
     function renderEvents(events) {
         const tbody = document.getElementById('eventsTable');
         if (!events.length) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">No events found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">' + AurvekI18n.t('admin_operations.no_events_found') + '</td></tr>';
             return;
         }
         tbody.innerHTML = events.map(event => `
             <tr>
                 <td>${formatDateTime(event.created_at)}</td>
-                <td>${escapeHtml(event.username || ('User #' + event.user_id))}</td>
-                <td>${escapeHtml(event.event_type || '-')}</td>
+                <td>${escapeHtml(event.username || AurvekI18n.t('admin_operations.user_id', {id: event.user_id}))}</td>
+                <td>${escapeHtml(eventLabel(event.event_type))}</td>
                 <td>${severityBadge(event.severity || 'normal')}</td>
-                <td>${escapeHtml(event.threshold_key || '-')}</td>
+                <td>${escapeHtml(thresholdLabel(event.threshold_key))}</td>
                 <td class="text-end">${event.observed_value === null || event.observed_value === undefined ? '-' : formatNumber(event.observed_value)}</td>
                 <td class="text-end">${event.conversation_id || '-'}</td>
             </tr>
@@ -481,7 +482,7 @@
 
     function updateEventsPager() {
         const lastPage = Math.max(1, Math.ceil(eventsTotal / eventsPerPage));
-        document.getElementById('eventsPageInfo').textContent = `Page ${eventsPage} of ${lastPage} (${formatNumber(eventsTotal)} events)`;
+        document.getElementById('eventsPageInfo').textContent = AurvekI18n.t('admin_operations.page_events', {page: eventsPage, pages: lastPage, total: formatNumber(eventsTotal)});
         document.getElementById('eventsPrev').disabled = eventsPage <= 1;
         document.getElementById('eventsNext').disabled = eventsPage >= lastPage;
     }
@@ -496,33 +497,42 @@
         if (el) el.textContent = value;
     }
 
+    function eventLabel(code) {
+        code = {reminder_dismissed: 'dismissed', reminder_snoozed: 'snoozed'}[code] || code;
+        const known = ['reminder_shown', 'dismissed', 'snoozed', 'pause_started', 'pause_completed', 'session_started', 'session_closed', 'severity_changed', 'session_reset'];
+        return code ? AurvekI18n.t('admin_operations.' + (known.includes(code) ? code : 'unknown')) : '-';
+    }
+
+    function thresholdLabel(code) {
+        const key = String(code || '').replace(/^wellbeing_/, '');
+        return policyKeys.includes('wellbeing_' + key) ? AurvekI18n.t('admin_operations.' + key) : '-';
+    }
+
     function severityBadge(severity) {
-        const safe = escapeHtml(severity || 'normal');
-        return `<span class="severity-badge severity-${safe}">${safe}</span>`;
+        const code = ['normal', 'soft', 'intense', 'strong'].includes(severity) ? severity : 'unknown';
+        return `<span class="severity-badge severity-${code}">${escapeHtml(AurvekI18n.t('admin_operations.' + code))}</span>`;
     }
 
     function formatNumber(value) {
-        const number = Number(value || 0);
-        if (number >= 1000000) return (number / 1000000).toFixed(1) + 'M';
-        if (number >= 1000) return (number / 1000).toFixed(1) + 'K';
-        return String(Math.round(number));
+        return AurvekI18n.formatNumber(Number(value || 0), {notation: 'compact', maximumFractionDigits: 1});
     }
 
     function formatDuration(seconds) {
         const total = Number(seconds || 0);
-        if (total < 60) return total + 's';
+        const unit = (value, name) => AurvekI18n.formatNumber(value, {style: 'unit', unit: name, unitDisplay: 'narrow'});
+        if (total < 60) return unit(total, 'second');
         const minutes = Math.floor(total / 60);
-        if (minutes < 60) return minutes + 'm';
+        if (minutes < 60) return unit(minutes, 'minute');
         const hours = Math.floor(minutes / 60);
-        return hours + 'h ' + (minutes % 60) + 'm';
+        return unit(hours, 'hour') + ' ' + unit(minutes % 60, 'minute');
     }
 
     function formatDateTime(value) {
         if (!value) return '-';
-        const normalized = String(value).replace(' ', 'T') + (String(value).includes('Z') ? '' : 'Z');
+        const normalized = String(value).replace(' ', 'T') + (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(value)) ? '' : 'Z');
         const date = new Date(normalized);
         if (Number.isNaN(date.getTime())) return escapeHtml(value);
-        return date.toLocaleString();
+        return date.toLocaleString(AurvekI18n.locale);
     }
 
     function escapeHtml(value) {

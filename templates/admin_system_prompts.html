@@ -1,16 +1,17 @@
+{% set i18n_domains = ['ai_config'] %}
 {% extends 'base_admin.html' %}
 
-{% block title %}System Prompts - AURVEK{% endblock %}
+{% block title %}{{ t('ai_config.system_title') }} - AURVEK{% endblock %}
 
-{% block page_title %}System Prompts{% endblock %}
+{% block page_title %}{{ t('ai_config.system_title') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Global prompt blocks injected into all AI conversations</p>
+<p class="page-subtitle">{{ t('ai_config.system_subtitle') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <button class="btn btn-primary" id="newBlockBtn" onclick="showCreateForm()">
-    <i class="fas fa-plus me-1"></i> New Block
+    <i class="fas fa-plus me-1"></i> {{ t('ai_config.new_block') }}
 </button>
 {% endblock %}
 
@@ -252,77 +253,79 @@
 <!-- Stats Row -->
 <div class="stats-row sp-stats" id="statsRow">
     <span class="stat-badge">
-        <i class="fas fa-check-circle"></i> <strong id="statActive">0</strong> Active
+        <i class="fas fa-check-circle"></i> <strong id="statActive">0</strong> {{ t('ai_config.active') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-pause-circle"></i> <strong id="statDisabled">0</strong> Disabled
+        <i class="fas fa-pause-circle"></i> <strong id="statDisabled">0</strong> {{ t('ai_config.disabled') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-arrow-up"></i> <strong id="statPre">0</strong> Pre-prompt
+        <i class="fas fa-arrow-up"></i> <strong id="statPre">0</strong> {{ t('ai_config.pre_prompt') }}
     </span>
     <span class="stat-badge">
-        <i class="fas fa-arrow-down"></i> <strong id="statPost">0</strong> Post-prompt
+        <i class="fas fa-arrow-down"></i> <strong id="statPost">0</strong> {{ t('ai_config.post_prompt') }}
     </span>
 </div>
 
 <!-- Create Form (hidden by default) -->
 <div class="block-form" id="createForm">
     <h5 style="margin-bottom: 16px; color: var(--text-primary); font-weight: 700;">
-        <i class="fas fa-plus-circle me-2" style="color: var(--accent);"></i>Create New Block
+        <i class="fas fa-plus-circle me-2" style="color: var(--accent);"></i>{{ t('ai_config.create_new') }}
     </h5>
     <div class="row">
         <div class="col-md-6 mb-3">
-            <label class="form-label" for="createName">Name</label>
-            <input type="text" class="form-control" id="createName" placeholder="Block name" maxlength="100" required>
+            <label class="form-label" for="createName">{{ t('ai_config.name') }}</label>
+            <input type="text" class="form-control" id="createName" placeholder="{{ t('ai_config.block_name') }}" maxlength="100" required>
         </div>
         <div class="col-md-3 mb-3">
-            <label class="form-label">Position</label>
+            <label class="form-label">{{ t('ai_config.position') }}</label>
             <div class="position-radio-group mt-1">
                 <div class="form-check">
                     <input class="form-check-input" type="radio" name="createPosition" id="createPosPre" value="pre_prompt">
-                    <label class="form-check-label" for="createPosPre">Pre-prompt</label>
+                    <label class="form-check-label" for="createPosPre">{{ t('ai_config.pre_prompt') }}</label>
                 </div>
                 <div class="form-check">
                     <input class="form-check-input" type="radio" name="createPosition" id="createPosPost" value="post_prompt" checked>
-                    <label class="form-check-label" for="createPosPost">Post-prompt</label>
+                    <label class="form-check-label" for="createPosPost">{{ t('ai_config.post_prompt') }}</label>
                 </div>
             </div>
         </div>
         <div class="col-md-3 mb-3">
-            <label class="form-label" for="createCondition">Condition</label>
+            <label class="form-label" for="createCondition">{{ t('ai_config.condition') }}</label>
             <select class="form-select" id="createCondition">
-                <option value="always">Always</option>
-                <option value="watchdog_only">Watchdog only</option>
+                <option value="always">{{ t('ai_config.always') }}</option>
+                <option value="watchdog_only">{{ t('ai_config.watchdog_only') }}</option>
             </select>
         </div>
     </div>
     <div class="mb-3">
-        <label class="form-label" for="createDescription">Description</label>
-        <input type="text" class="form-control" id="createDescription" placeholder="Optional description" maxlength="300">
+        <label class="form-label" for="createDescription">{{ t('ai_config.description') }}</label>
+        <input type="text" class="form-control" id="createDescription" placeholder="{{ t('ai_config.optional_description') }}" maxlength="300">
     </div>
     <div class="mb-2">
-        <label class="form-label" for="createContent">Content</label>
-        <textarea class="form-control" id="createContent" rows="15" placeholder="Prompt block content..."></textarea>
-        <div class="help-text mt-1">Available variables: <code>{user_level}</code></div>
+        <label class="form-label" for="createContent">{{ t('ai_config.content') }}</label>
+        <textarea class="form-control" id="createContent" rows="15" placeholder="{{ t('ai_config.content_hint') }}"></textarea>
+        <div class="help-text mt-1">{{ t('ai_config.variables') }} <code>{user_level}</code></div>
     </div>
     <div class="form-actions">
         <button class="btn btn-primary" onclick="createBlock()">
-            <i class="fas fa-save me-1"></i> Create Block
+            <i class="fas fa-save me-1"></i> {{ t('ai_config.create_block') }}
         </button>
-        <button class="btn btn-outline-secondary" onclick="hideCreateForm()">Cancel</button>
+        <button class="btn btn-outline-secondary" onclick="hideCreateForm()">{{ t('ai_config.cancel') }}</button>
     </div>
 </div>
 
 <!-- Block Lists -->
 <div id="blocksContainer">
     <div class="loading-container">
-        <span class="spinner-border spinner-border-sm me-2"></span> Loading blocks...
+        <span class="spinner-border spinner-border-sm me-2"></span> {{ t('ai_config.loading_blocks') }}
     </div>
 </div>
 {% endblock %}
 
 {% block scripts_inline %}
 <script>
+    const aiText = (key, params) => AurvekI18n.t(`ai_config.${key}`, params);
+
 (function() {
     'use strict';
 
@@ -333,53 +336,29 @@
 
     // -- API Helpers --
 
-    async function apiGet(url) {
-        var resp = await secureFetch(url);
-        if (!resp) return null;
-        if (!resp.ok) {
-            var err = await resp.json().catch(function() { return {}; });
-            throw new Error(err.detail || err.message || ('HTTP ' + resp.status));
+    async function apiRequest(url, options) {
+        var resp, data;
+        try {
+            resp = await secureFetch(url, options);
+            if (!resp) throw new Error('Missing response');
+            data = await resp.json();
+        } catch (err) {
+            throw new Error(aiText('request_failed'));
         }
-        return resp.json();
+        if (!resp.ok) {
+            throw new Error(data.error || data.detail || data.message || aiText('request_failed'));
+        }
+        return data;
     }
 
-    async function apiPost(url, body) {
-        var resp = await secureFetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-        if (!resp) return null;
-        if (!resp.ok) {
-            var err = await resp.json().catch(function() { return {}; });
-            throw new Error(err.detail || err.message || ('HTTP ' + resp.status));
-        }
-        return resp.json();
+    function apiGet(url) { return apiRequest(url); }
+    function apiPost(url, body) {
+        return apiRequest(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     }
-
-    async function apiPut(url, body) {
-        var resp = await secureFetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-        if (!resp) return null;
-        if (!resp.ok) {
-            var err = await resp.json().catch(function() { return {}; });
-            throw new Error(err.detail || err.message || ('HTTP ' + resp.status));
-        }
-        return resp.json();
+    function apiPut(url, body) {
+        return apiRequest(url, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     }
-
-    async function apiDelete(url) {
-        var resp = await secureFetch(url, { method: 'DELETE' });
-        if (!resp) return null;
-        if (!resp.ok) {
-            var err = await resp.json().catch(function() { return {}; });
-            throw new Error(err.detail || err.message || ('HTTP ' + resp.status));
-        }
-        return resp.json();
-    }
+    function apiDelete(url) { return apiRequest(url, {method: 'DELETE'}); }
 
     // -- Load Blocks --
 
@@ -392,9 +371,9 @@
             renderBlocks();
             updateStats();
         } catch (e) {
-            console.error('Failed to load blocks:', e);
+            console.error(aiText('load_failed'), e);
             document.getElementById('blocksContainer').innerHTML =
-                '<div class="empty-state"><i class="fas fa-exclamation-triangle"></i>Failed to load blocks: ' +
+                ("<div class=\"empty-state\"><i class=\"fas fa-exclamation-triangle\"></i>" + escapeHtml(aiText('load_failed')) + " ") +
                 escapeHtml(e.message) + '</div>';
         }
     }
@@ -409,29 +388,27 @@
             if (b.is_enabled) active++; else disabled++;
             if (b.position === 'pre_prompt') pre++; else post++;
         }
-        document.getElementById('statActive').textContent = active;
-        document.getElementById('statDisabled').textContent = disabled;
-        document.getElementById('statPre').textContent = pre;
-        document.getElementById('statPost').textContent = post;
+        document.getElementById('statActive').textContent = AurvekI18n.formatNumber(active);
+        document.getElementById('statDisabled').textContent = AurvekI18n.formatNumber(disabled);
+        document.getElementById('statPre').textContent = AurvekI18n.formatNumber(pre);
+        document.getElementById('statPost').textContent = AurvekI18n.formatNumber(post);
     }
 
     // -- Render --
 
     function escapeHtml(str) {
-        if (!str) return '';
-        var div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        return String(str == null ? '' : str).replace(/[&<>"']/g,
+            char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
     }
 
     function formatCondition(cond) {
-        if (cond === 'watchdog_only') return 'Watchdog only';
-        return 'Always';
+        if (cond === 'watchdog_only') return aiText('watchdog_only');
+        return aiText('always');
     }
 
     function formatPosition(pos) {
-        if (pos === 'pre_prompt') return 'Pre-prompt';
-        return 'Post-prompt';
+        if (pos === 'pre_prompt') return aiText('pre_prompt');
+        return aiText('post_prompt');
     }
 
     function renderBlocks() {
@@ -449,10 +426,10 @@
         var html = '';
 
         // Pre-prompt section
-        html += '<div class="position-header"><i class="fas fa-arrow-up"></i> PRE-PROMPT BLOCKS <span style="font-weight:400; font-size:0.75rem;">(before bot personality)</span></div>';
+        html += ("<div class=\"position-header\"><i class=\"fas fa-arrow-up\"></i> " + escapeHtml(aiText('pre_blocks')) + " <span style=\"font-weight:400; font-size:0.75rem;\">" + escapeHtml(aiText('before_personality')) + "</span></div>");
         html += '<div id="prePromptZone" class="drop-zone" data-position="pre_prompt">';
         if (preBlocks.length === 0) {
-            html += '<div class="empty-state"><i class="fas fa-inbox"></i>No pre-prompt blocks</div>';
+            html += ("<div class=\"empty-state\"><i class=\"fas fa-inbox\"></i>" + escapeHtml(aiText('no_pre')) + "</div>");
         } else {
             for (var j = 0; j < preBlocks.length; j++) {
                 html += renderBlockCard(preBlocks[j]);
@@ -461,10 +438,10 @@
         html += '</div>';
 
         // Post-prompt section
-        html += '<div class="position-header" style="margin-top: 24px;"><i class="fas fa-arrow-down"></i> POST-PROMPT BLOCKS <span style="font-weight:400; font-size:0.75rem;">(after bot personality)</span></div>';
+        html += ("<div class=\"position-header\" style=\"margin-top: 24px;\"><i class=\"fas fa-arrow-down\"></i> " + escapeHtml(aiText('post_blocks')) + " <span style=\"font-weight:400; font-size:0.75rem;\">" + escapeHtml(aiText('after_personality')) + "</span></div>");
         html += '<div id="postPromptZone" class="drop-zone" data-position="post_prompt">';
         if (postBlocks.length === 0) {
-            html += '<div class="empty-state"><i class="fas fa-inbox"></i>No post-prompt blocks</div>';
+            html += ("<div class=\"empty-state\"><i class=\"fas fa-inbox\"></i>" + escapeHtml(aiText('no_post')) + "</div>");
         } else {
             for (var k = 0; k < postBlocks.length; k++) {
                 html += renderBlockCard(postBlocks[k]);
@@ -496,7 +473,7 @@
 
         // Drag handle (custom blocks only)
         if (!isSystem && !isMissing) {
-            html += '<span class="drag-handle" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></span>';
+            html += ("<span class=\"drag-handle\" title=\"" + escapeHtml(aiText('drag')) + "\"><i class=\"fas fa-grip-vertical\"></i></span>");
         }
 
         // Name
@@ -504,9 +481,9 @@
 
         // Badges
         if (isMandatory) {
-            html += '<span class="badge-mandatory">MANDATORY</span>';
+            html += ("<span class=\"badge-mandatory\">" + escapeHtml(aiText('mandatory')) + "</span>");
         } else if (isSystem) {
-            html += '<span class="badge-system">SYSTEM</span>';
+            html += ("<span class=\"badge-system\">" + escapeHtml(aiText('system')) + "</span>");
         }
         if (block.condition !== 'always') {
             html += '<span class="badge-condition">' + escapeHtml(formatCondition(block.condition)) + '</span>';
@@ -518,8 +495,8 @@
         if (isMissing) {
             // Restore button for missing blocks
             html += '<button class="btn btn-sm btn-outline-warning" onclick="restoreBlock(\'' +
-                    escapeHtml(block.system_key) + '\')" title="Restore this system block">' +
-                    '<i class="fas fa-undo me-1"></i>Restore</button>';
+                    escapeHtml(block.system_key) + ("')\" title=\"" + escapeHtml(aiText('restore_system')) + "\">") +
+                    ("<i class=\"fas fa-undo me-1\"></i>" + escapeHtml(aiText('restore')) + "</button>");
         } else {
             // Toggle switch
             html += '<div class="block-toggle form-check form-switch mb-0">';
@@ -528,11 +505,11 @@
             var toggleOnChange = isMandatory ? '' : ' onchange="toggleBlock(' + id + ', this.checked, \'' + (block.system_key || '') + '\')"';
             html += '<input class="form-check-input" type="checkbox" role="switch"' +
                     toggleChecked + toggleDisabled + toggleOnChange +
-                    ' id="toggle_' + id + '" title="' + (isMandatory ? 'Cannot disable mandatory block' : 'Toggle enabled/disabled') + '">';
+                    ' id="toggle_' + id + '" title="' + escapeHtml(isMandatory ? aiText('cannot_disable') : aiText('toggle')) + '">';
             html += '</div>';
 
             // Edit button
-            html += '<button class="btn btn-sm btn-outline-secondary" onclick="showEditForm(' + id + ')" title="Edit block">' +
+            html += '<button class="btn btn-sm btn-outline-secondary" onclick="showEditForm(' + id + (")\" title=\"" + escapeHtml(aiText('edit_block')) + "\">") +
                     '<i class="fas fa-pen"></i></button>';
         }
 
@@ -542,9 +519,9 @@
         // Meta row
         html += '<div class="block-meta">';
         if (isSystem) {
-            html += '<span>' + escapeHtml(formatCondition(block.condition)) + ' (locked)</span>';
+            html += '<span>' + escapeHtml(formatCondition(block.condition)) + (" " + escapeHtml(aiText('locked')) + "</span>");
             html += '<span>|</span>';
-            html += '<span>order: fixed</span>';
+            html += ("<span>" + escapeHtml(aiText('order_fixed')) + "</span>");
         } else if (!isMissing) {
             html += '<span>' + escapeHtml(formatCondition(block.condition)) + '</span>';
         }
@@ -578,30 +555,30 @@
         if (!formEl) return;
 
         var html = '<h6 style="margin-bottom: 14px; color: var(--text-primary); font-weight: 700;">' +
-                   '<i class="fas fa-pen me-2" style="color: var(--accent);"></i>Edit: ' + escapeHtml(block.name) + '</h6>';
+                   ("<i class=\"fas fa-pen me-2\" style=\"color: var(--accent);\"></i>" + escapeHtml(aiText('edit')) + " ") + escapeHtml(block.name) + '</h6>';
 
         html += '<div class="row">';
 
         // Name field
         html += '<div class="col-md-6 mb-3">';
-        html += '<label class="form-label">Name</label>';
+        html += ("<label class=\"form-label\">" + escapeHtml(aiText('name')) + "</label>");
         html += '<input type="text" class="form-control" id="editName_' + blockId + '" value="' + escapeHtml(block.name) + '" maxlength="100">';
         html += '</div>';
 
         // Position
         html += '<div class="col-md-3 mb-3">';
-        html += '<label class="form-label">Position</label>';
+        html += ("<label class=\"form-label\">" + escapeHtml(aiText('position')) + "</label>");
         if (isSystem) {
-            html += '<div class="frozen-value">' + escapeHtml(formatPosition(block.position)) + ' <i class="fas fa-lock" title="Frozen for system blocks"></i></div>';
+            html += '<div class="frozen-value">' + escapeHtml(formatPosition(block.position)) + (" <i class=\"fas fa-lock\" title=\"" + escapeHtml(aiText('frozen')) + "\"></i></div>");
         } else {
             html += '<div class="position-radio-group mt-1">';
             html += '<div class="form-check">';
             html += '<input class="form-check-input" type="radio" name="editPosition_' + blockId + '" id="editPosPre_' + blockId + '" value="pre_prompt"' + (block.position === 'pre_prompt' ? ' checked' : '') + '>';
-            html += '<label class="form-check-label" for="editPosPre_' + blockId + '">Pre-prompt</label>';
+            html += '<label class="form-check-label" for="editPosPre_' + blockId + ("\">" + escapeHtml(aiText('pre_prompt')) + "</label>");
             html += '</div>';
             html += '<div class="form-check">';
             html += '<input class="form-check-input" type="radio" name="editPosition_' + blockId + '" id="editPosPost_' + blockId + '" value="post_prompt"' + (block.position === 'post_prompt' ? ' checked' : '') + '>';
-            html += '<label class="form-check-label" for="editPosPost_' + blockId + '">Post-prompt</label>';
+            html += '<label class="form-check-label" for="editPosPost_' + blockId + ("\">" + escapeHtml(aiText('post_prompt')) + "</label>");
             html += '</div>';
             html += '</div>';
         }
@@ -609,13 +586,13 @@
 
         // Condition
         html += '<div class="col-md-3 mb-3">';
-        html += '<label class="form-label">Condition</label>';
+        html += ("<label class=\"form-label\">" + escapeHtml(aiText('condition')) + "</label>");
         if (isSystem) {
-            html += '<div class="frozen-value">' + escapeHtml(formatCondition(block.condition)) + ' <i class="fas fa-lock" title="Frozen for system blocks"></i></div>';
+            html += '<div class="frozen-value">' + escapeHtml(formatCondition(block.condition)) + (" <i class=\"fas fa-lock\" title=\"" + escapeHtml(aiText('frozen')) + "\"></i></div>");
         } else {
             html += '<select class="form-select" id="editCondition_' + blockId + '">';
-            html += '<option value="always"' + (block.condition === 'always' ? ' selected' : '') + '>Always</option>';
-            html += '<option value="watchdog_only"' + (block.condition === 'watchdog_only' ? ' selected' : '') + '>Watchdog only</option>';
+            html += '<option value="always"' + (block.condition === 'always' ? ' selected' : '') + (">" + escapeHtml(aiText('always')) + "</option>");
+            html += '<option value="watchdog_only"' + (block.condition === 'watchdog_only' ? ' selected' : '') + (">" + escapeHtml(aiText('watchdog_only')) + "</option>");
             html += '</select>';
         }
         html += '</div>';
@@ -624,28 +601,28 @@
 
         // Description
         html += '<div class="mb-3">';
-        html += '<label class="form-label">Description</label>';
-        html += '<input type="text" class="form-control" id="editDescription_' + blockId + '" value="' + escapeHtml(block.description || '') + '" maxlength="300" placeholder="Optional description">';
+        html += ("<label class=\"form-label\">" + escapeHtml(aiText('description')) + "</label>");
+        html += '<input type="text" class="form-control" id="editDescription_' + blockId + '" value="' + escapeHtml(block.description || '') + ("\" maxlength=\"300\" placeholder=\"" + escapeHtml(aiText('optional_description')) + "\">");
         html += '</div>';
 
         // Content
         html += '<div class="mb-2">';
-        html += '<label class="form-label">Content</label>';
+        html += ("<label class=\"form-label\">" + escapeHtml(aiText('content')) + "</label>");
         html += '<textarea class="form-control" id="editContent_' + blockId + '" rows="15">' + escapeHtml(block.content) + '</textarea>';
-        html += '<div class="help-text mt-1">Available variables: <code>{user_level}</code></div>';
+        html += ("<div class=\"help-text mt-1\">" + escapeHtml(aiText('variables')) + " <code>{user_level}</code></div>");
         html += '</div>';
 
         // Actions
         html += '<div class="form-actions">';
-        html += '<button class="btn btn-primary" onclick="saveBlock(' + blockId + ')"><i class="fas fa-save me-1"></i> Save</button>';
-        html += '<button class="btn btn-outline-secondary" onclick="closeEditForm()">Cancel</button>';
+        html += '<button class="btn btn-primary" onclick="saveBlock(' + blockId + (")\"><i class=\"fas fa-save me-1\"></i> " + escapeHtml(aiText('save')) + "</button>");
+        html += ("<button class=\"btn btn-outline-secondary\" onclick=\"closeEditForm()\">" + escapeHtml(aiText('cancel')) + "</button>");
 
         if (isSystem) {
             html += '<button class="btn btn-outline-warning form-actions-right" onclick="resetBlock(' + blockId + ')">' +
-                    '<i class="fas fa-undo me-1"></i> Reset to Default</button>';
+                    ("<i class=\"fas fa-undo me-1\"></i> " + escapeHtml(aiText('reset_default')) + "</button>");
         } else {
             html += '<button class="btn btn-outline-danger form-actions-right" onclick="deleteBlock(' + blockId + ')">' +
-                    '<i class="fas fa-trash me-1"></i> Delete</button>';
+                    ("<i class=\"fas fa-trash me-1\"></i> " + escapeHtml(aiText('delete')) + "</button>");
         }
 
         html += '</div>';
@@ -704,11 +681,11 @@
         var condition = document.getElementById('createCondition').value;
 
         if (!name) {
-            NotificationModal.warning('Validation', 'Block name is required.');
+            NotificationModal.warning(aiText('validation'), aiText('name_required'));
             return;
         }
         if (!content.trim()) {
-            NotificationModal.warning('Validation', 'Block content cannot be empty.');
+            NotificationModal.warning(aiText('validation'), aiText('content_required'));
             return;
         }
 
@@ -722,9 +699,9 @@
             });
             hideCreateForm();
             await loadBlocks();
-            NotificationModal.info('Block Created', 'New prompt block "' + name + '" has been created.');
+            NotificationModal.info(aiText('block_created'), aiText('created_message', {name: name}));
         } catch (e) {
-            NotificationModal.error('Create Failed', e.message);
+            NotificationModal.error(aiText('create_failed'), e.message);
         }
     }
 
@@ -747,11 +724,11 @@
         }
 
         if (!name) {
-            NotificationModal.warning('Validation', 'Block name is required.');
+            NotificationModal.warning(aiText('validation'), aiText('name_required'));
             return;
         }
         if (!content.trim()) {
-            NotificationModal.warning('Validation', 'Block content cannot be empty.');
+            NotificationModal.warning(aiText('validation'), aiText('content_required'));
             return;
         }
 
@@ -766,9 +743,9 @@
             });
             closeEditForm();
             await loadBlocks();
-            NotificationModal.info('Block Saved', 'Changes to "' + name + '" have been saved.');
+            NotificationModal.info(aiText('block_saved'), aiText('saved_message', {name: name}));
         } catch (e) {
-            NotificationModal.error('Save Failed', e.message);
+            NotificationModal.error(aiText('save_failed'), e.message);
         }
     }
 
@@ -776,15 +753,15 @@
         // Warn when disabling watchdog_preamble
         if (!enabled && systemKey === 'watchdog_preamble') {
             NotificationModal.confirm(
-                'Disable Watchdog Preamble?',
-                'Disabling this block may reduce watchdog directive effectiveness. The watchdog will still inject hints but without the authority preamble.',
+                aiText('disable_watchdog'),
+                aiText('disable_watchdog_help'),
                 function() { doToggle(blockId, enabled); },
                 function() {
                     // Revert the toggle
                     var toggle = document.getElementById('toggle_' + blockId);
                     if (toggle) toggle.checked = true;
                 },
-                { type: 'warning', confirmText: 'Disable' }
+                { type: 'warning', confirmText: aiText('disable') }
             );
             return;
         }
@@ -807,7 +784,7 @@
             });
             await loadBlocks();
         } catch (e) {
-            NotificationModal.error('Toggle Failed', e.message);
+            NotificationModal.error(aiText('toggle_failed'), e.message);
             // Revert toggle on error
             var toggle = document.getElementById('toggle_' + blockId);
             if (toggle) toggle.checked = !enabled;
@@ -819,20 +796,20 @@
         if (!block) return;
 
         NotificationModal.confirm(
-            'Delete Block',
-            'Are you sure you want to delete "' + block.name + '"? This cannot be undone.',
+            aiText('delete_block'),
+            aiText('delete_confirm', {name: block.name}),
             async function() {
                 try {
                     await apiDelete('/api/system-prompt-blocks/' + blockId);
                     closeEditForm();
                     await loadBlocks();
-                    NotificationModal.info('Block Deleted', '"' + block.name + '" has been deleted.');
+                    NotificationModal.info(aiText('block_deleted'), aiText('deleted_message', {name: block.name}));
                 } catch (e) {
-                    NotificationModal.error('Delete Failed', e.message);
+                    NotificationModal.error(aiText('delete_failed'), e.message);
                 }
             },
             null,
-            { type: 'error', confirmText: 'Delete' }
+            { type: 'error', confirmText: aiText('delete') }
         );
     }
 
@@ -841,20 +818,20 @@
         if (!block) return;
 
         NotificationModal.confirm(
-            'Reset to Default',
-            'This will restore "' + block.name + '" to its default content and re-enable it. Any custom edits will be lost.',
+            aiText('reset_default'),
+            aiText('reset_confirm', {name: block.name}),
             async function() {
                 try {
                     await apiPost('/api/system-prompt-blocks/' + blockId + '/reset', {});
                     closeEditForm();
                     await loadBlocks();
-                    NotificationModal.info('Block Reset', '"' + block.name + '" has been reset to default.');
+                    NotificationModal.info(aiText('block_reset'), aiText('reset_message', {name: block.name}));
                 } catch (e) {
-                    NotificationModal.error('Reset Failed', e.message);
+                    NotificationModal.error(aiText('reset_failed'), e.message);
                 }
             },
             null,
-            { type: 'warning', confirmText: 'Reset' }
+            { type: 'warning', confirmText: aiText('reset') }
         );
     }
 
@@ -862,9 +839,9 @@
         try {
             await apiPost('/api/system-prompt-blocks/restore/' + systemKey, {});
             await loadBlocks();
-            NotificationModal.info('Block Restored', 'System block "' + systemKey + '" has been restored.');
+            NotificationModal.info(aiText('block_restored'), aiText('restored_message', {name: systemKey}));
         } catch (e) {
-            NotificationModal.error('Restore Failed', e.message);
+            NotificationModal.error(aiText('restore_failed'), e.message);
         }
     }
 
@@ -879,7 +856,7 @@
             await apiPut('/api/system-prompt-blocks/reorder', reorderData);
             await loadBlocks();
         } catch (e) {
-            NotificationModal.error('Reorder Failed', e.message);
+            NotificationModal.error(aiText('reorder_failed'), e.message);
             await loadBlocks(); // Reload to reset visual order
         }
     }
@@ -988,7 +965,7 @@
             }).then(function() {
                 return reorderBlocks(orderedIds);
             }).catch(function(err) {
-                NotificationModal.error('Move Failed', err.message);
+                NotificationModal.error(aiText('move_failed'), err.message);
                 loadBlocks();
             });
         } else {

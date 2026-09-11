@@ -54,7 +54,7 @@ _AUDIO_STATUSES = frozenset(
     {"not_generated", "pending", "ready", "failed", "needs_attention"}
 )
 _SUPPORTED_PHONE_TTS_PROVIDERS = frozenset({"elevenlabs", "openai"})
-_BLOCKED_PHONE_LLM_MACHINES = frozenset({"GPTSub", "GranSabio"})
+_BLOCKED_PHONE_LLM_MACHINES = frozenset({"GPTSub", "GranSabio", "O1"})
 _OPENAI_REALTIME_VOICES = frozenset(
     {
         "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer",
@@ -737,7 +737,7 @@ async def _normalize_phone_ai_update(
         if selected_capabilities is not None
         else "standard"
     )
-    if runtime_kind == "openai_realtime":
+    if runtime_kind in {"openai_realtime", "openai_live"}:
         realtime_voice = str(submitted.realtime_voice or "marin").strip().lower()
         if realtime_voice not in _OPENAI_REALTIME_VOICES:
             raise PromptPhoneSettingsError(

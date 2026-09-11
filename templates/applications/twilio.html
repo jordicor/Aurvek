@@ -1,0 +1,58 @@
+{% set i18n_domains = ['application_twilio'] %}
+{% extends 'base_admin.html' %}
+{% block title %}{{ twilio_state.display_name }} - Twilio{% endblock %}
+{% block page_title %}{{ twilio_state.display_name }} · Twilio{% endblock %}
+{% block content %}
+<a href="/applications/manage">{{ t('application_twilio.applications') }}</a>
+<div id="connection-feedback" class="alert d-none mt-3" role="status"></div>
+<div class="card my-3"><div class="card-body">
+  <h2 class="h5">{{ t('application_twilio.connect') }}</h2>
+  <p>{{ t('application_twilio.credentials_help') }}</p>
+  <form id="twilio-credentials">
+    <div class="mb-3"><label for="account-sid" class="form-label">Account SID</label>
+      <input id="account-sid" class="form-control" type="text" autocomplete="off" spellcheck="false" required pattern="AC[0-9a-fA-F]{32}" value="{{ twilio_state.connection.account_sid if twilio_state.connection else '' }}" {% if twilio_state.connection %}readonly{% endif %}></div>
+    <div class="mb-3"><label for="auth-token" class="form-label">Auth Token</label>
+      <input id="auth-token" class="form-control" type="password" autocomplete="new-password" required pattern="[0-9a-fA-F]{32}"></div>
+    {% if twilio_state.connection %}<p>{{ t('application_twilio.rotation_help') }}</p>{% endif %}
+    <button class="btn btn-primary" type="submit">{{ t('application_twilio.validate') }}</button>
+  </form>
+</div></div>
+{% if twilio_state.connection %}
+<div class="card my-3"><div class="card-body">
+  <h2 class="h5">{{ t('application_twilio.number') }}</h2>
+  <ul>
+    <li>{{ t('application_twilio.validated') }}: {{ twilio_state.connection.validated_at }}</li>
+    <li>{{ t('application_twilio.configured') }}: {{ twilio_state.connection.configured_at or t('application_twilio.pending') }}</li>
+    <li>{{ t('application_twilio.connection_state') }}: {{ t('application_twilio.active') if twilio_state.connection.enabled else t('application_twilio.inactive') }}</li>
+    <li>{{ t('application_twilio.real_test_pending') }}</li>
+  </ul>
+  <p>{{ t('application_twilio.activation_help') }}</p>
+  <button id="sync-numbers" type="button" class="btn btn-outline-secondary mb-3">{{ t('application_twilio.sync') }}</button>
+  <form id="twilio-number">
+    <div class="table-responsive"><table class="table"><thead><tr><th>{{ t('application_twilio.number') }}</th><th>{{ t('application_twilio.current_service') }}</th></tr></thead><tbody>
+    {% for number in twilio_state.numbers %}<tr><td>
+      <label><input type="radio" name="number_sid" value="{{ number.sid }}" {% if number.selected %}checked{% endif %} {% if not number.available %}disabled{% endif %} required>
+        <strong>{{ number.e164 }}</strong> {{ number.friendly_name or '' }}</label>
+      {% if not number.available %}<span class="text-muted">{{ t('application_twilio.unavailable') }}</span>{% endif %}
+    </td><td class="text-break">{{ number.voice_url or number.voice_application_sid or number.trunk_sid or t('application_twilio.none') }}</td></tr>
+    {% else %}<tr><td colspan="2">{{ t('application_twilio.no_numbers') }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <label class="d-block mb-2"><input type="checkbox" id="confirm-replace"> {{ t('application_twilio.confirm_replace') }}</label>
+    <label class="d-block mb-2"><input type="checkbox" id="linked-caller" {% if twilio_state.connection.phone_auth == 'linked_caller' %}checked{% endif %}> {{ t('application_twilio.linked_caller') }}</label>
+    <label class="d-block mb-3"><input type="checkbox" id="allow-outbound" {% if twilio_state.connection.allow_outbound %}checked{% endif %}> {{ t('application_twilio.allow_outbound') }}</label>
+    <div class="mb-3"><label for="phone-language" class="form-label">{{ t('application_twilio.phone_language') }}</label>
+    <select id="phone-language" class="form-select">
+      {% for language in ['en', 'es', 'ja', 'fr', 'pt', 'it', 'de'] %}<option value="{{ language }}" {% if language == twilio_state.connection.phone_language %}selected{% endif %}>{{ t('navigation.language.name.' ~ language) }}</option>{% endfor %}
+    </select></div>
+    <button class="btn btn-primary" type="submit">{{ t('application_twilio.activate') }}</button>
+    <button class="btn btn-outline-danger" id="disconnect" type="button">{{ t('application_twilio.disconnect') }}</button>
+  </form>
+  <p class="mt-3 text-muted">{{ t('application_twilio.billing_help') }}</p>
+  <p class="text-muted">{{ t('application_twilio.disconnect_help') }}</p>
+  {% if twilio_state.connection.previous_voice %}<details><summary>{{ t('application_twilio.recovery') }}</summary>
+  <pre class="mt-2 text-wrap">{{ twilio_state.connection.previous_voice|tojson(indent=2) }}</pre></details>{% endif %}
+</div></div>
+{% endif %}
+<script id="twilio-page-config" type="application/json">{{ {'csrf': connection_csrf, 'version': twilio_state.connection.version if twilio_state.connection else none, 'base': '/applications/manage/' ~ twilio_state.app_id ~ '/twilio', 'error': t('application_twilio.error.twilio_validation_failed')}|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ get_static_url('/static/js/application-twilio.js') }}"></script>{% endblock %}

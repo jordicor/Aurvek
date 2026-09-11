@@ -311,8 +311,10 @@ async def test_webhook_retry_responses_release_dedupe_markers(tmp_path, monkeypa
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE TELEGRAM_PROCESSED_UPDATES (
-                update_id INTEGER PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                receiver_key TEXT NOT NULL DEFAULT 'native',
+                update_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(receiver_key, update_id)
             );
             INSERT INTO WHATSAPP_PROCESSED_MESSAGES(message_sid) VALUES ('SM-retry');
             INSERT INTO TELEGRAM_PROCESSED_UPDATES(update_id) VALUES (9001);

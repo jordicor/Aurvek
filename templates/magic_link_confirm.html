@@ -1,6 +1,7 @@
+{% set i18n_domains = ['auth'] %}
 {% extends 'base.html' %}
 
-{% block title %}Confirm Login{% endblock %}
+{% block title %}{{ t('auth.title.confirm_login') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -21,9 +22,9 @@
 <div class="container d-flex align-items-center justify-content-center" style="min-height: 100vh;">
     <div class="card shadow" style="width: 28rem;">
         <div class="card-body p-4">
-            <h2 class="card-title text-center mb-3">Confirm Login</h2>
+            <h2 class="card-title text-center mb-3">{{ t('auth.title.confirm_login') }}</h2>
             <p class="text-center text-muted mb-4">
-                Log in as <strong>{{ username }}</strong>
+                {{ t('auth.confirm.log_in_as', username=username) }}
             </p>
 
             <form action="{{ login_url }}" method="POST">
@@ -33,10 +34,10 @@
 
                 <div class="d-grid gap-2">
                     <button type="submit" class="btn btn-primary">
-                        Continue
+                        {{ t('auth.action.continue') }}
                     </button>
                     <a href="{{ login_url }}" class="btn btn-outline-secondary">
-                        Cancel
+                        {{ t('auth.action.cancel') }}
                     </a>
                 </div>
             </form>

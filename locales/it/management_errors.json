@@ -1,0 +1,12 @@
+{
+  "curation.access": "Solo gli account di tipo Utente o Amministratore possono accedere alle impostazioni di curatela",
+  "curation.update_access": "Solo gli account di tipo Utente o Amministratore possono modificare le impostazioni di curatela",
+  "curation.load_failed": "Impossibile caricare le impostazioni di curatela. Riprova.",
+  "curation.save_failed": "Impossibile salvare le impostazioni di curatela. Riprova.",
+  "curation.negative": "Il ricarico non può essere negativo",
+  "curation.maximum": "Il ricarico non può superare {amount} per milione di token",
+  "curation.saved": "Impostazioni di curatela aggiornate",
+  "curation.invalid": "Valore del ricarico non valido",
+  "prompt.not_found": "Prompt non trovato",
+  "access.denied": "Accesso negato"
+}

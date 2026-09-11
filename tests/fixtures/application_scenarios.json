@@ -1,0 +1,35 @@
+{
+  "user": {"user_id": 1001, "subject": "synthetic-member-1", "personal_balance": 0},
+  "applications": [
+    {
+      "app_id": "practice-demo", "default_assistant_id": "reception", "payer_user_id": 2001,
+      "external_user_id": "member-1",
+      "assistants": [
+        {"assistant_id": "reception", "display_name": "Reception", "prompt_id": 101, "memory": {"read_private": true, "read_shared": true, "write_space": "shared"}},
+        {"assistant_id": "coach", "display_name": "Practice coach", "prompt_id": 102, "memory": {"read_private": true, "read_shared": true, "write_space": "shared"}},
+        {"assistant_id": "companion", "display_name": "Companion", "prompt_id": 103, "memory": {"read_private": true, "read_shared": true, "write_space": "private"}}
+      ],
+      "contexts": [
+        {"context_ref": "practice-01", "beneficiary_ref": "person-ada", "allowed_subjects": ["synthetic-member-1"], "assistant_ids": ["reception", "coach", "companion"]},
+        {"context_ref": "practice-02", "beneficiary_ref": "person-lin", "allowed_subjects": ["synthetic-member-2"], "assistant_ids": ["reception", "coach"]}
+      ]
+    },
+    {
+      "app_id": "learning-demo", "default_assistant_id": "guide", "payer_user_id": 2002,
+      "external_user_id": "local-77",
+      "assistants": [
+        {"assistant_id": "guide", "display_name": "Guide", "prompt_id": 101},
+        {"assistant_id": "tutor", "display_name": "Tutor", "prompt_id": 104}
+      ],
+      "contexts": [
+        {"context_ref": "practice-01", "beneficiary_ref": "person-ada", "allowed_subjects": ["synthetic-member-1"], "assistant_ids": ["guide", "tutor"]}
+      ]
+    }
+  ],
+  "requests": {
+    "open": {"operation_id": "demo-open-0001", "context_ref": "practice-01", "assistant_id": "coach", "mode": "resume"},
+    "new": {"operation_id": "demo-new-00001", "context_ref": "practice-01", "assistant_id": "coach", "mode": "new"},
+    "handoff": {"operation_id": "demo-pass-0001", "source_conversation_id": 101, "assistant_id": "coach", "note": "Wants to practice an introduction."},
+    "entry": {"context_ref": "practice-01", "channel": "phone", "assistant_id": "coach"}
+  }
+}

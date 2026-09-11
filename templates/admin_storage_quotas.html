@@ -1,6 +1,7 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_usage'] %}
 
-{% block title %}Storage Quotas - Admin - AURVEK{% endblock %}
+{% block title %}{{ t('admin_usage.storage_quotas_admin_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -128,15 +129,15 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Storage Quotas{% endblock %}
+{% block page_title %}{{ t('admin_usage.storage_quotas') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Per-user storage usage, quota overrides, and the platform default</p>
+<p class="page-subtitle">{{ t('admin_usage.per_user_storage_usage_quota_overrides_and_the_platform_default') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="refreshStorageQuotas()">
-    <i class="fas fa-sync-alt me-1"></i> Refresh
+    <i class="fas fa-sync-alt me-1"></i> {{ t('admin_usage.refresh') }}
 </button>
 {% endblock %}
 
@@ -145,83 +146,83 @@
 <div class="row mb-4">
     <div class="col-xl-2 col-md-4 col-6 mb-3">
         <div class="stat-card primary">
-            <div class="label"><i class="fas fa-database me-1"></i>Logical Usage</div>
+            <div class="label"><i class="fas fa-database me-1"></i>{{ t('admin_usage.logical_usage') }}</div>
             <div class="amount" id="statLogicalTotal">-</div>
-            <div class="subtext">Total charged against user quotas</div>
+            <div class="subtext">{{ t('admin_usage.total_charged_against_user_quotas') }}</div>
         </div>
     </div>
     <div class="col-xl-2 col-md-4 col-6 mb-3">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-file-arrow-up me-1"></i>Physical Uploads</div>
+            <div class="label"><i class="fas fa-file-arrow-up me-1"></i>{{ t('admin_usage.physical_uploads') }}</div>
             <div class="amount" id="statPhysicalBlobs">-</div>
-            <div class="subtext" id="statVariantsSubtext">Deduplicated blobs on disk</div>
+            <div class="subtext" id="statVariantsSubtext">{{ t('admin_usage.deduplicated_blobs_on_disk') }}</div>
         </div>
     </div>
     <div class="col-xl-2 col-md-4 col-6 mb-3">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-wand-magic-sparkles me-1"></i>Generated Media</div>
+            <div class="label"><i class="fas fa-wand-magic-sparkles me-1"></i>{{ t('admin_usage.generated_media') }}</div>
             <div class="amount" id="statGeneratedTotal">-</div>
-            <div class="subtext">Images, videos, exports, recordings</div>
+            <div class="subtext">{{ t('admin_usage.images_videos_exports_recordings') }}</div>
         </div>
     </div>
     <div class="col-xl-2 col-md-4 col-6 mb-3">
         <div class="stat-card dedupe">
-            <div class="label"><i class="fas fa-compress me-1"></i>Dedupe Savings</div>
+            <div class="label"><i class="fas fa-compress me-1"></i>{{ t('admin_usage.dedupe_savings') }}</div>
             <div class="amount" id="statDedupeSavings">-</div>
-            <div class="subtext">Disk saved by upload deduplication</div>
+            <div class="subtext">{{ t('admin_usage.disk_saved_by_upload_deduplication') }}</div>
         </div>
     </div>
     <div class="col-xl-2 col-md-4 col-6 mb-3">
         <div class="stat-card warning">
-            <div class="label"><i class="fas fa-triangle-exclamation me-1"></i>Users Over 80%</div>
+            <div class="label"><i class="fas fa-triangle-exclamation me-1"></i>{{ t('admin_usage.users_over_80') }}</div>
             <div class="amount" id="statUsersOver80">-</div>
-            <div class="subtext">Of their effective quota</div>
+            <div class="subtext">{{ t('admin_usage.of_their_effective_quota') }}</div>
         </div>
     </div>
     <div class="col-xl-2 col-md-4 col-6 mb-3">
         <div class="stat-card danger">
-            <div class="label"><i class="fas fa-ban me-1"></i>Users Over 100%</div>
+            <div class="label"><i class="fas fa-ban me-1"></i>{{ t('admin_usage.users_over_100') }}</div>
             <div class="amount" id="statUsersOver100">-</div>
-            <div class="subtext">At or above their quota</div>
+            <div class="subtext">{{ t('admin_usage.at_or_above_their_quota') }}</div>
         </div>
     </div>
 </div>
 
 <!-- Global default quota -->
 <div class="section-container mb-4">
-    <div class="section-title"><i class="fas fa-globe me-2"></i>Default Quota</div>
-    <p class="help-text mb-3">Applies to every user without a per-user override. Changes take effect immediately.</p>
+    <div class="section-title"><i class="fas fa-globe me-2"></i>{{ t('admin_usage.default_quota') }}</div>
+    <p class="help-text mb-3">{{ t('admin_usage.applies_to_every_user_without_a_per_user_override_changes_take_effect_im') }}</p>
     <form id="defaultQuotaForm" data-form-guard>
         <div class="mb-3">
-            <label for="defaultQuotaGb" class="form-label">Default storage quota (GB)</label>
+            <label for="defaultQuotaGb" class="form-label">{{ t('admin_usage.default_storage_quota_gb') }}</label>
             <div class="input-group quota-input-group">
                 <input type="number" class="form-control" id="defaultQuotaGb" name="default_quota_gb"
                        min="0" step="any" required>
                 <span class="input-group-text">GB</span>
             </div>
-            <small class="help-text">Binary GB (1 GB = 1024^3 bytes). 0 = unlimited.</small>
+            <small class="help-text">{{ t('admin_usage.binary_gb_1_gb_1024_3_bytes_0_unlimited') }}</small>
         </div>
         <button type="submit" class="btn btn-primary" id="saveDefaultBtn">
-            <i class="fas fa-save me-1"></i> Save Default
+            <i class="fas fa-save me-1"></i> {{ t('admin_usage.save_default') }}
         </button>
     </form>
 </div>
 
 <!-- Per-user usage table -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-users me-2"></i>Per-User Usage</div>
+    <div class="section-title"><i class="fas fa-users me-2"></i>{{ t('admin_usage.per_user_usage') }}</div>
     <div class="filters-row">
         <div class="filter-group">
-            <label for="userSearch">Search user</label>
-            <input type="text" id="userSearch" placeholder="Username" autocomplete="off">
+            <label for="userSearch">{{ t('admin_usage.search_user_2') }}</label>
+            <input type="text" id="userSearch" placeholder="{{ t('admin_usage.username_2') }}" autocomplete="off">
         </div>
         <div class="filter-group">
-            <label for="userLimit">Show</label>
+            <label for="userLimit">{{ t('admin_usage.show') }}</label>
             <select id="userLimit">
-                <option value="50" selected>Top 50</option>
-                <option value="100">Top 100</option>
-                <option value="250">Top 250</option>
-                <option value="500">Top 500</option>
+                <option value="50" selected>{{ t('admin_usage.top_50') }}</option>
+                <option value="100">{{ t('admin_usage.top_100') }}</option>
+                <option value="250">{{ t('admin_usage.top_250') }}</option>
+                <option value="500">{{ t('admin_usage.top_500') }}</option>
             </select>
         </div>
     </div>
@@ -229,15 +230,15 @@
         <table class="table">
             <thead>
                 <tr>
-                    <th>User</th>
-                    <th>Usage</th>
-                    <th class="text-end">Quota</th>
-                    <th class="text-end">Used</th>
-                    <th>Override (GB)</th>
+                    <th>{{ t('admin_usage.user') }}</th>
+                    <th>{{ t('admin_usage.usage') }}</th>
+                    <th class="text-end">{{ t('admin_usage.quota') }}</th>
+                    <th class="text-end">{{ t('admin_usage.used_2') }}</th>
+                    <th>{{ t('admin_usage.override_gb') }}</th>
                 </tr>
             </thead>
             <tbody id="usersTable">
-                <tr><td colspan="5" class="text-center text-muted py-4">Loading...</td></tr>
+                <tr><td colspan="5" class="text-center text-muted py-4">{{ t('admin_usage.loading') }}</td></tr>
             </tbody>
         </table>
     </div>
@@ -290,19 +291,26 @@
     // Adaptive binary units for usage amounts; quotas always display as GB.
     function formatBytes(bytes) {
         const value = Number(bytes) || 0;
-        if (value >= 1024 * GB_BYTES) return (value / (1024 * GB_BYTES)).toFixed(1) + ' TB';
-        if (value >= GB_BYTES) return (value / GB_BYTES).toFixed(1) + ' GB';
-        if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' MB';
-        if (value >= 1024) return (value / 1024).toFixed(1) + ' KB';
-        return Math.round(value) + ' B';
+        if (value >= 1024 * GB_BYTES) return formatStorageUnit(value / (1024 * GB_BYTES), 'terabyte');
+        if (value >= GB_BYTES) return formatStorageUnit(value / GB_BYTES, 'gigabyte');
+        if (value >= 1024 * 1024) return formatStorageUnit(value / (1024 * 1024), 'megabyte');
+        if (value >= 1024) return formatStorageUnit(value / 1024, 'kilobyte');
+        return formatStorageUnit(Math.round(value), 'byte', 0);
+    }
+
+    function formatStorageUnit(value, unit, digits = 1) {
+        return AurvekI18n.formatNumber(value, {
+            style: 'unit', unit, unitDisplay: 'short',
+            minimumFractionDigits: digits, maximumFractionDigits: digits,
+        });
     }
 
     function formatGb(bytes) {
-        return ((Number(bytes) || 0) / GB_BYTES).toFixed(1) + ' GB';
+        return formatStorageUnit((Number(bytes) || 0) / GB_BYTES, 'gigabyte');
     }
 
     function formatQuota(bytes) {
-        return bytes === 0 ? 'Unlimited' : formatGb(bytes);
+        return bytes === 0 ? AurvekI18n.t('admin_usage.unlimited') : formatGb(bytes);
     }
 
     // Compact GB value for prefilling number inputs ("30", "1.5").
@@ -330,7 +338,7 @@
     async function loadConfig() {
         try {
             const response = await apiFetch('/api/admin/storage-quotas/config');
-            if (!response || !response.ok) throw new Error('Failed to load config');
+            if (!response || !response.ok) throw new Error(AurvekI18n.t('admin_usage.failed_to_load_config'));
             const data = await response.json();
             defaultQuotaBytes = data.default_quota_bytes || 0;
             const input = document.getElementById('defaultQuotaGb');
@@ -338,7 +346,7 @@
             FormGuard.markClean(document.getElementById('defaultQuotaForm'));
         } catch (error) {
             console.error('Error loading storage quota config:', error);
-            NotificationModal.error('Load Failed', 'Could not load the default storage quota.');
+            NotificationModal.error(AurvekI18n.t('admin_usage.load_failed'), AurvekI18n.t('admin_usage.could_not_load_the_default_storage_quota'));
         }
     }
 
@@ -348,14 +356,14 @@
         const input = document.getElementById('defaultQuotaGb');
         const gb = parseFloat(input.value);
         if (!Number.isFinite(gb) || gb < 0) {
-            NotificationModal.warning('Invalid Value', 'The default quota must be a number of GB, 0 or greater.');
+            NotificationModal.warning(AurvekI18n.t('admin_usage.invalid_value'), AurvekI18n.t('admin_usage.the_default_quota_must_be_a_number_of_gb_0_or_greater'));
             return;
         }
 
         const saveBtn = document.getElementById('saveDefaultBtn');
         const originalText = saveBtn.innerHTML;
         saveBtn.disabled = true;
-        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + AurvekI18n.t('admin_usage.saving') + '';
 
         try {
             const response = await apiFetch('/api/admin/storage-quotas/config', {
@@ -369,7 +377,7 @@
                 defaultQuotaBytes = result.default_quota_bytes;
                 input.value = bytesToGbInputValue(defaultQuotaBytes);
                 FormGuard.markClean(document.getElementById('defaultQuotaForm'));
-                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> Saved!';
+                saveBtn.innerHTML = '<i class="fas fa-check me-1"></i> ' + AurvekI18n.t('admin_usage.saved') + '';
                 saveBtn.classList.remove('btn-primary');
                 saveBtn.classList.add('btn-success');
                 setTimeout(() => {
@@ -378,15 +386,16 @@
                     saveBtn.classList.add('btn-primary');
                     saveBtn.disabled = false;
                 }, 2000);
+                NotificationModal.toast(AurvekI18n.t('admin_usage.storage.default_saved', {quota: formatQuota(defaultQuotaBytes)}), 'success');
                 // The default applies to every non-override user: refresh derived views.
                 loadUsers();
                 loadStats();
                 return;
             }
-            NotificationModal.error('Save Failed', result.message || 'Error saving the default quota');
+            NotificationModal.error(AurvekI18n.t('admin_usage.save_failed'), result.message || AurvekI18n.t('admin_usage.error_saving_the_default_quota'));
         } catch (error) {
             console.error('Error saving storage quota config:', error);
-            NotificationModal.error('Save Error', 'An error occurred while saving the default quota.');
+            NotificationModal.error(AurvekI18n.t('admin_usage.save_error'), AurvekI18n.t('admin_usage.an_error_occurred_while_saving_the_default_quota'));
         }
         saveBtn.innerHTML = originalText;
         saveBtn.disabled = false;
@@ -397,18 +406,18 @@
     async function loadStats() {
         try {
             const response = await apiFetch('/api/admin/storage-quotas/stats');
-            if (!response || !response.ok) throw new Error('Failed to load stats');
+            if (!response || !response.ok) throw new Error(AurvekI18n.t('admin_usage.failed_to_load_stats'));
             const data = await response.json();
             setText('statLogicalTotal', formatBytes(data.logical_total));
             setText('statPhysicalBlobs', formatBytes(data.physical_blob_total));
-            setText('statVariantsSubtext', 'Plus ' + formatBytes(data.physical_variants_total) + ' in thumbnails');
+            setText('statVariantsSubtext', AurvekI18n.t('admin_usage.storage.thumbnails', {amount: formatBytes(data.physical_variants_total)}));
             setText('statGeneratedTotal', formatBytes(data.generated_total));
             setText('statDedupeSavings', formatBytes(Math.max(0, data.dedupe_savings)));
-            setText('statUsersOver80', String(data.users_over_80));
-            setText('statUsersOver100', String(data.users_over_100));
+            setText('statUsersOver80', AurvekI18n.formatNumber(data.users_over_80));
+            setText('statUsersOver100', AurvekI18n.formatNumber(data.users_over_100));
         } catch (error) {
             console.error('Error loading storage stats:', error);
-            NotificationModal.error('Load Failed', 'Could not load storage statistics.');
+            NotificationModal.error(AurvekI18n.t('admin_usage.load_failed'), AurvekI18n.t('admin_usage.could_not_load_storage_statistics'));
         }
     }
 
@@ -422,13 +431,13 @@
 
         try {
             const response = await apiFetch('/api/admin/storage-quotas/users?' + params.toString());
-            if (!response || !response.ok) throw new Error('Failed to load users');
+            if (!response || !response.ok) throw new Error(AurvekI18n.t('admin_usage.failed_to_load_users'));
             const data = await response.json();
             renderUsers(data.users || []);
         } catch (error) {
             console.error('Error loading storage quota users:', error);
             document.getElementById('usersTable').innerHTML =
-                '<tr><td colspan="5" class="text-center text-danger py-4">Failed to load users</td></tr>';
+                '<tr><td colspan="5" class="text-center text-danger py-4">' + AurvekI18n.t('admin_usage.failed_to_load_users') + '</td></tr>';
         }
     }
 
@@ -442,7 +451,7 @@
         usersById = new Map(users.map(user => [user.user_id, user]));
         const tbody = document.getElementById('usersTable');
         if (!users.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No users found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' + AurvekI18n.t('admin_usage.no_users_found') + '</td></tr>';
             return;
         }
         tbody.innerHTML = users.map(renderUserRow).join('');
@@ -458,20 +467,22 @@
             const level = thresholdLevel(user.percent);
             const width = Math.max(0, Math.min(100, user.percent));
             const fillClass = level === 'ok' ? '' : ' ' + level;
+            const percent = AurvekI18n.formatNumber(user.percent / 100, {
+                style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1,
+            });
             usageBar = `
                 <div class="usage-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                     aria-valuenow="${Math.round(width)}"
-                     aria-label="${safeName} storage usage ${user.percent.toFixed(1)}%">
+                     aria-valuenow="${Math.round(width)}" aria-label="${escapeHtml(AurvekI18n.t('admin_usage.storage.usage_label', {name: user.username, percent}))}">
                     <div class="usage-bar-fill${fillClass}" style="width: ${width}%;"></div>
                 </div>`;
             const pctClass = level === 'danger' ? 'pct-danger' : (level === 'warn' ? 'pct-warn' : 'pct-ok');
-            usedCell = `<span class="${pctClass}">${user.percent.toFixed(1)}%</span>`;
+            usedCell = `<span class="${pctClass}">${percent}</span>`;
         }
 
         const quotaCell = unlimited
-            ? 'Unlimited'
+            ? AurvekI18n.t('admin_usage.unlimited')
             : formatGb(user.quota_bytes);
-        const overrideBadge = user.is_override ? '<span class="override-badge">Override</span>' : '';
+        const overrideBadge = user.is_override ? '<span class="override-badge">' + AurvekI18n.t('admin_usage.override') + '</span>' : '';
         const overrideValue = user.is_override ? escapeHtml(bytesToGbInputValue(user.quota_bytes)) : '';
 
         return `
@@ -483,18 +494,17 @@
                 <td>
                     <div class="usage-total">${formatBytes(user.total_bytes)}</div>
                     ${usageBar}
-                    <div class="usage-split">Uploads ${formatBytes(user.uploads_bytes)} - Generated ${formatBytes(user.generated_bytes)}</div>
+                    <div class="usage-split">${escapeHtml(AurvekI18n.t('admin_usage.storage.split', {uploads: formatBytes(user.uploads_bytes), generated: formatBytes(user.generated_bytes)}))}</div>
                 </td>
                 <td class="text-end">${quotaCell}${overrideBadge}</td>
                 <td class="text-end">${usedCell}</td>
                 <td>
                     <div class="input-group input-group-sm override-editor">
                         <input type="number" class="form-control override-input" min="0" step="any"
-                               data-user-id="${user.user_id}" value="${overrideValue}"
-                               placeholder="System default" aria-label="Quota override in GB for ${safeName}">
+                               data-user-id="${user.user_id}" value="${overrideValue}" placeholder="${escapeHtml(AurvekI18n.t('admin_usage.storage.system_default'))}" aria-label="${escapeHtml(AurvekI18n.t('admin_usage.storage.override_label', {name: user.username}))}">
                         <span class="input-group-text">GB</span>
-                        <button type="button" class="btn btn-outline-primary" data-action="set" data-user-id="${user.user_id}">Set</button>
-                        <button type="button" class="btn btn-outline-secondary" data-action="clear" data-user-id="${user.user_id}"${user.is_override ? '' : ' disabled'}>Clear</button>
+                        <button type="button" class="btn btn-outline-primary" data-action="set" data-user-id="${user.user_id}">${AurvekI18n.t('admin_usage.storage.set')}</button>
+                        <button type="button" class="btn btn-outline-secondary" data-action="clear" data-user-id="${user.user_id}"${user.is_override ? '' : ' disabled'}>${AurvekI18n.t('admin_usage.storage.clear')}</button>
                     </div>
                 </td>
             </tr>`;
@@ -515,12 +525,12 @@
         const input = document.querySelector(`.override-input[data-user-id="${userId}"]`);
         const raw = input ? input.value.trim() : '';
         if (raw === '') {
-            NotificationModal.warning('Storage Quotas', 'Enter a quota in GB, or use Clear to return the user to the system default.');
+            NotificationModal.warning(AurvekI18n.t('admin_usage.storage_quotas'), AurvekI18n.t('admin_usage.enter_a_quota_in_gb_or_use_clear_to_return_the_user_to_the_system_defaul'));
             return;
         }
         const gb = parseFloat(raw);
         if (!Number.isFinite(gb) || gb < 0) {
-            NotificationModal.warning('Invalid Value', 'The quota override must be a number of GB, 0 or greater.');
+            NotificationModal.warning(AurvekI18n.t('admin_usage.invalid_value'), AurvekI18n.t('admin_usage.the_quota_override_must_be_a_number_of_gb_0_or_greater'));
             return;
         }
         putUserQuota(user, Math.round(gb * GB_BYTES));
@@ -538,18 +548,18 @@
             const result = await response.json();
             if (response.ok && result.success) {
                 const summary = quotaBytes === null
-                    ? 'Override cleared for ' + user.username + ' (back to system default)'
-                    : 'Quota set to ' + formatQuota(quotaBytes) + ' for ' + user.username;
+                    ? AurvekI18n.t('admin_usage.storage.override_cleared', {name: user.username})
+                    : AurvekI18n.t('admin_usage.storage.override_saved', {name: user.username, quota: formatQuota(quotaBytes)});
                 NotificationModal.toast(summary, 'success');
                 // Refetch: quota changes shift per-user percents and the over-threshold tallies.
                 loadUsers();
                 loadStats();
             } else {
-                NotificationModal.error('Save Failed', result.message || 'Error saving the quota override');
+                NotificationModal.error(AurvekI18n.t('admin_usage.save_failed'), result.message || AurvekI18n.t('admin_usage.error_saving_the_quota_override'));
             }
         } catch (error) {
             console.error('Error saving storage quota override:', error);
-            NotificationModal.error('Save Error', 'An error occurred while saving the quota override.');
+            NotificationModal.error(AurvekI18n.t('admin_usage.save_error'), AurvekI18n.t('admin_usage.an_error_occurred_while_saving_the_quota_override'));
         } finally {
             overridePutInFlight = false;
         }

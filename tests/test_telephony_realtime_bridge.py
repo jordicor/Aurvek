@@ -14,11 +14,110 @@ from integrations.telephony.realtime_bridge import (
     RealtimeDoneEvent,
     RealtimeErrorEvent,
     RealtimeStatusEvent,
+    RealtimeTextAudioCheckpoints,
     RealtimeToolCallEvent,
 )
 
 
 _CLOSE = object()
+
+
+def test_text_only_output_cannot_extend_an_audio_transcript_checkpoint():
+    checkpoints = RealtimeTextAudioCheckpoints()
+    item = {
+        "response_id": "response-1",
+        "item_id": "item-1",
+        "content_index": 0,
+    }
+    checkpoints.note_audio(b"a" * 800, is_final=False, **item)
+    checkpoints.note_text(
+        "Heard phrase. ",
+        channel="audio_transcript",
+        is_final=False,
+        **item,
+    )
+    assert checkpoints.confirmed_prefix(100) == ""
+    checkpoints.note_audio(b"", is_final=True, **item)
+    checkpoints.note_text(
+        "",
+        channel="audio_transcript",
+        is_final=True,
+        **item,
+    )
+    assert checkpoints.confirmed_prefix(100) == "Heard phrase. "
+
+    checkpoints.note_text(
+        "unspoken text",
+        channel="text",
+        is_final=True,
+        response_id="response-2",
+        item_id="item-2",
+        content_index=0,
+    )
+
+    assert checkpoints.confirmed_prefix(1_000) == "Heard phrase. "
+
+
+def test_checkpoints_publish_only_contiguous_complete_audio_items():
+    checkpoints = RealtimeTextAudioCheckpoints()
+    first = {
+        "response_id": "response-1",
+        "item_id": "item-1",
+        "content_index": 0,
+    }
+    second = {
+        "response_id": "response-1",
+        "item_id": "item-2",
+        "content_index": 0,
+    }
+    checkpoints.note_text(
+        "First item. ",
+        channel="audio_transcript",
+        is_final=False,
+        **first,
+    )
+    checkpoints.note_text(
+        "Second item.",
+        channel="audio_transcript",
+        is_final=True,
+        **second,
+    )
+    checkpoints.note_audio(b"a" * 800, is_final=False, **first)
+    checkpoints.note_audio(b"", is_final=True, **first)
+    checkpoints.note_audio(b"b" * 800, is_final=False, **second)
+    checkpoints.note_audio(b"", is_final=True, **second)
+
+    # The later item cannot carry incomplete text from the earlier item into a
+    # published prefix merely because its own final events arrived first.
+    assert checkpoints.confirmed_prefix(200) == ""
+    checkpoints.note_text(
+        "",
+        channel="audio_transcript",
+        is_final=True,
+        **first,
+    )
+    assert checkpoints.confirmed_prefix(99) == ""
+    assert checkpoints.confirmed_prefix(100) == "First item. "
+    assert checkpoints.confirmed_prefix(200) == "First item. Second item."
+
+
+def test_checkpoint_tracker_rejects_interleaved_audio_items():
+    checkpoints = RealtimeTextAudioCheckpoints()
+    checkpoints.note_audio(
+        b"a" * 80,
+        response_id="response-1",
+        item_id="item-1",
+        content_index=0,
+        is_final=False,
+    )
+    with pytest.raises(ValueError, match="changed before finalization"):
+        checkpoints.note_audio(
+            b"b" * 80,
+            response_id="response-1",
+            item_id="item-2",
+            content_index=0,
+            is_final=False,
+        )
 
 
 class FakeRealtimeClient:
@@ -52,8 +151,8 @@ class FakeRealtimeClient:
     async def commit_audio(self):
         self.commands.append(("commit",))
 
-    async def create_response(self, instructions=None):
-        self.commands.append(("response", instructions))
+    async def create_response(self, instructions=None, *, tool_choice=None):
+        self.commands.append(("response", instructions, tool_choice))
 
     async def send_function_output(self, call_id, output):
         self.commands.append(("tool_output", call_id, output))
@@ -63,6 +162,9 @@ class FakeRealtimeClient:
 
     async def truncate_item(self, item_id, played_ms, *, content_index=0):
         self.commands.append(("truncate", item_id, played_ms, content_index))
+
+    async def delete_item(self, item_id):
+        self.commands.append(("delete", item_id))
 
     async def events(self):
         while True:
@@ -250,7 +352,7 @@ async def test_tool_continuation_waits_for_previous_response_done():
     await client.events_queue.put(OpenAIResponseDoneEvent("r1", "completed", usage()))
     await continuation
     assert ("tool_output", "c1", {"value": 7}) in client.commands
-    assert client.commands[-1] == ("response", None)
+    assert client.commands[-1] == ("response", None, "none")
 
     await client.events_queue.put(
         OpenAIOutputTextEvent("audio_transcript", "r2", "i2", 0, "seven", False)

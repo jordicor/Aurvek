@@ -1,5 +1,6 @@
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import aiosqlite
 import pytest
@@ -31,6 +32,8 @@ class DummyRequest:
         self.headers = headers or {}
         self.url = DummyUrl()
         self.base_url = "https://example.com/"
+        self.state = SimpleNamespace()
+        self.cookies = {}
 
 
 class DummyUser:
@@ -206,9 +209,9 @@ async def test_legal_routes_serve_clean_urls(monkeypatch):
     monkeypatch.delenv("SUPPORT_URL", raising=False)
     monkeypatch.setenv("SUPPORT_EMAIL", "help@example.com")
 
-    privacy = await legal_routes.privacy_page()
-    terms = await legal_routes.terms_page()
-    support = await legal_routes.support_page()
+    privacy = await legal_routes.privacy_page(DummyRequest(), None)
+    terms = await legal_routes.terms_page(DummyRequest(), None)
+    support = await legal_routes.support_page(DummyRequest(), None)
 
     assert privacy.status_code == 200
     assert terms.status_code == 200
@@ -318,8 +321,8 @@ async def test_ios_purchase_endpoints_return_storekit_required(monkeypatch):
     request = DummyRequest({"x-aurvek-client": "ios"})
     user = DummyUser()
 
-    monkeypatch.setattr(checkout, "require_checkout_enabled", lambda: None)
-    monkeypatch.setattr(packs, "require_checkout_enabled", lambda: None)
+    monkeypatch.setattr(checkout, "require_checkout_enabled", lambda translator=None: None)
+    monkeypatch.setattr(packs, "require_checkout_enabled", lambda translator=None: None)
     monkeypatch.delenv("IOS_PURCHASES_ENABLED", raising=False)
 
     responses = [

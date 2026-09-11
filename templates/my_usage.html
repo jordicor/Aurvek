@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
+{% set i18n_domains = ['admin_usage'] %}
 
-{% block title %}My Usage - AURVEK{% endblock %}
+{% block title %}{{ t('admin_usage.my_usage_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -154,12 +155,12 @@
 </style>
 {% endblock %}
 
-{% block page_title %}My Usage{% endblock %}
+{% block page_title %}{{ t('admin_usage.my_usage') }}{% endblock %}
 
 {% block back_url %}/{% endblock %}
 
 {% block page_subtitle %}
-<p class="text-muted mb-0">Track your consumption and spending</p>
+<p class="text-muted mb-0">{{ t('admin_usage.track_your_consumption_and_spending') }}</p>
 {% endblock %}
 
 {% block content %}
@@ -169,11 +170,11 @@
         <div class="stat-card success">
             <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
                 <div>
-                    <div class="label"><i class="fas fa-wallet me-1"></i>Current Balance</div>
-                    <div class="amount" id="currentBalance">$0.00</div>
+                    <div class="label"><i class="fas fa-wallet me-1"></i>{{ t('admin_usage.current_balance') }}</div>
+                    <div class="amount" id="currentBalance">{{ format_currency(0.00, 'USD') }}</div>
                 </div>
                 <a href="/payment" class="btn btn-success">
-                    <i class="fas fa-plus me-1"></i> Add Funds
+                    <i class="fas fa-plus me-1"></i> {{ t('admin_usage.add_funds') }}
                 </a>
             </div>
         </div>
@@ -183,12 +184,12 @@
 <!-- Filters -->
 <div class="filters-row">
     <div class="filter-group">
-        <label>Time Period</label>
+        <label>{{ t('admin_usage.time_period') }}</label>
         <select id="dateRange" onchange="loadUsageData()">
-            <option value="7">Last 7 days</option>
-            <option value="30" selected>Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="all">All time</option>
+            <option value="7">{{ t('admin_usage.last_7_days') }}</option>
+            <option value="30" selected>{{ t('admin_usage.last_30_days') }}</option>
+            <option value="90">{{ t('admin_usage.last_90_days') }}</option>
+            <option value="all">{{ t('admin_usage.all_time') }}</option>
         </select>
     </div>
 </div>
@@ -197,26 +198,26 @@
 <div class="row mb-4">
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card primary">
-            <div class="label"><i class="fas fa-bolt me-1"></i>Total Operations</div>
+            <div class="label"><i class="fas fa-bolt me-1"></i>{{ t('admin_usage.total_operations') }}</div>
             <div class="amount" id="statOperations">-</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-microchip me-1"></i>Tokens Used</div>
+            <div class="label"><i class="fas fa-microchip me-1"></i>{{ t('admin_usage.tokens_used') }}</div>
             <div class="amount" id="statTokens">-</div>
             <div class="subtext" id="statTokensBreakdown">-</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card warning">
-            <div class="label"><i class="fas fa-receipt me-1"></i>Total Spent</div>
+            <div class="label"><i class="fas fa-receipt me-1"></i>{{ t('admin_usage.total_spent') }}</div>
             <div class="amount" id="statCost">-</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card success">
-            <div class="label"><i class="fas fa-calendar-day me-1"></i>Avg. Daily</div>
+            <div class="label"><i class="fas fa-calendar-day me-1"></i>{{ t('admin_usage.avg_daily') }}</div>
             <div class="amount" id="statAvgDaily">-</div>
         </div>
     </div>
@@ -224,44 +225,44 @@
 
 <!-- Session Health Summary -->
 <div class="section-container mb-4">
-    <div class="section-title"><i class="fas fa-heart-pulse me-2"></i>Session Health</div>
+    <div class="section-title"><i class="fas fa-heart-pulse me-2"></i>{{ t('admin_usage.session_health') }}</div>
     <div class="row">
         <div class="col-md-3 col-6 mb-3">
             <div class="stat-card info">
-                <div class="label">Current Active Minutes</div>
+                <div class="label">{{ t('admin_usage.current_active_minutes') }}</div>
                 <div class="amount" id="wellbeingActiveMinutes">-</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
             <div class="stat-card primary">
-                <div class="label">User Messages</div>
+                <div class="label">{{ t('admin_usage.user_messages') }}</div>
                 <div class="amount" id="wellbeingUserMessages">-</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
             <div class="stat-card warning">
-                <div class="label">Reminders</div>
+                <div class="label">{{ t('admin_usage.reminders') }}</div>
                 <div class="amount" id="wellbeingReminders">-</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
             <div class="stat-card success">
-                <div class="label">Long Sessions</div>
+                <div class="label">{{ t('admin_usage.long_sessions') }}</div>
                 <div class="amount" id="wellbeingLongSessions">-</div>
             </div>
         </div>
     </div>
-    <div class="text-muted small" id="wellbeingSummaryText">Loading session health...</div>
+    <div class="text-muted small" id="wellbeingSummaryText">{{ t('admin_usage.loading_session_health') }}</div>
 </div>
 
 <div class="row">
     <!-- Usage by Type -->
     <div class="col-lg-5 mb-4">
         <div class="section-container h-100">
-            <div class="section-title"><i class="fas fa-chart-pie me-2"></i>Usage by Type</div>
+            <div class="section-title"><i class="fas fa-chart-pie me-2"></i>{{ t('admin_usage.usage_by_type') }}</div>
             <div id="usageByType">
                 <div class="text-center text-muted py-4">
-                    <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+                    <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_usage.loading') }}
                 </div>
             </div>
         </div>
@@ -270,7 +271,7 @@
     <!-- Spending Trend Chart -->
     <div class="col-lg-7 mb-4">
         <div class="section-container h-100">
-            <div class="section-title"><i class="fas fa-chart-area me-2"></i>Spending Trend</div>
+            <div class="section-title"><i class="fas fa-chart-area me-2"></i>{{ t('admin_usage.spending_trend') }}</div>
             <div class="chart-container">
                 <canvas id="spendingChart"></canvas>
             </div>
@@ -280,10 +281,10 @@
 
 <!-- Daily Breakdown -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-calendar-alt me-2"></i>Recent Activity</div>
+    <div class="section-title"><i class="fas fa-calendar-alt me-2"></i>{{ t('admin_usage.recent_activity') }}</div>
     <div id="dailyBreakdown">
         <div class="text-center text-muted py-4">
-            <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+            <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_usage.loading') }}
         </div>
     </div>
 </div>
@@ -308,7 +309,7 @@
 
         try {
             const response = await fetch('/api/my-usage?' + params.toString());
-            if (!response.ok) throw new Error('Failed to load data');
+            if (!response.ok) throw new Error(AurvekI18n.t('admin_usage.failed_to_load_data'));
             const data = await response.json();
 
             updateBalance(data.balance);
@@ -320,21 +321,21 @@
 
         } catch (error) {
             console.error('Error loading usage data:', error);
-            NotificationModal.error('Error', 'Failed to load usage data');
+            NotificationModal.error(AurvekI18n.t('admin_usage.error'), AurvekI18n.t('admin_usage.failed_to_load_usage_data'));
         }
     }
 
     function updateBalance(balance) {
-        document.getElementById('currentBalance').textContent = '$' + (balance || 0).toFixed(2);
+        document.getElementById('currentBalance').textContent = AurvekI18n.formatCurrency((balance || 0), 'USD', 2);
     }
 
     function updateStats(stats) {
         document.getElementById('statOperations').textContent = formatNumber(stats.total_operations || 0);
         document.getElementById('statTokens').textContent = formatNumber(stats.total_tokens || 0);
         document.getElementById('statTokensBreakdown').textContent =
-            formatNumber(stats.tokens_in || 0) + ' in / ' + formatNumber(stats.tokens_out || 0) + ' out';
-        document.getElementById('statCost').textContent = '$' + (stats.total_cost || 0).toFixed(2);
-        document.getElementById('statAvgDaily').textContent = '$' + (stats.avg_daily || 0).toFixed(2);
+            AurvekI18n.t('admin_usage.token_breakdown', {input: formatNumber(stats.tokens_in || 0), output: formatNumber(stats.tokens_out || 0)});
+        document.getElementById('statCost').textContent = AurvekI18n.formatCurrency((stats.total_cost || 0), 'USD', 2);
+        document.getElementById('statAvgDaily').textContent = AurvekI18n.formatCurrency((stats.avg_daily || 0), 'USD', 2);
     }
 
     function updateWellbeingSummary(wellbeing) {
@@ -348,10 +349,13 @@
 
         const summaryText = document.getElementById('wellbeingSummaryText');
         if (summaryText) {
-            const sessionText = activeSession.id
-                ? `Current status: ${activeSession.current_severity || 'normal'}`
-                : 'No active continuous session';
-            summaryText.textContent = `${sessionText}. ${formatNumber(wellbeing.sessions || 0)} sessions in this period.`;
+            const severityKeys = {normal: 'normal', soft: 'soft', intense: 'intense', strong: 'strong'};
+            const severity = severityKeys[activeSession.current_severity || 'normal'] || 'unknown';
+            const count = wellbeing.sessions || 0;
+            const params = {count, sessions: formatNumber(count)};
+            if (activeSession.id) params.status = AurvekI18n.t('admin_usage.wellbeing.' + severity);
+            summaryText.textContent = AurvekI18n.t(activeSession.id
+                ? 'admin_usage.wellbeing.active_summary' : 'admin_usage.wellbeing.inactive_summary', params);
         }
     }
 
@@ -359,7 +363,7 @@
         const container = document.getElementById('usageByType');
 
         if (!byType || byType.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted py-4">No usage data yet</div>';
+            container.innerHTML = '<div class="text-center text-muted py-4">' + AurvekI18n.t('admin_usage.no_usage_data_yet') + '</div>';
             return;
         }
 
@@ -373,24 +377,24 @@
         };
 
         const typeLabels = {
-            'ai_tokens': 'AI Conversations',
-            'tts': 'Text-to-Speech',
-            'stt': 'Speech-to-Text',
-            'image': 'Image Generation',
-            'video': 'Video Generation',
-            'domain': 'Custom Domains'
+            'ai_tokens': AurvekI18n.t('admin_usage.ai_conversations'),
+            'tts': AurvekI18n.t('admin_usage.text_to_speech'),
+            'stt': AurvekI18n.t('admin_usage.speech_to_text'),
+            'image': AurvekI18n.t('admin_usage.image_generation'),
+            'video': AurvekI18n.t('admin_usage.video_generation'),
+            'domain': AurvekI18n.t('admin_usage.custom_domains')
         };
 
         container.innerHTML = byType.map(t => `
             <div class="usage-item">
                 <div class="details">
-                    <span class="type-badge ${t.type}">
+                    <span class="type-badge ${Object.hasOwn(typeLabels, t.type) ? t.type : ''}">
                         <i class="fas ${typeIcons[t.type] || 'fa-circle'}"></i>
-                        ${typeLabels[t.type] || t.type}
+                        ${typeLabels[t.type] || AurvekI18n.t('admin_usage.unknown_type')}
                     </span>
-                    <span class="ops">${formatNumber(t.operations)} operations</span>
+                    <span class="ops">${AurvekI18n.t('admin_usage.operation_count', {count: t.operations, number: formatNumber(t.operations)})}</span>
                 </div>
-                <div class="cost">$${t.total_cost.toFixed(2)}</div>
+                <div class="cost">${AurvekI18n.formatCurrency(t.total_cost, 'USD', 2)}</div>
             </div>
         `).join('');
     }
@@ -416,7 +420,7 @@
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Daily Spending',
+                    label: AurvekI18n.t('admin_usage.daily_spending'),
                     data: costData,
                     borderColor: 'rgb(250, 166, 26)',
                     backgroundColor: 'rgba(250, 166, 26, 0.15)',
@@ -427,13 +431,14 @@
                 }]
             },
             options: {
+                locale: AurvekI18n.locale,
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
                     legend: { display: false },
                     tooltip: {
                         callbacks: {
-                            label: ctx => '$' + ctx.parsed.y.toFixed(2)
+                            label: ctx => AurvekI18n.formatCurrency(ctx.parsed.y, 'USD', 2)
                         }
                     }
                 },
@@ -448,7 +453,7 @@
                     y: {
                         ticks: {
                             color: getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim() || '#72767d',
-                            callback: v => '$' + v.toFixed(2)
+                            callback: v => AurvekI18n.formatCurrency(v, 'USD', 2)
                         },
                         grid: { color: 'rgba(255,255,255,0.05)' }
                     }
@@ -461,7 +466,7 @@
         const container = document.getElementById('dailyBreakdown');
 
         if (!daily || daily.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted py-4">No activity yet</div>';
+            container.innerHTML = '<div class="text-center text-muted py-4">' + AurvekI18n.t('admin_usage.no_activity_yet') + '</div>';
             return;
         }
 
@@ -472,29 +477,26 @@
             <div class="daily-item">
                 <div class="date">${formatDateLong(d.date)}</div>
                 <div class="stats">
-                    <span class="stat-val"><strong>${formatNumber(d.operations)}</strong> ops</span>
-                    <span class="stat-val"><strong>${formatNumber(d.tokens_in + d.tokens_out)}</strong> tokens</span>
-                    <span class="stat-val"><strong>$${d.total_cost.toFixed(2)}</strong></span>
+                    <span class="stat-val">${AurvekI18n.t('admin_usage.operation_count', {count: d.operations, number: formatNumber(d.operations)})}</span>
+                    <span class="stat-val">${AurvekI18n.t('admin_usage.token_count', {count: d.tokens_in + d.tokens_out, number: formatNumber(d.tokens_in + d.tokens_out)})}</span>
+                    <span class="stat-val"><strong>${AurvekI18n.formatCurrency(d.total_cost, 'USD', 2)}</strong></span>
                 </div>
             </div>
         `).join('');
     }
 
     function formatNumber(num) {
-        if (num >= 1000000000) return (num / 1000000000).toFixed(1) + 'B';
-        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-        return num.toString();
+        return AurvekI18n.formatNumber(num, {notation: 'compact', maximumFractionDigits: 1});
     }
 
     function formatDateShort(dateStr) {
         const date = new Date(dateStr + 'T00:00:00');
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        return date.toLocaleDateString(AurvekI18n.locale, { month: 'short', day: 'numeric' });
     }
 
     function formatDateLong(dateStr) {
         const date = new Date(dateStr + 'T00:00:00');
-        return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        return date.toLocaleDateString(AurvekI18n.locale, { weekday: 'short', month: 'short', day: 'numeric' });
     }
 </script>
 {% endblock %}

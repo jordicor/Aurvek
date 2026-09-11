@@ -1,0 +1,40 @@
+# Include ONLY inside the EXISTING native identity server (example.com).
+# Install identity-private-proxy.conf.example as the absolute include below,
+# replacing {{FASTAPI_PORT}} and {{IDENTITY_HOST}} in that proxy snippet.
+# Install aurvek-embed-logging.conf.example in nginx's http context first.
+# Exact/prefix locations take precedence over the existing native regex routes.
+# They preserve the same application handlers, cookies, limits and timeouts.
+
+location = /embed/authorize { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /embed/authorize/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+
+# A login next= query can contain an embedded authorization transaction.
+# Registration/recovery links retain that same browser-bound return value.
+location = /login { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /login/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location = /logout { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /logout/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location = /register { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /register/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location = /create-user { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /create-user/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location = /magic-link-recovery { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /magic-link-recovery/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+
+# OAuth authorization/callback parameters are never written to nginx logs.
+location = /auth/google { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /auth/google/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location = /auth/facebook { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /auth/facebook/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location = /auth/apple { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /auth/apple/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+
+# Verification credentials are in the PATH: omitting only $args is insufficient.
+location = /verify-email { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+location ^~ /verify-email/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
+
+# Authenticated service callers use direct loopback, never this public proxy.
+location ^~ /api/embed/v1/ { return 404; }
+# Replace this deny with application-backend.conf.example only when enabling
+# registered remote application backends. Do not install duplicate locations.
+location ^~ /api/applications/v1/ { return 404; }

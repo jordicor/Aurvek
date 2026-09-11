@@ -96,6 +96,35 @@ class _PcmuTimelineTrack:
         self._file.write(raw)
         self._bytes_written += len(raw)
 
+    def truncate(self, end_byte: int) -> None:
+        """Discard queued audio after one trusted absolute byte frontier.
+
+        Telephone providers accept media faster than they play it.  After a
+        ``clear`` the raw track may therefore extend beyond the audio the
+        caller actually heard.  Rewinding that unsounded suffix also prevents
+        the next response, which starts on the live call clock, from
+        overlapping bytes that no longer exist on the provider timeline.
+        """
+
+        if isinstance(end_byte, bool) or not isinstance(end_byte, int):
+            raise PhoneRecordingError("recording frontier must be an integer")
+        if end_byte < 0 or end_byte > MAX_RECORDING_TIMELINE_MS * PCMU_SAMPLE_RATE_HZ // 1_000:
+            raise PhoneRecordingError("recording frontier is outside its bounds")
+        if self._closed:
+            raise PhoneRecordingError("recording track is already closed")
+        if end_byte >= self._bytes_written:
+            return
+        if self._file is not None:
+            self._file.flush()
+            os.ftruncate(self._file.fileno(), end_byte)
+            self._file.seek(end_byte, os.SEEK_SET)
+        elif self.path.exists():
+            with self.path.open("r+b") as existing:
+                existing.truncate(end_byte)
+                existing.flush()
+                os.fsync(existing.fileno())
+        self._bytes_written = end_byte
+
     def close(self) -> Path | None:
         if self._closed:
             return self.path if self._bytes_written else None
@@ -165,6 +194,12 @@ class LocalCallRecorder:
     def record_assistant(self, audio: bytes, *, start_ms: int | None = None) -> None:
         if self.enabled:
             self._assistant.append(audio, start_ms=start_ms)
+
+    def truncate_assistant(self, *, end_byte: int) -> None:
+        """Remove assistant bytes that a provider clear made inaudible."""
+
+        if self.enabled:
+            self._assistant.truncate(end_byte)
 
     def finalize(
         self,

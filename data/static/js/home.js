@@ -1,6 +1,8 @@
 'use strict';
 
 (function() {
+    const mt = (key, params) => AurvekI18n.t('marketplace.' + key, params);
+    const mh = (key, params) => escapeHtml(mt(key, params));
     let homeData = null;
     let welcomeMessages = null;
     const canManage = window._homeConfig && window._homeConfig.canManage;
@@ -64,18 +66,18 @@
         var subtitleEl = document.getElementById('home-greeting-subtitle');
         var hour = new Date().getHours();
         var greeting;
-        if (hour < 6) greeting = 'Good night';
-        else if (hour < 12) greeting = 'Good morning';
-        else if (hour < 18) greeting = 'Good afternoon';
-        else greeting = 'Good evening';
+        if (hour < 6) greeting = mt('home.night', {name: homeData.user.username});
+        else if (hour < 12) greeting = mt('home.morning', {name: homeData.user.username});
+        else if (hour < 18) greeting = mt('home.afternoon', {name: homeData.user.username});
+        else greeting = mt('home.evening', {name: homeData.user.username});
 
         var b = homeData.branding;
         if (b && b.company_name) {
             titleEl.textContent = b.company_name;
-            subtitleEl.textContent = greeting + ', ' + homeData.user.username;
+            subtitleEl.textContent = greeting;
         } else {
-            titleEl.textContent = greeting + ', ' + homeData.user.username;
-            subtitleEl.textContent = 'Ready to start';
+            titleEl.textContent = greeting;
+            subtitleEl.textContent = mt('home.ready');
         }
     }
 
@@ -89,7 +91,7 @@
         var favPrompts = prompts.filter(function(p) { return favIds.includes(p.id); });
         if (favPrompts.length) {
             var favGroup = document.createElement('optgroup');
-            favGroup.label = '\u2605 Favorites';
+            favGroup.label = '\u2605 ' + mt('explore.favorites');
             favPrompts.forEach(function(p) {
                 var opt = document.createElement('option');
                 opt.value = String(p.id);
@@ -102,7 +104,7 @@
         var myPrompts = prompts.filter(function(p) { return !!p.is_mine; });
         if (myPrompts.length) {
             var myGroup = document.createElement('optgroup');
-            myGroup.label = 'My Prompts';
+            myGroup.label = mt('explore.my_prompts');
             myPrompts.forEach(function(p) {
                 var opt = document.createElement('option');
                 opt.value = String(p.id);
@@ -114,7 +116,7 @@
 
         if (prompts.length) {
             var allGroup = document.createElement('optgroup');
-            allGroup.label = 'All Prompts';
+            allGroup.label = mt('home.all_prompts');
             prompts.forEach(function(p) {
                 var opt = document.createElement('option');
                 opt.value = String(p.id);
@@ -127,7 +129,7 @@
         var activePacks = packs.filter(function(pk) { return pk.prompt_count > 0; });
         if (activePacks.length) {
             var packGroup = document.createElement('optgroup');
-            packGroup.label = 'Packs';
+            packGroup.label = mt('common.packs');
             activePacks.forEach(function(pk) {
                 var opt = document.createElement('option');
                 opt.value = 'pack:' + pk.id;
@@ -180,11 +182,11 @@
                 var created = new Date(p.created_at + 'Z');
                 isNew = (now - created) < 7 * 24 * 60 * 60 * 1000;
             }
-            var badge = isNew ? '<span class="home-item-badge">NEW</span>' : '';
+            var badge = isNew ? '<span class="home-item-badge">' + mh('home.new') + '</span>' : '';
             var actions = '';
             if (p.has_welcome) {
                 actions = '<div class="home-item-actions">'
-                    + '<button class="home-item-icon" onclick="event.stopPropagation(); navigateToWelcome(\'prompt\', ' + p.id + ')" title="Visit welcome page"><i class="fas fa-globe"></i></button>'
+                    + '<button class="home-item-icon" onclick="event.stopPropagation(); navigateToWelcome(\'prompt\', ' + p.id + ')" title="' + mh('home.visit_welcome') + '"><i class="fas fa-globe"></i></button>'
                     + '</div>';
             }
             return '<div class="home-item" data-prompt-id="' + p.id + '">'
@@ -210,6 +212,7 @@
             items = homeData.prompts || [];
         }
 
+        emptyEl.querySelector('p').textContent = tab === 'packs' ? mt('home.no_packs') : mt('home.no_prompts');
         if (!items.length) {
             list.innerHTML = '';
             emptyEl.style.display = '';
@@ -226,10 +229,10 @@
             var type = tab === 'packs' ? 'pack' : 'prompt';
             var actions = '';
             if (hasWelcome) {
-                actions += '<button class="home-item-icon" onclick="navigateToWelcome(\'' + type + '\', ' + item.id + ')" title="Visit welcome page"><i class="fas fa-globe"></i></button>';
+                actions += '<button class="home-item-icon" onclick="navigateToWelcome(\'' + type + '\', ' + item.id + ')" title="' + mh('home.visit_welcome') + '"><i class="fas fa-globe"></i></button>';
             }
             if (tab === 'prompts') {
-                actions += '<button class="home-item-icon" onclick="startChatWithPrompt(' + item.id + ')" title="Start chat"><i class="fas fa-comment-dots"></i></button>';
+                actions += '<button class="home-item-icon" onclick="startChatWithPrompt(' + item.id + ')" title="' + mh('home.start_chat') + '"><i class="fas fa-comment-dots"></i></button>';
             }
             return '<div class="home-item">'
                 + '<span class="home-item-name">' + name + '</span>'
@@ -251,7 +254,7 @@
             t.classList.toggle('active', t.getAttribute('data-tab') === (tab || 'prompts'));
         });
         var title = document.querySelector('.home-modal-title');
-        if (title) title.textContent = (tab === 'packs') ? 'All Packs' : 'All Prompts';
+        if (title) title.textContent = (tab === 'packs') ? mt('home.all_packs') : mt('home.all_prompts');
     }
 
     function renderModalList(tab) {
@@ -265,10 +268,10 @@
             var type = tab === 'packs' ? 'pack' : 'prompt';
             var actions = '';
             if (hasWelcome) {
-                actions += '<button class="home-item-icon" onclick="navigateToWelcome(\'' + type + '\', ' + item.id + ')" title="Visit welcome page"><i class="fas fa-globe"></i></button>';
+                actions += '<button class="home-item-icon" onclick="navigateToWelcome(\'' + type + '\', ' + item.id + ')" title="' + mh('home.visit_welcome') + '"><i class="fas fa-globe"></i></button>';
             }
             if (tab === 'prompts') {
-                actions += '<button class="home-item-icon" onclick="startChatWithPrompt(' + item.id + ')" title="Start chat"><i class="fas fa-comment-dots"></i></button>';
+                actions += '<button class="home-item-icon" onclick="startChatWithPrompt(' + item.id + ')" title="' + mh('home.start_chat') + '"><i class="fas fa-comment-dots"></i></button>';
             }
             return '<div class="home-item">'
                 + '<span class="home-item-name">' + name + '</span>'
@@ -363,7 +366,7 @@
                 + '<div class="welcome-selector-avatar">' + avatarContent + '</div>'
                 + '<div class="welcome-selector-info">'
                 + '<div class="welcome-selector-name">' + escapeHtml(m.name) + '</div>'
-                + '<div class="welcome-selector-creator">by ' + escapeHtml(m.creator_name || '') + '</div>'
+                + '<div class="welcome-selector-creator">' + mh('explore.by_creator', {name: m.creator_name || ''}) + '</div>'
                 + '</div>'
                 + (isUnread ? '<div class="welcome-unread-dot"></div>' : '')
                 + '</div>';
@@ -401,22 +404,22 @@
         var actionsHtml = '';
         if (msg.entity_type === 'prompt') {
             actionsHtml += '<button class="welcome-action-btn primary" data-action="chat" data-id="' + msg.entity_id + '">'
-                + '<i class="fas fa-comment-dots"></i> Start Chat</button>';
+                + '<i class="fas fa-comment-dots"></i> ' + mh('home.start_chat') + '</button>';
         }
         if (msg.has_welcome_page) {
             actionsHtml += '<button class="welcome-action-btn secondary" data-action="welcome-page" data-type="' + msg.entity_type + '" data-id="' + msg.entity_id + '">'
-                + '<i class="fas fa-globe"></i> Welcome Page</button>';
+                + '<i class="fas fa-globe"></i> ' + mh('home.welcome_page') + '</button>';
         }
-        var muteLabel = msg.is_muted ? 'Unmute' : 'Mute';
+        var muteLabel = msg.is_muted ? mt('home.unmute') : mt('home.mute');
         var muteIcon = msg.is_muted ? 'fa-bell' : 'fa-bell-slash';
-        actionsHtml += '<button class="welcome-action-btn mute" data-action="mute-toggle" data-msg-id="' + msg.id + '" title="' + muteLabel + '">'
-            + '<i class="fas ' + muteIcon + '"></i> ' + muteLabel + '</button>';
+        actionsHtml += '<button class="welcome-action-btn mute" data-action="mute-toggle" data-msg-id="' + msg.id + '" title="' + escapeHtml(muteLabel) + '">'
+            + '<i class="fas ' + muteIcon + '"></i> ' + escapeHtml(muteLabel) + '</button>';
 
         display.innerHTML = '<div class="welcome-msg-header">'
             + '<div class="welcome-msg-avatar">' + avatarHtml + '</div>'
             + '<div class="welcome-msg-meta">'
             + '<div class="welcome-msg-name">' + escapeHtml(msg.name) + '</div>'
-            + '<div class="welcome-msg-creator">by ' + escapeHtml(msg.creator_name || '') + '</div>'
+            + '<div class="welcome-msg-creator">' + mh('explore.by_creator', {name: msg.creator_name || ''}) + '</div>'
             + '</div></div>'
             + '<div class="welcome-msg-body">' + msg.content + '</div>'
             + '<div class="welcome-msg-actions">' + actionsHtml + '</div>';
@@ -489,7 +492,7 @@
         var badge = document.getElementById('welcome-badge');
         if (badge) {
             if (count > 0) {
-                badge.textContent = count;
+                badge.textContent = AurvekI18n.formatNumber(count);
                 badge.style.display = '';
             } else {
                 badge.style.display = 'none';
@@ -500,7 +503,7 @@
         var dockBadge = document.querySelector('.dock-item[data-win="welcome"] .dock-item-badge');
         if (dockBadge) {
             if (count > 0) {
-                dockBadge.textContent = count;
+                dockBadge.textContent = AurvekI18n.formatNumber(count);
                 dockBadge.style.display = '';
             } else {
                 dockBadge.style.display = 'none';
@@ -581,20 +584,20 @@
             var unread = welcomeMessages ? welcomeMessages.filter(function(m) { return !m.is_read && !m.is_muted; }).length : 0;
             items.push('<div class="dock-item" data-win="welcome" onclick="restoreWindow(\'welcome\')">'
                 + '<div class="dock-item-icon welcome"><i class="fas fa-envelope-open-text"></i></div>'
-                + '<span>Welcome</span>'
-                + (unread > 0 ? '<div class="dock-item-badge">' + unread + '</div>' : '')
+                + '<span>' + mh('home.welcome') + '</span>'
+                + (unread > 0 ? '<div class="dock-item-badge">' + escapeHtml(AurvekI18n.formatNumber(unread)) + '</div>' : '')
                 + '</div>');
         }
         if (minimizedWindows.has('latest')) {
             items.push('<div class="dock-item" data-win="latest" onclick="restoreWindow(\'latest\')">'
                 + '<div class="dock-item-icon latest"><i class="fas fa-bolt"></i></div>'
-                + '<span>Latest</span>'
+                + '<span>' + mh('home.latest') + '</span>'
                 + '</div>');
         }
         if (minimizedWindows.has('library')) {
             items.push('<div class="dock-item" data-win="library" onclick="restoreWindow(\'library\')">'
                 + '<div class="dock-item-icon library"><i class="fas fa-book-open"></i></div>'
-                + '<span>Library</span>'
+                + '<span>' + mh('home.library_short') + '</span>'
                 + '</div>');
         }
 
@@ -731,7 +734,7 @@
                 modalTabs.querySelectorAll('.home-tab').forEach(function(t) { t.classList.remove('active'); });
                 btn.classList.add('active');
                 var title = document.querySelector('.home-modal-title');
-                if (title) title.textContent = (tab === 'packs') ? 'All Packs' : 'All Prompts';
+                if (title) title.textContent = (tab === 'packs') ? mt('home.all_packs') : mt('home.all_prompts');
                 renderModalList(tab);
             });
         }
@@ -790,31 +793,7 @@
         if (!text) return '';
         var div = document.createElement('div');
         div.textContent = text;
-        return div.innerHTML;
-    }
-
-    function formatRelativeDate(dateStr) {
-        try {
-            var date = new Date(dateStr + 'Z');
-            var now = new Date();
-            var diff = now - date;
-            var mins = Math.floor(diff / 60000);
-            if (mins < 1) return 'Just now';
-            if (mins < 60) return mins + 'm ago';
-            var hours = Math.floor(mins / 60);
-            if (hours < 24) return hours + 'h ago';
-            var days = Math.floor(hours / 24);
-            if (days < 7) return days + 'd ago';
-            return date.toLocaleDateString();
-        } catch (e) {
-            return '';
-        }
-    }
-
-    function formatNumber(n) {
-        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-        return String(n);
+        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
 })();

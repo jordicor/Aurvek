@@ -13,6 +13,14 @@ _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
 
+class MarketplaceConfigError(ValueError):
+    """Stable validation code; the owning UI translates at its request boundary."""
+
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True, slots=True)
 class MarketplaceFlagDefinition:
     key: str
@@ -116,7 +124,7 @@ def _strict_bool(value: Any) -> bool:
         return True
     if normalized in _FALSE_VALUES:
         return False
-    raise ValueError(f"Invalid boolean value: {value!r}")
+    raise MarketplaceConfigError(f"Invalid boolean value: {value!r}", "invalid_boolean")
 
 
 def _definition_for_env_var(env_var: str) -> MarketplaceFlagDefinition:
@@ -185,11 +193,11 @@ def reset_marketplace_config_values() -> None:
 def normalize_marketplace_config_updates(payload: Mapping[str, Any]) -> dict[str, bool]:
     raw_flags = payload.get("flags", payload)
     if not isinstance(raw_flags, Mapping):
-        raise ValueError("Marketplace config payload must include a flags object.")
+        raise MarketplaceConfigError("Marketplace config payload must include a flags object.", "flags_object_required")
 
     unknown = sorted(str(key) for key in raw_flags if str(key) not in _FLAG_BY_KEY)
     if unknown:
-        raise ValueError("Unknown marketplace flag: " + ", ".join(unknown))
+        raise MarketplaceConfigError("Unknown marketplace flag: " + ", ".join(unknown), "unknown_flag")
 
     updates: dict[str, bool] = {}
     for definition in MARKETPLACE_FLAG_DEFINITIONS:
@@ -197,7 +205,7 @@ def normalize_marketplace_config_updates(payload: Mapping[str, Any]) -> dict[str
             updates[definition.key] = _strict_bool(raw_flags[definition.key])
 
     if not updates:
-        raise ValueError("No marketplace flags provided.")
+        raise MarketplaceConfigError("No marketplace flags provided.", "no_flags")
 
     return updates
 
@@ -310,26 +318,27 @@ def get_marketplace_flags() -> MarketplaceFlags:
     )
 
 
-def require_public_landings_enabled() -> None:
+def require_public_landings_enabled(translator=None) -> None:
     if not marketplace_public_landings_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=translator.t("marketplace_admin.response.not_found") if translator else "Not found")
 
 
-def require_discovery_enabled() -> None:
+def require_discovery_enabled(translator=None) -> None:
     if not marketplace_discovery_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=translator.t("marketplace_admin.response.not_found") if translator else "Not found")
 
 
-def require_storefronts_enabled() -> None:
+def require_storefronts_enabled(translator=None) -> None:
     if not marketplace_storefronts_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=translator.t("marketplace_admin.response.not_found") if translator else "Not found")
 
 
-def require_checkout_enabled() -> None:
+def require_checkout_enabled(translator=None) -> None:
     if not marketplace_checkout_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        detail = translator.t("marketplace.checkout.not_found") if translator else "Not found"
+        raise HTTPException(status_code=404, detail=detail)
 
 
-def require_creator_tools_enabled() -> None:
+def require_creator_tools_enabled(translator=None) -> None:
     if not marketplace_creator_tools_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=translator.t("marketplace_admin.response.not_found") if translator else "Not found")

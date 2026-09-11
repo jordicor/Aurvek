@@ -1,6 +1,7 @@
 {% extends 'base_admin.html' %}
+{% set i18n_domains = ['admin_usage'] %}
 
-{% block title %}Platform Usage - Admin - AURVEK{% endblock %}
+{% block title %}{{ t('admin_usage.platform_usage_admin_aurvek') }}{% endblock %}
 
 {% block styles %}
 <style>
@@ -97,18 +98,18 @@
 </style>
 {% endblock %}
 
-{% block page_title %}Platform Usage{% endblock %}
+{% block page_title %}{{ t('admin_usage.platform_usage') }}{% endblock %}
 
 {% block page_subtitle %}
-<p class="page-subtitle">Monitor consumption across all users and services</p>
+<p class="page-subtitle">{{ t('admin_usage.monitor_consumption_across_all_users_and_services') }}</p>
 {% endblock %}
 
 {% block page_actions %}
 <button class="btn btn-outline-secondary btn-sm" onclick="loadUsageData()">
-    <i class="fas fa-sync-alt me-1"></i> Refresh
+    <i class="fas fa-sync-alt me-1"></i> {{ t('admin_usage.refresh') }}
 </button>
 <button class="btn btn-outline-primary btn-sm" onclick="exportUsageCSV()">
-    <i class="fas fa-download me-1"></i> Export CSV
+    <i class="fas fa-download me-1"></i> {{ t('admin_usage.export_csv') }}
 </button>
 {% endblock %}
 
@@ -116,30 +117,30 @@
 <!-- Filters -->
 <div class="filters-row">
     <div class="filter-group">
-        <label>Date Range</label>
+        <label>{{ t('admin_usage.date_range') }}</label>
         <select id="dateRange" onchange="onFilterChange()">
-            <option value="7">Last 7 days</option>
-            <option value="30" selected>Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="365">Last year</option>
-            <option value="all">All time</option>
+            <option value="7">{{ t('admin_usage.last_7_days') }}</option>
+            <option value="30" selected>{{ t('admin_usage.last_30_days') }}</option>
+            <option value="90">{{ t('admin_usage.last_90_days') }}</option>
+            <option value="365">{{ t('admin_usage.last_year') }}</option>
+            <option value="all">{{ t('admin_usage.all_time') }}</option>
         </select>
     </div>
     <div class="filter-group">
-        <label>Usage Type</label>
+        <label>{{ t('admin_usage.usage_type') }}</label>
         <select id="typeFilter" onchange="onFilterChange()">
-            <option value="">All types</option>
-            <option value="ai_tokens">AI Tokens</option>
-            <option value="tts">TTS</option>
-            <option value="stt">STT</option>
-            <option value="image">Images</option>
-            <option value="video">Videos</option>
-            <option value="domain">Domains</option>
+            <option value="">{{ t('admin_usage.all_types') }}</option>
+            <option value="ai_tokens">{{ t('admin_usage.ai_tokens') }}</option>
+            <option value="tts">{{ t('admin_usage.tts') }}</option>
+            <option value="stt">{{ t('admin_usage.stt') }}</option>
+            <option value="image">{{ t('admin_usage.images') }}</option>
+            <option value="video">{{ t('admin_usage.videos') }}</option>
+            <option value="domain">{{ t('admin_usage.domains') }}</option>
         </select>
     </div>
     <div class="filter-group">
-        <label>Search User</label>
-        <input type="text" id="userSearch" placeholder="Username..." oninput="debounceFilter()">
+        <label>{{ t('admin_usage.search_user') }}</label>
+        <input type="text" id="userSearch" placeholder="{{ t('admin_usage.username') }}" oninput="debounceFilter()">
     </div>
 </div>
 
@@ -147,30 +148,30 @@
 <div class="row mb-4">
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card primary">
-            <div class="label"><i class="fas fa-users me-1"></i>Active Users</div>
+            <div class="label"><i class="fas fa-users me-1"></i>{{ t('admin_usage.active_users') }}</div>
             <div class="amount" id="statActiveUsers">-</div>
-            <div class="subtext" id="statActiveUsersPeriod">in selected period</div>
+            <div class="subtext" id="statActiveUsersPeriod">{{ t('admin_usage.in_selected_period') }}</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card success">
-            <div class="label"><i class="fas fa-bolt me-1"></i>Total Operations</div>
+            <div class="label"><i class="fas fa-bolt me-1"></i>{{ t('admin_usage.total_operations') }}</div>
             <div class="amount" id="statOperations">-</div>
-            <div class="subtext" id="statOperationsPeriod">in selected period</div>
+            <div class="subtext" id="statOperationsPeriod">{{ t('admin_usage.in_selected_period') }}</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card info">
-            <div class="label"><i class="fas fa-microchip me-1"></i>Tokens Used</div>
+            <div class="label"><i class="fas fa-microchip me-1"></i>{{ t('admin_usage.tokens_used') }}</div>
             <div class="amount" id="statTokens">-</div>
-            <div class="subtext">input + output</div>
+            <div class="subtext">{{ t('admin_usage.input_output') }}</div>
         </div>
     </div>
     <div class="col-md-3 col-6 mb-3">
         <div class="stat-card warning">
-            <div class="label"><i class="fas fa-dollar-sign me-1"></i>Total Cost</div>
+            <div class="label"><i class="fas fa-dollar-sign me-1"></i>{{ t('admin_usage.total_cost') }}</div>
             <div class="amount" id="statCost">-</div>
-            <div class="subtext">platform revenue</div>
+            <div class="subtext">{{ t('admin_usage.platform_revenue') }}</div>
         </div>
     </div>
 </div>
@@ -179,10 +180,10 @@
     <!-- Usage by Type -->
     <div class="col-lg-4 mb-4">
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-chart-pie me-2"></i>Usage by Type</div>
+            <div class="section-title"><i class="fas fa-chart-pie me-2"></i>{{ t('admin_usage.usage_by_type') }}</div>
             <div id="usageByType">
                 <div class="text-center text-muted py-4">
-                    <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+                    <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_usage.loading') }}
                 </div>
             </div>
         </div>
@@ -191,7 +192,7 @@
     <!-- Daily Usage Chart -->
     <div class="col-lg-8 mb-4">
         <div class="section-container">
-            <div class="section-title"><i class="fas fa-chart-line me-2"></i>Daily Usage Trend</div>
+            <div class="section-title"><i class="fas fa-chart-line me-2"></i>{{ t('admin_usage.daily_usage_trend') }}</div>
             <div class="chart-container">
                 <canvas id="dailyChart"></canvas>
             </div>
@@ -201,22 +202,22 @@
 
 <!-- Top Users Table -->
 <div class="section-container">
-    <div class="section-title"><i class="fas fa-trophy me-2"></i>Top Users by Consumption</div>
+    <div class="section-title"><i class="fas fa-trophy me-2"></i>{{ t('admin_usage.top_users_by_consumption') }}</div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>User</th>
-                    <th class="text-center">Operations</th>
-                    <th class="text-end">Tokens</th>
-                    <th class="text-end">Cost</th>
-                    <th class="text-center">Types</th>
+                    <th>{{ t('admin_usage.user') }}</th>
+                    <th class="text-center">{{ t('admin_usage.operations_2') }}</th>
+                    <th class="text-end">{{ t('admin_usage.tokens_2') }}</th>
+                    <th class="text-end">{{ t('admin_usage.cost') }}</th>
+                    <th class="text-center">{{ t('admin_usage.types') }}</th>
                 </tr>
             </thead>
             <tbody id="topUsersTable">
                 <tr>
                     <td colspan="5" class="text-center text-muted py-4">
-                        <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+                        <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_usage.loading') }}
                     </td>
                 </tr>
             </tbody>
@@ -226,22 +227,22 @@
 
 <!-- Daily Breakdown Table -->
 <div class="section-container mt-4">
-    <div class="section-title"><i class="fas fa-calendar-alt me-2"></i>Daily Breakdown</div>
+    <div class="section-title"><i class="fas fa-calendar-alt me-2"></i>{{ t('admin_usage.daily_breakdown') }}</div>
     <div class="table-wrapper">
         <table class="table">
             <thead>
                 <tr>
-                    <th>Date</th>
-                    <th class="text-center">Users</th>
-                    <th class="text-center">Operations</th>
-                    <th class="text-end">Tokens</th>
-                    <th class="text-end">Cost</th>
+                    <th>{{ t('admin_usage.date') }}</th>
+                    <th class="text-center">{{ t('admin_usage.users') }}</th>
+                    <th class="text-center">{{ t('admin_usage.operations_2') }}</th>
+                    <th class="text-end">{{ t('admin_usage.tokens_2') }}</th>
+                    <th class="text-end">{{ t('admin_usage.cost') }}</th>
                 </tr>
             </thead>
             <tbody id="dailyTable">
                 <tr>
                     <td colspan="5" class="text-center text-muted py-4">
-                        <i class="fas fa-spinner fa-spin me-2"></i>Loading...
+                        <i class="fas fa-spinner fa-spin me-2"></i>{{ t('admin_usage.loading') }}
                     </td>
                 </tr>
             </tbody>
@@ -284,7 +285,7 @@
 
         try {
             const response = await fetch('/api/admin/usage?' + params.toString());
-            if (!response.ok) throw new Error('Failed to load data');
+            if (!response.ok) throw new Error(AurvekI18n.t('admin_usage.failed_to_load_data'));
             const data = await response.json();
 
             updateStats(data.stats);
@@ -295,7 +296,7 @@
 
         } catch (error) {
             console.error('Error loading usage data:', error);
-            NotificationModal.error('Error', 'Failed to load usage data');
+            NotificationModal.error(AurvekI18n.t('admin_usage.error'), AurvekI18n.t('admin_usage.failed_to_load_usage_data'));
         }
     }
 
@@ -303,14 +304,14 @@
         document.getElementById('statActiveUsers').textContent = formatNumber(stats.active_users || 0);
         document.getElementById('statOperations').textContent = formatNumber(stats.total_operations || 0);
         document.getElementById('statTokens').textContent = formatNumber(stats.total_tokens || 0);
-        document.getElementById('statCost').textContent = '$' + (stats.total_cost || 0).toFixed(2);
+        document.getElementById('statCost').textContent = AurvekI18n.formatCurrency((stats.total_cost || 0), 'USD', 2);
     }
 
     function updateUsageByType(byType) {
         const container = document.getElementById('usageByType');
 
         if (!byType || byType.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted py-4">No data for selected period</div>';
+            container.innerHTML = '<div class="text-center text-muted py-4">' + AurvekI18n.t('admin_usage.no_data_for_selected_period') + '</div>';
             return;
         }
 
@@ -324,25 +325,25 @@
         };
 
         const typeLabels = {
-            'ai_tokens': 'AI Tokens',
-            'tts': 'Text-to-Speech',
-            'stt': 'Speech-to-Text',
-            'image': 'Images',
-            'video': 'Videos',
-            'domain': 'Domains'
+            'ai_tokens': AurvekI18n.t('admin_usage.ai_tokens'),
+            'tts': AurvekI18n.t('admin_usage.text_to_speech'),
+            'stt': AurvekI18n.t('admin_usage.speech_to_text'),
+            'image': AurvekI18n.t('admin_usage.images'),
+            'video': AurvekI18n.t('admin_usage.videos'),
+            'domain': AurvekI18n.t('admin_usage.domains')
         };
 
         container.innerHTML = byType.map(t => `
             <div class="d-flex justify-content-between align-items-center py-2 border-bottom" style="border-color: var(--border-color) !important;">
                 <div>
-                    <span class="type-badge ${t.type}">
+                    <span class="type-badge ${Object.hasOwn(typeLabels, t.type) ? t.type : ''}">
                         <i class="fas ${typeIcons[t.type] || 'fa-circle'}"></i>
-                        ${typeLabels[t.type] || t.type}
+                        ${typeLabels[t.type] || AurvekI18n.t('admin_usage.unknown_type')}
                     </span>
                 </div>
                 <div class="text-end">
-                    <div class="fw-bold">${formatNumber(t.operations)} ops</div>
-                    <small class="text-muted">$${t.total_cost.toFixed(2)}</small>
+                    <div class="fw-bold">${AurvekI18n.t('admin_usage.operation_count', {count: t.operations, number: formatNumber(t.operations)})}</div>
+                    <small class="text-muted">${AurvekI18n.formatCurrency(t.total_cost, 'USD', 2)}</small>
                 </div>
             </div>
         `).join('');
@@ -359,7 +360,7 @@
             return;
         }
 
-        const labels = daily.map(d => d.date);
+        const labels = daily.map(d => formatDate(d.date));
         const costData = daily.map(d => d.total_cost);
         const opsData = daily.map(d => d.operations);
 
@@ -369,7 +370,7 @@
                 labels: labels,
                 datasets: [
                     {
-                        label: 'Cost ($)',
+                        label: AurvekI18n.t('admin_usage.cost_2'),
                         data: costData,
                         borderColor: 'rgb(250, 166, 26)',
                         backgroundColor: 'rgba(250, 166, 26, 0.1)',
@@ -378,7 +379,7 @@
                         yAxisID: 'y'
                     },
                     {
-                        label: 'Operations',
+                        label: AurvekI18n.t('admin_usage.operations_2'),
                         data: opsData,
                         borderColor: 'rgb(88, 101, 242)',
                         backgroundColor: 'rgba(88, 101, 242, 0.1)',
@@ -389,6 +390,7 @@
                 ]
             },
             options: {
+                locale: AurvekI18n.locale,
                 responsive: true,
                 maintainAspectRatio: false,
                 interaction: {
@@ -418,7 +420,7 @@
                         position: 'left',
                         ticks: {
                             color: 'rgb(250, 166, 26)',
-                            callback: v => '$' + v.toFixed(2)
+                            callback: v => AurvekI18n.formatCurrency(v, 'USD', 2)
                         },
                         grid: {
                             color: 'rgba(255,255,255,0.05)'
@@ -444,7 +446,7 @@
         const tbody = document.getElementById('topUsersTable');
 
         if (!users || users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No data for selected period</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' + AurvekI18n.t('admin_usage.no_data_for_selected_period') + '</td></tr>';
             return;
         }
 
@@ -456,9 +458,12 @@
                 </td>
                 <td class="text-center">${formatNumber(u.operations)}</td>
                 <td class="text-end amount-cell">${formatNumber(u.tokens)}</td>
-                <td class="text-end amount-cell text-warning-soft">$${u.total_cost.toFixed(2)}</td>
+                <td class="text-end amount-cell text-warning-soft">${AurvekI18n.formatCurrency(u.total_cost, 'USD', 2)}</td>
                 <td class="text-center">
-                    ${u.types.map(t => `<span class="type-badge ${t}">${t.replace('_', ' ')}</span>`).join(' ')}
+                    ${u.types.map(type => {
+                        const labels = {ai_tokens: 'ai_tokens', tts: 'text_to_speech', stt: 'speech_to_text', image: 'images', video: 'videos', domain: 'domains'};
+                        return `<span class="type-badge ${Object.hasOwn(labels, type) ? type : ''}">${AurvekI18n.t('admin_usage.' + (labels[type] || 'unknown_type'))}</span>`;
+                    }).join(' ')}
                 </td>
             </tr>
         `).join('');
@@ -468,7 +473,7 @@
         const tbody = document.getElementById('dailyTable');
 
         if (!daily || daily.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No data for selected period</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' + AurvekI18n.t('admin_usage.no_data_for_selected_period') + '</td></tr>';
             return;
         }
 
@@ -477,11 +482,11 @@
 
         tbody.innerHTML = sorted.slice(0, 30).map(d => `
             <tr>
-                <td><strong>${d.date}</strong></td>
-                <td class="text-center">${d.unique_users || '-'}</td>
+                <td><strong>${formatDate(d.date)}</strong></td>
+                <td class="text-center">${d.unique_users === null || d.unique_users === undefined ? '-' : formatNumber(d.unique_users)}</td>
                 <td class="text-center">${formatNumber(d.operations)}</td>
                 <td class="text-end amount-cell">${formatNumber(d.tokens_in + d.tokens_out)}</td>
-                <td class="text-end amount-cell text-warning-soft">$${d.total_cost.toFixed(2)}</td>
+                <td class="text-end amount-cell text-warning-soft">${AurvekI18n.formatCurrency(d.total_cost, 'USD', 2)}</td>
             </tr>
         `).join('');
     }
@@ -498,11 +503,12 @@
         window.location.href = '/api/admin/usage/export?' + params.toString();
     }
 
+    function formatDate(value) {
+        return new Date(value + 'T00:00:00').toLocaleDateString(AurvekI18n.locale, {year: 'numeric', month: 'short', day: 'numeric'});
+    }
+
     function formatNumber(num) {
-        if (num >= 1000000000) return (num / 1000000000).toFixed(1) + 'B';
-        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-        return num.toString();
+        return AurvekI18n.formatNumber(num, {notation: 'compact', maximumFractionDigits: 1});
     }
 
     function escapeHtml(text) {

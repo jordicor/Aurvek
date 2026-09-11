@@ -719,3 +719,11 @@
     font-weight: 600;
 }
 
+/* Narrow page padding is smaller than Bootstrap's default negative row gutters. */
+@media (max-width: 768px) {
+    .main-container > .row {
+        margin-left: 0;
+        margin-right: 0;
+    }
+}
+

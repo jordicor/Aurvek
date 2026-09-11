@@ -1,0 +1,16 @@
+{
+  "title": "Consulter les conversations",
+  "read_only": "Accès en lecture seule. Les consultations sont enregistrées dans le journal d’audit.",
+  "back": "Retour aux conversations",
+  "untitled": "Conversation sans titre",
+  "older_messages": "Messages précédents",
+  "client": "Client",
+  "assistant": "Assistant",
+  "unavailable": "Ce fichier est indisponible.",
+  "audio": "Audio conservé",
+  "empty_messages": "Il n’y a aucun message.",
+  "applications": "Applications",
+  "open": "Ouvrir l’historique",
+  "empty_conversations": "Il n’y a aucune conversation pour cette application.",
+  "more": "Autres conversations"
+}

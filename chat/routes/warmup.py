@@ -25,6 +25,8 @@ from chat.services.warmup import (
     mark_skipped as mark_warmup_skipped,
 )
 
+from chat.services.localization import chat_text, chat_error
+
 router = APIRouter()
 
 
@@ -51,7 +53,7 @@ async def warmup_conversation_context(
 
     activity_payload, payload_error = _sanitize_warmup_payload(payload)
     if payload_error:
-        return JSONResponse(content={"success": False, "message": payload_error}, status_code=400)
+        return JSONResponse(content={"success": False, "message": chat_text(current_user, "invalid_request")}, status_code=400)
 
     if not await check_rate_limit(current_user.id, action="chat_warmup", limit=30, window_minutes=1):
         mark_warmup_skipped()
@@ -75,14 +77,14 @@ async def warmup_conversation_context(
     if not state:
         mark_warmup_skipped()
         return JSONResponse(
-            content={"success": False, "status": "skipped", "message": "Conversation not found."},
+            content={"success": False, "status": "skipped", "message": chat_text(current_user, "conversation_not_found")},
             status_code=404,
         )
 
     if state.get("locked"):
         mark_warmup_skipped()
         return JSONResponse(
-            content={"success": False, "status": "skipped", "message": "Conversation is locked."},
+            content={"success": False, "status": "skipped", "message": chat_text(current_user, "conversation_locked")},
             status_code=403,
         )
 

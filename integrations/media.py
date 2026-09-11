@@ -6,7 +6,6 @@ import tempfile
 
 import aiohttp
 import httpx
-import requests
 from fastapi import HTTPException
 from pydub.utils import mediainfo_json
 
@@ -20,8 +19,12 @@ from billing.usage_reservations import (
 )
 from clients import deepgram, stt_engine, stt_fallback_enabled
 from common import Cost, load_service_costs
+from database import get_db_connection
 from log_config import logger
 from tools.tts_load_balancer import get_elevenlabs_key
+from user_languages import load_user_preferred_languages
+from integrations.applications.messaging import current_messaging_state, check_current_messaging
+from integrations.embed.models import EmbedError
 
 
 DEFAULT_STT_LANGUAGE = "es"
@@ -51,6 +54,20 @@ class ExternalTranscriptionResult:
     duration_seconds: float
 
 
+async def _load_primary_stt_language(user_id: int | None) -> str | None:
+    """Return the user's primary language, or None for provider autodetection."""
+    if user_id is None:
+        return None
+    async with get_db_connection(readonly=True) as conn:
+        state = current_messaging_state()
+        if state is not None:
+            from integrations.applications.profile import load_profile
+            preferred_languages = (await load_profile(conn, state.admission.scope.app_id, state.admission.scope.subject)).preferred_languages
+        else:
+            preferred_languages = await load_user_preferred_languages(conn, user_id)
+    return preferred_languages[0] if preferred_languages else None
+
+
 def _probe_audio_duration_seconds(audio_content: bytes) -> float:
     """Probe compressed audio metadata without decoding it to PCM in memory."""
     with tempfile.TemporaryDirectory(prefix="aurvek-stt-") as temp_dir:
@@ -76,14 +93,77 @@ def _probe_audio_duration_seconds(audio_content: bytes) -> float:
     raise ValueError("Audio duration could not be determined")
 
 
-async def download_external_audio(media_url: str) -> bytes:
-    """Download provider media once so it can be transcribed and retained."""
-    response = await asyncio.to_thread(requests.get, media_url, timeout=(10, 300))
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Error downloading audio file")
-    if not response.content:
-        raise HTTPException(status_code=400, detail="No audio")
-    return response.content
+async def download_external_media(
+    media_url: str,
+    *,
+    max_bytes: int | None = None,
+    total_timeout: float = 300.0,
+) -> bytes:
+    """Download a caller-validated URL with one deadline and an optional byte cap."""
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    if not math.isfinite(total_timeout) or total_timeout <= 0:
+        raise ValueError("total_timeout must be finite and positive")
+
+    headers = {"Accept-Encoding": "identity"} if max_bytes is not None else None
+    timeout = httpx.Timeout(total_timeout, connect=min(10.0, total_timeout))
+    chunk_size = min(65536, max_bytes + 1) if max_bytes is not None else 65536
+    async with asyncio.timeout(total_timeout):
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            request = client.build_request("GET", media_url)
+            for redirect_count in range(21):
+                response = await client.send(request, stream=True, follow_redirects=False)
+                try:
+                    # Automatic redirects read intermediate bodies without our cap.
+                    if response.next_request is not None:
+                        if redirect_count == 20:
+                            raise httpx.TooManyRedirects(
+                                "Exceeded maximum allowed redirects", request=request
+                            )
+                        request = response.next_request
+                        continue
+                    if response.status_code != 200:
+                        raise HTTPException(400, "Error downloading media file")
+                    if max_bytes is not None:
+                        # Reject compression before decoding can expand one chunk
+                        # beyond the cap; media providers should honor identity.
+                        encoding = response.headers.get("content-encoding", "").strip().lower()
+                        if encoding not in ("", "identity"):
+                            raise HTTPException(400, "Compressed media download is not supported")
+                        try:
+                            content_length = int(response.headers.get("content-length", ""))
+                        except ValueError:
+                            content_length = None
+                        if content_length is not None and content_length > max_bytes:
+                            raise HTTPException(413, "Media file exceeds download limit")
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                        if max_bytes is not None and len(content) + len(chunk) > max_bytes:
+                            raise HTTPException(413, "Media file exceeds download limit")
+                        content.extend(chunk)
+                    return bytes(content)
+                finally:
+                    await response.aclose()
+
+
+async def download_external_audio(
+    media_url: str,
+    *,
+    max_bytes: int | None = None,
+    total_timeout: float = 300.0,
+) -> bytes:
+    """Download audio once for transcription and retention, preserving audio errors."""
+    try:
+        content = await download_external_media(
+            media_url, max_bytes=max_bytes, total_timeout=total_timeout
+        )
+    except HTTPException as exc:
+        if exc.status_code == 400:
+            raise HTTPException(400, "Error downloading audio file") from exc
+        raise
+    if not content:
+        raise HTTPException(400, "No audio")
+    return content
 
 
 async def get_stt_billing_config(
@@ -182,6 +262,7 @@ async def finalize_failed_stt_attempt(
     error: BaseException,
     *,
     context: str,
+    provider_started: bool | None = None,
 ) -> None:
     """Settle a billable provider response, otherwise release its reservation."""
     if isinstance(error, BillableSTTProviderError):
@@ -189,6 +270,9 @@ async def finalize_failed_stt_attempt(
             reservation_id,
             context=context,
         )
+        return
+    if provider_started and getattr(error, "status_code", None) not in {400, 401, 403, 404, 413, 422, 429}:
+        # The request may have run. Keep its original payer's hold for reconciliation.
         return
     await refund_stt_attempt(
         reservation_id,
@@ -228,7 +312,12 @@ async def reserve_stt_attempt(
         ) from exc
 
 
-async def transcribe_with_elevenlabs(audio_content: bytes = None, media_url: str = None):
+async def transcribe_with_elevenlabs(
+    audio_content: bytes = None,
+    media_url: str = None,
+    language_code: str | None = None,
+    before_provider=None,
+):
     try:
         eleven_key = get_elevenlabs_key()
         if not eleven_key:
@@ -249,12 +338,18 @@ async def transcribe_with_elevenlabs(audio_content: bytes = None, media_url: str
 
             form_data = aiohttp.FormData()
             form_data.add_field("model_id", "scribe_v2")
+            if language_code:
+                form_data.add_field("language_code", language_code)
             form_data.add_field("file", audio_content, filename="audio.webm", content_type="audio/webm")
 
+            if before_provider is not None:
+                await before_provider()
             async with session.post(url, headers=headers, data=form_data) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(f"ElevenLabs API error: {response.status} - {error_text}")
+                    error = RuntimeError(f"ElevenLabs STT API error: {response.status}")
+                    error.status_code = response.status
+                    raise error
                 try:
                     result = await response.json()
                     return result.get("text", "")
@@ -271,14 +366,18 @@ async def transcribe_with_deepgram(
     audio_content: bytes = None,
     media_url: str = None,
     user_agent: str = None,
+    language_code: str | None = None,
+    before_provider=None,
 ):
     try:
         options = {
             "model": "nova-2",
             "smart_format": True,
             "punctuate": True,
-            "language": DEFAULT_STT_LANGUAGE,
+            "language": language_code or DEFAULT_STT_LANGUAGE,
         }
+        if before_provider is not None:
+            await before_provider()
         if media_url:
             response = await deepgram.listen.asyncprerecorded.v("1").transcribe_url(
                 {"url": media_url},
@@ -370,15 +469,35 @@ async def transcribe_external_audio_detailed(
     )
     if primary_engine not in {"deepgram", "elevenlabs"}:
         raise HTTPException(status_code=400, detail="Unsupported speech-to-text engine")
+    language_code = await _load_primary_stt_language(user_id)
 
-    async def transcribe_with_engine(engine: str):
+    async def transcribe_with_engine(engine: str, reservation_id, attempt):
+        extra = {}
+        if current_messaging_state() is not None:
+            async def before_provider():
+                from billing.usage_reservations import claim_fixed_usage_provider
+                await check_current_messaging("stt")
+                if not await claim_fixed_usage_provider(reservation_id, purpose="stt", user_id=user_id):
+                    attempt["started"] = True  # Another claimant owns any settlement/refund.
+                    raise BillingReservationError("STT provider attempt was already claimed")
+                await check_current_messaging("stt")
+                attempt["started"] = True
+            extra["before_provider"] = before_provider
         if engine == "elevenlabs":
-            return await transcribe_with_elevenlabs(audio_content=audio_content)
+            return await transcribe_with_elevenlabs(
+                audio_content=audio_content,
+                language_code=language_code,
+                **extra,
+            )
         return await transcribe_with_deepgram(
             audio_content=audio_content,
             user_agent=user_agent,
+            language_code=language_code,
+            **extra,
         )
 
+    await check_current_messaging("stt")
+    primary_attempt = {"started": False if current_messaging_state() is not None else None}
     primary_reservation_id = await reserve_stt_attempt(
         user_id=user_id,
         engine=primary_engine,
@@ -387,21 +506,25 @@ async def transcribe_external_audio_detailed(
         context=f"external {primary_engine}",
     )
     try:
-        prompt = await transcribe_with_engine(primary_engine)
+        prompt = await transcribe_with_engine(primary_engine, primary_reservation_id, primary_attempt)
     except BaseException as primary_error:
         await finalize_failed_stt_attempt(
             primary_reservation_id,
             primary_error,
             context=f"failed external {primary_engine}",
+            provider_started=primary_attempt["started"],
         )
         if (
             not isinstance(primary_error, Exception)
+            or isinstance(primary_error, EmbedError)
             or not stt_fallback_enabled
             or primary_engine == "elevenlabs"
         ):
             raise
 
         fallback_engine = "elevenlabs"
+        await check_current_messaging("stt")
+        fallback_attempt = {"started": False if current_messaging_state() is not None else None}
         fallback_reservation_id = await reserve_stt_attempt(
             user_id=user_id,
             engine=fallback_engine,
@@ -410,12 +533,13 @@ async def transcribe_external_audio_detailed(
             context=f"external fallback {fallback_engine}",
         )
         try:
-            prompt = await transcribe_with_engine(fallback_engine)
+            prompt = await transcribe_with_engine(fallback_engine, fallback_reservation_id, fallback_attempt)
         except BaseException as fallback_error:
             await finalize_failed_stt_attempt(
                 fallback_reservation_id,
                 fallback_error,
                 context=f"failed external fallback {fallback_engine}",
+                provider_started=fallback_attempt["started"],
             )
             if not isinstance(fallback_error, Exception):
                 raise
