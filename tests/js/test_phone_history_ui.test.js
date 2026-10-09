@@ -223,6 +223,39 @@ test('saved voice notes and phone turns prefer original audio and otherwise keep
     assert.doesNotMatch(originalPlayback, /fetch\(/);
 });
 
+test('message audio download uses the retained bytes and their media extension', async () => {
+    const downloadSource = audio.match(/async function downloadOriginalAudio\([\s\S]+?\r?\n}/)[0];
+    const links = [];
+    const requests = [];
+    const context = vm.createContext({
+        resolveOriginalAudioUrl: url => url,
+        fetch: async (url, options) => {
+            requests.push({url, options});
+            return {
+                ok: true,
+                headers: {get: () => 'audio/wav'},
+                blob: async () => ({bytes: 'recording'}),
+            };
+        },
+        URL: {createObjectURL: () => 'blob:recording', revokeObjectURL() {}},
+        document: {
+            body: {appendChild() {}},
+            createElement() {
+                const link = {click() { links.push({href: this.href, filename: this.download}); }, remove() {}};
+                return link;
+            },
+        },
+        setTimeout() {},
+        console: {error() {}},
+    });
+    vm.runInContext(downloadSource, context);
+    await context.downloadOriginalAudio('/api/phone-messages/42/audio', 42);
+    assert.equal(requests[0].url, '/api/phone-messages/42/audio');
+    assert.equal(requests[0].options.credentials, 'same-origin');
+    assert.deepEqual(links, [{href: 'blob:recording', filename: 'audio-42.wav'}]);
+    assert.match(chat, /if \(originalAudio\) \{[\s\S]+?downloadOriginalAudio\(originalAudio\.url, messageId\)/);
+});
+
 test('active telephone calls never render a false end state', () => {
     assert.match(history, /const TERMINAL_CALL_STATUSES = new Set/);
     assert.match(history, /callState\.textContent = statusLabel\(call\.status\)/);

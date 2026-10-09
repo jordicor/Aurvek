@@ -71,28 +71,29 @@ async def _get_pack_path_safe(pack_id: int) -> str | None:
 
 
 async def build_world(world_type: str, world_id: int) -> dict | None:
-    """Build a world dict if the entity exists and has a welcome page."""
-    if world_type == "prompt":
-        path = await _get_prompt_path_safe(world_id)
-    elif world_type == "pack":
-        path = await _get_pack_path_safe(world_id)
-    else:
+    """Resolve only published welcome pages, with fresh metadata and gate."""
+    if world_type not in ("prompt", "pack"):
         return None
-
-    if path is None or not _welcome_exists(path):
-        return None
-
-    # Fetch the name
+    table = "PROMPTS" if world_type == "prompt" else "PACKS"
     try:
-        if world_type == "prompt":
-            info = await get_prompt_info(world_id)
-        else:
-            info = await _get_pack_info(world_id)
-        name = info["name"] if info else str(world_id)
+        async with get_db_connection(readonly=True) as conn:
+            cursor = await conn.execute(
+                f"""SELECT p.name, p.created_by_user_id, u.username AS created_by_username,
+                           p.has_welcome_page
+                    FROM {table} p JOIN USERS u ON p.created_by_user_id = u.id
+                    WHERE p.id = ?""",
+                (world_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None or not row["has_welcome_page"]:
+            return None
+        info = dict(row)
+        path = (get_prompt_path if world_type == "prompt" else get_pack_path)(world_id, info)
+        if not _welcome_exists(path):
+            return None
     except Exception:
-        name = str(world_id)
-
-    return {"type": world_type, "id": world_id, "name": name, "path": path}
+        return None
+    return {"type": world_type, "id": world_id, "name": info["name"], "path": path}
 
 
 

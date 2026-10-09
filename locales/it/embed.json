@@ -8,6 +8,7 @@
   "memory_notice": "Questa conversazione conserva la cronologia. La memoria delle altre conversazioni è disattivata.",
   "expired": "Il tuo accesso è scaduto. Torna al prodotto per accedere di nuovo.",
   "error": "Non è stato possibile completare l’operazione. Controlla lo stato della conversazione prima di riprovare.",
+  "theme_error": "Non è stato possibile caricare l’aspetto della chat. Ricarica la pagina o contatta il responsabile dell’applicazione.",
   "ending": "Chiusura dell’attività in corso…",
   "idle": "Inattivo",
   "generating": "Preparazione della risposta…",

@@ -434,6 +434,9 @@ function initPhoneInput() {
         // The phone widget formats saved numbers after its utilities load.
         // Only that field becomes clean; an early user edit must stay protected.
         if (!editedDuringLoad) {
+            if (phoneInputField.dataset.original) {
+                phoneInputJS.setNumber(phoneInputField.dataset.original);
+            }
             FormGuard.markFieldsClean('#editProfileForm', ['phone_number']);
         }
     }
@@ -609,6 +612,7 @@ function setupEventListeners() {
 
     verifyCodeButton.addEventListener('click', async function(e) {
         e.preventDefault();
+        if (profileSaveInProgress) return;
         const phoneNumber = phoneInputJS.getNumber(intlTelInputUtils.numberFormat.E164);
         const code = verificationCodeInput.value;
         if (!phoneChallengeId || challengePhoneNumber !== phoneNumber) {
@@ -616,6 +620,9 @@ function setupEventListeners() {
             return;
         }
 
+        profileSaveInProgress = true;
+        verifyCodeButton.disabled = true;
+        phoneInput.disabled = true;
         try {
             const response = await secureFetch('/api/verify-code', {
                 method: 'POST',
@@ -631,20 +638,49 @@ function setupEventListeners() {
             });
             if (!response) return; // Session expired
             const result = await response.json();
-            if (result.status === 'approved') {
-                NotificationModal.success(profileText('modal.success'), profileText('phone.verified'));
-                verifyCodeButton.style.display = 'none';
-                verificationCodeInput.disabled = true;
-                phoneInput.dataset.verified = 'true';
-                phoneChallengeApproved = true;
-                phoneVerificationIdInput.value = phoneChallengeId;
-            } else {
+            if (!response.ok || result.status !== 'approved') {
                 NotificationModal.error(profileText('modal.error'), result.detail || profileText('phone.verification_failed'));
                 verificationCodeInput.value = '';
+                return;
+            }
+            phoneChallengeApproved = true;
+            phoneVerificationIdInput.value = phoneChallengeId;
+
+            // The challenge alone does not update USERS. Persist this phone now so
+            // WhatsApp and phone assignment can use it without another profile save.
+            const phoneData = new FormData();
+            phoneData.set('username', document.getElementById('username').value);
+            phoneData.set('phone_number', phoneNumber);
+            phoneData.set('phone_verification_id', phoneChallengeId);
+            const saveResponse = await secureFetch('/api/edit-profile', {
+                method: 'POST',
+                body: phoneData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (!saveResponse) return; // Session expired
+            const saved = await saveResponse.json();
+            if (!saveResponse.ok || !saved.success) {
+                NotificationModal.error(profileText('modal.error'), saved.message || profileText('error.profile_update'));
+                return;
+            }
+            originalPhoneNumber = phoneNumber;
+            resetPhoneVerificationState();
+            phoneInput.dataset.phoneVerified = 'true';
+            sendCodeButton.style.display = 'none';
+            phoneInput.disabled = false;
+            FormGuard.markFieldsClean('#editProfileForm', ['phone_number']);
+            NotificationModal.success(profileText('modal.success'),
+                profileText(saved.reauthenticate ? 'phone.updated_reauthenticate' : 'phone.verified'));
+            if (saved.reauthenticate) {
+                setTimeout(() => FormGuard.navigate('/login'), 1200);
             }
         } catch (error) {
             console.error('Error:', error);
             NotificationModal.error(profileText('modal.error'), profileText('phone.verification_error'));
+        } finally {
+            profileSaveInProgress = false;
+            verifyCodeButton.disabled = false;
+            phoneInput.disabled = false;
         }
     });
 

@@ -78,6 +78,7 @@ async def password_flow(tmp_path, monkeypatch):
             );
             CREATE TABLE USER_ALTER_EGOS (
                 id INTEGER PRIMARY KEY,
+                user_id INTEGER,
                 name TEXT,
                 profile_picture TEXT
             );

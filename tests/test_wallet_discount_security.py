@@ -2,12 +2,16 @@ import asyncio
 import json
 import sqlite3
 from contextlib import asynccontextmanager
+from unittest.mock import Mock
 
 import aiosqlite
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from starlette.requests import Request
+from starlette.templating import Jinja2Templates
+from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader, select_autoescape
+from i18n import Translator, template_context
 
 from billing import discounts as discounts_module
 from billing import wallet as wallet_module
@@ -21,6 +25,64 @@ from billing.routes import wallet as wallet_routes
 
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("status,paid,credit,expected", [
+    ("expired", "unpaid", False, "not_completed"),
+    ("open", "unpaid", False, "pending"),
+    ("complete", "unpaid", False, "pending"),
+    ("complete", "paid", False, "crediting"),
+    ("complete", "paid", True, "credited"),
+])
+async def test_wallet_success_reports_payment_and_actual_credit_separately(wallet_db, monkeypatch, status, paid, credit, expected):
+    session = wallet_module.stripe.checkout.Session.construct_from(
+        {"id": "cs-wallet", "status": status, "payment_status": paid,
+         "metadata": {"user_id": "1", "original_amount": "10"}}, None)
+    monkeypatch.setattr(wallet_module, "STRIPE_SECRET_KEY", "fixture-key")
+    monkeypatch.setattr(wallet_module.stripe.checkout.Session, "retrieve", Mock(return_value=session))
+    with sqlite3.connect(wallet_db) as db:
+        # Similar entries from other users, sessions or types do not confirm this top-up.
+        db.executemany("""INSERT INTO TRANSACTIONS
+            (user_id,type,amount,balance_before,balance_after,reference_id) VALUES (?,?,10,2,12,?)""",
+            [(2, "payment", "cs-wallet"), (1, "payment", "cs-other"), (1, "balance_credit", "cs-wallet")])
+        if credit:
+            db.execute("""INSERT INTO TRANSACTIONS
+                (user_id,type,amount,balance_before,balance_after,reference_id) VALUES (1,'payment',10,2,12,'cs-wallet')""")
+            db.execute("UPDATE USER_DETAILS SET balance=12 WHERE user_id=1")
+        entries = db.execute("SELECT * FROM TRANSACTIONS").fetchall()
+    env = Environment(loader=ChoiceLoader([
+        DictLoader({"base.html": "{% block title %}{% endblock %}{% block styles %}{% endblock %}{% block content %}{% endblock %}"}),
+        FileSystemLoader("templates"),
+    ]), autoescape=select_autoescape())
+    monkeypatch.setattr(wallet_routes, "templates", Jinja2Templates(env=env))
+
+    async def page_context(request, user):
+        return {"request": request, **template_context(request)}
+
+    monkeypatch.setattr(wallet_routes, "get_template_context", page_context)
+    request = Request({"type": "http", "method": "GET", "path": "/payment-success",
+                       "headers": [(b"host", b"testserver"), (b"accept-language", b"es")],
+                       "query_string": b"session_id=cs-wallet", "scheme": "https"})
+    response = await wallet_routes.payment_success_page(request, "cs-wallet", DummyUser(1))
+    assert response.context["payment_state"] == expected
+    assert response.context["new_balance"] == (12 if credit else None)
+    html = response.body.decode()
+    assert Translator("es").render(f"wallet.payment.{expected}.title") in html
+    assert ('http-equiv="refresh"' in html) is (expected in {"pending", "crediting"})
+    assert ('class="balance-amount"' in html) is credit
+    if expected == "crediting":
+        final = await wallet_routes.payment_success_page(request, "cs-wallet", DummyUser(1), check=4)
+        assert 'http-equiv="refresh"' not in final.body.decode()
+        assert Translator("es").render("wallet.payment.check_later") in final.body.decode()
+    with sqlite3.connect(wallet_db) as db:
+        assert db.execute("SELECT * FROM TRANSACTIONS").fetchall() == entries
+        assert db.execute("SELECT balance FROM USER_DETAILS WHERE user_id=1").fetchone()[0] == (12 if credit else 2)
+
+    # Even a paid session with an entry must never disclose another user's wallet.
+    if credit:
+        session["metadata"]["user_id"] = "2"
+        denied = await wallet_routes.payment_success_page(request, "cs-wallet", DummyUser(1))
+        assert denied.status_code == 302 and denied.headers["location"] == "/payment"
 
 
 class DummyUser:

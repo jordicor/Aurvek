@@ -83,10 +83,13 @@ def test_prompt_domain_variants_and_money(language):
 
 @pytest.fixture
 def landing_db(checkout_db, monkeypatch, tmp_path):
+    from marketplace.landing import publication
     path, connect = checkout_db
     monkeypatch.setattr(config, 'marketplace_creator_tools_enabled', lambda: True)
     monkeypatch.setattr(config, 'marketplace_public_landings_enabled', lambda: True)
     monkeypatch.setattr(builder, 'get_db_connection', connect)
+    monkeypatch.setattr(publication, 'get_db_connection', connect)
+    monkeypatch.setattr(publication, '_LANDING_SAVE_LOCK_DIR', tmp_path / 'save-locks')
     monkeypatch.setattr(domains, 'get_db_connection', connect)
     async def context(req, current_user):
         get_translator(req, current_user)
@@ -229,3 +232,66 @@ async def test_publication_unavailable_is_localized_and_fail_closed(tmp_path, mo
     monkeypatch.setattr(builder, '_PROMPT_PIPELINE_DIR', tmp_path / 'missing')
     errors = await builder._get_landing_publication_errors(10, '<p>Creator page</p>', translator=Translator(language))
     assert errors == [Translator(language).t('landing_publication.unavailable')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['prompt', 'pack'])
+@pytest.mark.parametrize('target', ['landing', 'welcome'])
+@pytest.mark.parametrize('job_type', ['generate', 'modify'])
+async def test_wizard_routes_run_stored_job_with_fake_runner_and_language(
+    landing_db, monkeypatch, kind, target, job_type,
+):
+    import prompts
+    from marketplace.landing import jobs, worker, wizard, publication
+    from types import SimpleNamespace
+
+    _, connect, pack_dir = landing_db
+    destination = pack_dir if kind == 'pack' else pack_dir.parent / 'prompt'
+    destination.mkdir()
+    page = destination / ('home.html' if target == 'landing' else 'welcome/index.html')
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text('<main>Previous page</main>', encoding='utf-8')
+    monkeypatch.setattr(prompts, 'get_db_connection', connect)
+    monkeypatch.setattr(builder, 'get_prompt_path', lambda *args: str(destination))
+    monkeypatch.setattr(jobs, 'JOBS_DIR', destination.parent / 'jobs')
+    jobs.JOBS_DIR.mkdir()
+    monkeypatch.setattr(publication, 'get_db_connection', connect)
+    monkeypatch.setattr(publication, '_LANDING_SAVE_LOCK_DIR', jobs.JOBS_DIR / 'save-locks')
+    monkeypatch.setattr(jobs, 'get_wizard_sandbox_status', lambda: SimpleNamespace(available=True))
+    monkeypatch.setattr(jobs.subprocess, 'Popen', lambda *args, **kwargs: SimpleNamespace(pid=123))
+    monkeypatch.setattr(builder, 'is_claude_available', lambda: (True, 'fake runner'))
+    monkeypatch.setattr(packs, 'is_claude_available', lambda: (True, 'fake runner'))
+    security = AsyncMock(return_value={'checked': True, 'allowed': True})
+    monkeypatch.setattr(builder, 'check_security', security)
+    monkeypatch.setattr(packs, 'check_security', security)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(kwargs)
+        assert Path(kwargs['workspace']) == destination
+        if target == 'welcome' or job_type == 'generate':
+            assert 'English (US)' in kwargs['prompt']
+        page.write_text('<main>Generated page in English</main>', encoding='utf-8')
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+
+    monkeypatch.setattr(wizard, 'run_claude_in_sandbox', runner)
+    handler = (getattr(builder, f'{job_type}_{target}_with_wizard') if kind == 'prompt' else
+               getattr(packs, f'pack_{"ai" if target == "landing" else "welcome"}_wizard_{job_type}'))
+    payload = {'description': 'Create a professional page in English',
+               'instructions': 'Update this page in English', 'language': 'en'}
+    response = await handler(request(payload), 10 if kind == 'prompt' else 20, Creator('en'))
+    assert response.status_code == 200, response.body
+    task_id = json.loads(response.body)['task_id']
+    assert await worker.run_job(task_id, str(destination)) is True
+    job = jobs.get_job(task_id)
+    assert job['status'] == 'completed'
+    assert job['target'] == target
+    assert job['pack_id'] == (20 if kind == 'pack' else None)
+    assert job['files_created'] == [page.relative_to(destination).as_posix()]
+    assert len(calls) == 1
+    async with connect() as conn:
+        row = await (await conn.execute(
+            'SELECT has_landing_page, landing_trusted, has_welcome_page FROM PROMPTS WHERE id=10' if kind == 'prompt' else
+            'SELECT has_custom_landing, has_welcome_page FROM PACKS WHERE id=20',
+        )).fetchone()
+    assert tuple(row) == ((0, 0, int(target == 'welcome')) if kind == 'prompt' else (0, int(target == 'welcome')))

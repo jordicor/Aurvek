@@ -86,6 +86,9 @@
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.0.4/pako.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+    {% if presentation|default('native') == 'embedded' and embed_theme_css_url %}
+    <link rel="stylesheet" id="application-theme-css" href="{{ embed_theme_css_url }}" referrerpolicy="no-referrer">
+    {% endif %}
 </head>
 <body>
     <!-- Skeleton loader - shown while page content loads -->
@@ -357,7 +360,7 @@
                 {% endif %}
             </div>
             <div class="dropdown">
-                <div class="user-info-text" role="button" id="userDropdownDesktop" data-bs-toggle="dropdown" aria-expanded="false">
+                <div class="user-info-text" role="button" tabindex="0" id="userDropdownDesktop" data-bs-toggle="dropdown" aria-expanded="false">
                     <div class="user-info-name">{{ username }}</div>
                     <div class="user-info-role">
                         {% if is_admin %}{{ t('chat_ui.role.administrator') }}{% elif is_user %}{{ t('chat_ui.role.user') }}{% else %}{{ t('chat_ui.role.customer') }}{% endif %}
@@ -388,6 +391,14 @@
                       </ul>
                     </li>
                     {% if presentation|default('native') != 'embedded' %}
+                    <li class="dropend">
+                      <a class="dropdown-item dropdown-toggle alter-ego-toggle" href="#" aria-expanded="false">
+                        <i class="fas fa-masks-theater"></i> {{ t('navigation.menu.alter_egos') }}
+                      </a>
+                      <ul class="dropdown-menu theme-submenu settings-submenu" data-submenu="alter-egos">
+                        <li><span class="dropdown-item-text">{{ t('navigation.alter_ego.loading') }}</span></li>
+                      </ul>
+                    </li>
                     <li class="dropend">
                       <a class="dropdown-item dropdown-toggle" href="#">
                         <i class="fas fa-language"></i> {{ t('navigation.menu.language') }}
@@ -534,6 +545,7 @@
                     </div>
                 </div>
                 <div class="voice-overlay-footer">
+                    <button type="button" id="voice-native-open" class="voice-secondary-btn">Voice &amp; camera</button>
                     <button type="button" id="voice-start-stop" class="voice-primary-btn" disabled>{{ t('chat_ui.voice.configuring') }}</button>
                     <button type="button" id="voice-mute-toggle" class="voice-secondary-btn hidden" aria-pressed="false" aria-label="{{ t('chat_ui.voice.mute') }}">
                         <i class="fas fa-microphone"></i>
@@ -541,6 +553,27 @@
                 </div>
             </div>
         </div>
+
+        <dialog id="native-live-dialog" class="native-live-dialog" aria-labelledby="native-live-title" aria-describedby="native-live-intro">
+            <header>
+                <i class="fas fa-phone native-live-icon" aria-hidden="true"></i>
+                <h2 id="native-live-title">Voice call</h2>
+                <button type="button" id="native-live-close" aria-label="Close call window">&#215;</button>
+            </header>
+            <p id="native-live-intro" class="native-live-intro">Talk with your assistant.</p>
+            <label id="native-live-camera-option" class="native-live-camera-option" hidden>
+                <input type="checkbox" id="native-live-camera" aria-labelledby="native-live-camera-label" aria-describedby="native-live-camera-hint">
+                <span><strong id="native-live-camera-label">Share camera</strong><small id="native-live-camera-hint">Let the assistant see what you show.</small></span>
+            </label>
+            <video id="native-live-preview" aria-label="Your camera" autoplay muted playsinline hidden></video>
+            <p id="native-live-status" role="status" hidden></p>
+            <p id="native-live-captions" aria-live="off" hidden></p>
+            <footer>
+                <button type="button" id="native-live-mute" aria-pressed="false" disabled hidden>Mute</button>
+                <button type="button" id="native-live-start" disabled>Start call</button>
+            </footer>
+        </dialog>
+        <link rel="stylesheet" href="{{ get_static_url('/static/css/native-live.css') }}">
 
         <div class="chat-window" id="chat-window">
             <div class="chat-messages-container" id="chat-messages-container">
@@ -645,6 +678,7 @@
                                     <span class="plus-menu-label">{{ t('chat_ui.tools.ai_voice') }}</span>
                                     <span id="voice-call-availability-reason" class="voice-call-availability-reason" role="status" hidden></span>
                                 </button>
+                                <button type="button" class="plus-menu-item" id="plus-native-live"><i class="fas fa-video"></i><span class="plus-menu-label">Voice &amp; camera</span></button>
                                 {% if presentation|default('native') == 'embedded' and embed_config.application is defined %}
                                 {% if embed_config.controls.export_pdf %}
                                 <button type="button" class="plus-menu-item" data-application-action="export_pdf"><i class="fas fa-file-pdf"></i><span class="plus-menu-label">{{ t('chat.download_pdf') }}</span></button>
@@ -955,12 +989,16 @@
     <script src="{{ get_static_url('/static/js/chat/folders.js') }}"></script>
     <script src="{{ get_static_url('/static/js/themeManager.js') }}"></script>
     <script src="{{ get_static_url('/static/js/common/ui-language.js') }}"></script>
+    {% if presentation|default('native') != 'embedded' %}
+    <script src="{{ get_static_url('/static/js/chat/alter-egos.js') }}"></script>
+    {% endif %}
     <script src="{{ get_static_url('/static/js/nekoglass-controls.js') }}"></script>
     <script src="/sdk/elevenlabs-client.js"></script>
     <script src="{{ get_static_url('/static/js/chat/phone-call.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/wellbeing.js') }}"></script>
     {% endif %}
     <script src="{{ get_static_url('/static/js/chat/browser-voice.js') }}"></script>
+    <script src="{{ get_static_url('/static/js/chat/native-live.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/voice-call.js') }}"></script>
     <script src="{{ get_static_url('/static/js/chat/application-actions.js') }}"></script>
     <script>

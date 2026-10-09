@@ -7,6 +7,9 @@ from database import get_db_connection
 from models import User
 
 from chat.services.message_rendering import process_message
+from chat.services.privacy import ensure_conversation_privacy_schema
+from integrations.applications.listing import blocked_application_conversation_ids
+from integrations.applications.web import require_application_access
 from integrations.messaging_voice_notes.service import load_message_channel_provenance
 
 from chat.services.localization import chat_text, chat_translator
@@ -34,6 +37,7 @@ async def bookmark_message(
         if not conversation or conversation[0] != current_user.id:
             raise HTTPException(status_code=403, detail=chat_text(current_user, "bookmark_access_denied"))
 
+        await require_application_access(conn, conversation_id, current_user.id)
         is_bookmarked = 1 if action == "add" else 0
         await conn.execute(
             "UPDATE MESSAGES SET is_bookmarked = ? WHERE id = ? AND conversation_id = ?",
@@ -52,21 +56,25 @@ async def get_bookmarked_messages(
     if current_user is None:
         return unauthenticated_response()
 
+    await ensure_conversation_privacy_schema()
     async with get_db_connection(readonly=True) as conn:
+        blocked_ids = await blocked_application_conversation_ids(conn, current_user.id)
+        application_filter = ("AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
         cursor = await conn.cursor()
         await cursor.execute(
-            """
+            f"""
             SELECT m.id, m.conversation_id, m.user_id, u.username, m.message, m.type,
                    strftime('%Y-%m-%d %H:%M:%S', m.date) as date_utc,
                    c.chat_name
             FROM MESSAGES m
             JOIN USERS u ON m.user_id = u.id
-            LEFT JOIN CONVERSATIONS c ON m.conversation_id = c.id
-            WHERE m.user_id = ? AND m.is_bookmarked = 1
+            JOIN CONVERSATIONS c ON m.conversation_id = c.id
+            WHERE m.user_id = ? AND c.user_id = ? AND m.is_bookmarked = 1
               AND COALESCE(c.hidden_from_history, 0) = 0
+              {application_filter}
             ORDER BY m.conversation_id DESC, m.date ASC
             """,
-            (current_user.id,),
+            (current_user.id, current_user.id, *blocked_ids),
         )
         messages = await cursor.fetchall()
         channel_provenance = await load_message_channel_provenance(

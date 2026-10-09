@@ -9,7 +9,7 @@ from integrations.embed.api import PrivateRoute
 from integrations.embed.identity import get_embed_store
 from integrations.embed.models import AppConfig, DelegatedRequest, ExchangeCodeRequest, StrictModel
 
-from .models import CONTRACT_VERSION, ConversationId, EntryPreferenceRequest, ExternalReference, HandoffRequest, LocalId, OpenConversationRequest
+from .models import CONTRACT_VERSION, ConversationId, EntryPreferenceRequest, ExternalReference, HandoffRequest, ListConversationsRequest, LocalId, OpenConversationRequest
 from .service import ApplicationService
 from .profile import ConversationalProfileUpdate, ApplicationProfileService
 from .channel_destination import ChannelDestination
@@ -41,6 +41,10 @@ class ApplicationRoute(PrivateRoute):
 
 class OpenBody(DelegatedRequest):
     conversation: OpenConversationRequest
+
+
+class ListConversationsBody(DelegatedRequest, ListConversationsRequest):
+    pass
 
 
 class BootstrapBody(DelegatedRequest):
@@ -132,6 +136,29 @@ def account_response(result):
 
 
 router = APIRouter(prefix="/api/applications/v1", route_class=ApplicationRoute)
+
+
+@router.post("/provider-keys/{action}")
+async def application_provider_keys(action: str, body: dict, app: AppConfig = Depends(backend_client)):
+    """Expose organization key lifecycle only to the authenticated application backend."""
+    from .provider_keys import KeyScope, KeyMutation, SaveKey, ResolveKey, ProviderKeyService
+    from integrations.embed.models import EmbedError
+    models = {"status": KeyScope, "save": SaveKey, "revoke": KeyMutation,
+              "validate": ResolveKey, "resolve": ResolveKey}
+    if action not in models:
+        raise EmbedError("not_found", 404)
+    try:
+        value = models[action].model_validate(body)
+    except ValueError:
+        raise EmbedError("invalid_request", 400) from None
+    service = ProviderKeyService(get_embed_store())
+    if action == "status":
+        result = await service.summaries(app.app_id, value.organization_ref)
+    elif action == "resolve":
+        result = {"api_key": await service.resolve(app.app_id, value)}
+    else:
+        result = await getattr(service, action)(app.app_id, value)
+    return account_response(result)
 
 
 @router.post('/context-source/state')
@@ -242,6 +269,14 @@ async def open_conversation(body: OpenBody, app: AppConfig = Depends(backend_cli
     store = get_embed_store()
     identity = await store.inspect_identity(app.app_id, body.delegated_credential)
     return await ApplicationService(store).open_conversation(identity, body.conversation)
+
+
+@router.post("/list-conversations")
+async def list_conversations(body: ListConversationsBody, app: AppConfig = Depends(backend_client)):
+    store = get_embed_store()
+    identity = await store.inspect_identity(app.app_id, body.delegated_credential)
+    request = ListConversationsRequest(context_ref=body.context_ref, limit=body.limit)
+    return await ApplicationService(store).list_conversations(identity, request)
 
 
 @router.post("/issue-embed-bootstrap")

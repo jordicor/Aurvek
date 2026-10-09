@@ -367,7 +367,7 @@ async def _load_warmup_prompt_runtime_snapshot(
                 watchdog_hint_active = True
                 watchdog_hint_eval_id = hint_row[2]
 
-        blocks = await get_effective_blocks()
+        blocks = await get_effective_blocks(embedded=embed_interview)
         full_prompt = assemble_system_prompt(
             blocks,
             {"user_level": user_level},

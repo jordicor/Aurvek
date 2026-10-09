@@ -99,6 +99,17 @@ def scoped_headers(frame=FRAME_A, **extra):
     return {"X-Aurvek-Embed-Frame": frame, **extra}
 
 
+def test_native_worklet_requires_the_embed_frame_and_voice_capability(surface):
+    client, store = surface
+    path = "/sdk/native-live-worklet.js"
+    assert client.get(path).status_code == 401
+    assert client.get(path, params={"embed_frame": FRAME_A}).status_code == 403
+    store.frames[FRAME_A] = replace(store.frames[FRAME_A],
+        capabilities={**store.frames[FRAME_A].capabilities, "voice": True})
+    assert client.get(path, params={"embed_frame": FRAME_A}).status_code == 200
+    assert client.post(path, headers=scoped_headers()).status_code == 404
+
+
 @pytest.mark.parametrize("kind", ["pdf", "mp3"])
 def test_export_routes_require_capability_csrf_and_matching_frame(surface, kind):
     client, store = surface
@@ -458,6 +469,7 @@ async def test_embed_message_requires_no_native_cookie_and_retains_pause_rate_ac
     ("model", "PATCH", "model_selection"), ("extension", "PATCH", "extensions"),
     ("voice/transcribe", "POST", "stt"), ("voice/tts", "POST", "tts"),
     ("voice/audio", "GET", "voice"), ("media/content", "GET", "text"),
+    ("live/config", "GET", "voice"),
 ])
 def test_multimodal_routes_require_capability_and_exact_frame(surface, operation, method, capability):
     client, store = surface
@@ -468,3 +480,30 @@ def test_multimodal_routes_require_capability_and_exact_frame(surface, operation
     store.frames[FRAME_A].capabilities[capability] = True
     assert client.request(method, path, headers=headers).status_code == 200
     assert client.request(method, path.replace('/101/', '/102/'), headers=headers).status_code == 404
+
+
+@pytest.mark.parametrize("transport", ["voice", "live"])
+def test_voice_sockets_keep_embed_identity_and_exact_conversation(monkeypatch, transport):
+    from fastapi import WebSocket
+    monkeypatch.setenv("UVICORN_WORKERS", "1")
+    monkeypatch.setattr(custom_domains, "_primary_domains", {"aurvek.example"})
+    store = ScopedStore()
+    app = FastAPI()
+    @app.websocket("/ws/conversations/{conversation_id}/" + transport)
+    async def observed(socket: WebSocket, conversation_id: int):
+        await socket.accept()
+        await socket.send_json({"conversation": socket.state.embed_principal.conversation_id})
+        await socket.close()
+    app.add_middleware(EmbedHostMiddleware, store=store)
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.cookies.set(EMBED_COOKIE_NAME, COOKIE)
+        path = ORIGIN.replace("https://", "wss://") + f"/ws/conversations/101/{transport}?embed_frame={FRAME_A}"
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(path):
+                pass
+        store.frames[FRAME_A].capabilities["voice"] = True
+        with client.websocket_connect(path) as socket:
+            assert socket.receive_json() == {"conversation": 101}
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(path.replace("/101/", "/102/")):
+                pass

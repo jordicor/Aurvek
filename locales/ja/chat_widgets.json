@@ -1,4 +1,5 @@
 {
+  "phone.backend_model_unavailable": "GPT-Liveで通話中の操作を行うには、対応するAPIモデルが必要です。プロンプトの通話設定で選択してください。チャットモデルは変更せずに利用できます。",
   "audio.browser_unsupported": "お使いのブラウザは録音に対応していません。",
   "audio.browser_unsupported_title": "非対応のブラウザ",
   "audio.empty_recording": "録音に音声データが含まれていませんでした。",

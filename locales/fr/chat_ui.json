@@ -89,6 +89,7 @@
   "role.user": "Utilisateur",
   "search.clear": "Effacer la recherche",
   "search.empty": "Aucun message trouvé",
+  "search.failed": "La recherche a échoué. Veuillez réessayer.",
   "search.label": "Rechercher des messages",
   "search.load_more": "Charger plus de résultats",
   "search.placeholder": "Rechercher des messages...",

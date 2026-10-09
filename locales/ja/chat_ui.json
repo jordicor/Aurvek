@@ -89,6 +89,7 @@
   "role.user": "ユーザー",
   "search.clear": "検索をクリア",
   "search.empty": "メッセージが見つかりません",
+  "search.failed": "検索に失敗しました。もう一度お試しください。",
   "search.label": "メッセージを検索",
   "search.load_more": "さらに結果を読み込む",
   "search.placeholder": "メッセージを検索...",

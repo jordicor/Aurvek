@@ -200,7 +200,11 @@ async def revoke_entitlement(
     revoked_by_user_id: int | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> int:
-    """Mark matching active entitlements inactive. Returns affected rows."""
+    """Mark active entitlements inactive or finalize revoked ones as refunded.
+
+    Merge event metadata into the existing evidence and retain the original
+    revocation attribution. Returns affected rows; the caller owns the commit.
+    """
     _validate_asset_type(asset_type)
     if status not in INACTIVE_STATUSES:
         raise EntitlementError(f"Invalid revoke status: {status}")
@@ -210,10 +214,14 @@ async def revoke_entitlement(
     metadata_json = _metadata_to_json(metadata)
     set_metadata = ""
     if metadata_json is not None:
-        set_metadata = ", metadata_json = ?"
+        set_metadata = ", metadata_json = json_patch(COALESCE(metadata_json, '{}'), ?)"
         params.append(metadata_json)
 
-    where = "user_id = ? AND asset_type = ? AND asset_id = ? AND status = 'active'"
+    where = "user_id = ? AND asset_type = ? AND asset_id = ?"
+    if status == STATUS_REFUNDED:
+        where += " AND status IN ('active', 'revoked')"
+    else:
+        where += " AND status = 'active'"
     params.extend([user_id, asset_type, asset_id])
     if source_ref_type and source_ref_id is not None:
         where += " AND source_ref_type = ? AND source_ref_id = ?"
@@ -221,7 +229,8 @@ async def revoke_entitlement(
 
     cursor = await db.execute(
         f"""UPDATE ENTITLEMENTS
-            SET status = ?, revoked_at = ?, updated_at = ?, revoked_by_user_id = ?{set_metadata}
+            SET status = ?, revoked_at = COALESCE(revoked_at, ?), updated_at = ?,
+                revoked_by_user_id = COALESCE(?, revoked_by_user_id){set_metadata}
             WHERE {where}""",
         tuple(params),
     )

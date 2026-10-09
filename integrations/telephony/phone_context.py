@@ -83,7 +83,7 @@ def create_phone_channel_turn(
     link_state: PhoneTurnLinkState | None = None,
     end_controller: CallEndController | None = None,
     internal_turn_context: str | None = None,
-    openai_realtime_bridge: Any | None = None,
+    native_audio_bridge: Any | None = None,
     ai_initiation_mode: (
         Literal["on_request", "proactive", "disabled"] | None
     ) = None,
@@ -108,10 +108,10 @@ def create_phone_channel_turn(
         raise ValueError("turn_id is not a valid bounded identifier")
     if persistence not in {"deferred", "ingest_only"}:
         raise ValueError("phone turn persistence mode is invalid")
-    if openai_realtime_bridge is not None and (
+    if native_audio_bridge is not None and (
         persistence != "deferred"
         or getattr(
-            openai_realtime_bridge,
+            native_audio_bridge,
             "_aurvek_internal_realtime_bridge",
             False,
         )
@@ -206,8 +206,8 @@ def create_phone_channel_turn(
         persistence=persistence,
         input_origin="phone.live_call",
         input_perception=(
-            "audio_native"
-            if openai_realtime_bridge is not None
+            getattr(native_audio_bridge, "input_perception", "audio_native")
+            if native_audio_bridge is not None
             else "transcript_only"
         ),
         phone_direction=phone_direction,
@@ -233,8 +233,8 @@ def create_phone_channel_turn(
                 else {}
             ),
             **(
-                {"openai_realtime_bridge": openai_realtime_bridge}
-                if openai_realtime_bridge is not None
+                {"native_audio_bridge": native_audio_bridge}
+                if native_audio_bridge is not None
                 else {}
             ),
             **(

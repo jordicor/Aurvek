@@ -76,6 +76,7 @@ def _log_truncated_response(provider: str, model: str, conversation_id: int, llm
         max_tokens,
     )
 
-def _is_gpt5_model(model: str) -> bool:
-    """Check if a model is GPT-5 family (requires max_completion_tokens, no custom temperature)."""
-    return model.startswith("gpt-5")
+def _is_gpt_reasoning_model(model: str) -> bool:
+    """Recognize GPT-5 and later generations, including dated model names."""
+    match = re.match(r"gpt-(\d+)(?:[.-]|$)", model.removeprefix("openai/"))
+    return bool(match and int(match[1]) >= 5)

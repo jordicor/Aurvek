@@ -6,6 +6,7 @@ from database import get_db_connection
 from log_config import logger
 from models import User
 from chat.services.privacy import ensure_conversation_privacy_schema
+from integrations.applications.listing import blocked_application_conversation_ids
 
 from chat.services.localization import chat_text, chat_error
 
@@ -20,20 +21,23 @@ async def get_chat_folders(current_user: User = Depends(get_current_user)):
     try:
         await ensure_conversation_privacy_schema()
         async with get_db_connection(readonly=True) as conn:
+            blocked_ids = await blocked_application_conversation_ids(conn, current_user.id)
+            application_filter = ("AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
             async with conn.cursor() as cursor:
                 await cursor.execute(
-                    """
+                    f"""
                     SELECT cf.id, cf.name, cf.color, cf.created_at, cf.updated_at,
                            COUNT(c.id) as conversation_count
                     FROM CHAT_FOLDERS cf
                     LEFT JOIN CONVERSATIONS c
                       ON cf.id = c.folder_id
                      AND COALESCE(c.hidden_from_history, 0) = 0
+                     {application_filter}
                     WHERE cf.user_id = ?
                     GROUP BY cf.id, cf.name, cf.color, cf.created_at, cf.updated_at
                     ORDER BY cf.created_at ASC
                     """,
-                    (current_user.id,),
+                    (*blocked_ids, current_user.id),
                 )
                 folders = await cursor.fetchall()
                 return JSONResponse(content={

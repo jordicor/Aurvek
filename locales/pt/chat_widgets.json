@@ -1,4 +1,5 @@
 {
+  "phone.backend_model_unavailable": "O GPT-Live precisa de um modelo de API compatível para as ações da chamada. Selecione-o nas definições de chamadas do prompt; o modelo do chat pode permanecer inalterado.",
   "audio.browser_unsupported": "O seu navegador não suporta gravação de áudio.",
   "audio.browser_unsupported_title": "Navegador não suportado",
   "audio.empty_recording": "A gravação não continha dados de áudio.",

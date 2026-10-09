@@ -273,20 +273,27 @@ async def get_payment_success_model(session_id: str, user_id: int) -> dict | Non
         return None
     try:
         session = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
-        if not session or session.metadata.get("user_id") != str(user_id):
+        if not session or (session.get("metadata") or {}).get("user_id") != str(user_id):
             return None
 
-        payment_amount = float(session.metadata.get("original_amount", 0))
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                "SELECT balance FROM USER_DETAILS WHERE user_id = ?",
-                (user_id,),
-            )
-            result = await cursor.fetchone()
-            new_balance = result[0] if result else 0
+        state = "not_completed" if session.get("status") == "expired" else "pending"
+        new_balance = payment_amount = None
+        if session.get("status") == "complete" and session.get("payment_status") == "paid":
+            state = "crediting"
+            async with get_db_connection(readonly=True) as conn:
+                cursor = await conn.execute(
+                    """SELECT ud.balance,t.amount FROM TRANSACTIONS t
+                       JOIN USER_DETAILS ud ON ud.user_id=t.user_id
+                       WHERE t.user_id=? AND t.reference_id=? AND t.type='payment'
+                       LIMIT 1""",
+                    (user_id, session_id),
+                )
+                credited = await cursor.fetchone()
+                if credited:
+                    state = "credited"
+                    new_balance, payment_amount = credited
 
-        return {"new_balance": new_balance, "payment_amount": payment_amount}
+        return {"payment_state": state, "new_balance": new_balance, "payment_amount": payment_amount}
     except Exception as exc:
         logger.error("Error retrieving Stripe session: %s", exc)
         return None

@@ -90,30 +90,8 @@ class TechnicalNoticePayload(_Payload):
         return self
 
 
-class ReasoningSelectionPayload(_Payload):
-    mode: Literal[
-        "default", "off", "auto", "minimal", "low", "medium", "high",
-        "xhigh", "max", "custom",
-    ] = "default"
-    budget_tokens: int | None = Field(default=None, ge=1)
-
-    @model_validator(mode="after")
-    def validate_budget(self) -> "ReasoningSelectionPayload":
-        if self.mode == "custom" and self.budget_tokens is None:
-            raise ValueError("Custom thinking requires a token budget")
-        if self.mode != "custom" and self.budget_tokens is not None:
-            raise ValueError("Only custom thinking accepts a token budget")
-        return self
-
-
 class PromptPhoneSettingsPayload(_Payload):
     voice_id: int | None = Field(default=None, gt=0)
-    llm_id: int | None = Field(default=None, gt=0)
-    reasoning_selection: ReasoningSelectionPayload | None = None
-    realtime_voice: Literal[
-        "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer",
-        "verse", "marin", "cedar",
-    ] | None = None
     stt_locale: Annotated[str, Field(min_length=2, max_length=40)] = "auto"
     endpointing_ms: int | None = Field(default=None, ge=300, le=3_000)
     interruptible: bool = True
@@ -232,13 +210,6 @@ def create_prompt_phone_settings_router(
             prompt_id,
             billing_user_id=current_user.id,
             voice_id=payload.voice_id,
-            phone_llm_id=payload.llm_id,
-            phone_reasoning_selection=(
-                None
-                if payload.reasoning_selection is None
-                else payload.reasoning_selection.model_dump(exclude_none=True)
-            ),
-            phone_realtime_voice=payload.realtime_voice,
             policy=PromptPhonePolicyUpdate(
                 stt_locale=payload.stt_locale,
                 endpointing_ms=payload.endpointing_ms,
@@ -272,7 +243,6 @@ __all__ = [
     "GreetingListPayload",
     "GreetingPhrasePayload",
     "PromptPhoneSettingsPayload",
-    "ReasoningSelectionPayload",
     "TechnicalNoticePayload",
     "create_prompt_phone_settings_router",
     "router",

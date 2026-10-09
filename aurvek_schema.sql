@@ -177,9 +177,10 @@ CREATE TABLE PROMPTS (
     allowed_llms TEXT DEFAULT NULL,
     forced_llm_id INTEGER DEFAULT NULL,
     forced_reasoning_json TEXT DEFAULT NULL,
-    phone_llm_id INTEGER DEFAULT NULL,
-    phone_reasoning_json TEXT DEFAULT NULL,
-    phone_realtime_voice TEXT DEFAULT NULL,
+    realtime_llm_id INTEGER DEFAULT NULL,
+    realtime_reasoning_json TEXT DEFAULT NULL,
+    realtime_voice TEXT DEFAULT NULL,
+    realtime_backend_llm_id INTEGER DEFAULT NULL,
     hide_llm_name BOOLEAN DEFAULT 0,
     landing_registration_config TEXT DEFAULT NULL,
     disable_web_search BOOLEAN DEFAULT 0,
@@ -290,9 +291,9 @@ CREATE TABLE MESSAGE_INPUT_PROVENANCE (
         'web.message', 'web.live_voice',
         'whatsapp.message', 'whatsapp.voice_note', 'whatsapp.audio',
         'telegram.message', 'telegram.voice_note',
-        'device.message', 'phone.live_call'
+        'device.message', 'device.live_voice', 'phone.live_call'
     )),
-    perception TEXT NOT NULL CHECK(perception IN ('text', 'transcript_only')),
+    perception TEXT NOT NULL CHECK(perception IN ('text', 'transcript_only', 'audio_native')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK(
         (perception = 'text' AND origin IN (
@@ -303,6 +304,10 @@ CREATE TABLE MESSAGE_INPUT_PROVENANCE (
         (perception = 'transcript_only' AND origin IN (
             'web.live_voice', 'whatsapp.voice_note', 'whatsapp.audio',
             'telegram.voice_note', 'phone.live_call'
+        ))
+        OR
+        (perception = 'audio_native' AND origin IN (
+            'web.live_voice', 'device.live_voice', 'phone.live_call'
         ))
     ),
     FOREIGN KEY(message_id) REFERENCES MESSAGES(id) ON DELETE CASCADE
@@ -691,6 +696,7 @@ CREATE TABLE USER_DETAILS (
     referral_markup_per_mtokens DECIMAL DEFAULT 0.00,
     pending_earnings DECIMAL DEFAULT 0.00,
     billing_account_id INTEGER DEFAULT NULL,
+    billing_acquisition_ref TEXT DEFAULT NULL,
     billing_limit DECIMAL DEFAULT NULL,
     billing_limit_action TEXT DEFAULT 'block',
     billing_current_month_spent DECIMAL DEFAULT 0.00,

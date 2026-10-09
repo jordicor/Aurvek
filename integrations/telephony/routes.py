@@ -292,7 +292,11 @@ class TelephonyProviderRuntime:
             )
             runtime_kind = runtime_kind_from_snapshot(context.call_snapshot)
             stt_provider = {"openai_realtime": "openai", "openai_live": "openai_live"}.get(runtime_kind, "elevenlabs")
-            if runtime_kind in {"openai_realtime", "openai_live"}:
+            if runtime_kind == "gemini_live":
+                from common import gemini_key
+                if not gemini_key:
+                    return False
+            elif runtime_kind in {"openai_realtime", "openai_live"}:
                 if not callable(self.openai_api_key_provider):
                     return False
                 if (
@@ -307,7 +311,7 @@ class TelephonyProviderRuntime:
                     if not has_elevenlabs_keys() or not elevenlabs_keys_ready():
                         return False
             if (
-                self.billing_service is not None
+                runtime_kind != "gemini_live" and self.billing_service is not None
                 and not await self.billing_service.rate_available(
                     call=call,
                     provider=stt_provider,
@@ -322,9 +326,9 @@ class TelephonyProviderRuntime:
     def build_session(self, context: PhoneMediaSessionContext) -> PhoneMediaSession:
         if self.session_factory is not None:
             return self.session_factory(context)
-        if runtime_kind_from_snapshot(context.call_snapshot) == "openai_live":
-            from integrations.telephony.live_session import OpenAILivePhoneSession
-            return OpenAILivePhoneSession(
+        if runtime_kind_from_snapshot(context.call_snapshot) in {"openai_live", "gemini_live"}:
+            from integrations.telephony.live_session import NativeLivePhoneSession
+            return NativeLivePhoneSession(
                 context, openai_api_key_provider=self.openai_api_key_provider,
                 repository=self.repository, current_user_loader=get_user_by_id,
                 hangup_call=self.hangup, notice_loader=self.notice_loader,
@@ -359,19 +363,6 @@ class TelephonyProviderRuntime:
             greeting_loader=self.greeting_loader,
             billing_service=self.billing_service,
         )
-
-
-class _NoopDeletedCallbackRepository:
-    """Test-adapter fallback for legacy fake provider repositories."""
-
-    async def is_deleted_provider_call(self, _provider_call_sid: str) -> bool:
-        return False
-
-    async def is_deleted_callback(self, _token: str, _provider_call_sid: str) -> bool:
-        return False
-
-    async def capture_late_recording(self, **_kwargs: Any) -> bool:
-        return False
 
 
 async def _default_readiness() -> bool:
@@ -444,14 +435,11 @@ def create_telephony_provider_router(
     runtime: TelephonyProviderRuntime | None = None,
 ) -> APIRouter:
     active = runtime or _default_runtime()
-    if active.purge_repository is not None:
-        purge_repository = active.purge_repository
-    elif isinstance(active.repository, TelephonyProviderRepository):
-        purge_repository = PhoneDataPurgeRepository(
-            active.repository.connection_factory
-        )
-    else:
-        purge_repository = _NoopDeletedCallbackRepository()
+    purge_repository = (
+        active.purge_repository
+        if active.purge_repository is not None
+        else PhoneDataPurgeRepository(active.repository.connection_factory)
+    )
     router = APIRouter()
 
     async def runtime_ready(active=active) -> bool:
@@ -558,7 +546,7 @@ def create_telephony_provider_router(
                 stream_attempt=int(stream_attempt),
                 call_elapsed_seconds=0.0,
                 include_pstn=bool(include_pstn),
-                include_stt=_runtime_kind_from_call(call) != "openai_live",
+                include_stt=_runtime_kind_from_call(call) not in {"openai_live", "gemini_live"},
                 stt_provider=stt_provider,
             )
         except PhoneBillingExhausted:

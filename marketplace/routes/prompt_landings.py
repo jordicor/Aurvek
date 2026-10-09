@@ -1,8 +1,10 @@
+import asyncio
 import re
 from pathlib import PurePosixPath
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from filelock import Timeout as FileLockTimeout
 
 from i18n import get_translator
 from auth import get_current_user
@@ -12,7 +14,7 @@ from common import GOOGLE_CLIENT_ID, is_internal_ip, slugify, templates
 from database import get_db_connection
 from log_config import logger
 from marketplace.config import require_public_landings_enabled, marketplace_public_landings_enabled
-from marketplace.landing.cache import get_landing_path_cached
+from marketplace.landing.cache import get_landing_path_cached, get_prompt_publication_state
 from marketplace.landing.isolation import (
     build_creator_content_url,
     creator_content_unavailable_response,
@@ -22,9 +24,12 @@ from marketplace.landing.isolation import (
     verify_content_token,
 )
 from marketplace.landing.paths import build_prompt_filesystem_path, get_active_custom_domain
+from marketplace.landing.publication import _landing_save_lock
+from marketplace.landing.sandbox import get_wizard_sandbox_status
 from marketplace.landing.rendering import (
     file_response_for_landing_static,
     landing_404_response,
+    media_type_for_path,
     render_custom_domain_landing_html,
     render_prompt_landing_html,
 )
@@ -82,48 +87,37 @@ async def public_landing_static(
         if not _valid_resource_path(resource_path):
             raise HTTPException(status_code=404, detail="Resource not found")
 
-        landing_data = await get_landing_path_cached(public_id)
-        if slug != slugify(landing_data["prompt_name"]):
-            raise HTTPException(status_code=404, detail="Resource not found")
+        landing_data = await get_landing_path_cached(public_id, refresh_publication=False)
+        async with _landing_save_lock(landing_data["prompt_id"], timeout_seconds=1):
+            if slug != slugify(landing_data["prompt_name"]):
+                raise HTTPException(status_code=404, detail="Resource not found")
+            if not is_creator_content_request(request):
+                publication = await get_prompt_publication_state(landing_data["prompt_id"])
+                # A redirected script still executes in its requesting document.
+                # Primary-origin requests must fail closed when publication or
+                # trust is revoked. Keep trusted non-public preview assets usable.
+                if not (publication["has_landing_page"] and publication["landing_trusted"]):
+                    raise HTTPException(status_code=404, detail="Resource not found")
 
-        if not is_creator_content_request(request):
-            custom_domain = await get_active_custom_domain(landing_data["prompt_id"])
-            if custom_domain and is_host_isolated_from_primary(custom_domain):
-                return RedirectResponse(
-                    url=f"https://{custom_domain}/static/{resource_path}",
-                    status_code=302,
-                )
-            if not (landing_data["has_landing_page"] and landing_data["landing_trusted"]):
-                # Non-servable (no landing page) or untrusted creator assets stay
-                # on the isolated origin (or fail closed). Trusted, servable assets
-                # fall through and are served directly from the primary domain,
-                # matching the trusted page policy.
-                #
-                # `public` is intentionally NOT part of this gate (unlike the page
-                # and /internal/resolve-landing routes, which enforce it): an admin
-                # previewing a not-yet-public landing loads it from the primary
-                # domain, and its asset sub-requests carry no preview auth, so
-                # requiring `public` here would break preview of trusted landings.
-                isolated_url = build_creator_content_url(
-                    f"/p/{public_id}/{slug}/static/{resource_path}"
-                )
-                if not isolated_url:
-                    return creator_content_unavailable_response(get_translator(request))
-                return RedirectResponse(url=isolated_url, status_code=302)
+            static_root = landing_data["path"] / "static"
+            try:
+                resolved = (static_root / resource_path).resolve(strict=False)
+                resolved.relative_to(static_root.resolve())
+            except (ValueError, OSError):
+                raise HTTPException(status_code=404, detail="Resource not found")
+            if not resolved.is_file():
+                raise HTTPException(status_code=404, detail="Resource not found")
 
-        static_root = landing_data["path"] / "static"
-        static_path = static_root / resource_path
-        try:
-            resolved = static_path.resolve(strict=False)
-            resolved.relative_to(static_root.resolve())
-        except (ValueError, OSError):
-            raise HTTPException(status_code=404, detail="Resource not found")
+            if media_type_for_path(resolved) in {"audio/mpeg", "video/mp4", "video/webm", "application/pdf"}:
+                return file_response_for_landing_static(resolved)
+            # FileResponse opens later, after this lock would be released. Load
+            # active assets here so a worker cannot replace authorized scripts.
+            # Large media keeps its existing streaming/range response.
+            content = await asyncio.to_thread(resolved.read_bytes)
+            return file_response_for_landing_static(resolved, content=content)
 
-        if not resolved.is_file():
-            raise HTTPException(status_code=404, detail="Resource not found")
-
-        return file_response_for_landing_static(resolved)
-
+    except FileLockTimeout:
+        return creator_content_unavailable_response(get_translator(request), retry_after_seconds=5)
     except HTTPException as e:
         if e.status_code == 404:
             return landing_404_response(get_translator(request))
@@ -227,108 +221,112 @@ async def public_landing_page(
         if not _valid_page_name(page):
             raise HTTPException(status_code=400, detail="Invalid page name")
 
-        landing_data = await get_landing_path_cached(public_id)
-        canonical_slug = slugify(landing_data["prompt_name"])
+        landing_data = await get_landing_path_cached(public_id, refresh_publication=False)
+        async with _landing_save_lock(landing_data["prompt_id"], timeout_seconds=1):
+            landing_data = {**landing_data, **await get_prompt_publication_state(landing_data["prompt_id"])}
+            canonical_slug = slugify(landing_data["prompt_name"])
 
-        if slug != canonical_slug:
-            raise HTTPException(status_code=404, detail="Page not found")
-
-        is_preview = request.query_params.get("preview") == "1"
-        is_embed = request.query_params.get("embed") == "1"
-        # A landing is publicly servable only when it is public AND actually has
-        # a landing page. Trusted (platform-authored) landings are safe to serve
-        # directly from the primary domain; untrusted ones must stay on the
-        # isolated creator-content origin.
-        is_servable = bool(landing_data["public"]) and bool(landing_data["has_landing_page"])
-        is_trusted = bool(landing_data["landing_trusted"])
-
-        if is_creator_content_request(request):
-            if is_preview:
-                token = request.query_params.get("preview_token")
-                expected = {
-                    "purpose": "prompt_preview",
-                    "prompt_id": int(landing_data["prompt_id"]),
-                    "page": page,
-                }
-                if verify_content_token(token, expected=expected) is None:
-                    raise HTTPException(status_code=404, detail="Page not found")
-            elif not is_servable:
+            if slug != canonical_slug:
                 raise HTTPException(status_code=404, detail="Page not found")
-        elif is_preview:
-            if not await _can_preview_prompt(request, landing_data["prompt_id"]):
-                raise HTTPException(status_code=403, detail="Access denied")
-            if not is_trusted:
-                preview_token = sign_content_token(
-                    {
+
+            is_preview = request.query_params.get("preview") == "1"
+            is_embed = request.query_params.get("embed") == "1"
+            # A landing is publicly servable only when it is public AND actually has
+            # a landing page. Trusted (platform-authored) landings are safe to serve
+            # directly from the primary domain; untrusted ones must stay on the
+            # isolated creator-content origin.
+            is_servable = bool(landing_data["public"]) and bool(landing_data["has_landing_page"])
+            is_trusted = bool(landing_data["landing_trusted"])
+
+            if is_creator_content_request(request):
+                if is_preview:
+                    token = request.query_params.get("preview_token")
+                    expected = {
                         "purpose": "prompt_preview",
                         "prompt_id": int(landing_data["prompt_id"]),
                         "page": page,
-                    },
-                    ttl_seconds=300,
-                )
-                isolated_url = build_creator_content_url(
-                    f"/p/{public_id}/{canonical_slug}/{'' if page == 'home' else page}",
-                    {"preview": 1, "preview_token": preview_token},
-                )
-                if not isolated_url or not preview_token:
-                    return creator_content_unavailable_response(get_translator(request))
-                return RedirectResponse(
-                    url=isolated_url,
-                    status_code=302,
-                    headers={"Cache-Control": "no-store"},
-                )
-            # Trusted preview is safe on the primary domain: an authorized admin
-            # can review a non-public trusted landing without the isolated origin
-            # being configured. Fall through to serve it directly below.
-        else:
-            custom_domain = await get_active_custom_domain(landing_data["prompt_id"])
-            if custom_domain and is_host_isolated_from_primary(custom_domain):
-                redirect_path = "/" if page == "home" else f"/{page}"
-                if is_embed:
-                    redirect_path += "?embed=1"
-                return RedirectResponse(
-                    url=f"https://{custom_domain}{redirect_path}",
-                    status_code=302,
-                )
-            if not is_servable:
+                    }
+                    if verify_content_token(token, expected=expected) is None:
+                        raise HTTPException(status_code=404, detail="Page not found")
+                elif not is_servable:
+                    raise HTTPException(status_code=404, detail="Page not found")
+            elif is_preview:
+                if not await _can_preview_prompt(request, landing_data["prompt_id"]):
+                    raise HTTPException(status_code=403, detail="Access denied")
+                if not is_trusted:
+                    preview_token = sign_content_token(
+                        {
+                            "purpose": "prompt_preview",
+                            "prompt_id": int(landing_data["prompt_id"]),
+                            "page": page,
+                        },
+                        ttl_seconds=300,
+                    )
+                    isolated_url = build_creator_content_url(
+                        f"/p/{public_id}/{canonical_slug}/{'' if page == 'home' else page}",
+                        {"preview": 1, "preview_token": preview_token},
+                    )
+                    if not isolated_url or not preview_token:
+                        return creator_content_unavailable_response(get_translator(request))
+                    return RedirectResponse(
+                        url=isolated_url,
+                        status_code=302,
+                        headers={"Cache-Control": "no-store"},
+                    )
+                # Trusted preview is safe on the primary domain: an authorized admin
+                # can review a non-public trusted landing without the isolated origin
+                # being configured. Fall through to serve it directly below.
+            else:
+                custom_domain = await get_active_custom_domain(landing_data["prompt_id"])
+                if custom_domain and is_host_isolated_from_primary(custom_domain):
+                    redirect_path = "/" if page == "home" else f"/{page}"
+                    if is_embed:
+                        redirect_path += "?embed=1"
+                    return RedirectResponse(
+                        url=f"https://{custom_domain}{redirect_path}",
+                        status_code=302,
+                    )
+                if not is_servable:
+                    raise HTTPException(status_code=404, detail="Page not found")
+                if not is_trusted:
+                    isolated_path = (
+                        f"/p/{public_id}/{canonical_slug}/"
+                        if page == "home"
+                        else f"/p/{public_id}/{canonical_slug}/{page}"
+                    )
+                    isolated_url = build_creator_content_url(
+                        isolated_path,
+                        {"embed": 1} if is_embed else None,
+                    )
+                    if not isolated_url:
+                        return creator_content_unavailable_response(get_translator(request))
+                    return RedirectResponse(url=isolated_url, status_code=302)
+                # Trusted + servable: serve directly from the primary domain below.
+
+            html_path = landing_data["path"] / f"{page}.html"
+
+            if not html_path.is_file():
                 raise HTTPException(status_code=404, detail="Page not found")
-            if not is_trusted:
-                isolated_path = (
-                    f"/p/{public_id}/{canonical_slug}/"
-                    if page == "home"
-                    else f"/p/{public_id}/{canonical_slug}/{page}"
-                )
-                isolated_url = build_creator_content_url(
-                    isolated_path,
-                    {"embed": 1} if is_embed else None,
-                )
-                if not isolated_url:
-                    return creator_content_unavailable_response(get_translator(request))
-                return RedirectResponse(url=isolated_url, status_code=302)
-            # Trusted + servable: serve directly from the primary domain below.
 
-        html_path = landing_data["path"] / f"{page}.html"
+            html_content = await render_prompt_landing_html(
+                html_path,
+                landing_data["prompt_id"],
+                page=page,
+                is_preview=is_preview,
+                is_unlisted=bool(landing_data["is_unlisted"]),
+                ui_language=get_translator(request).language,
+            )
 
-        if not html_path.is_file():
-            raise HTTPException(status_code=404, detail="Page not found")
+            headers = {"Vary": "Cookie, Accept-Language", "Cache-Control": "private, no-cache"}
+            if landing_data["is_unlisted"]:
+                headers["X-Robots-Tag"] = "noindex, nofollow"
+            if is_preview:
+                headers["Cache-Control"] = "no-store"
 
-        html_content = await render_prompt_landing_html(
-            html_path,
-            landing_data["prompt_id"],
-            page=page,
-            is_preview=is_preview,
-            is_unlisted=bool(landing_data["is_unlisted"]),
-            ui_language=get_translator(request).language,
-        )
+            return HTMLResponse(content=html_content, headers=headers)
 
-        headers = {"Vary": "Cookie, Accept-Language", "Cache-Control": "private, no-cache"}
-        if landing_data["is_unlisted"]:
-            headers["X-Robots-Tag"] = "noindex, nofollow"
-        if is_preview:
-            headers["Cache-Control"] = "no-store"
-
-        return HTMLResponse(content=html_content, headers=headers)
-
+    except FileLockTimeout:
+        return creator_content_unavailable_response(get_translator(request), retry_after_seconds=5)
     except HTTPException as e:
         if e.status_code == 404:
             return landing_404_response(get_translator(request))
@@ -360,6 +358,12 @@ async def internal_resolve_landing(
             raise HTTPException(status_code=400, detail="Invalid public_id format")
         if not _valid_page_name(page):
             raise HTTPException(status_code=400, detail="Invalid page name")
+
+        # Returning a mutable path hands the file open to nginx after our
+        # request/lock has ended. The ordinary HTML route keeps gate + read
+        # together; path offload cannot do that while wizard writes are enabled.
+        if get_wizard_sandbox_status().enabled:
+            raise HTTPException(status_code=503, detail="Landing path offload is unavailable while the AI wizard is enabled")
 
         landing_data = await get_landing_path_cached(public_id)
         canonical_slug = slugify(landing_data["prompt_name"])
@@ -407,15 +411,22 @@ async def serve_custom_domain_home(request: Request):
         prompt_name = request.state.prompt_name
         username = request.state.username
 
-        prompt_dir = build_prompt_filesystem_path(username, prompt_id, prompt_name)
-        html_path = prompt_dir / "home.html"
+        async with _landing_save_lock(prompt_id, timeout_seconds=1):
+            publication = await get_prompt_publication_state(prompt_id)
+            if not (publication["public"] and publication["has_landing_page"]):
+                return landing_404_response(get_translator(request))
 
-        if html_path.is_file():
-            html_content = await render_custom_domain_landing_html(
-                html_path,
-                prompt_id,
-            )
-            return HTMLResponse(content=html_content)
+            prompt_dir = build_prompt_filesystem_path(username, prompt_id, prompt_name)
+            html_path = prompt_dir / "home.html"
+
+            if html_path.is_file():
+                html_content = await render_custom_domain_landing_html(
+                    html_path,
+                    prompt_id,
+                )
+                return HTMLResponse(content=html_content)
+    except FileLockTimeout:
+        return creator_content_unavailable_response(get_translator(request), retry_after_seconds=5)
     except Exception as e:
         logger.error(f"Error serving custom domain landing at /: {e}")
     return landing_404_response(get_translator(request))
@@ -437,26 +448,33 @@ async def custom_domain_landing(request: Request, page: str = ""):
         prompt_name = request.state.prompt_name
         username = request.state.username
 
-        if not page or page == "/":
-            page = "home"
-        else:
-            page = page.strip("/").split("/")[0]
+        async with _landing_save_lock(prompt_id, timeout_seconds=1):
+            publication = await get_prompt_publication_state(prompt_id)
+            if not (publication["public"] and publication["has_landing_page"]):
+                return landing_404_response(get_translator(request))
 
-        if not _valid_page_name(page):
-            return landing_404_response(get_translator(request))
+            if not page or page == "/":
+                page = "home"
+            else:
+                page = page.strip("/").split("/")[0]
 
-        prompt_dir = build_prompt_filesystem_path(username, prompt_id, prompt_name)
-        html_path = prompt_dir / f"{page}.html"
+            if not _valid_page_name(page):
+                return landing_404_response(get_translator(request))
 
-        if not html_path.is_file():
-            return landing_404_response(get_translator(request))
+            prompt_dir = build_prompt_filesystem_path(username, prompt_id, prompt_name)
+            html_path = prompt_dir / f"{page}.html"
 
-        html_content = await render_custom_domain_landing_html(
-            html_path,
-            prompt_id,
-        )
-        return HTMLResponse(content=html_content)
+            if not html_path.is_file():
+                return landing_404_response(get_translator(request))
 
+            html_content = await render_custom_domain_landing_html(
+                html_path,
+                prompt_id,
+            )
+            return HTMLResponse(content=html_content)
+
+    except FileLockTimeout:
+        return creator_content_unavailable_response(get_translator(request), retry_after_seconds=5)
     except Exception as e:
         logger.error(f"Error serving custom domain landing: {e}")
         return landing_404_response(get_translator(request))

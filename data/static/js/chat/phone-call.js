@@ -77,7 +77,8 @@
             conversation_incognito: 'incognito_unavailable', conversation_locked: 'locked',
             scheduled_call_started: 'scheduled_already_started', outbound_calls_disabled: 'disabled_for_conversation',
             phone_binding_required: 'choose_before_calling', invalid_phone_number: 'saved_number_invalid',
-            invalid_schedule_time: 'invalid_time'
+            invalid_schedule_time: 'invalid_time',
+            phone_backend_model_unavailable: 'backend_model_unavailable'
         };
         if (messages[code]) return tr(messages[code]);
         if (response && response.status === 401) return AurvekI18n.t('common.session.expired_message');

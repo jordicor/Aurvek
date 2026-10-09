@@ -124,6 +124,9 @@ async def get_variable_billing_rates(
     byok: bool,
 ) -> VariableBillingRates:
     """Mirror the linear pricing formula used by ``consume_token``."""
+    operation = current_application_operation(user_id)
+    if operation is not None and operation.mode == "external":
+        return VariableBillingRates(0.0, 0.0)
     from common import (
         get_pricing_config,
         get_prompt_pricing_info,
@@ -629,6 +632,11 @@ async def get_user_billing_availability(user_id: int) -> dict:
     await _maybe_reconcile_stale_usage_reservations()
     user_id = int(user_id)
     operation = current_application_operation(user_id)
+    if operation is not None and operation.mode == "external":
+        await revalidate_application_operation(operation)
+        return {"user_id": user_id, "billing_account_id": operation.payer_user_id,
+                "balance": 0.0, "available": 0.0, "monthly_remaining": None,
+                "billing_limit_action": "block"}
     if operation is not None and operation.mode == 'sponsored':
         async with get_db_connection(readonly=True) as conn:
             return await sponsored_availability(conn, operation)
@@ -788,7 +796,8 @@ async def reserve_fixed_usage(
     )
 
 
-async def reserve_ai_usage(*, user_id: int, maximum_amount: float) -> str | None:
+async def reserve_ai_usage(*, user_id: int, maximum_amount: float,
+                           reservation_id: str | None = None) -> str | None:
     """Reserve a variable AI upper bound before any provider work starts."""
     maximum_amount = float(maximum_amount or 0.0)
     if not math.isfinite(maximum_amount) or maximum_amount < 0:
@@ -803,6 +812,7 @@ async def reserve_ai_usage(*, user_id: int, maximum_amount: float) -> str | None
         service_id=None,
         usage_quantity=None,
         expected_payer_id=None,
+        reservation_id=reservation_id,
     )
 
 
@@ -844,8 +854,11 @@ async def _reserve_usage_atomic(
     service_id: int | None,
     usage_quantity: float | None,
     expected_payer_id: int | None,
+    reservation_id: str | None = None,
 ) -> str:
-    reservation_id = secrets.token_urlsafe(24)
+    from integrations.applications.external_execution import reject_unsupported
+    reject_unsupported("native_charge")
+    reservation_id = reservation_id or secrets.token_urlsafe(24)
     operation = current_application_operation(user_id)
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     last_lock_error = None
@@ -1921,6 +1934,7 @@ async def settle_ai_reservation_components(
     user_id: int,
     prompt_id: int | None,
     components: list[dict],
+    pricing_margin_override: float | None = None,
 ) -> bool:
     """Capture completed heterogeneous provider calls without saving a message."""
     if not reservation_id or not components:
@@ -2000,6 +2014,7 @@ async def settle_ai_reservation_components(
                         prompt_id=prompt_id,
                         byok=component["byok"],
                         override_api_cost=component["override_api_cost"],
+                        pricing_margin_override=pricing_margin_override,
                         billing_account_id_override=credit.billing_account_id,
                         **application_settlement_kwargs(credit),
                     )

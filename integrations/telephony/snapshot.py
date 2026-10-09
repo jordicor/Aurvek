@@ -10,7 +10,6 @@ from typing import Any, Mapping
 from ai_runtime.reasoning import (
     ReasoningValidationError,
     parse_reasoning_selection,
-    resolve_and_validate,
 )
 from ai_runtime.voice_resolution import CanonicalVoice, resolve_prompt_voice
 from database import get_db_connection
@@ -22,7 +21,6 @@ from integrations.telephony.greetings import (
     PHONE_CACHE_MP3_FORMAT,
     normalize_phone_cache_tts_profile,
 )
-from llm_catalog import normalize_capabilities
 from tools.tts_config import TTSProfile, VALID_FORMATS, get_tts_profile
 
 
@@ -55,6 +53,12 @@ class PhoneAudioRevisionUnavailable(PhoneSnapshotError):
     """No complete activated phone-audio revision can be captured."""
 
 
+class PhoneBackendModelUnavailable(PhoneSnapshotError):
+    """GPT-Live needs a compatible API model for delegated actions."""
+
+    error_code = "phone_backend_model_unavailable"
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationPhoneSnapshot:
     conversation_id: int
@@ -73,6 +77,7 @@ class ConversationPhoneSnapshot:
     phone_settings: dict[str, Any]
     audio_revision: int
     captured_at: str
+    backend_llm_id: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         voice = asdict(self.canonical_voice)
@@ -92,6 +97,7 @@ class ConversationPhoneSnapshot:
             "runtime_llm_id": self.runtime_llm_id,
             "runtime_kind": self.runtime_kind,
             "runtime_model": self.runtime_model,
+            "backend_llm_id": self.backend_llm_id,
             "reasoning_selection": dict(self.reasoning_selection),
             "phone_realtime_voice": self.phone_realtime_voice,
             "canonical_voice": voice,
@@ -174,6 +180,7 @@ async def _build_snapshot(
         runtime_model,
         reasoning_selection,
         phone_realtime_voice,
+        backend_llm_id,
     ) = await _resolve_phone_model_selection(
         conn,
         prompt_id=prompt_id,
@@ -209,6 +216,7 @@ async def _build_snapshot(
         runtime_model=runtime_model,
         reasoning_selection=reasoning_selection,
         phone_realtime_voice=phone_realtime_voice,
+        backend_llm_id=backend_llm_id,
         canonical_voice=voice,
         tts_profile=profile,
         phone_settings=phone_settings.as_dict(),
@@ -220,175 +228,18 @@ async def _build_snapshot(
 
 
 async def _resolve_phone_model_selection(
-    conn: Any,
-    *,
-    prompt_id: int,
-    conversation_llm_id: int,
-) -> tuple[int, str, str, dict[str, Any], str | None]:
-    configuration = await _load_prompt_model_configuration(conn, prompt_id)
-    forced_llm_id = configuration["forced_llm_id"]
-    forced_reasoning_raw = configuration["forced_reasoning_json"]
-    phone_llm_id = configuration["phone_llm_id"]
-    phone_reasoning_raw = configuration["phone_reasoning_json"]
-    phone_realtime_voice_raw = configuration["phone_realtime_voice"]
-
-    if forced_reasoning_raw is not None and forced_llm_id is None:
-        raise PhoneSnapshotError(
-            "Prompt forced reasoning requires a forced model"
-        )
-
-    runtime_llm_id = (
-        int(phone_llm_id)
-        if phone_llm_id is not None
-        else int(conversation_llm_id)
-    )
-    model = await _load_phone_runtime_model(conn, runtime_llm_id)
-
-    if phone_reasoning_raw is not None:
-        reasoning_raw = phone_reasoning_raw
-    elif phone_llm_id is None and forced_reasoning_raw is not None:
-        reasoning_raw = forced_reasoning_raw
-    else:
-        reasoning_raw = None
-
+    conn: Any, *, prompt_id: int, conversation_llm_id: int,
+) -> tuple[int, str, str, dict[str, Any], str | None, int | None]:
+    from integrations.realtime.configuration import RealtimeConfigurationError, resolve_selection
     try:
-        selection = parse_reasoning_selection(_loads_reasoning(reasoning_raw))
-        validated = resolve_and_validate(selection, model["capabilities"])
-    except (ReasoningValidationError, TypeError, ValueError) as exc:
-        raise PhoneSnapshotError(
-            "Prompt phone reasoning is invalid for its runtime model"
-        ) from exc
-    runtime_kind = str(model["runtime_kind"])
-    if runtime_kind == "openai_live":
-        backend = await _load_phone_runtime_model(conn, int(forced_llm_id or conversation_llm_id))
-        if backend["runtime_kind"] != "standard":
-            raise PhoneSnapshotError("GPT-Live requires a text model for its conversation backend")
-    if runtime_kind in {"openai_realtime", "openai_live"}:
-        phone_realtime_voice = str(
-            phone_realtime_voice_raw or OPENAI_REALTIME_DEFAULT_VOICE
-        ).strip().lower()
-        if phone_realtime_voice not in OPENAI_REALTIME_VOICES:
-            raise PhoneSnapshotError("Prompt Realtime voice is invalid")
-    else:
-        # A stale voice value cannot alter the standard canonical-voice path.
-        phone_realtime_voice = None
-    return (
-        runtime_llm_id,
-        runtime_kind,
-        str(model["model"]),
-        validated.to_dict(),
-        phone_realtime_voice,
-    )
-
-
-async def _load_prompt_model_configuration(
-    conn: Any,
-    prompt_id: int,
-) -> dict[str, Any]:
-    cursor = await conn.execute("PRAGMA table_info(PROMPTS)")
-    columns = {str(row[1]) for row in await cursor.fetchall()}
-    names = (
-        "forced_llm_id",
-        "forced_reasoning_json",
-        "phone_llm_id",
-        "phone_reasoning_json",
-        "phone_realtime_voice",
-    )
-    projections = [
-        name if name in columns else f"NULL AS {name}"
-        for name in names
-    ]
-    cursor = await conn.execute(
-        f"SELECT {', '.join(projections)} FROM PROMPTS WHERE id=?",
-        (int(prompt_id),),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise PhoneSnapshotError("Conversation prompt was not found")
-    return {name: row[index] for index, name in enumerate(names)}
-
-
-async def _load_phone_runtime_model(conn: Any, llm_id: int) -> dict[str, Any]:
-    cursor = await conn.execute("PRAGMA table_info(LLM)")
-    columns = {str(row[1]) for row in await cursor.fetchall()}
-
-    def column(name: str, fallback: str = "NULL") -> str:
-        return name if name in columns else f"{fallback} AS {name}"
-
-    enabled_projection = (
-        "COALESCE(enabled,1) AS enabled"
-        if "enabled" in columns
-        else "1 AS enabled"
-    )
-    cursor = await conn.execute(
-        f"""
-        SELECT id,machine,model,
-               {enabled_projection},
-               {column('provider_key')},
-               {column('provider_model_id')},
-               {column('raw_metadata_json')},
-               {column('capabilities_json')},
-               {column('manual_overrides_json')}
-        FROM LLM WHERE id=?
-        """,
-        (int(llm_id),),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise PhoneSnapshotError("Phone runtime model was not found")
-    values = tuple(row)
-    machine = str(values[1] or "")
-    model_id = str(values[2] or "")
-    if not bool(values[3]):
-        raise PhoneSnapshotError("Phone runtime model is disabled")
-    if machine in {"GPTSub", "GranSabio", "O1"}:
-        raise PhoneSnapshotError(
-            f"{machine} cannot be used as a phone runtime model"
-        )
-    capabilities = normalize_capabilities(
-        values[4] or machine,
-        values[5] or model_id,
-        _loads_object(values[6]),
-        _loads_object(values[7]),
-        _loads_object(values[8]),
-    )
-    runtime = capabilities.get("runtime") or {}
-    runtime_kind = str(runtime.get("kind") or "")
-    if runtime_kind not in {"standard", "openai_realtime", "openai_live"}:
-        raise PhoneSnapshotError("Phone runtime model type is unsupported")
-    return {
-        "id": int(values[0]),
-        "machine": machine,
-        "model": model_id,
-        "capabilities": capabilities,
-        "runtime_kind": runtime_kind,
-    }
-
-
-def _loads_object(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, Mapping):
-        return dict(value)
-    try:
-        decoded = json.loads(str(value))
-    except (TypeError, ValueError) as exc:
-        raise PhoneSnapshotError("Stored model capabilities are invalid") from exc
-    if not isinstance(decoded, dict):
-        raise PhoneSnapshotError("Stored model capabilities are invalid")
-    return decoded
-
-
-def _loads_reasoning(value: Any) -> Mapping[str, Any] | str | None:
-    if value is None or isinstance(value, Mapping):
-        return value
-    try:
-        decoded = json.loads(str(value))
-    except (TypeError, ValueError) as exc:
-        raise PhoneSnapshotError("Stored prompt reasoning is invalid") from exc
-    if not isinstance(decoded, (dict, str)):
-        raise PhoneSnapshotError("Stored prompt reasoning is invalid")
-    return decoded
+        selection = await resolve_selection(conn, prompt_id=prompt_id,
+            conversation_llm_id=conversation_llm_id, channel="phone")
+    except RealtimeConfigurationError as exc:
+        error = PhoneBackendModelUnavailable if exc.code == "live_backend_unavailable" else PhoneSnapshotError
+        raise error(str(exc)) from exc
+    return (selection.model["id"], selection.kind, selection.model["model"],
+            selection.reasoning, selection.voice,
+            selection.backend["id"] if selection.backend else None)
 
 
 async def _resolve_active_audio_revision(conn: Any, prompt_id: int) -> int:
@@ -458,7 +309,7 @@ def runtime_kind_from_snapshot(values: Mapping[str, Any]) -> str:
     """Return the captured runtime route; legacy calls use standard dispatch."""
 
     kind = str(values.get("runtime_kind") or "standard").strip().lower()
-    if kind not in {"standard", "openai_realtime", "openai_live"}:
+    if kind not in {"standard", "openai_realtime", "openai_live", "gemini_live"}:
         raise PhoneSnapshotError("Call snapshot runtime kind is invalid")
     return kind
 
@@ -473,8 +324,14 @@ def runtime_model_from_snapshot(values: Mapping[str, Any]) -> str:
 
 
 def realtime_voice_from_snapshot(values: Mapping[str, Any]) -> str | None:
-    """Return the OpenAI voice only for a native Realtime call snapshot."""
+    """Return the validated native voice for the captured provider."""
 
+    if runtime_kind_from_snapshot(values) == "gemini_live":
+        from integrations.telephony.native_voices import normalize_gemini_voice
+        try:
+            return normalize_gemini_voice(values.get("phone_realtime_voice"))
+        except ValueError as exc:
+            raise PhoneSnapshotError(str(exc)) from exc
     if runtime_kind_from_snapshot(values) not in {"openai_realtime", "openai_live"}:
         return None
     voice = str(

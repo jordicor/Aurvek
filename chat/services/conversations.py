@@ -1,6 +1,7 @@
 import orjson
 
 from log_config import logger
+from llm_catalog import normalize_runtime_capability
 from prompts import can_user_access_prompt
 
 
@@ -100,6 +101,8 @@ async def create_conversation_core(
         raise ValueError("LLM model not found")
     if not bool(llm_row[0]):
         raise ValueError("This AI model is no longer available. Choose an available model to start a new chat.")
+    if "web" not in normalize_runtime_capability(llm_row[1], llm_row[2])["channels"]:
+        raise ValueError("This model only supports real-time voice. Choose a chat model.")
     # GPTSub (ChatGPT subscription) models need an active per-user link. This is a
     # UX write-gate; the authoritative fail-closed gate runs at inference time.
     # Never preserve an unlinked GPTSub default: no-op/default inheritance is still

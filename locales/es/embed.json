@@ -8,6 +8,7 @@
   "memory_notice": "Esta conversación conserva su historial. La memoria de otras conversaciones está desactivada.",
   "expired": "Tu acceso ha caducado. Vuelve al producto para iniciar sesión de nuevo.",
   "error": "No se ha podido completar la operación. Comprueba el estado de la conversación antes de volver a intentarlo.",
+  "theme_error": "No se ha podido cargar el aspecto del chat. Recarga la página o contacta con el responsable de la aplicación.",
   "ending": "Finalizando la actividad actual…",
   "idle": "Inactivo",
   "generating": "Preparando la respuesta…",

@@ -69,7 +69,9 @@ async def read_configuration(store, app_id):
         tools = await rows("SELECT config_json FROM APPLICATION_HTTP_TOOLS WHERE app_id=? ORDER BY name")
         funding = await rows("""SELECT mode,payer_user_id,monthly_limit,active FROM APPLICATION_FUNDING_GRANTS
             WHERE app_id=? AND context_id='' AND beneficiary_ref='' AND subject=''""")
-    return {"app": app.model_dump(), "assistants": [json.loads(row["config_json"]) for row in assistants],
+    # Stored rows predate newer settings; report their effective defaults.
+    return {"app": app.model_dump(),
+        "assistants": [AssistantConfig.model_validate_json(row["config_json"]).model_dump() for row in assistants],
         "entry_assistant_id": settings[0]["entry_assistant_id"],
         "account_policy": json.loads(policy[0]["config_json"]) if policy else None,
         "funding": FundingConfig.model_validate({**funding[0], "active": bool(funding[0]["active"])}).model_dump() if funding else None,

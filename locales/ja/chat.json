@@ -24,6 +24,8 @@
   "click_conversation": "クリックして会話に移動",
   "invalid_date": "無効な日時",
   "read_aloud": "読み上げ",
+  "download_audio": "元の音声をダウンロード",
+  "download_audio_failed": "元の音声をダウンロードできませんでした。",
   "audio": "音声",
   "voice_reply": "音声による返信",
   "voice_note": "ボイスメッセージ",

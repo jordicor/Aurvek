@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "残高を更新しました",
+  "payment.credited.detail": "チャージ金額が残高に反映されました。",
+  "payment.crediting.title": "お支払いを受け付けました",
+  "payment.crediting.detail": "お支払いは確認済みです。残高への反映を処理しています。",
+  "payment.pending.title": "お支払いの確認待ち",
+  "payment.pending.detail": "お支払いはまだ確認されていません。",
+  "payment.not_completed.title": "チャージ未完了",
+  "payment.not_completed.detail": "チャージが完了する前に、お支払いセッションの有効期限が切れました。",
+  "payment.amount_added": "反映された金額",
+  "payment.balance": "現在の残高",
+  "payment.check_later": "自動確認は終了しました。後ほどこのページを再読み込みして、状況をご確認ください。",
+  "payment.back_to_wallet": "残高に戻る"
+}

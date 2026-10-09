@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "Saldo aggiornato",
+  "payment.credited.detail": "La ricarica è stata accreditata sul tuo saldo.",
+  "payment.crediting.title": "Pagamento ricevuto",
+  "payment.crediting.detail": "Il pagamento è confermato. Il saldo è ancora in fase di aggiornamento.",
+  "payment.pending.title": "Pagamento in attesa",
+  "payment.pending.detail": "Il pagamento non è ancora stato confermato.",
+  "payment.not_completed.title": "Ricarica non completata",
+  "payment.not_completed.detail": "Questa sessione di pagamento è scaduta senza completare la ricarica.",
+  "payment.amount_added": "Importo accreditato",
+  "payment.balance": "Saldo attuale",
+  "payment.check_later": "Il controllo automatico è terminato. Puoi ricaricare questa pagina più tardi per consultare lo stato.",
+  "payment.back_to_wallet": "Torna al saldo"
+}

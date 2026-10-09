@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "Balance updated",
+  "payment.credited.detail": "Your top-up has been credited to your balance.",
+  "payment.crediting.title": "Payment received",
+  "payment.crediting.detail": "Your payment is confirmed. Your balance is still being updated.",
+  "payment.pending.title": "Payment pending",
+  "payment.pending.detail": "Your payment has not been confirmed yet.",
+  "payment.not_completed.title": "Top-up not completed",
+  "payment.not_completed.detail": "This payment session expired without completing the top-up.",
+  "payment.amount_added": "Amount added",
+  "payment.balance": "Current balance",
+  "payment.check_later": "Automatic checking has stopped. You can reload this page later to check the status.",
+  "payment.back_to_wallet": "Back to wallet"
+}

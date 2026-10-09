@@ -60,13 +60,14 @@ class RealtimeUsage:
     reasoning_output_tokens: int = 0
     cached_text_input_tokens: int = 0
     cached_audio_input_tokens: int = 0
+    visual_input_tokens: int = 0
 
-    def plus(self, value: OpenAIRealtimeUsage | None) -> "RealtimeUsage":
+    def plus(self, value: OpenAIRealtimeUsage | RealtimeUsage | None) -> "RealtimeUsage":
         if value is None:
             return self
         return RealtimeUsage(
             **{
-                name: getattr(self, name) + getattr(value, name)
+                name: getattr(self, name) + getattr(value, name, 0)
                 for name in self.__dataclass_fields__
             }
         )
@@ -94,7 +95,7 @@ class RealtimeStatusEvent:
     response_id: str
     status: str
     usage: RealtimeUsage
-    response_usage: OpenAIRealtimeUsage | None = None
+    response_usage: OpenAIRealtimeUsage | RealtimeUsage | None = None
     accounting_done: asyncio.Event | None = field(
         default=None,
         repr=False,

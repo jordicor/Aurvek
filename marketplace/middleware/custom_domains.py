@@ -15,14 +15,18 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Optional, Dict
 
-from fastapi import Request
+from fastapi import HTTPException, Request
+from filelock import Timeout as FileLockTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from cachetools import TTLCache
 from i18n import get_translator
+from marketplace.landing.cache import get_prompt_publication_state
+from marketplace.landing.publication import _landing_save_lock
 
 from marketplace.landing.isolation import (
     apply_creator_content_headers,
+    creator_content_unavailable_response,
     get_creator_content_config,
     is_host_isolated_from_primary,
     primary_app_url,
@@ -261,7 +265,7 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
         if method in {"GET", "HEAD"} and self._valid_custom_landing_path(path):
             is_embed = request.query_params.get("embed") == "1"
             return self._finalize_isolated_response(
-                self._serve_custom_landing_html(domain_data, path, request),
+                await self._serve_custom_landing_html(domain_data, path, request),
                 path=path,
                 allow_primary_frame=is_embed,
             )
@@ -386,12 +390,19 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
 
         from welcome_service import build_world
 
-        world = await build_world(entity_type, entity_id)
-        if not world:
-            return self._not_found_response(request)
-        index_path = Path(world["path"]) / "welcome" / "index.html"
         try:
-            html = index_path.read_text(encoding="utf-8")
+            async with _landing_save_lock(
+                entity_id if entity_type == "prompt" else 0,
+                pack_id=entity_id if entity_type == "pack" else None,
+                timeout_seconds=1,
+            ):
+                world = await build_world(entity_type, entity_id)
+                if not world:
+                    return self._not_found_response(request)
+                index_path = Path(world["path"]) / "welcome" / "index.html"
+                html = index_path.read_text(encoding="utf-8")
+        except FileLockTimeout:
+            return creator_content_unavailable_response(get_translator(request), retry_after_seconds=5)
         except (OSError, UnicodeError):
             return self._not_found_response(request)
 
@@ -520,7 +531,7 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
-    def _serve_custom_landing_html(self, domain_data: Dict, path: str, request: Request) -> Response:
+    async def _serve_custom_landing_html(self, domain_data: Dict, path: str, request: Request) -> Response:
         """Serve creator HTML directly so application routes cannot win routing."""
         if path in {"/", "/index.html"}:
             page = "home"
@@ -529,17 +540,22 @@ class CustomDomainMiddleware(BaseHTTPMiddleware):
         if not _PAGE_RE.fullmatch(page):
             return self._not_found_response(request)
 
-        prompt_dir = _build_prompt_path(
-            domain_data["username"],
-            domain_data["prompt_id"],
-            domain_data["prompt_name"],
-        )
-        html_path = prompt_dir / f"{page}.html"
         try:
-            resolved = html_path.resolve(strict=True)
-            resolved.relative_to(prompt_dir.resolve())
-            html = resolved.read_text(encoding="utf-8")
-        except (OSError, UnicodeError, ValueError):
+            async with _landing_save_lock(domain_data["prompt_id"], timeout_seconds=1):
+                publication = await get_prompt_publication_state(domain_data["prompt_id"])
+                if not (publication["public"] and publication["has_landing_page"]):
+                    return self._not_found_response(request)
+                prompt_dir = _build_prompt_path(
+                    domain_data["username"],
+                    domain_data["prompt_id"],
+                    domain_data["prompt_name"],
+                )
+                resolved = (prompt_dir / f"{page}.html").resolve(strict=True)
+                resolved.relative_to(prompt_dir.resolve())
+                html = resolved.read_text(encoding="utf-8")
+        except FileLockTimeout:
+            return creator_content_unavailable_response(get_translator(request), retry_after_seconds=5)
+        except (OSError, UnicodeError, ValueError, HTTPException):
             return self._not_found_response(request)
 
         from marketplace.landing.rendering import inject_custom_domain_analytics

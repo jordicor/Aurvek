@@ -7,9 +7,11 @@ from captcha_service import get_captcha_config
 from common import GOOGLE_CLIENT_ID, _get_marketplace_template_flags, templates
 from database import get_db_connection
 from log_config import logger
+from llm_catalog import normalize_runtime_capability
 from models import User
 from prompts import can_user_access_prompt
 from integrations.applications.web import require_application_access
+from ai_runtime.provider_health import provider_from_machine, touch_provider_activity
 
 from chat.services.page_context import handle_get_request
 
@@ -105,6 +107,8 @@ async def chat_post(request: Request, current_user: User = Depends(get_current_u
             if not bool(llm_row[0]):
                 await conn.close()
                 raise HTTPException(status_code=400, detail=chat_text(current_user, "model_disabled"))
+            if "web" not in normalize_runtime_capability(llm_row[1], llm_row[2])["channels"]:
+                raise HTTPException(status_code=400, detail=chat_text(current_user, "model_voice_only"))
             # GPTSub (ChatGPT subscription) models need an active per-user link.
             if llm_row[1] == "GPTSub":
                 try:
@@ -175,16 +179,17 @@ async def get_conversation_details(
                 (SELECT p.hide_llm_name FROM PROMPTS p WHERE p.id = ?) AS hide_llm_name,
                 (SELECT p.allowed_llms FROM PROMPTS p WHERE p.id = ?) AS allowed_llms,
                 (SELECT COALESCE(p.is_paid, 0) FROM PROMPTS p WHERE p.id = ?) AS is_paid,
-                (SELECT COALESCE(l.enabled, 1) FROM LLM l WHERE l.id = ?) AS llm_enabled
+                (SELECT COALESCE(l.enabled, 1) FROM LLM l WHERE l.id = ?) AS llm_enabled,
+                (SELECT l.machine FROM LLM l WHERE l.id = ?) AS machine
             """,
-            (llm_id, prompt_id, prompt_id, prompt_id, prompt_id, prompt_id, llm_id),
+            (llm_id, prompt_id, prompt_id, prompt_id, prompt_id, prompt_id, llm_id, llm_id),
         )
 
         result = await cursor.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail=chat_text(current_user, "model_prompt_not_found"))
 
-        model, prompt_name, forced_llm_id, hide_llm_name, allowed_llms, is_paid, llm_enabled = result
+        model, prompt_name, forced_llm_id, hide_llm_name, allowed_llms, is_paid, llm_enabled, machine = result
         await conn.close()
 
     return JSONResponse(
@@ -192,6 +197,7 @@ async def get_conversation_details(
             "llm_id": llm_id,
             "model": model,
             "llm_enabled": bool(llm_enabled),
+            "provider_health": touch_provider_activity(provider_from_machine(machine, model)),
             "prompt_id": prompt_id,
             "prompt_name": prompt_name,
             "forced_llm_id": forced_llm_id,
@@ -288,6 +294,8 @@ async def update_conversation_model(
             llm_data = await cursor.fetchone()
             if not llm_data:
                 raise HTTPException(status_code=404, detail=chat_text(current_user, "model_not_found"))
+            if "web" not in normalize_runtime_capability(llm_data[1], llm_data[2])["channels"]:
+                raise HTTPException(status_code=400, detail=chat_text(current_user, "model_voice_only"))
             if not bool(llm_data[3]) and (
                 llm_data[1] == "GPTSub"
                 or int(new_llm_id) != int(current_llm_id or 0)
@@ -342,6 +350,9 @@ async def update_conversation_model(
                     "updated": updated,
                     "llm_id": llm_data[0],
                     "model": llm_data[2],
+                    "provider_health": touch_provider_activity(
+                        provider_from_machine(llm_data[1], llm_data[2])
+                    ),
                 }
             )
     except HTTPException:

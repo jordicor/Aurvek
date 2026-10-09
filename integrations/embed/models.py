@@ -60,9 +60,22 @@ class AppConfig(StrictModel):
     prompt_id: int = Field(gt=0, strict=True)
     owner_user_id: int | None = Field(default=None, gt=0, strict=True)
     theme: str = Field(default="default", max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    theme_css_url: str | None = Field(default=None, max_length=2048)
     capabilities: dict[str, bool] = Field(default_factory=lambda: {"text": True})
     enabled: bool = False
     remote_backend_access: bool = Field(default=False, strict=True)
+
+    @field_validator("theme_css_url")
+    @classmethod
+    def valid_theme_css_url(cls, value):
+        if value is None:
+            return None
+        if (not value.isascii() or any(ord(char) <= 32 or ord(char) == 127 for char in value)
+                or "\\" in value or "#" in value):
+            raise ValueError("Theme CSS URL must not contain whitespace, backslashes, or a fragment")
+        parsed = urlsplit(value)
+        exact_https_origin(f"{parsed.scheme}://{parsed.netloc}")
+        return value
 
     @field_validator("issuer")
     @classmethod

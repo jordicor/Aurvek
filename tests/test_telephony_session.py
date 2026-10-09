@@ -11,11 +11,6 @@ import pytest
 from integrations.telephony import session as session_module
 from integrations.telephony.billing import PhoneBillingError, PhoneBillingExhausted
 from integrations.telephony.clock import EndCallDirective, EndCallReason
-from integrations.telephony.deepgram_live import (
-    DeepgramSpeechStartedEvent,
-    DeepgramTranscriptEvent,
-    DeepgramUtteranceEndEvent,
-)
 from integrations.telephony.elevenlabs_realtime import (
     ElevenLabsMetadataEvent,
     ElevenLabsSpeechStartedEvent,
@@ -93,7 +88,7 @@ def context(
     )
 
 
-class FakeDeepgram:
+class FakeStt:
     def __init__(self):
         self.audio = []
         self.connected = False
@@ -197,7 +192,7 @@ class FakeWebSocket:
 
 def make_session(*, call_context=None, **overrides):
     values = {
-        "deepgram": FakeDeepgram(),
+        "stt": FakeStt(),
         "repository": FakeRepository(),
         "current_user_loader": _user,
         "hangup_call": _noop,
@@ -229,7 +224,7 @@ async def test_live_handoff_roundtrip_replaces_provider_and_preserves_physical_c
     original = realtime_context() if native_realtime else context()
     providers = []
 
-    class Provider(FakeDeepgram):
+    class Provider(FakeStt):
         closed = False
 
         async def close(self):
@@ -243,7 +238,7 @@ async def test_live_handoff_roundtrip_replaces_provider_and_preserves_physical_c
 
     repository = FakeRepository()
     session = make_session(call_context=original, stt=factory(original.call_snapshot),
-                           repository=repository, stt_factory=factory, deepgram=None)
+                           repository=repository, stt_factory=factory)
     original_clock = session.clock
     session._stream_sid = STREAM_SID
     for target_id, epoch, prompt_id in [(20, 8, 12), (10, 9, 2)]:
@@ -284,7 +279,7 @@ async def test_live_handoff_roundtrip_replaces_provider_and_preserves_physical_c
 @pytest.mark.asyncio
 async def test_handoff_retains_source_when_caller_interrupts_prepared_transfer():
     from integrations.embed.models import EmbedError
-    session = make_session(stt_factory=lambda _snapshot: FakeDeepgram())
+    session = make_session(stt_factory=lambda _snapshot: FakeStt())
     source = session.stt
     candidate = await session.prepare_handoff_transport(snapshot())
     session._speech_generation += 1
@@ -853,20 +848,19 @@ async def test_real_speech_barges_cached_notice() -> None:
     session = make_session()
     session._active_notice = Notice()
 
-    await session.feed_deepgram_event(
-        DeepgramSpeechStartedEvent(0.25), FakeWebSocket()
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 250), FakeWebSocket()
     )
 
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text="please stop there",
             is_final=False,
             speech_final=False,
-            from_finalize=False,
             start_seconds=0.25,
             duration_seconds=0.4,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
@@ -887,17 +881,18 @@ async def test_brief_backchannel_does_not_cut_active_playback(
 
     session = make_session()
     session._active_playback = Playback()
-    await session.feed_deepgram_event(DeepgramSpeechStartedEvent(1.0), FakeWebSocket())
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 1_000), FakeWebSocket()
+    )
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text=backchannel,
             is_final=True,
             speech_final=True,
-            from_finalize=False,
             start_seconds=1.0,
             duration_seconds=0.45,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
@@ -914,19 +909,18 @@ async def test_brief_backchannel_without_active_output_remains_a_user_turn(
 ) -> None:
     session = make_session()
 
-    await session.feed_deepgram_event(
-        DeepgramSpeechStartedEvent(1.0), FakeWebSocket()
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 1_000), FakeWebSocket()
     )
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text=backchannel,
             is_final=True,
             speech_final=True,
-            from_finalize=False,
             start_seconds=1.0,
             duration_seconds=0.45,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
@@ -943,24 +937,23 @@ async def test_suppressed_final_backchannel_does_not_contaminate_next_utterance(
 
     session = make_session()
     session._active_playback = Playback()
-    await session.feed_deepgram_event(
-        DeepgramSpeechStartedEvent(1.0), FakeWebSocket()
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 1_000), FakeWebSocket()
     )
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text="sí",
             is_final=True,
             speech_final=False,
-            from_finalize=False,
             start_seconds=1.0,
             duration_seconds=0.25,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
-    await session.feed_deepgram_event(
-        DeepgramUtteranceEndEvent(last_word_end_seconds=1.25),
+    await session.feed_stt_event(
+        ElevenLabsUtteranceEndEvent(last_word_end_seconds=1.25),
         FakeWebSocket(),
     )
 
@@ -968,19 +961,18 @@ async def test_suppressed_final_backchannel_does_not_contaminate_next_utterance(
     assert session._assembler.pending_segment_count == 0
 
     session._active_playback = None
-    await session.feed_deepgram_event(
-        DeepgramSpeechStartedEvent(2.0), FakeWebSocket()
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 2_000), FakeWebSocket()
     )
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text="ahora sí quiero responder",
             is_final=True,
             speech_final=True,
-            from_finalize=False,
             start_seconds=2.0,
             duration_seconds=0.8,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
@@ -999,17 +991,18 @@ async def test_long_same_words_are_not_treated_as_brief_backchannel() -> None:
 
     session = make_session()
     session._active_playback = Playback()
-    await session.feed_deepgram_event(DeepgramSpeechStartedEvent(1.0), FakeWebSocket())
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 1_000), FakeWebSocket()
+    )
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text="un momento",
             is_final=True,
             speech_final=True,
-            from_finalize=False,
             start_seconds=1.0,
             duration_seconds=1.5,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
@@ -1021,15 +1014,14 @@ async def test_long_same_words_are_not_treated_as_brief_backchannel() -> None:
 
 @pytest.mark.asyncio
 async def test_interrupt_sensitivity_changes_confirmation_window() -> None:
-    event = DeepgramTranscriptEvent(
+    event = RealtimeCallTranscriptEvent(
+        item_id="caller-item",
         text="wait, that is incorrect",
         is_final=False,
         speech_final=False,
-        from_finalize=False,
         start_seconds=1.0,
         duration_seconds=0.25,
         confidence=0.95,
-        words=(),
     )
     high_calls = []
     low_calls = []
@@ -1057,10 +1049,10 @@ async def test_interrupt_sensitivity_changes_confirmation_window() -> None:
     low._active_playback = Playback(low_calls)
 
     for session in (high, low):
-        await session.feed_deepgram_event(
-            DeepgramSpeechStartedEvent(1.0), FakeWebSocket()
+        await session.feed_stt_event(
+            RealtimeCallSpeechStartedEvent("caller-item", 1_000), FakeWebSocket()
         )
-        await session.feed_deepgram_event(event, FakeWebSocket())
+        await session.feed_stt_event(event, FakeWebSocket())
 
     assert high_calls == ["barge"]
     assert low_calls == []
@@ -1077,17 +1069,18 @@ async def test_non_interruptible_prompt_still_transcribes_without_barge() -> Non
     session = make_session()
     session.settings = replace(session.settings, interruptible=False)
     session._active_playback = Playback()
-    await session.feed_deepgram_event(DeepgramSpeechStartedEvent(1.0), FakeWebSocket())
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 1_000), FakeWebSocket()
+    )
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text="stop, I need to correct that",
             is_final=True,
             speech_final=True,
-            from_finalize=False,
             start_seconds=1.0,
             duration_seconds=0.8,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )
@@ -1147,7 +1140,7 @@ async def test_final_utterance_uses_canonical_runtime_and_fenced_context(monkeyp
     assert phone_turn.context.phone_request_source == "caller"
     assert phone_turn.context.phone_request_timing == "immediate"
     assert phone_turn.context.turn_key.turn_id == "stt-1"
-    assert "openai_realtime_bridge" not in phone_turn.context.provenance
+    assert "native_audio_bridge" not in phone_turn.context.provenance
     assert "remaining_seconds=" in phone_turn.context.provenance["internal_turn_context"]
     schedule_policy = phone_turn.context.provenance["call_schedule_policy"]
     assert isinstance(schedule_policy, CallSchedulePolicy)
@@ -1234,7 +1227,7 @@ async def test_realtime_turn_passes_bridge_and_uses_realtime_playback(monkeypatc
     assert phone_turn.context.phone_direction == "outbound"
     assert phone_turn.context.phone_request_source == "user_ui"
     assert phone_turn.context.phone_request_timing == "scheduled"
-    assert phone_turn.context.provenance["openai_realtime_bridge"] is bridge
+    assert phone_turn.context.provenance["native_audio_bridge"] is bridge
     assert captured["realtime_playback"]["bridge"] is bridge
     assert captured["realtime_playback"]["phone_turn"] is phone_turn
     assert bridge.close_calls == 1
@@ -1329,7 +1322,7 @@ async def test_expired_deadline_plays_notice_then_hangs_up() -> None:
     )
     session = PhoneMediaSession(
         expired,
-        deepgram=FakeDeepgram(),
+        stt=FakeStt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=hangup,
@@ -1348,13 +1341,13 @@ async def test_expired_deadline_plays_notice_then_hangs_up() -> None:
 
 @pytest.mark.asyncio
 async def test_initial_greeting_backend_is_required_before_provider_streams() -> None:
-    deepgram = FakeDeepgram()
-    session = make_session(deepgram=deepgram)
+    stt = FakeStt()
+    session = make_session(stt=stt)
 
     with pytest.raises(PhoneMediaSessionError, match="greeting cache backend"):
         await session.run(FakeWebSocket())
 
-    assert deepgram.connected is False
+    assert stt.connected is False
 
 
 @pytest.mark.asyncio
@@ -1393,12 +1386,12 @@ async def test_stop_event_finalizes_and_bounded_drains_confirmed_phrase_before_s
         assert values["phone_turn"].context.phone_request_timing == "immediate"
         return 101
 
-    deepgram = FakeDeepgram()
+    stt = FakeStt()
     monkeypatch.setattr(
         "integrations.telephony.session._STOP_FINAL_DRAIN_TOTAL_SECONDS", 0.05
     )
     session = make_session(
-        deepgram=deepgram, caller_turn_persister=persist_caller
+        stt=stt, caller_turn_persister=persist_caller
     )
     session._current_user = await _user(1)
     websocket = FakeWebSocket()
@@ -1416,20 +1409,16 @@ async def test_stop_event_finalizes_and_bounded_drains_confirmed_phrase_before_s
         session.feed_twilio_message(stop, websocket)
     )
     for _ in range(10):
-        if deepgram.finalized:
+        if stt.finalized:
             break
         await asyncio.sleep(0)
-    assert deepgram.finalized == 1
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    assert stt.finalized == 1
+    await session.feed_stt_event(
+        ElevenLabsTranscriptEvent(
             text="the final phrase",
             is_final=True,
             speech_final=True,
             from_finalize=True,
-            start_seconds=4.0,
-            duration_seconds=0.8,
-            confidence=0.97,
-            words=(),
         ),
         websocket,
     )
@@ -1454,8 +1443,8 @@ async def test_stop_quiescence_admits_two_committed_scribe_segments(
     monkeypatch.setattr(
         "integrations.telephony.session._STOP_FINAL_DRAIN_TOTAL_SECONDS", 1.0
     )
-    stt = FakeDeepgram()
-    session = make_session(deepgram=stt, caller_turn_persister=persist_caller)
+    stt = FakeStt()
+    session = make_session(stt=stt, caller_turn_persister=persist_caller)
     session._current_user = await _user(1)
     session._stream_sid = STREAM_SID
     websocket = FakeWebSocket()
@@ -1510,7 +1499,7 @@ async def test_stop_publishes_terminal_attempt_before_provider_settlement() -> N
 
     repository = Repository()
 
-    class Stt(FakeDeepgram):
+    class Stt(FakeStt):
         async def finalize(self):
             assert repository.stream_attempt_results == [
                 {
@@ -1530,7 +1519,7 @@ async def test_stop_publishes_terminal_attempt_before_provider_settlement() -> N
 
     stt = Stt()
     session = make_session(
-        deepgram=stt,
+        stt=stt,
         repository=repository,
         caller_turn_persister=persist_caller,
     )
@@ -1562,8 +1551,8 @@ async def test_stop_finalize_with_no_scribe_final_is_bounded(monkeypatch) -> Non
     monkeypatch.setattr(
         "integrations.telephony.session._STOP_FINAL_DRAIN_TOTAL_SECONDS", 0.03
     )
-    stt = FakeDeepgram()
-    session = make_session(deepgram=stt)
+    stt = FakeStt()
+    session = make_session(stt=stt)
     session._current_user = await _user(1)
     session._stream_sid = STREAM_SID
 
@@ -1649,9 +1638,9 @@ async def test_stop_persists_prequeued_turn_and_two_scribe_commits_with_full_win
     monkeypatch.setattr(
         "integrations.telephony.session._STOP_PERSIST_TIMEOUT_SECONDS", 0.5
     )
-    stt = FakeDeepgram()
+    stt = FakeStt()
     session = make_session(
-        deepgram=stt,
+        stt=stt,
         caller_turn_persister=persist_caller,
     )
     session._current_user = await _user(1)
@@ -1883,10 +1872,10 @@ async def test_stop_persistence_timeout_cancels_child_and_finishes_shutdown(
 
 
 @pytest.mark.asyncio
-async def test_stop_total_budget_cancels_hung_deepgram_finalize(monkeypatch) -> None:
+async def test_stop_total_budget_cancels_hung_stt_finalize(monkeypatch) -> None:
     canceled = asyncio.Event()
 
-    class Deepgram(FakeDeepgram):
+    class Stt(FakeStt):
         async def finalize(self):
             try:
                 await asyncio.Event().wait()
@@ -1896,7 +1885,7 @@ async def test_stop_total_budget_cancels_hung_deepgram_finalize(monkeypatch) -> 
     monkeypatch.setattr(
         "integrations.telephony.session._STOP_SETTLEMENT_TIMEOUT_SECONDS", 0.02
     )
-    session = make_session(deepgram=Deepgram())
+    session = make_session(stt=Stt())
     session._current_user = await _user(1)
     session._stream_sid = STREAM_SID
 
@@ -1957,7 +1946,7 @@ async def test_run_keeps_stop_receive_task_alive_until_caller_only_persistence(
                 }
             )
 
-    class Deepgram(FakeDeepgram):
+    class Stt(FakeStt):
         async def events(self):
             await asyncio.Event().wait()
             if False:
@@ -1987,7 +1976,7 @@ async def test_run_keeps_stop_receive_task_alive_until_caller_only_persistence(
     )
     session = PhoneMediaSession(
         context(),
-        deepgram=Deepgram(),
+        stt=Stt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2025,7 +2014,7 @@ class _StopWebSocket(FakeWebSocket):
 async def test_run_keeps_published_stop_when_provider_settlement_fails() -> None:
     actions = []
 
-    class Stt(FakeDeepgram):
+    class Stt(FakeStt):
         async def events(self):
             await asyncio.Event().wait()
             if False:
@@ -2046,7 +2035,7 @@ async def test_run_keeps_published_stop_when_provider_settlement_fails() -> None
     repository = FakeRepository()
     session = PhoneMediaSession(
         context(),
-        deepgram=Stt(),
+        stt=Stt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=hangup,
@@ -2094,7 +2083,7 @@ async def test_post_stop_sibling_failure_preserves_receiver_settlement() -> None
             outcome_published.set()
             return result
 
-    class Stt(FakeDeepgram):
+    class Stt(FakeStt):
         def __init__(self):
             super().__init__()
             self.final_events = asyncio.Queue()
@@ -2136,7 +2125,7 @@ async def test_post_stop_sibling_failure_preserves_receiver_settlement() -> None
     repository = Repository()
     session = PhoneMediaSession(
         context(),
-        deepgram=Stt(),
+        stt=Stt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2181,7 +2170,7 @@ def _assert_no_owned_phone_tasks() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "hung_dependency",
-    ["deepgram_finalize", "greeting_disconnect", "canonical_persistence"],
+    ["stt_finalize", "greeting_disconnect", "canonical_persistence"],
 )
 async def test_run_stop_budget_cancels_hung_settlement_and_all_owned_tasks(
     monkeypatch,
@@ -2189,14 +2178,14 @@ async def test_run_stop_budget_cancels_hung_settlement_and_all_owned_tasks(
 ) -> None:
     canceled = asyncio.Event()
 
-    class Deepgram(FakeDeepgram):
+    class Stt(FakeStt):
         async def events(self):
             await asyncio.Event().wait()
             if False:
                 yield None
 
         async def finalize(self):
-            if hung_dependency != "deepgram_finalize":
+            if hung_dependency != "stt_finalize":
                 return await super().finalize()
             try:
                 await asyncio.Event().wait()
@@ -2238,7 +2227,7 @@ async def test_run_stop_budget_cancels_hung_settlement_and_all_owned_tasks(
     )
     session = PhoneMediaSession(
         context(),
-        deepgram=Deepgram(),
+        stt=Stt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2264,7 +2253,7 @@ async def test_run_stop_budget_cancels_hung_settlement_and_all_owned_tasks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hung_dependency", ["deepgram_close", "recording_finalize"])
+@pytest.mark.parametrize("hung_dependency", ["stt_close", "recording_finalize"])
 async def test_run_stop_budget_bounds_final_cleanup_dependencies(
     monkeypatch,
     hung_dependency,
@@ -2272,14 +2261,14 @@ async def test_run_stop_budget_bounds_final_cleanup_dependencies(
     async_canceled = asyncio.Event()
     recorder_entered = asyncio.Event()
 
-    class Deepgram(FakeDeepgram):
+    class Stt(FakeStt):
         async def events(self):
             await asyncio.Event().wait()
             if False:
                 yield None
 
         async def close(self):
-            if hung_dependency != "deepgram_close":
+            if hung_dependency != "stt_close":
                 return
             try:
                 await asyncio.Event().wait()
@@ -2324,7 +2313,7 @@ async def test_run_stop_budget_bounds_final_cleanup_dependencies(
         repository.persist_local_recording = persist_local_recording
     session = PhoneMediaSession(
         session_context,
-        deepgram=Deepgram(),
+        stt=Stt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2342,7 +2331,7 @@ async def test_run_stop_budget_bounds_final_cleanup_dependencies(
     )
 
     assert result.reason == "twilio_stop"
-    if hung_dependency == "deepgram_close":
+    if hung_dependency == "stt_close":
         assert async_canceled.is_set()
     else:
         assert recorder_entered.is_set()
@@ -2378,7 +2367,7 @@ async def test_zero_residual_stop_budget_persists_raw_without_starting_mix() -> 
     repository.persist_local_recording = persist_local_recording
     session = PhoneMediaSession(
         replace(context(), recording_enabled=True),
-        deepgram=FakeDeepgram(),
+        stt=FakeStt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2420,7 +2409,7 @@ async def test_tombstone_rejection_removes_late_finalized_local_audio(tmp_path) 
     recorder.record_participant(b"\xff" * 160, start_ms=0)
     session = PhoneMediaSession(
         call_context,
-        deepgram=FakeDeepgram(),
+        stt=FakeStt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2441,7 +2430,7 @@ async def test_run_stop_timeout_skips_fatal_notice_and_hangup(
 ) -> None:
     canceled = asyncio.Event()
 
-    class Deepgram(FakeDeepgram):
+    class Stt(FakeStt):
         async def events(self):
             await asyncio.Event().wait()
             if False:
@@ -2486,7 +2475,7 @@ async def test_run_stop_timeout_skips_fatal_notice_and_hangup(
     )
     session = PhoneMediaSession(
         context(),
-        deepgram=Deepgram(),
+        stt=Stt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=hangup,
@@ -2539,7 +2528,7 @@ async def test_milestone_is_persisted_only_after_runtime_receives_context(
             maximum=1_200,
             started_at=datetime.now(UTC) - timedelta(seconds=301),
         ),
-        deepgram=FakeDeepgram(),
+        stt=FakeStt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2562,7 +2551,7 @@ async def test_milestone_is_persisted_only_after_runtime_receives_context(
     assert repository.milestone_records[0]["milestones_seconds"] == (900,)
 
 
-class BlockingDeepgram(FakeDeepgram):
+class BlockingStt(FakeStt):
     async def events(self):
         await asyncio.Event().wait()
         if False:
@@ -2585,7 +2574,7 @@ async def test_only_twilio_websocket_disconnect_is_reconnectable() -> None:
     repository.delivered_milestones = (900,)
     session = PhoneMediaSession(
         context(maximum=1_200, started_at=datetime.now(UTC) - timedelta(seconds=301)),
-        deepgram=BlockingDeepgram(),
+        stt=BlockingStt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2618,7 +2607,7 @@ async def test_final_stream_attempt_disconnect_returns_to_connect_action_without
 
     session = PhoneMediaSession(
         context(stream_attempt=2),
-        deepgram=BlockingDeepgram(),
+        stt=BlockingStt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=hangup,
@@ -2648,7 +2637,7 @@ async def test_disconnect_publishes_non_reconnectable_after_durable_hangup(
     repository = FakeRepository()
     session = PhoneMediaSession(
         context(),
-        deepgram=BlockingDeepgram(),
+        stt=BlockingStt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2683,13 +2672,13 @@ async def test_disconnect_publishes_non_reconnectable_after_durable_hangup(
 
 @pytest.mark.asyncio
 async def test_bootstrap_failure_result_has_no_published_attempt_outcome() -> None:
-    class Stt(FakeDeepgram):
+    class Stt(FakeStt):
         async def connect(self):
             raise RuntimeError("bootstrap failed")
 
     session = PhoneMediaSession(
         context(),
-        deepgram=Stt(),
+        stt=Stt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2744,7 +2733,7 @@ async def test_disconnect_outcome_is_durable_before_blocked_runtime_cleanup(
 
     session = PhoneMediaSession(
         context(),
-        deepgram=BlockingDeepgram(),
+        stt=BlockingStt(),
         repository=repository,
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2837,7 +2826,7 @@ async def test_stop_during_runtime_start_persists_active_and_queued_callers(
     )
     session = PhoneMediaSession(
         context(),
-        deepgram=BlockingDeepgram(),
+        stt=BlockingStt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2894,7 +2883,7 @@ async def test_canceled_runtime_starter_persists_committed_caller_before_cleanup
     )
     session = PhoneMediaSession(
         context(),
-        deepgram=BlockingDeepgram(),
+        stt=BlockingStt(),
         repository=FakeRepository(),
         current_user_loader=_user,
         hangup_call=_noop,
@@ -2967,7 +2956,7 @@ async def test_simultaneous_websocket_and_stt_failure_is_terminal_not_reconnecta
             await release.wait()
             raise ConnectionError("provider websocket closed")
 
-    class Deepgram(FakeDeepgram):
+    class Stt(FakeStt):
         async def connect(self):
             asyncio.get_running_loop().call_soon(release.set)
             return await super().connect()
@@ -2998,7 +2987,7 @@ async def test_simultaneous_websocket_and_stt_failure_is_terminal_not_reconnecta
 
     session = PhoneMediaSession(
         context(),
-        deepgram=Deepgram(),
+        stt=Stt(),
         repository=(repository := FakeRepository()),
         current_user_loader=_user,
         hangup_call=hangup,
@@ -3073,7 +3062,7 @@ async def test_runtime_failure_keeps_receiver_for_notice_then_hangup_and_stt_clo
             actions.append(("claim", values["reason"]))
             return await super().record_hangup_requested(**values)
 
-    class Stt(FakeDeepgram):
+    class Stt(FakeStt):
         async def events(self):
             raise RuntimeError("synthetic STT failure")
             if False:
@@ -3135,7 +3124,7 @@ async def test_runtime_failure_keeps_receiver_for_notice_then_hangup_and_stt_clo
     stt = Stt()
     session = PhoneMediaSession(
         context(),
-        deepgram=stt,
+        stt=stt,
         repository=Repository(),
         current_user_loader=_user,
         hangup_call=hangup,
@@ -3179,7 +3168,7 @@ async def test_stt_llm_and_tts_failures_play_confirmed_notice_and_hang_up(
             actions.append(("claim", values["reason"]))
             return await super().record_hangup_requested(**values)
 
-    class FailedDeepgram(FakeDeepgram):
+    class FailedStt(FakeStt):
         async def events(self):
             raise RuntimeError("stt failed")
             if False:
@@ -3214,7 +3203,7 @@ async def test_stt_llm_and_tts_failures_play_confirmed_notice_and_hang_up(
 
     session = PhoneMediaSession(
         context(),
-        deepgram=(FailedDeepgram() if failure_source == "stt" else BlockingDeepgram()),
+        stt=(FailedStt() if failure_source == "stt" else BlockingStt()),
         repository=Repository(),
         current_user_loader=_user,
         hangup_call=hangup,
@@ -3554,19 +3543,18 @@ async def test_speech_during_runtime_start_persists_caller_only() -> None:
         )
     )
     await entered.wait()
-    await session.feed_deepgram_event(
-        DeepgramSpeechStartedEvent(1.6), FakeWebSocket()
+    await session.feed_stt_event(
+        RealtimeCallSpeechStartedEvent("caller-item", 1_600), FakeWebSocket()
     )
-    await session.feed_deepgram_event(
-        DeepgramTranscriptEvent(
+    await session.feed_stt_event(
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
             text="wait, I need to correct that",
             is_final=False,
             speech_final=False,
-            from_finalize=False,
             start_seconds=1.6,
             duration_seconds=0.4,
             confidence=0.95,
-            words=(),
         ),
         FakeWebSocket(),
     )

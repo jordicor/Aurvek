@@ -247,14 +247,10 @@ def _normalize_spoken_text(value: str) -> str:
 
 
 def _is_speech_started_event(event: object) -> bool:
-    if isinstance(
+    return isinstance(
         event,
         (ElevenLabsSpeechStartedEvent, RealtimeCallSpeechStartedEvent),
-    ):
-        return True
-    # Narrow compatibility for old unit-test fakes.  No live runtime imports or
-    # constructs the retired provider's event classes.
-    return type(event).__name__ == "DeepgramSpeechStartedEvent"
+    )
 
 
 def _is_transcript_event(event: object) -> bool:
@@ -266,28 +262,11 @@ def _is_transcript_event(event: object) -> bool:
 
 
 def _is_utterance_end_event(event: object) -> bool:
-    return isinstance(event, ElevenLabsUtteranceEndEvent) or (
-        hasattr(event, "last_word_end_seconds")
-        and not _is_transcript_event(event)
-    )
+    return isinstance(event, ElevenLabsUtteranceEndEvent)
 
 
 def _transcript_duration_ms(event: object) -> int | None:
     duration = getattr(event, "duration_seconds", None)
-    words = getattr(event, "words", ())
-    if duration is None and words:
-        starts = [
-            word.start_seconds
-            for word in words
-            if word.start_seconds is not None
-        ]
-        ends = [
-            word.end_seconds
-            for word in words
-            if word.end_seconds is not None
-        ]
-        if starts and ends:
-            duration = max(ends) - min(starts)
     if duration is None or not math.isfinite(float(duration)) or duration < 0:
         return None
     return round(float(duration) * 1_000)
@@ -531,8 +510,7 @@ class PhoneMediaSession:
         self,
         context: PhoneMediaSessionContext,
         *,
-        stt: RealtimeSttClient | None = None,
-        deepgram: RealtimeSttClient | None = None,
+        stt: RealtimeSttClient,
         repository: TelephonyProviderRepository,
         current_user_loader: CurrentUserLoader,
         hangup_call: HangupCall,
@@ -546,13 +524,10 @@ class PhoneMediaSession:
         billing_meter: PhoneLiveBillingMeter | None = None,
         stt_factory: Callable[[Mapping[str, Any]], RealtimeSttClient] | None = None,
     ) -> None:
-        if stt is not None and deepgram is not None:
-            raise ValueError("provide one live STT client")
-        resolved_stt = stt if stt is not None else deepgram
-        if resolved_stt is None:
+        if stt is None:
             raise ValueError("a live STT client is required")
         self.context = context
-        self.stt = resolved_stt
+        self.stt = stt
         self._stt_factory = stt_factory
         self._prepared_handoff: _PreparedHandoffTransport | None = None
         self._provider_input_lock = asyncio.Lock()
@@ -732,11 +707,6 @@ class PhoneMediaSession:
                 stt_provider="openai",
             ),
         )
-    @property
-    def deepgram(self) -> RealtimeSttClient:
-        """Deprecated test compatibility alias for the provider-neutral client."""
-
-        return self.stt
 
     @bill_phone_session
     async def run(
@@ -1454,15 +1424,6 @@ class PhoneMediaSession:
             self._pending_barge_in.reset()
             self._participant_speech_activity.reset()
 
-    async def feed_deepgram_event(
-        self,
-        event: object,
-        websocket: MediaWebSocket,
-    ) -> None:
-        """Deprecated test adapter; active runtime calls :meth:`feed_stt_event`."""
-
-        await self.feed_stt_event(event, websocket)
-
     def _barge_in_candidate(
         self,
         event: object,
@@ -1476,7 +1437,7 @@ class PhoneMediaSession:
         if len(known_durations) == len(events):
             duration_ms = sum(known_durations)
         elif self._participant_speech_activity.last_voice_end_ms is not None:
-            # Some live STT events omit word/duration metadata. Use the
+            # Some live STT events omit duration metadata. Use the
             # voiced PCMU that this session actually observed, once for the
             # whole utterance rather than once per changing hypothesis.
             duration_ms = self._participant_speech_activity.voiced_duration_ms
@@ -2143,7 +2104,7 @@ class PhoneMediaSession:
             link_state=self._link_state_for_utterance(utterance),
             end_controller=self.end_controller,
             internal_turn_context=internal_context,
-            openai_realtime_bridge=realtime_bridge,
+            native_audio_bridge=realtime_bridge,
             phone_direction=self.context.direction,
             phone_request_source=self.context.request_source,
             phone_request_timing=self.context.request_timing,

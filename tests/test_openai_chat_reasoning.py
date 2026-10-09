@@ -60,6 +60,73 @@ def _sse_payload(event: str) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_openrouter_stream_decodes_unicode_split_across_transport_chunks(monkeypatch):
+    prefix = 'data: {"choices":[{"delta":{"content":"'
+    answer = 'a' * (1023 - len(prefix)) + 'é, respuesta completa'
+    payload = (prefix + answer + '"}}]}\n\ndata: [DONE]\n\n').encode('utf-8')
+    assert payload[1023:1025] == 'é'.encode('utf-8')
+
+    class _SplitContent:
+        async def iter_chunked(self, _size):
+            yield payload[:1024]
+            yield payload[1024:]
+
+    class _SplitResponse(_FakeResponse):
+        def __init__(self):
+            self.content = _SplitContent()
+
+    class _SplitSession(_FakeSession):
+        def post(self, _url, headers=None, json=None):
+            self._captured['headers'] = headers or {}
+            self._captured['json'] = json or {}
+            return _SplitResponse()
+
+    monkeypatch.setattr(openai_chat.aiohttp, 'ClientSession',
+                        lambda *args, **kwargs: _SplitSession('', {}))
+    monkeypatch.setattr(openai_chat, 'record_provider_error_for_label', AsyncMock())
+    chunks = [chunk async for chunk in openai_chat.call_llm_api(
+        messages=[{'role': 'user', 'content': 'Resume el PDF y la imagen.'}],
+        model='openai/gpt-6-astra', temperature=0.7, max_tokens=100,
+        prompt='Product assistant', conversation_id=2280, current_user=_User(),
+        request=None, api_url='https://example.invalid', api_key='test',
+        provider_label='OpenRouter', save_to_db=False)]
+    events = [_sse_payload(chunk) for chunk in chunks if chunk.startswith('data: {')]
+
+    assert ''.join(event.get('content', '') for event in events) == answer
+    assert not any('error' in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stream_error_reports_provider_failure_and_never_executes_partial_tool(monkeypatch):
+    payload = '\n\n'.join([
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_partial","function":{"name":"lookup_platform_help","arguments":"{"}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}',
+        'data: {"error":{"code":400,"message":"Synthetic continuation rejected"}}',
+        'data: [DONE]', '',
+    ])
+    captured = {}
+    monkeypatch.setattr(openai_chat.aiohttp, 'ClientSession',
+                        lambda *args, **kwargs: _FakeSession(payload, captured))
+    save, error, success = AsyncMock(), AsyncMock(), AsyncMock()
+    accumulate = AsyncMock(return_value=(20, 2))
+    monkeypatch.setattr(openai_chat, 'save_content_to_db', save)
+    monkeypatch.setattr(openai_chat, 'record_provider_error_for_label', error)
+    monkeypatch.setattr(openai_chat, 'record_provider_success_for_label', success)
+    monkeypatch.setattr(openai_chat, 'accumulate_ai_provider_call_usage', accumulate)
+    chunks = [chunk async for chunk in openai_chat.call_llm_api(
+        messages=[{'role': 'user', 'content': 'Explain QA.'}], model='test-model',
+        temperature=0.3, max_tokens=100, prompt='Product assistant', conversation_id=123,
+        current_user=_User(), request=None, api_url='https://example.invalid', api_key='test',
+        provider_label='OpenRouter', billing_reservation_id='test-hold')]
+    events = [_sse_payload(chunk) for chunk in chunks]
+    assert len(events) == 1 and 'Synthetic continuation rejected' in events[0]['error']
+    assert not any('tool_call' in event for event in events)
+    error.assert_awaited_once()
+    accumulate.assert_awaited_once()
+    save.assert_not_awaited()
+    success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_partial_stream_usage_is_accumulated_even_when_provider_then_fails(
     monkeypatch,
 ):

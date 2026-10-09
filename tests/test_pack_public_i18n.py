@@ -47,7 +47,14 @@ def setup_route(monkeypatch):
 
     @asynccontextmanager
     async def connection(**kwargs):
-        yield object()
+        class Connection:
+            async def execute(self, sql, params):
+                return self
+
+            async def fetchone(self):
+                return cached['status'], cached['is_public'], cached['has_custom_landing']
+
+        yield Connection()
 
     monkeypatch.setattr(routes, 'get_db_connection', connection)
     monkeypatch.setattr(routes, 'get_pack_items', AsyncMock(return_value=[dict(prompt_name=original, prompt_description=original)]))

@@ -222,18 +222,39 @@ def _is_openai_realtime_model(provider: str, model: str) -> bool:
 def normalize_runtime_capability(
     provider_key: str | None,
     model_id: str | None,
+    raw_metadata: Any = None,
+    capabilities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Classify the safe Aurvek runtime surface for one catalog route."""
 
     provider = normalize_provider_key(provider_key)
-    model = (model_id or "").strip().lower()
+    model = (model_id or "").strip().lower().removeprefix("models/")
     if provider == "openai" and (model == "gpt-live-1" or model.startswith("gpt-live-1-")):
-        return {"kind": "openai_live", "channels": ["phone"]}
+        return {"kind": "openai_live", "channels": ["phone", "live", "device"]}
     if _is_openai_realtime_model(provider, model):
         return {
             "kind": "openai_realtime",
             "channels": ["phone"],
         }
+    if provider == "google":
+        raw = raw_metadata if isinstance(raw_metadata, dict) else {}
+        methods = raw.get("supportedGenerationMethods") or (capabilities or {}).get(
+            "supported_generation_methods", []
+        ) or []
+        if (
+            (
+                model.startswith("gemini-")
+                and ("live" in model.split("-") or "native-audio" in model)
+            )
+            or ("bidiGenerateContent" in methods and "generateContent" not in methods)
+        ):
+            # Only models with a tested transport and modality pricing can be used.
+            channels = ["phone", "live", "device"] if model == "gemini-3.8-live" else []
+            runtime = {"kind": "gemini_live", "channels": channels}
+            if channels:
+                from integrations.telephony.native_voices import GEMINI_LIVE_VOICES
+                runtime.update(voices=sorted(GEMINI_LIVE_VOICES), default_voice="Kore")
+            return runtime
     return {
         "kind": "standard",
         "channels": ["web", "phone"],
@@ -464,6 +485,13 @@ def _curated_reasoning(provider: str, model: str, capabilities: dict[str, Any]) 
         if model.startswith(("o1", "o3", "o4")):
             return configurable("low", "medium", "high")
 
+    if provider == "google" and model.removeprefix("models/") == "gemini-3.8-live":
+        return {
+            "behavior": "fixed", "modes": [],
+            "default_mode": "default", "source": "curated",
+        }
+    if provider == "google" and model.removeprefix("models/") == "gemini-3.8-live-extended-thinking":
+        return configurable("low", "medium", "high")
     if provider == "google" and model.startswith("gemini-3"):
         if "pro" in model or "gemini-3.7-flash" in model:
             return configurable("low", "medium", "high")
@@ -644,7 +672,9 @@ def normalize_capabilities(
     result["reasoning"] = normalize_reasoning_capability(
         provider_key, model_id, raw_metadata, result, manual_overrides
     )
-    result["runtime"] = normalize_runtime_capability(provider_key, model_id)
+    result["runtime"] = normalize_runtime_capability(
+        provider_key, model_id, raw_metadata, result
+    )
     return result
 
 

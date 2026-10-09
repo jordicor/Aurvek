@@ -128,14 +128,16 @@ async def test_public_packs_include_entitlement_access_for_purchase_metadata(tmp
         await conn.close()
 
 
-def test_mobile_config_marks_ios_purchases_unavailable_by_default(monkeypatch):
+def test_mobile_config_cannot_enable_unimplemented_ios_purchases(monkeypatch):
     monkeypatch.setenv("PRIMARY_APP_DOMAIN", "example.com")
-    monkeypatch.delenv("IOS_PURCHASES_ENABLED", raising=False)
+    monkeypatch.setenv("IOS_PURCHASES_ENABLED", "1")
 
     payload = mobile_config_payload(DummyRequest({"x-aurvek-client": "ios"}))
 
     assert payload["platform"]["is_ios_client"] is True
     assert payload["features"]["native_purchases"] is False
+    assert payload["features"]["ios_storekit_purchases"] is False
+    assert payload["purchase_policy"]["ios_purchases_enabled"] is False
     assert payload["purchase_policy"]["ios_purchases_unavailable_reason"] == IOS_PURCHASE_DISABLED_REASON
     assert payload["auth"]["apple_sign_in_required_for_ios_review"] is True
     assert payload["auth"]["apple_sign_in_available"] is False
@@ -145,20 +147,21 @@ def test_mobile_config_marks_ios_purchases_unavailable_by_default(monkeypatch):
     assert payload["legal"]["support_url"] == "https://example.com/support"
 
 
-def test_purchase_metadata_hides_paid_items_for_ios_without_storekit(monkeypatch):
-    monkeypatch.delenv("IOS_PURCHASES_ENABLED", raising=False)
+@pytest.mark.parametrize("ios", (True, False))
+def test_purchase_metadata_allows_only_supported_purchase_provider(monkeypatch, ios):
+    monkeypatch.setenv("IOS_PURCHASES_ENABLED", "1")
 
     metadata = purchase_metadata_for_request(
-        DummyRequest({"x-aurvek-client": "ios"}),
+        DummyRequest({"x-aurvek-client": "ios"} if ios else {}),
         is_paid=True,
         user_has_access=False,
         price=9.99,
     )
 
     assert metadata == {
-        "purchase_available": False,
-        "purchase_provider": None,
-        "purchase_unavailable_reason": IOS_PURCHASE_DISABLED_REASON,
+        "purchase_available": not ios,
+        "purchase_provider": None if ios else "stripe",
+        "purchase_unavailable_reason": IOS_PURCHASE_DISABLED_REASON if ios else None,
     }
 
 
@@ -220,7 +223,8 @@ async def test_legal_routes_serve_clean_urls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apple_sign_in_skeleton_reports_missing_configuration(monkeypatch):
+@pytest.mark.parametrize("configured", (False, True))
+async def test_apple_sign_in_stays_unavailable_until_implemented(monkeypatch, configured):
     for name in (
         "APPLE_SIGN_IN_ENABLED",
         "APPLE_TEAM_ID",
@@ -230,12 +234,18 @@ async def test_apple_sign_in_skeleton_reports_missing_configuration(monkeypatch)
         "APPLE_PRIVATE_KEY_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
+    if configured:
+        monkeypatch.setenv("APPLE_SIGN_IN_ENABLED", "1")
+        for name in auth_apple.APPLE_SIGN_IN_ENV_VARS + ("APPLE_PRIVATE_KEY",):
+            monkeypatch.setenv(name, "synthetic-apple-configuration")
 
     status_response = await auth_apple.apple_sign_in_status()
     status = _json_body(status_response)["apple_sign_in"]
     assert status["enabled"] is False
-    assert status["configured"] is False
-    assert "APPLE_TEAM_ID" in status["missing_env"]
+    assert status["configured"] is configured
+    assert bool(status["missing_env"]) is not configured
+    assert status["implementation_status"] == "pending_token_verification"
+    assert mobile_config_payload(DummyRequest())["auth"]["apple_sign_in_available"] is False
 
     callback_response = await auth_apple.apple_native_callback(DummyRequest())
     callback = _json_body(callback_response)
@@ -317,13 +327,17 @@ async def test_content_report_endpoint_creates_report(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ios_purchase_endpoints_return_storekit_required(monkeypatch):
+@pytest.mark.parametrize("legacy_flag", (None, "1"))
+async def test_ios_purchase_endpoints_return_storekit_required(monkeypatch, legacy_flag):
     request = DummyRequest({"x-aurvek-client": "ios"})
     user = DummyUser()
 
     monkeypatch.setattr(checkout, "require_checkout_enabled", lambda translator=None: None)
     monkeypatch.setattr(packs, "require_checkout_enabled", lambda translator=None: None)
-    monkeypatch.delenv("IOS_PURCHASES_ENABLED", raising=False)
+    if legacy_flag is None:
+        monkeypatch.delenv("IOS_PURCHASES_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("IOS_PURCHASES_ENABLED", legacy_flag)
 
     responses = [
         await checkout.api_purchase_prompt(prompt_id=1, request=request, current_user=user),

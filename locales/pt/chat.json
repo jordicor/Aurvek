@@ -24,6 +24,8 @@
   "click_conversation": "Clique para abrir a conversa",
   "invalid_date": "Data inválida",
   "read_aloud": "Ler em voz alta",
+  "download_audio": "Baixar áudio original",
+  "download_audio_failed": "Não foi possível baixar o áudio original.",
   "audio": "Áudio",
   "voice_reply": "Resposta por voz",
   "voice_note": "Mensagem de voz",

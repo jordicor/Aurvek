@@ -35,6 +35,8 @@ class AssistantConfig(StrictModel):
     enabled: bool = Field(default=True, strict=True)
     capabilities: dict[str, bool] = Field(default_factory=lambda: {"text": True})
     tools: list[str] = Field(default_factory=list, max_length=64)
+    # Tool calls one reply may chain; 1 keeps a single call per reply.
+    max_tool_rounds: int = Field(default=1, strict=True, ge=1, le=25)
     memory: MemoryPolicy = Field(default_factory=MemoryPolicy)
 
 
@@ -50,6 +52,11 @@ class OpenConversationRequest(StrictModel):
         if self.mode == "new" and self.conversation_id is not None:
             raise ValueError("A new conversation cannot specify an existing destination")
         return self
+
+
+class ListConversationsRequest(StrictModel):
+    context_ref: ExternalReference | None = None
+    limit: int = Field(default=8, strict=True, ge=1, le=50)
 
 
 class HandoffRequest(StrictModel):

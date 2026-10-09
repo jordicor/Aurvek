@@ -12,14 +12,14 @@ keywords:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-09-04
+last_reviewed: 2026-09-13
 locale: de
-base_source_hash: d28dd6f8f08df51ce23978820fe8844e2486a8bbdd846dea5f0f6aeef3480319
+base_source_hash: b3c1ef1899fa03562f45b2774ce0b7d2121a2ed97f46e036e5ae1b9968a2ac6d
 ---
 
 ## Kurzantwort
 
-Exportieren Sie einen ganzen Chat als MP3. Aufbewahrtes Originalaudio von Telefonbeiträgen oder WhatsApp-/Telegram-Sprachnotizen bleibt erhalten. Nachrichten ohne Originalaudio werden vorgelesen; alle Abschnitte werden in Gesprächsreihenfolge verbunden.
+Sie können einen ganzen Chat als MP3 exportieren. Für abgeschlossene Telefonate wird die gespeicherte durchgehende Aufnahme einmal verwendet; beide Stimmen, Pausen und gleichzeitiges Sprechen bleiben erhalten. Andere gespeicherte Audios, etwa WhatsApp-/Telegram-Sprachnotizen, bleiben in Gesprächsreihenfolge. Nur Nachrichten ohne verwendbares Audio benötigen Sprachsynthese (TTS).
 
 ## Schritte
 
@@ -31,6 +31,7 @@ Exportieren Sie einen ganzen Chat als MP3. Aufbewahrtes Originalaudio von Telefo
 
 ## Hinweise
 
+- Die vollständige Aufnahme wird verwendet, wenn das Telefonat vollständig zu diesem Chat gehört und seine Nachrichten einen zusammenhängenden Block bilden. Andernfalls oder bei fehlender Aufnahme werden die verfügbaren Audios der einzelnen Nachrichten verwendet.
 - Die Hintergrundverarbeitung kann je nach Gesprächslänge dauern.
 - Aufbewahrtes Telefon- und Sprachnotizaudio behält die Originalstimmen. Bot- und Nutzernachrichten ohne Audio verwenden die konfigurierten Prompt- und Kontostimmen.
 - Außergewöhnlich lange Einzelaufnahmen können für zuverlässige Exporte durch TTS ersetzt werden.

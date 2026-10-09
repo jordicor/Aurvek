@@ -1,4 +1,11 @@
 {
+  "menu.alter_egos": "Alter egos",
+  "alter_ego.real_profile": "Real profile",
+  "alter_ego.loading": "Loading...",
+  "alter_ego.load_failed": "Could not load alter egos. Click to retry.",
+  "alter_ego.unavailable": "This alter ego is not available.",
+  "alter_ego.change_failed": "Could not change the alter ego. Please try again.",
+  "alter_ego.finish_activity": "Finish the current response or call before changing the alter ego.",
   "menu.applications": "Applications",
   "action.back_to_home": "Back to Home",
   "aria.toggle_navigation": "Toggle navigation",

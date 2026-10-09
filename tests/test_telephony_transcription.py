@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 import pytest
 
 from integrations.telephony.elevenlabs_realtime import (
@@ -7,20 +5,11 @@ from integrations.telephony.elevenlabs_realtime import (
     ElevenLabsTranscriptEvent,
     ElevenLabsUtteranceEndEvent,
 )
+from integrations.telephony.realtime_call import RealtimeCallTranscriptEvent
 from integrations.telephony.transcription import (
     PhoneUtteranceAssembler,
     PhoneTranscriptionError,
 )
-
-
-@dataclass(frozen=True)
-class _TimedTranscript:
-    text: str
-    is_final: bool
-    speech_final: bool
-    start_seconds: float | None = 0.0
-    duration_seconds: float | None = 1.0
-    confidence: float | None = 0.9
 
 
 def _result(
@@ -31,14 +20,17 @@ def _result(
     start=0.0,
     duration=1.0,
     confidence=0.9,
+    turn_handle=None,
 ):
-    return _TimedTranscript(
+    return RealtimeCallTranscriptEvent(
+        item_id="caller-item",
         text=text,
         is_final=is_final,
         speech_final=speech_final,
         start_seconds=start,
         duration_seconds=duration,
         confidence=confidence,
+        turn_handle=turn_handle,
     )
 
 
@@ -126,19 +118,15 @@ def test_native_realtime_final_preserves_provider_turn_handle():
     handle = object()
 
     utterance = assembler.feed(
-        type(
-            "RealtimeFinal",
-            (),
-            {
-                "text": "native caller turn",
-                "is_final": True,
-                "speech_final": True,
-                "start_seconds": 1.0,
-                "duration_seconds": 0.5,
-                "confidence": None,
-                "turn_handle": handle,
-            },
-        )()
+        RealtimeCallTranscriptEvent(
+            item_id="caller-item",
+            text="native caller turn",
+            is_final=True,
+            speech_final=True,
+            start_seconds=1.0,
+            duration_seconds=0.5,
+            turn_handle=handle,
+        )
     )
 
     assert utterance is not None
@@ -149,11 +137,12 @@ def test_native_realtime_final_preserves_provider_turn_handle():
 def test_assembler_rejects_mixed_native_turn_handles():
     assembler = PhoneUtteranceAssembler()
 
-    first = _result("first", is_final=True)
-    object.__setattr__(first, "turn_handle", object())
+    first = _result("first", is_final=True, turn_handle=object())
     assembler.feed(first)
-    second = _result("second", is_final=True, speech_final=True, start=1.0)
-    object.__setattr__(second, "turn_handle", object())
+    second = _result(
+        "second", is_final=True, speech_final=True, start=1.0,
+        turn_handle=object(),
+    )
 
     with pytest.raises(PhoneTranscriptionError, match="turn handles"):
         assembler.feed(second)

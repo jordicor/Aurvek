@@ -8,6 +8,7 @@
   "memory_notice": "This conversation keeps its history. Memory from other conversations is disabled.",
   "expired": "Your access has expired. Return to the product to sign in again.",
   "error": "The operation could not be completed. Check the conversation status before trying again.",
+  "theme_error": "The chat appearance could not load. Reload the page or contact the application owner.",
   "ending": "Finishing the current activity…",
   "idle": "Idle",
   "generating": "Preparing the response…",

@@ -19,7 +19,7 @@ from integrations.telephony.tooling import (
 )
 
 
-def _phone_turn(*, openai_realtime_bridge=None):
+def _phone_turn(*, native_audio_bridge=None):
     return create_phone_channel_turn(
         ForegroundCommitGuard(
             conversation_id=7,
@@ -29,11 +29,11 @@ def _phone_turn(*, openai_realtime_bridge=None):
             lease_owner="media-tool",
         ),
         turn_id="turn-tool",
-        openai_realtime_bridge=openai_realtime_bridge,
+        native_audio_bridge=native_audio_bridge,
     )
 
 
-def _phone_turn_with_schedule(mode="on_request", *, openai_realtime_bridge=None):
+def _phone_turn_with_schedule(mode="on_request", *, native_audio_bridge=None):
     return create_phone_channel_turn(
         ForegroundCommitGuard(
             conversation_id=7,
@@ -43,7 +43,7 @@ def _phone_turn_with_schedule(mode="on_request", *, openai_realtime_bridge=None)
             lease_owner="media-tool",
         ),
         turn_id="turn-tool",
-        openai_realtime_bridge=openai_realtime_bridge,
+        native_audio_bridge=native_audio_bridge,
         ai_initiation_mode=mode,
         prompt_id=1,
     )
@@ -608,7 +608,7 @@ async def test_realtime_schedule_failure_returns_private_error_then_speaks(
 
     bridge = _PendingRealtimeBridge()
     phone_turn = _phone_turn_with_schedule(
-        openai_realtime_bridge=bridge
+        native_audio_bridge=bridge
     )
     monkeypatch.setattr(execution, "TelephonyRepository", lambda: object())
     monkeypatch.setattr(execution, "UserPhoneService", FailingScheduleService)
@@ -689,7 +689,7 @@ async def test_realtime_schedule_success_returns_private_result_then_confirms(
         yield "Perfecto, te llamaré el lunes a las siete."
 
     bridge = _PendingRealtimeBridge()
-    phone_turn = _phone_turn_with_schedule(openai_realtime_bridge=bridge)
+    phone_turn = _phone_turn_with_schedule(native_audio_bridge=bridge)
     monkeypatch.setattr(execution, "TelephonyRepository", lambda: object())
     monkeypatch.setattr(execution, "UserPhoneService", SuccessfulScheduleService)
     monkeypatch.setattr(
@@ -910,7 +910,7 @@ async def test_realtime_tool_billing_failure_finishes_pending_output(
         yield 'data: {"content":"must not run"}\n\n'
 
     bridge = _PendingRealtimeBridge()
-    phone_turn = _phone_turn(openai_realtime_bridge=bridge)
+    phone_turn = _phone_turn(native_audio_bridge=bridge)
     extension = AsyncMock()
     if extension_error is not None:
         extension.side_effect = extension_error
@@ -974,7 +974,7 @@ async def test_realtime_at_field_extends_followup_reservation_once(monkeypatch):
 
     extension = AsyncMock()
     bridge = _PendingRealtimeBridge()
-    phone_turn = _phone_turn(openai_realtime_bridge=bridge)
+    phone_turn = _phone_turn(native_audio_bridge=bridge)
     monkeypatch.setattr(execution, "atFieldActivate", fake_at_field)
     monkeypatch.setattr(execution, "extend_ai_reservation", extension)
     monkeypatch.setattr(

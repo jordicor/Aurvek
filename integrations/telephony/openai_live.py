@@ -23,6 +23,9 @@ class OpenAILiveError(RuntimeError):
 class OpenAILiveClient:
     """One provider session; the receiver survives the media consumer's close."""
 
+    _aurvek_internal_realtime_bridge = True
+    input_perception = "audio_native"
+
     def __init__(self, *, api_key_provider, session_loader, http_factory=None):
         self.api_key_provider = api_key_provider
         self.session_loader = session_loader
@@ -101,6 +104,7 @@ class OpenAILiveClient:
                 if kind in {
                     "session.output_audio.delta", "session.input_transcript.delta",
                     "session.output_transcript.delta", "session.delegation.created",
+                    "session.usage.updated",
                 }:
                     self._queue.put_nowait(event)
             if not self.final_usage_confirmed:
@@ -179,12 +183,12 @@ class OpenAILiveClient:
         self._closed.set()
 
 
-def live_session_configuration(*, instructions: str, history: list, voice: str = "marin") -> dict[str, Any]:
+def live_session_configuration(*, instructions: str, history: list, voice: str = "marin", pcm: bool = False) -> dict[str, Any]:
     return {
         "model": LIVE_MODEL,
         "instructions": instructions,
         "input": history,
-        "audio": {"format": {"type": "audio/pcmu", "rate": 8000}, "output": {"voice": voice}},
+        "audio": {"format": {"type": "audio/pcm", "rate": 24000} if pcm else {"type": "audio/pcmu", "rate": 8000}, "output": {"voice": voice}},
         "delegation": {"type": "client"},
         "store": False,
     }

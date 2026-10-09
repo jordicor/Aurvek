@@ -1,4 +1,5 @@
 {
+  "phone.backend_model_unavailable": "GPT-Live nécessite un modèle API compatible pour les actions de l’appel. Sélectionnez-le dans les paramètres téléphoniques du prompt ; le modèle de discussion peut rester inchangé.",
   "audio.browser_unsupported": "Votre navigateur ne prend pas en charge l’enregistrement audio.",
   "audio.browser_unsupported_title": "Navigateur non pris en charge",
   "audio.empty_recording": "L’enregistrement ne contenait aucune donnée audio.",

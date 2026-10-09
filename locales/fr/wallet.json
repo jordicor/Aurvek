@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "Solde mis à jour",
+  "payment.credited.detail": "Le rechargement a été crédité sur votre solde.",
+  "payment.crediting.title": "Paiement reçu",
+  "payment.crediting.detail": "Votre paiement est confirmé. Votre solde est encore en cours de mise à jour.",
+  "payment.pending.title": "Paiement en attente",
+  "payment.pending.detail": "Votre paiement n’a pas encore été confirmé.",
+  "payment.not_completed.title": "Rechargement non terminé",
+  "payment.not_completed.detail": "Cette session de paiement a expiré sans terminer le rechargement.",
+  "payment.amount_added": "Montant crédité",
+  "payment.balance": "Solde actuel",
+  "payment.check_later": "La vérification automatique est terminée. Vous pouvez recharger cette page plus tard pour consulter le statut.",
+  "payment.back_to_wallet": "Retour au solde"
+}

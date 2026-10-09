@@ -147,7 +147,7 @@ async def test_gemini_tool_event_carries_native_signed_content(monkeypatch) -> N
         async def generate_content_stream(self, **_kwargs):
             return Stream()
 
-    fake_client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    fake_client = SimpleNamespace(aio=SimpleNamespace(models=Models(), aclose=AsyncMock()))
     monkeypatch.setattr(gemini.google_genai, "Client", lambda **_kwargs: fake_client)
     monkeypatch.setattr(gemini, "record_provider_success_for_label", AsyncMock())
 
@@ -195,7 +195,7 @@ async def test_gemini_stale_commit_is_terminal_not_persistence_content(monkeypat
 
             return stream()
 
-    fake_client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    fake_client = SimpleNamespace(aio=SimpleNamespace(models=Models(), aclose=AsyncMock()))
 
     async def stale_save(*_args, **_kwargs):
         raise StaleChannelTurnError("phone acquired foreground")

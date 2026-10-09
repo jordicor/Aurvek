@@ -441,7 +441,7 @@ async def get_template_context(request, current_user, branding_context=None):
                           ae.profile_picture AS alter_ego_profile_picture
                    FROM USERS u
                    JOIN USER_DETAILS ud ON u.id = ud.user_id
-                   LEFT JOIN USER_ALTER_EGOS ae ON ud.current_alter_ego_id = ae.id
+                   LEFT JOIN USER_ALTER_EGOS ae ON ud.current_alter_ego_id = ae.id AND ae.user_id = u.id
                    WHERE u.id = ?""",
                 (current_user.id,)
             )
@@ -1526,6 +1526,16 @@ def resolve_api_key_for_provider(
     }
 
     provider_key = provider_map.get(provider, provider.lower())
+    from integrations.applications.external_execution import current
+    if current() is not None:
+        from integrations.applications.external_execution import selected_api_key
+        admitted_key = selected_api_key(provider_key)
+        if admitted_key is not None:
+            return (admitted_key, False)
+        if provider_key not in {"openai", "anthropic", "google", "xai", "openrouter"} or api_key_mode == API_KEY_MODE_OWN_ONLY or (
+                api_key_mode == API_KEY_MODE_BOTH_PREFER_OWN and (user_api_keys or {}).get(provider_key)):
+            raise ValueError("External managed text execution does not support this provider or BYOK selection")
+        return (None, True)
     user_has_key = user_api_keys and provider_key in user_api_keys and bool(user_api_keys[provider_key])
 
     if api_key_mode == API_KEY_MODE_SYSTEM_ONLY:
@@ -2277,6 +2287,7 @@ async def consume_token(
     override_api_cost=None,
     billing_account_id_override=None,
     application_billing_reservation_id=None,
+    pricing_margin_override=None,
 ):
     """
     Consume tokens and apply pricing logic based on prompt configuration.
@@ -2287,6 +2298,13 @@ async def consume_token(
     C) Creator uses OWN prompt: API cost * (1 + margin_personal)
     D) Same as B but with referral markup added
     """
+    from integrations.applications.external_execution import current
+    operation = current()
+    if operation is not None:
+        from integrations.applications.billing import verify_operation
+        await verify_operation(conn, operation, user_id)
+        return await record_daily_usage(user_id=user_id, usage_type="ai_tokens", cost=0.0,
+            tokens_in=input_tokens, tokens_out=output_tokens + reasoning_tokens, conn=conn, cursor=cursor)
     try:
         # Convert to float and calculate API cost
         input_token_cost_per_million = float(input_token_cost_per_million)
@@ -2308,12 +2326,13 @@ async def consume_token(
             output_cost_total = 0
 
         # GranSabio: direct cost passthrough from pipeline billing
-        if override_api_cost is not None:
+        if override_api_cost is not None and not byok:
             api_cost = override_api_cost
 
         # Get pricing configuration
         pricing_config = await get_pricing_config()
-        margin_free = pricing_config['margin_free']
+        margin_free = (pricing_config['margin_free'] if pricing_margin_override is None
+                       else float(pricing_margin_override))
         margin_paid = pricing_config['margin_paid']
         margin_personal = pricing_config['margin_personal']
         commission_rate = pricing_config['commission']

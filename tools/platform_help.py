@@ -10,10 +10,20 @@ from tools import register_tool
 
 logger = logging.getLogger(__name__)
 
+HELP_EVIDENCE_GUIDANCE = (
+    'Answer only the details explicitly supported by these results. Related articles do not '
+    'confirm details they do not document. For a question covered only in part, answer the '
+    'supported part and acknowledge the gaps. For each unsupported requested detail, say in '
+    'the user\'s language the equivalent of: "I could not find documented information about '
+    'that, so I cannot confirm it." Missing documentation does not prove that a feature '
+    'does not exist. Mention menus, links, or support routes only when explicitly documented; '
+    'do not suggest generic places to look.'
+)
+
 # ---- FTS5 query builder (adapted from message_search.py) ----
 
 # Short tokens that are meaningful for KB search (not filtered by length check)
-FTS_SHORT_ALLOWLIST = {'ai', 'ui', 'qr', 'tts', 'stt', 'pdf', 'mp3'}
+FTS_SHORT_ALLOWLIST = {'ai', 'ui', 'qa', 'qr', 'tts', 'stt', 'pdf', 'mp3'}
 
 STOPWORDS = frozenset({
     'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -50,23 +60,28 @@ def _help_sql(locale):
     controls = """
         a.is_active = 1 AND a.approval_status = 'approved' AND a.tool_visible = 1
         AND (a.required_role IS NULL OR :user_role = 'admin' OR a.required_role = :user_role)
+        AND a.knowledge_scope IN (:knowledge_scope, :shared_scope)
+        AND NOT EXISTS (SELECT 1 FROM json_each(a.required_capabilities) required
+            WHERE required.value NOT IN (SELECT value FROM json_each(:capabilities)))
+        AND NOT EXISTS (SELECT 1 FROM json_each(a.required_tools) required
+            WHERE required.value NOT IN (SELECT value FROM json_each(:tools)))
     """
     if locale != 'en':
         source += ' JOIN HELP_ARTICLE_VARIANTS v ON v.article_pk = a.id'
         controls += """ AND v.locale = :locale AND v.is_active = 1
             AND v.approval_status = 'approved' AND v.base_source_hash = a.source_hash"""
-    fields = f'a.article_id, a.category, {content}.title, {content}.short_answer, {content}.tool_text, {content}.keywords'
+    fields = f'a.article_id, a.knowledge_scope, a.category, {content}.title, {content}.short_answer, {content}.tool_text, {content}.keywords'
     return content, fts, source, controls, fields
 
 
-async def _search_locale(conn, query, category, user_role, locale):
+async def _search_locale(conn, query, category, user_role, locale, scope_params):
     tokens = _search_tokens(query)
     if not tokens:
         return []
     and_query, or_query = build_help_fts_query(query)
     content, fts, source, controls, fields = _help_sql(locale)
     for search_category in ([category, None] if category else [None]):
-        params = {'user_role': user_role, 'locale': locale, 'category': search_category}
+        params = {**scope_params, 'user_role': user_role, 'locale': locale, 'category': search_category}
         filtered = controls + (' AND a.category = :category' if search_category else '')
         sql = (f'SELECT {fields} FROM {source} JOIN {fts} ON {fts}.rowid = {content}.id '
                f'WHERE {fts} MATCH :query AND {filtered} ORDER BY bm25({fts}), a.article_id LIMIT 3')
@@ -112,32 +127,46 @@ async def _search_locale(conn, query, category, user_role, locale):
 
 
 async def lookup_platform_help(conn, query: str, category: str = None, user_role: str = 'customer',
-                               locale: str = 'en', english_query: str = None) -> tuple:
+                               locale: str = 'en', english_query: str = None, *,
+                               application_context=None, available_tools=()) -> tuple:
     """Return up to three articles in conversation language, or explicit English fallback.
 
     Locale is a retrieval hint supplied by the model from the conversation, never
     an authority for access checks. The caller supplies the user's live DB role.
-    Existing callers without locale keep English behavior and the same tuple.
+    Application scope, capabilities and tool names are server-resolved authority,
+    never model arguments. Every search path uses the same scope restrictions.
     """
     locale = normalize_language(locale) or 'en'
     if not isinstance(query, str) or not query.strip():
-        return ('No results found. The query was empty.', 0, None)
+        return (
+            'Help search was not performed because the query was empty. No documentation '
+            'was checked. Explain in the user\'s language that you could not check the '
+            'documentation, so you cannot confirm the requested detail. This is not a '
+            'search with no results and does not prove that a feature does not exist. '
+            'Do not invent details, menus, links, or support routes.',
+            0, None,
+        )
     if not isinstance(english_query, str) or not english_query.strip():
         english_query = query
-    if category not in ('whatsapp', 'telegram', 'voice', 'search', 'chat', 'settings',
-                        'media', 'auth', 'billing', 'limitations'):
+    if category is not None and (not isinstance(category, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', category)):
         category = None
+    scope_params = {
+        'knowledge_scope': 'app:' + application_context.app_id if application_context else 'platform',
+        'shared_scope': 'embed' if application_context else 'platform',
+        'capabilities': json.dumps([key for key, value in application_context.capabilities.items() if value is True]
+                                   if application_context else []),
+        'tools': json.dumps(sorted(available_tools)),
+    }
     try:
-        rows = await _search_locale(conn, query, category, user_role, locale)
+        rows = await _search_locale(conn, query, category, user_role, locale, scope_params)
         content_locale = locale
         if not rows and locale != 'en':
-            rows = await _search_locale(conn, english_query, category, user_role, 'en')
+            rows = await _search_locale(conn, english_query, category, user_role, 'en', scope_params)
             content_locale = 'en'
         if not rows:
             return (
-                'No platform help articles found for this query. You do not have confirmed '
-                'information about this platform feature. Tell the user in the conversation '
-                "language that you do not have specific guidance and suggest contacting support.",
+                'No help articles matched this query in the authorized knowledge scope. '
+                + HELP_EVIDENCE_GUIDANCE,
                 0, None,
             )
         results = []
@@ -148,14 +177,23 @@ async def lookup_platform_help(conn, query: str, category: str = None, user_role
         formatted = (
             f'PLATFORM HELP RESULTS (requested_language={locale}; content_language={content_locale}; '
             f'english_fallback={fallback}). Use this information to answer in the conversation language. '
-            'If English fallback was needed, explain the guidance in that language without inventing details.\n\n'
+            'If English fallback was needed, explain the guidance in that language without inventing details. '
+            + HELP_EVIDENCE_GUIDANCE + '\n\n'
             + '\n---\n'.join(results)
         )
-        return formatted, len(rows), rows[0]['article_id']
+        top = rows[0]
+        article_id = top['article_id'] if top['knowledge_scope'] == 'platform' else top['knowledge_scope'] + '/' + top['article_id']
+        return formatted, len(rows), article_id
     except Exception:
         logger.exception('[lookup_platform_help] Help search failed')
-        return ('Platform help search is temporarily unavailable. Tell the user in the conversation '
-                'language to try again later.', 0, None)
+        return (
+            'Help search failed; the documentation could not be checked. Explain in the '
+            'user\'s language that you could not check the documentation, so you cannot '
+            'confirm the requested detail. This is not a search with no results and does '
+            'not prove that a feature does not exist. Do not invent details, menus, links, '
+            'or support routes.',
+            0, None,
+        )
 
 
 async def log_help_query(query: str, user_message: str, category: str, results_count: int,
@@ -194,10 +232,9 @@ register_tool({
     "function": {
         "name": "lookup_platform_help",
         "description": (
-            "Look up how to use Aurvek platform features. Use this tool when the user asks "
-            "how to do something on the platform, whether a feature exists, how something works, "
-            "or needs help with platform functionality. Do NOT guess -- always use this tool for "
-            "platform-related questions."
+            "Look up approved guidance for the current product and its available chat features. "
+            "Use for product questions, reference material, and how to perform supported actions. "
+            "The server selects the authorized knowledge scope. Do not guess undocumented product behavior."
         ),
         "parameters": {
             "type": "object",
@@ -217,12 +254,9 @@ register_tool({
                 },
                 "category": {
                     "type": "string",
-                    "description": "Optional category hint. Use chat for conversations and message search; search is for web search. Omit when uncertain.",
-                    "enum": [
-                        "whatsapp", "telegram", "voice", "search",
-                        "chat", "settings", "media", "auth", "billing",
-                        "limitations"
-                    ]
+                    "description": "Optional product category hint, such as chat, product, writing, or qa. Omit when uncertain.",
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                    "maxLength": 64
                 }
             },
             "required": ["query", "locale"],

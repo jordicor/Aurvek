@@ -1,0 +1,66 @@
+.native-live-dialog {
+    box-sizing: border-box;
+    width: min(440px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+    padding: 24px;
+    border: 1px solid var(--border-color, #d8dce4);
+    border-radius: 20px;
+    color: var(--text-primary, #1f2937);
+    background: var(--bg-primary, #fff);
+    box-shadow: 0 24px 80px #0004;
+}
+
+.native-live-dialog::backdrop { background: #080d18a6; backdrop-filter: blur(4px); }
+.native-live-dialog [hidden] { display: none !important; }
+.native-live-dialog header { display: flex; align-items: center; gap: 12px; }
+.native-live-dialog h2 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+.native-live-icon { color: var(--accent-color, var(--accent, #5865f2)); font-size: 1.2rem; }
+.native-live-intro { margin: 8px 0 24px; color: var(--text-secondary, #616b7a); font-size: .95rem; }
+
+.native-live-dialog button {
+    min-height: 44px;
+    border: 1px solid var(--border-color, #d8dce4);
+    border-radius: 12px;
+    padding: 10px 18px;
+    color: inherit;
+    background: var(--bg-secondary, #f4f5f8);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+.native-live-dialog button:disabled { opacity: .6; cursor: default; }
+.native-live-dialog button:not(:disabled):hover { filter: brightness(.94); }
+.native-live-dialog button:focus-visible, .native-live-dialog input:focus-visible {
+    outline: 3px solid var(--accent-color, var(--accent, #5865f2));
+    outline-offset: 3px;
+}
+#native-live-close { margin-left: auto; padding: 0; width: 36px; min-height: 36px; border: 0; background: transparent; font-size: 1.5rem; font-weight: 400; }
+
+.native-live-camera-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    margin: 0 0 20px;
+    border: 1px solid var(--border-color, #d8dce4);
+    border-radius: 12px;
+    background: var(--bg-secondary, #f4f5f8);
+    cursor: pointer;
+}
+.native-live-camera-option input { flex-shrink: 0; width: 20px; height: 20px; margin: 0; accent-color: var(--accent-color, var(--accent, #5865f2)); }
+.native-live-camera-option strong { display: block; font-size: .95rem; font-weight: 600; }
+.native-live-camera-option small { display: block; margin-top: 4px; color: var(--text-secondary, #616b7a); font-size: .85rem; line-height: 1.4; }
+#native-live-preview { display: block; width: 100%; max-height: 260px; object-fit: contain; border-radius: 12px; background: #000; }
+#native-live-status { margin: 16px 0; font-size: .95rem; line-height: 1.5; color: var(--text-secondary, #616b7a); }
+#native-live-status[data-error="true"] { color: var(--text-primary, #1f2937); padding: 12px; border-left: 3px solid #ef4444; background: var(--bg-secondary, #f4f5f8); border-radius: 4px; }
+#native-live-captions { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto; margin: 16px 0; padding: 12px; border-radius: 10px; background: var(--bg-secondary, #f4f5f8); font-size: .9rem; line-height: 1.5; }
+.native-live-dialog footer { display: flex; gap: 12px; margin-top: 20px; }
+#native-live-start { flex: 1; background: var(--accent-color, var(--accent, #5865f2)); border-color: transparent; color: var(--bg-primary, #fff); }
+#native-live-start[data-active="true"] { background: #c92d3a; color: #fff; }
+#native-live-mute[aria-pressed="true"] { border-color: currentColor; }
+#voice-native-open { width: auto; padding: 0 16px; }
+
+@media (max-width: 480px) {
+    .native-live-dialog { padding: 20px; border-radius: 16px; }
+}

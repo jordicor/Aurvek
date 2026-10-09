@@ -70,6 +70,7 @@
   "pdf_paths_required": "PDFのパスが指定されていません",
   "mp3_paths_required": "MP3のパスが指定されていません",
   "media_delete_result": "削除成功: {deleted}、失敗: {failed}",
+  "model_voice_only": "このモデルはリアルタイム音声にのみ対応しています。チャット用のモデルを選択してください。",
   "model_unavailable": "このAIモデルでは新しい応答を生成できなくなりました。",
   "expected_llm_id_required": "Aurvekが選択中のAIモデルを確認できるよう、会話を再読み込みしてください。",
   "conversation_model_changed": "別のセッションでAIモデルが変更されました。確認してから再送信してください。",

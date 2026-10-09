@@ -36,7 +36,7 @@ function setup(activityResponses = ['idle'], fetchResponse, configOverrides = {}
         getElementById(id) { return id === 'aurvek-embed-config' ? { textContent: JSON.stringify(config) } : id === 'embed-session-status' ? status : id === 'message-text' ? input : id === 'send-button' ? button : null; },
         querySelectorAll() { return []; },
         documentElement: { dataset: {} },
-        addEventListener() {}
+        addEventListener(name, callback) { handlers['document:' + name] = callback; }
     };
     const global = {
         parent, location: { href: 'https://chat.example/embed/sample/frame_instance_123/chat', origin: 'https://chat.example' },
@@ -59,9 +59,159 @@ function setup(activityResponses = ['idle'], fetchResponse, configOverrides = {}
         const data = { contract_version: config.contract_version, app_id: config.app_id, external_project_id: config.external_project_id, conversation_id: config.conversation_id, frame_instance_id: config.frame_instance_id, event: 'request_state', request_id: 'request-1', ...overrides };
         handlers.message({ data, origin: config.parent_origin, source: parent, ...eventOverrides });
     };
-    return { global, emitted, calls, command, send, config, status, input, button };
+    return { inputEvent: () => handlers['document:input']({target: input}),
+        themeEvent: type => handlers['document:' + type]({target: {id: 'application-theme-css'}}),
+        global, document, emitted, calls, command, send, config, status, input, button };
 }
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+test('typing opens the native entry without transferring or replacing the draft', () => {
+    const context = setup(['idle'], null, { application: { context_id: 'context' } });
+    context.input.id = 'message-text';
+    context.command({ event: 'set_presentation', presentation: 'entry' });
+    context.inputEvent();
+    assert.equal(context.document.documentElement.dataset.embedPresentation, 'compact');
+    assert.equal(context.input.value, 'Private draft');
+    assert.equal(context.input.selectionStart, 4);
+    assert.equal(context.calls.length, 0);
+    const event = context.emitted.at(-1).message;
+    assert.equal(event.event, 'presentation_changed');
+    assert.ok(!('text' in event) && !('transcript' in event));
+});
+
+test('host sending uses native admission with exact scope and metadata-only acknowledgement', async () => {
+    const context = setup(['idle'], null, { application: { context_id: 'context' } });
+    const messages = [];
+    context.global.AurvekChatActions = { sendMessage: text => messages.push(text), activity: () => 'idle' };
+    await context.global.AurvekEmbed.chatReady();
+    await settle();
+    const command = { event: 'send_message', text: '日本語'.repeat(4000) };
+    context.command(command, { origin: 'https://foreign.example' });
+    context.command(command, { source: {} });
+    context.command({ ...command, conversation_id: '13' });
+    context.command({ ...command, app_id: 'foreign' });
+    context.command({ ...command, html: 'unexpected' });
+    await settle();
+    assert.equal(messages.length, 0);
+    context.command(command);
+    await settle();
+    assert.deepEqual(messages, [command.text]);
+    const ack = context.emitted.at(-1);
+    assert.equal(ack.origin, context.config.parent_origin);
+    assert.equal(ack.message.action, 'send_message');
+    assert.equal(ack.message.request_id, 'request-1');
+    assert.equal('text' in ack.message, false);
+    assert.equal('transcript' in ack.message, false);
+});
+
+test('host sends reject invalid text, unavailable state and overlapping admission without retry', async () => {
+    const context = setup(['idle'], null, { application: { context_id: 'context' } });
+    const messages = [];
+    context.global.AurvekChatActions = { sendMessage: text => messages.push(text), activity: () => 'idle' };
+    context.command({ event: 'send_message', text: 'before ready' });
+    await settle();
+    assert.equal(context.emitted.at(-1).message.code, 'chat_not_ready');
+    await context.global.AurvekEmbed.chatReady();
+    await settle();
+    for (const text of ['', ' \n ', null, {}, 'x'.repeat(16001)]) {
+        context.command({ event: 'send_message', text });
+        await settle();
+        assert.equal(context.emitted.at(-1).message.code, 'invalid_message');
+    }
+    context.command({ event: 'send_message', text: 'first', request_id: 'first' });
+    context.command({ event: 'send_message', text: 'second', request_id: 'second' });
+    await settle();
+    assert.deepEqual(messages, ['first']);
+    assert.equal(context.emitted.find(item => item.message.request_id === 'second').message.code, 'operation_in_progress');
+    context.global.AurvekChatActions.sendMessage = () => { throw Object.assign(new Error('Private draft'), { code: 'draft_present' }); };
+    context.command({ event: 'send_message', text: 'cannot replace draft' });
+    await settle();
+    assert.equal(context.emitted.at(-1).message.code, 'draft_present');
+    context.global.AurvekChatActions.sendMessage = () => { throw new Error('Internal failure with private details'); };
+    context.command({ event: 'send_message', text: 'fails locally' });
+    await settle();
+    assert.equal(context.emitted.at(-1).message.code, 'message_not_admitted');
+    const busy = setup(['generating'], null, { application: { context_id: 'context' } });
+    await busy.global.AurvekEmbed.chatReady();
+    busy.command({ event: 'send_message', text: 'already generating' });
+    await settle();
+    assert.equal(busy.emitted.at(-1).message.code, 'operation_in_progress');
+    const disabled = setup(['idle'], null, { application: { context_id: 'context' }, capabilities: { text: false } });
+    await disabled.global.AurvekEmbed.chatReady();
+    await settle();
+    disabled.command({ event: 'send_message', text: 'no text capability' });
+    await settle();
+    assert.equal(disabled.emitted.at(-1).message.code, 'capability_disabled');
+});
+
+test('theme swap requires exact host scope, loads before applying, and preserves the draft', () => {
+    const context = setup(['idle'], null, { application: { context_id: 'context' } });
+    const links = [];
+    const current = { href: 'https://chat.example/static/css/chat/chat-writer.css?v=old',
+        after(link) { links.push(link); }, remove() { this.removed = true; } };
+    const getElementById = context.document.getElementById;
+    context.document.getElementById = id => id === 'theme-css' ? current : getElementById(id);
+    context.document.createElement = () => ({remove() { this.removed = true; }});
+    context.document.documentElement.dataset.theme = 'writer';
+    context.command({event: 'set_theme', theme: 'coder'}, {origin: 'https://foreign.example'});
+    context.command({event: 'set_theme', theme: '../katari'});
+    assert.equal(links.length, 0);
+    context.command({event: 'set_theme', theme: 'coder'});
+    assert.equal(links[0].href, 'https://chat.example/static/css/chat/chat-coder.css');
+    assert.equal(current.removed, undefined);
+    assert.equal(context.document.documentElement.dataset.theme, 'writer');
+    links[0].onload();
+    assert.equal(current.removed, true);
+    assert.equal(links[0].id, 'theme-css');
+    assert.equal(links[0].media, 'all');
+    assert.equal(context.document.documentElement.dataset.theme, 'coder');
+    assert.equal(context.input.value, 'Private draft');
+    assert.equal(context.input.selectionStart, 4);
+    assert.equal(context.calls.length, 0);
+});
+
+test('a failed base stylesheet reports an error without replacing the current theme', () => {
+    const context = setup(['idle'], null, { application: { context_id: 'context' } });
+    let pending;
+    const current = { href: 'https://chat.example/static/css/chat/chat-writer.css', after(link) { pending = link; } };
+    const getElementById = context.document.getElementById;
+    context.document.getElementById = id => id === 'theme-css' ? current : getElementById(id);
+    context.document.createElement = () => ({remove() { this.removed = true; }});
+    context.document.documentElement.dataset.theme = 'writer';
+    context.command({event: 'set_theme', theme: 'coder'});
+    pending.onerror();
+    assert.equal(context.emitted.at(-1).message.code, 'theme_unavailable');
+    assert.equal(context.document.documentElement.dataset.theme, 'writer');
+    assert.equal(pending.removed, true);
+});
+
+test('custom CSS must emit load before ready, and an error fails even with a sheet object', async () => {
+    for (const outcome of [null, 'load', 'error']) {
+        const context = setup();
+        const stylesheet = outcome ? {sheet: {}} : null;
+        const getElementById = context.document.getElementById;
+        context.document.getElementById = id => id === 'application-theme-css' ? stylesheet : getElementById(id);
+        context.document.querySelectorAll = selector => selector.startsWith('#form-message ')
+            ? [context.input, context.button] : [];
+        const ready = context.global.AurvekEmbed.chatReady();
+        await settle();
+        if (outcome) {
+            assert.equal(context.emitted.length, 0);
+            context.themeEvent(outcome);
+        }
+        await ready;
+        const failed = outcome === 'error';
+        assert.equal(context.emitted.some(item => item.message.event === 'ready'), !failed);
+        assert.equal(context.emitted.some(item => item.message.code === 'theme_load_failed'), Boolean(failed));
+        if (failed) {
+            assert.equal(context.input.disabled, true);
+            assert.equal(context.button.disabled, true);
+            assert.equal(context.status.textContent, context.global.AurvekEmbed.t('theme_error'));
+            assert.equal(context.calls.length, 0);
+        }
+        assert.equal(context.input.value, 'Private draft');
+    }
+});
 
 test('attachment XHR uses the current frame locale and scope only on its own origin', async () => {
     const context = setup();

@@ -1,10 +1,13 @@
+from integrations.applications.external_execution import provider_request
+from integrations.embed.models import EmbedError
+
 from ai_runtime.dependencies import *
 from ai_runtime.config import safe_log_headers, _log_truncated_response
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
 from ai_runtime.persistence.messages import persistence_error_payload, persistence_result_payload, save_content_to_db
 from ai_runtime.reasoning_tags import TaggedThinkingStreamParser
 from ai_runtime.providers.claude_capabilities import (
-    claude_omits_temperature,
+    claude_supports_temperature,
     claude_supports_adaptive_thinking,
 )
 from ai_runtime.tooling.citations import build_citation_event
@@ -161,6 +164,8 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     messages = _claude_assistant_image_context(messages)
     user_id = current_user.id
     error_yielded = False
+    stream_interruption: BaseException | None = None
+    deferred_error_event = None
 
     # Use user's API key if provided, otherwise use default
     api_key_to_use = user_api_key or anthropic.api_key
@@ -176,7 +181,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     if model_max_tokens < 1:
         model_max_tokens = 1
 
-    is_temperature_deprecated = claude_omits_temperature(model)
+    supports_temperature = claude_supports_temperature(model)
 
     data = {
         "model": model,
@@ -189,14 +194,17 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
         "messages": messages,
         "stream": True
     }
-    if not is_temperature_deprecated:
+    if supports_temperature:
         data["temperature"] = temperature
 
     # Shallow copy to avoid mutating the caller's list when appending server tools below
     if tools:
         data["tools"] = list(tools)
-        if tool_choice is not None:
-            data["tool_choice"] = tool_choice
+        data["tool_choice"] = dict(tool_choice or {"type": "auto"})
+        if data["tool_choice"]["type"] != "none":
+            # Aurvek executes one client tool per continuation. Request the
+            # same contract so every returned tool_use receives a tool_result.
+            data["tool_choice"]["disable_parallel_tool_use"] = True
 
     # Add native web search server tool when in native mode
     if web_search_mode == 'native':
@@ -220,7 +228,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
             yield f"data: {orjson.dumps({'error': 'Claude thinking budget_tokens must be less than max_tokens'}).decode()}\n\n"
             return
         data["thinking"] = thinking
-        if thinking.get("type") != "disabled" and not is_temperature_deprecated:
+        if thinking.get("type") != "disabled" and supports_temperature:
             # Anthropic legacy thinking requests require this fixed temperature.
             data["temperature"] = 1.0
         logger.info("Thinking mode: %s for %s", thinking["type"], model)
@@ -235,22 +243,13 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
     cache_creation_tokens = cache_read_tokens = 0
     cache_write_5m_tokens = cache_write_1h_tokens = 0
 
-    # Tool use tracking
-    tool_use_name = ""
-    tool_use_id = ""
-    tool_use_input_buffer = ""
-    stop_reason = ""
-
     # Native web search tracking
-    block_types = {}  # Maps block index -> block type string
     search_citations = []  # Accumulated citations from web search
     search_queries = []  # Queries Claude executed
     search_source_urls = []  # Source URLs from web_search_tool_result blocks
     all_citations = []  # Final merged citations for persistence
     server_tool_input_buffer = ""  # Buffer for server tool use input (search query)
-    response_content_blocks = []  # Full content blocks for pause_turn continuation
     paused_content_blocks = []  # Earlier pieces of this same assistant turn
-    current_block = None  # Currently open content block being streamed
 
     max_continuations = 3
     continuation_count = 0
@@ -269,6 +268,14 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
             search_stream_valid = True
             message_stopped = False
             request_usage = {}
+            # Client tool state belongs to this HTTP request, never to a paused predecessor.
+            tool_use_name = tool_use_id = tool_use_input_buffer = stop_reason = ""
+            tool_seen = multiple_tool_calls = tool_block_complete = tool_arguments_invalid = False
+            tool_use_index = None
+            tool_use_block = None
+            block_types = {}
+            response_content_blocks = []
+            current_block = None
 
             try:
                 if web_search_mode == "native":
@@ -277,7 +284,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                     )
                     data["tools"][-1]["max_uses"] = search_usage.max_uses
                     await search_usage.claim()
-                async with session.post(url, headers=headers, json=data) as response:
+                async with provider_request(session, url, headers=headers, json=data) as response:
                     if response.status == 200:
                         async for line in response.content:
                             if stop_signals.get(conversation_id):
@@ -302,11 +309,15 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                             if delta_type == "input_json_delta":
                                                 partial_json = delta.get("partial_json", "")
                                                 if current_block_type == "tool_use":
-                                                    # Regular function-call tool input
-                                                    tool_use_input_buffer += partial_json
+                                                    if block_index == tool_use_index:
+                                                        tool_use_input_buffer += partial_json
+                                                    else:
+                                                        multiple_tool_calls = True
                                                 elif current_block_type == "server_tool_use":
                                                     # Server tool input (search query) - accumulate to extract query
                                                     server_tool_input_buffer += partial_json
+                                                else:
+                                                    search_stream_valid = False
                                             # Handle thinking tokens
                                             elif delta_type == "thinking_delta" and "thinking" in delta:
                                                 thinking_chunk = delta["thinking"]
@@ -344,6 +355,15 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                                         "cited_text": citation.get("cited_text", ""),
                                                     })
 
+                                        elif event_type == "error":
+                                            search_stream_valid = False
+                                            human_msg = _extract_human_error_message(json_data, 200, "Claude")
+                                            await record_provider_error_for_label(
+                                                "Claude", message=human_msg, model=model, byok=byok)
+                                            error_yielded = True
+                                            yield f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+                                            break
+
                                         elif event_type == "message_start":
                                             usage_info = event.get("message", {}).get("usage", {})
                                             server_usage = usage_info.get("server_tool_use") or {}
@@ -366,7 +386,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                             _merge_claude_stream_usage(request_usage, usage)
                                             # Check stop_reason for tool_use
                                             delta = event.get("delta", {})
-                                            stop_reason = delta.get("stop_reason", "")
+                                            stop_reason = delta.get("stop_reason") or stop_reason
                                             # A terminal delta contains the final cumulative
                                             # usage even if the client leaves before message_stop.
                                             if stop_reason:
@@ -391,12 +411,17 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                                     current_block.setdefault("thinking", "")
                                                 yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
                                             elif block_type == "tool_use":
-                                                # Regular function-call tool (generateImage, etc.)
-                                                tool_use_name = content_block.get("name", "")
-                                                tool_use_id = content_block.get("id", "")
-                                                tool_use_input_buffer = ""
-                                                current_block = {**content_block, "input": {}}
-                                                logger.info(f"[call_claude_api] - Tool use started: {tool_use_name}")
+                                                if tool_seen:
+                                                    # Even identical function names can be separate calls.
+                                                    multiple_tool_calls = True
+                                                else:
+                                                    tool_seen = True
+                                                    tool_use_index = block_index
+                                                    tool_use_name = content_block.get("name", "")
+                                                    tool_use_id = content_block.get("id", "")
+                                                    tool_use_block = dict(content_block)
+                                                current_block = dict(content_block) if multiple_tool_calls else tool_use_block
+                                                logger.info(f"[call_claude_api] - Tool use started: {content_block.get('name', '')}")
                                             elif block_type == "server_tool_use":
                                                 # Claude decided to search the web (server-side)
                                                 server_tool_input_buffer = ""
@@ -426,13 +451,17 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                                             stopped_block_type = block_types.get(block_index, "")
                                             if stopped_block_type in {"thinking", "redacted_thinking"}:
                                                 yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
-                                            elif stopped_block_type == "tool_use":
-                                                # Finalize regular tool block with parsed input
-                                                if current_block and tool_use_input_buffer:
-                                                    try:
-                                                        current_block["input"] = orjson.loads(tool_use_input_buffer)
-                                                    except orjson.JSONDecodeError:
-                                                        pass
+                                            elif stopped_block_type == "tool_use" and block_index == tool_use_index:
+                                                tool_block_complete = True
+                                                try:
+                                                    parsed_input = (orjson.loads(tool_use_input_buffer)
+                                                                    if tool_use_input_buffer else tool_use_block.get("input"))
+                                                    if not isinstance(parsed_input, dict):
+                                                        tool_arguments_invalid = True
+                                                    else:
+                                                        tool_use_block["input"] = parsed_input
+                                                except (orjson.JSONDecodeError, TypeError):
+                                                    tool_arguments_invalid = True
                                             elif stopped_block_type == "server_tool_use":
                                                 # Extract search query from accumulated input
                                                 if server_tool_input_buffer:
@@ -481,8 +510,17 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                         yield f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
                         error_yielded = True
                         break  # Don't continue on error
+            except (asyncio.CancelledError, GeneratorExit) as exc:
+                stream_interruption = exc
+                break
             except BillingReservationError as exc:
-                yield f"data: {orjson.dumps({'error': str(exc), 'error_code': 'hosted_search_billing_unavailable'}).decode()}\n\n"
+                deferred_error_event = f"data: {orjson.dumps({'error': str(exc), 'error_code': 'hosted_search_billing_unavailable'}).decode()}\n\n"
+                error_yielded = True
+                break
+            except EmbedError as exc:
+                # Application accounting refused or revoked the call: not a provider fault.
+                logger.warning(f"[call_claude_api] - Application refused the call: {exc.code}")
+                deferred_error_event = f"data: {orjson.dumps({'error': exc.code, 'error_code': exc.code}).decode()}\n\n"
                 error_yielded = True
                 break
             except asyncio.TimeoutError as exc:
@@ -490,7 +528,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                 logger.error(error_msg)
                 human_msg = _human_exception_error(exc, "Claude")
                 await record_provider_error_for_label("Claude", message=human_msg, exception=exc, model=model, byok=byok)
-                yield f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+                deferred_error_event = f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
                 error_yielded = True
                 break
             except aiohttp.ClientError as exc:
@@ -498,7 +536,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                 logger.error(error_msg)
                 human_msg = _human_exception_error(exc, "Claude")
                 await record_provider_error_for_label("Claude", message=human_msg, exception=exc, model=model, byok=byok)
-                yield f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+                deferred_error_event = f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
                 error_yielded = True
                 break
             except Exception as exc:
@@ -506,7 +544,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                 logger.error(error_msg)
                 human_msg = _human_exception_error(exc, "Claude")
                 await record_provider_error_for_label("Claude", message=human_msg, exception=exc, model=model, byok=byok)
-                yield f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+                deferred_error_event = f"data: {orjson.dumps(_provider_error_payload('Claude', human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
                 error_yielded = True
                 break
             finally:
@@ -533,7 +571,11 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                     unresolved_search_billing = unresolved_search_billing or not resolved
 
             # Check if we need to continue (pause_turn = Claude needs more turns)
-            if unresolved_search_billing:
+            if (unresolved_search_billing or error_yielded or not message_stopped
+                    or not search_stream_valid or stop_signals.get(conversation_id, False)):
+                break
+            if tool_seen and stop_reason == "pause_turn":
+                # A client call needs its result, so it cannot be silently carried through a pause.
                 break
             if stop_reason == "pause_turn" and continuation_count < max_continuations:
                 continuation_count += 1
@@ -543,11 +585,6 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                     "content": response_content_blocks
                 })
                 paused_content_blocks.extend(response_content_blocks)
-                # Reset per-iteration state (keep accumulated content, tokens, citations)
-                stop_reason = ""
-                block_types = {}
-                response_content_blocks = []
-                current_block = None
                 logger.info(f"[call_claude_api] - pause_turn continuation {continuation_count}/{max_continuations}")
                 continue
             else:
@@ -555,90 +592,110 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                     logger.warning(f"[call_claude_api] - Max continuations ({max_continuations}) reached, stopping")
                 break
 
-    for tagged_type, tagged_chunk in tagged_thinking_parser.finalize():
-        if tagged_type == "thinking":
-            yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
-        elif tagged_type == "thinking_end":
-            yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
-        elif tagged_type == "content" and tagged_chunk:
-            content += tagged_chunk
-            yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
-
-    uncached_input_tokens = input_tokens
-    input_tokens += cache_creation_tokens + cache_read_tokens
-    total_tokens = input_tokens + output_tokens
-    override_api_cost = None
-    if cache_creation_tokens or cache_read_tokens:
-        input_cost, output_cost = await get_llm_token_costs(model=model, llm_id=llm_id)
-        override_api_cost = 0.0 if byok else _claude_cache_api_cost(
-            model=model, uncached_input=uncached_input_tokens, output=output_tokens,
-            cache_read=cache_read_tokens, cache_write_5m=cache_write_5m_tokens,
-            cache_write_1h=cache_write_1h_tokens,
-            input_rate=input_cost, output_rate=output_cost,
-        )
-    logger.info(f"Tokens used Claude:\ninput_tokens: {input_tokens}\noutput_tokens: {output_tokens}\ntotal_tokens: {total_tokens}")
-    logger.info(f"Cache tokens used:\ncache_creation_tokens: {cache_creation_tokens}\ncache_read_tokens: {cache_read_tokens}")
-    if stop_reason == "max_tokens":
-        _log_truncated_response("Claude", model, conversation_id, llm_id, stop_reason, data.get("max_tokens"))
-
-    billing_input_tokens = input_tokens
-    billing_output_tokens = output_tokens
-    if (
-        billing_reservation_id
-        and save_to_db
-        and (content or tool_use_name or input_tokens or output_tokens)
-    ):
-        if override_api_cost is not None:
-            # Retain real token totals for usage/creator markups, and the exact
-            # category-priced API cost for normal margin/BYOK settlement.
-            await accumulate_ai_reservation_usage(
-                reservation_id=billing_reservation_id, user_id=user_id,
-                input_tokens=input_tokens, output_tokens=output_tokens,
-                component={
-                    "input_tokens": input_tokens, "output_tokens": output_tokens,
-                    "input_cost_per_million": input_cost,
-                    "output_cost_per_million": output_cost,
-                    "override_api_cost": override_api_cost,
-                    "prompt_id": prompt_id, "byok": byok,
-                },
+    try:
+        if stream_interruption is None:
+            for tagged_type, tagged_chunk in tagged_thinking_parser.finalize():
+                if tagged_type == "thinking":
+                    yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
+                elif tagged_type == "thinking_end":
+                    yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                elif tagged_type == "content" and tagged_chunk:
+                    content += tagged_chunk
+                    yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
+    finally:
+        # Closing an SSE consumer must not discard usage already received.
+        uncached_input_tokens = input_tokens
+        input_tokens += cache_creation_tokens + cache_read_tokens
+        total_tokens = input_tokens + output_tokens
+        override_api_cost = None
+        if cache_creation_tokens or cache_read_tokens:
+            input_cost, output_cost = await get_llm_token_costs(model=model, llm_id=llm_id)
+            override_api_cost = 0.0 if byok else _claude_cache_api_cost(
+                model=model, uncached_input=uncached_input_tokens, output=output_tokens,
+                cache_read=cache_read_tokens, cache_write_5m=cache_write_5m_tokens,
+                cache_write_1h=cache_write_1h_tokens,
+                input_rate=input_cost, output_rate=output_cost,
             )
-        else:
-            billing_input_tokens, billing_output_tokens = (
-                await accumulate_ai_provider_call_usage(
-                    reservation_id=billing_reservation_id,
-                    user_id=user_id,
-                    reported_input_tokens=input_tokens,
-                    reported_output_tokens=output_tokens,
-                    input_payload=(prompt, messages),
-                    output_payload=(content, tool_use_name, tool_use_input_buffer),
-                    input_token_fallback=input_token_fallback,
-                    output_token_cap=max_tokens,
-                    llm_id=llm_id,
-                    model=model,
-                    prompt_id=prompt_id,
-                    byok=byok,
+        logger.info(f"Tokens used Claude:\ninput_tokens: {input_tokens}\noutput_tokens: {output_tokens}\ntotal_tokens: {total_tokens}")
+        logger.info(f"Cache tokens used:\ncache_creation_tokens: {cache_creation_tokens}\ncache_read_tokens: {cache_read_tokens}")
+        if stop_reason == "max_tokens":
+            _log_truncated_response("Claude", model, conversation_id, llm_id, stop_reason, data.get("max_tokens"))
+
+        billing_input_tokens = input_tokens
+        billing_output_tokens = output_tokens
+        if (
+            billing_reservation_id
+            and save_to_db
+            and (content or tool_seen or input_tokens or output_tokens)
+        ):
+            if override_api_cost is not None:
+                # Retain real token totals for usage/creator markups, and the exact
+                # category-priced API cost for normal margin/BYOK settlement.
+                await accumulate_ai_reservation_usage(
+                    reservation_id=billing_reservation_id, user_id=user_id,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    component={
+                        "input_tokens": input_tokens, "output_tokens": output_tokens,
+                        "input_cost_per_million": input_cost,
+                        "output_cost_per_million": output_cost,
+                        "override_api_cost": override_api_cost,
+                        "prompt_id": prompt_id, "byok": byok,
+                    },
                 )
-            )
+            else:
+                billing_input_tokens, billing_output_tokens = (
+                    await accumulate_ai_provider_call_usage(
+                        reservation_id=billing_reservation_id,
+                        user_id=user_id,
+                        reported_input_tokens=input_tokens,
+                        reported_output_tokens=output_tokens,
+                        input_payload=(prompt, messages),
+                        output_payload=(content, tool_use_name, tool_use_input_buffer),
+                        input_token_fallback=input_token_fallback,
+                        output_token_cap=max_tokens,
+                        llm_id=llm_id,
+                        model=model,
+                        prompt_id=prompt_id,
+                        byok=byok,
+                    )
+                )
+
+    if stream_interruption is not None:
+        raise stream_interruption
+
+    # Report exceptions only after accounting for the received output.
+    if deferred_error_event is not None:
+        yield deferred_error_event
 
     if unresolved_search_billing:
         yield f"data: {orjson.dumps({'error': 'Hosted search usage could not be confirmed; its reservation is retained for reconciliation.', 'error_code': 'hosted_search_usage_unconfirmed'}).decode()}\n\n"
         return
 
-    # If a tool use was detected, emit it and return without saving to DB
-    # The caller (get_ai_response) will handle the tool call and save the result
-    # When save_to_db=False (Multi-AI), skip tool handling entirely
-    if tool_use_name and (stop_reason == "tool_use" or tool_use_input_buffer) and save_to_db:
-        try:
-            # Parse the accumulated input as JSON
-            parsed_args = orjson.loads(tool_use_input_buffer) if tool_use_input_buffer else {}
-        except orjson.JSONDecodeError:
-            logger.error(f"[call_claude_api] - Failed to parse tool input: {tool_use_input_buffer}")
-            parsed_args = {}
+    # message_delta(stop_reason) is not the final message_stop event.
+    if (tool_seen or stop_reason == "tool_use") and save_to_db:
+        tool_error = None
+        if multiple_tool_calls:
+            tool_error = "multiple_tool_calls_unsupported"
+        elif (error_yielded or not search_stream_valid or not message_stopped or not tool_block_complete
+              or current_block is not None
+              or stop_reason != "tool_use" or not tool_use_name or not tool_use_id
+              or stop_signals.get(conversation_id, False)):
+            tool_error = "tool_call_incomplete"
+        elif tool_arguments_invalid:
+            tool_error = "invalid_tool_arguments"
+        if tool_error:
+            if not error_yielded:
+                await record_provider_error_for_label("Claude", message=tool_error, model=model, byok=byok)
+                yield f"data: {orjson.dumps({'error': tool_error, 'error_code': tool_error}).decode()}\n\n"
+            return
+        parsed_args = tool_use_block["input"]
 
         logger.info(f"[call_claude_api] - Tool use detected: {tool_use_name}, pre_tool_content length: {len(content)}")
 
         # Include any text Claude generated before calling the tool
         await record_provider_success_for_label("Claude", model=model, byok=byok)
+        if stop_signals.get(conversation_id, False):
+            return
         yield f"data: {orjson.dumps({'tool_call': {'name': tool_use_name, 'arguments': parsed_args, 'id': tool_use_id, 'claude_content_blocks': [*paused_content_blocks, *response_content_blocks], '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}, 'pre_tool_content': content}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return  # Don't save to DB - handler will do it
@@ -672,7 +729,8 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
                     yield f"data: {orjson.dumps(_provider_error_payload('Claude', empty_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             return
         else:
-            await record_provider_success_for_label("Claude", model=model, byok=byok)
+            if not error_yielded:
+                await record_provider_success_for_label("Claude", model=model, byok=byok)
             citations_data = orjson.dumps(all_citations).decode() if all_citations else None
             user_message_id, bot_message_id = await save_content_to_db(content, input_tokens, output_tokens, total_tokens, conversation_id, user_id, model, user_message=user_message,
                                                                         input_token_fallback=input_token_fallback,
@@ -688,7 +746,7 @@ async def call_claude_api(messages, model, temperature, max_tokens, prompt, conv
 
         yield content.strip()
     else:
-        if content.strip():
+        if content.strip() and not error_yielded:
             await record_provider_success_for_label("Claude", model=model, byok=byok)
         elif not error_yielded:
             await record_provider_error_for_label("Claude", message="empty response", model=model, byok=byok)

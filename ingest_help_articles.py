@@ -47,6 +47,8 @@ def parse_article(filepath: str, locale: str = 'en') -> dict:
     meta = yaml.safe_load(match.group(1))
     if not isinstance(meta, dict):
         raise ValueError(f"Frontmatter must be a mapping in {filepath}")
+    if 'app_id' in meta or 'knowledge_scope' in meta:
+        raise ValueError(f"Knowledge scope is selected by the operator, not article metadata: {filepath}")
     if locale not in LANGUAGES or meta.get('locale', 'en') != locale:
         raise ValueError(f"Locale does not match the selected directory in {filepath}")
     if locale != 'en' and not re.fullmatch(r'[0-9a-f]{64}', str(meta.get('base_source_hash', ''))):
@@ -60,17 +62,20 @@ def parse_article(filepath: str, locale: str = 'en') -> dict:
         raise ValueError(f"Invalid required_role '{raw_role}' in {filepath} (must be public/user/admin)")
 
     # Validate frontmatter field types
-    if not isinstance(meta.get('id'), str) or not meta['id'].strip():
-        raise ValueError(f"'id' must be a non-empty string in {filepath}")
+    if not isinstance(meta.get('id'), str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,95}', meta['id']):
+        raise ValueError(f"Invalid article id in {filepath}; use lowercase letters, digits and underscores")
     if meta['id'] != Path(filepath).stem:
         raise ValueError(f"Article id must match the filename in {filepath}")
     if not isinstance(meta.get('title'), str) or not meta['title'].strip():
         raise ValueError(f"'title' must be a non-empty string in {filepath}")
-    if not isinstance(meta.get('category'), str):
-        raise ValueError(f"'category' must be a string in {filepath}")
-    valid_categories = ('whatsapp', 'telegram', 'voice', 'search', 'chat', 'settings', 'media', 'auth', 'billing', 'limitations')
-    if meta['category'] not in valid_categories:
-        raise ValueError(f"Invalid category '{meta['category']}' in {filepath} (must be one of: {', '.join(valid_categories)})")
+    if not isinstance(meta.get('category'), str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', meta['category']):
+        raise ValueError(f"Invalid category in {filepath}; use a short lowercase identifier")
+    for field in ('required_capabilities', 'required_tools'):
+        values = meta.get(field, [])
+        if (not isinstance(values, list) or len(values) > 64
+                or any(not isinstance(value, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', value) for value in values)
+                or len(set(values)) != len(values)):
+            raise ValueError(f"Invalid {field} in {filepath}; use unique capability/tool names")
     if not isinstance(meta.get('keywords', []), list):
         raise ValueError(f"'keywords' must be a list in {filepath}")
     if meta.get('prerequisites') is not None and not isinstance(meta['prerequisites'], list):
@@ -154,22 +159,24 @@ def parse_article(filepath: str, locale: str = 'en') -> dict:
         'last_reviewed_at': meta.get('last_reviewed'),
         'source_hash': source_hash,
         'base_source_hash': meta.get('base_source_hash'),
+        'required_capabilities': json.dumps(meta.get('required_capabilities', [])),
+        'required_tools': json.dumps(meta.get('required_tools', [])),
     }
 
 
-def _save_article(conn, article, locale, rebuild):
+def _save_article(conn, article, locale, rebuild, scope):
     fields = ('title', 'keywords', 'prerequisites', 'short_answer', 'tool_text',
               'body', 'approval_status', 'last_reviewed_at', 'source_hash')
     if locale == 'en':
         table = 'HELP_ARTICLES'
-        identity = {'article_id': article['article_id']}
-        fields += ('category', 'tool_visible', 'required_role')
+        identity = {'knowledge_scope': scope, 'article_id': article['article_id']}
+        fields += ('category', 'tool_visible', 'required_role', 'required_capabilities', 'required_tools')
     else:
-        base = conn.execute('SELECT * FROM HELP_ARTICLES WHERE article_id = ?',
-                            (article['article_id'],)).fetchone()
+        base = conn.execute('SELECT * FROM HELP_ARTICLES WHERE knowledge_scope = ? AND article_id = ?',
+                            (scope, article['article_id'])).fetchone()
         if base is None:
             raise ValueError('Missing English base article: ' + article['article_id'])
-        for field in ('category', 'required_role', 'tool_visible'):
+        for field in ('category', 'required_role', 'tool_visible', 'required_capabilities', 'required_tools'):
             if article[field] != base[field]:
                 raise ValueError('Variant must share base ' + field + ': ' + article['article_id'])
         table = 'HELP_ARTICLE_VARIANTS'
@@ -197,26 +204,29 @@ def _save_article(conn, article, locale, rebuild):
     return 'inserted'
 
 
-def _rebuild_fts(conn, locale):
+def _rebuild_fts(conn, locale, scope):
     if locale == 'en':
-        conn.execute('DELETE FROM HELP_ARTICLES_FTS')
+        conn.execute('DELETE FROM HELP_ARTICLES_FTS WHERE rowid IN '
+                     '(SELECT id FROM HELP_ARTICLES WHERE knowledge_scope = ?)', (scope,))
         conn.execute("""
             INSERT INTO HELP_ARTICLES_FTS(rowid, title, short_answer, body, keywords)
             SELECT id, title, short_answer, body, keywords FROM HELP_ARTICLES
-            WHERE is_active = 1 AND approval_status = 'approved' AND tool_visible = 1
-        """)
+            WHERE knowledge_scope = ? AND is_active = 1 AND approval_status = 'approved' AND tool_visible = 1
+        """, (scope,))
     else:
         conn.execute('DELETE FROM HELP_ARTICLE_VARIANTS_FTS WHERE rowid IN '
-                     '(SELECT id FROM HELP_ARTICLE_VARIANTS WHERE locale = ?)', (locale,))
+                     '(SELECT v.id FROM HELP_ARTICLE_VARIANTS v JOIN HELP_ARTICLES a ON a.id=v.article_pk '
+                     'WHERE v.locale = ? AND a.knowledge_scope = ?)', (locale, scope))
         conn.execute("""
             INSERT INTO HELP_ARTICLE_VARIANTS_FTS(rowid, title, short_answer, body, keywords)
-            SELECT id, title, short_answer, body, keywords FROM HELP_ARTICLE_VARIANTS
-            WHERE locale = ? AND is_active = 1 AND approval_status = 'approved'
-        """, (locale,))
+            SELECT v.id, v.title, v.short_answer, v.body, v.keywords
+            FROM HELP_ARTICLE_VARIANTS v JOIN HELP_ARTICLES a ON a.id=v.article_pk
+            WHERE v.locale = ? AND a.knowledge_scope = ? AND v.is_active = 1 AND v.approval_status = 'approved'
+        """, (locale, scope))
 
 
 def ingest(rebuild: bool = False, *, locales=None, article_ids=None, tolerant=False,
-           docs_dir=None, db_path=None) -> dict:
+           docs_dir=None, db_path=None, app_id=None, shared_embed=False) -> dict:
     """Upsert a validated scope atomically; partial article updates never retire rows.
 
     A complete locale directory is its inventory. Missing directories are errors,
@@ -226,10 +236,15 @@ def ingest(rebuild: bool = False, *, locales=None, article_ids=None, tolerant=Fa
     if not selected or any(locale not in LANGUAGES for locale in selected):
         raise ValueError('Select at least one supported locale')
     selected = sorted(selected, key=lambda locale: locale != 'en')
+    if app_id is not None and (shared_embed or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', app_id)):
+        raise ValueError('Select one registered application or shared embed help')
+    scope = 'app:' + app_id if app_id is not None else ('embed' if shared_embed else 'platform')
     requested = set(article_ids or ())
     if any(not re.fullmatch(r'[a-z0-9_]+', aid) for aid in requested):
         raise ValueError('Article ids must contain only lowercase letters, digits and underscores')
-    root = Path(docs_dir or DOCS_DIR)
+    default_root = (Path(__file__).parent / 'docs' / 'application_help' / app_id if app_id else
+                    Path(__file__).parent / 'docs' / 'embed_help' if shared_embed else Path(DOCS_DIR))
+    root = Path(docs_dir) if docs_dir is not None else default_root
     counts = dict(inserted=0, updated=0, skipped=0, errors=0, deactivated=0, stale=0)
     parsed = {}
     invalid = set()
@@ -261,11 +276,13 @@ def ingest(rebuild: bool = False, *, locales=None, article_ids=None, tolerant=Fa
     conn.execute('PRAGMA foreign_keys = ON')
     try:
         ensure_help_schema(conn)
+        if app_id is not None and not conn.execute('SELECT 1 FROM EMBED_APPS WHERE app_id=?', (app_id,)).fetchone():
+            raise ValueError('Application must be registered before loading its knowledge')
         with conn:
             for locale in selected:
                 for article in parsed[locale]:
                     try:
-                        outcome = _save_article(conn, article, locale, rebuild)
+                        outcome = _save_article(conn, article, locale, rebuild, scope)
                         counts[outcome] += 1
                     except (ValueError, sqlite3.IntegrityError) as exc:
                         if not tolerant:
@@ -278,19 +295,19 @@ def ingest(rebuild: bool = False, *, locales=None, article_ids=None, tolerant=Fa
                     marks = ','.join('?' for _ in ids)
                     if locale == 'en':
                         cursor = conn.execute(f'UPDATE HELP_ARTICLES SET is_active = 0 WHERE is_active = 1 '
-                                              f'AND article_id NOT IN ({marks})', ids)
+                                              f'AND knowledge_scope = ? AND article_id NOT IN ({marks})', (scope, *ids))
                     else:
                         cursor = conn.execute('UPDATE HELP_ARTICLE_VARIANTS SET is_active = 0 '
                                               'WHERE is_active = 1 AND locale = ? AND article_pk IN '
-                                              f'(SELECT id FROM HELP_ARTICLES WHERE article_id NOT IN ({marks}))',
-                                              (locale, *ids))
+                                              f'(SELECT id FROM HELP_ARTICLES WHERE knowledge_scope = ? AND article_id NOT IN ({marks}))',
+                                              (locale, scope, *ids))
                     counts['deactivated'] += cursor.rowcount
                 if rebuild:
-                    _rebuild_fts(conn, locale)
+                    _rebuild_fts(conn, locale, scope)
             counts['stale'] = conn.execute("""
                 SELECT count(*) FROM HELP_ARTICLE_VARIANTS v JOIN HELP_ARTICLES a ON a.id = v.article_pk
-                WHERE v.is_active = 1 AND a.is_active = 1 AND v.base_source_hash != a.source_hash
-            """).fetchone()[0]
+                WHERE a.knowledge_scope = ? AND v.is_active = 1 AND a.is_active = 1 AND v.base_source_hash != a.source_hash
+            """, (scope,)).fetchone()[0]
     finally:
         conn.close()
     print('Help ingest: ' + ', '.join(f'{key}={value}' for key, value in counts.items()))
@@ -303,6 +320,10 @@ if __name__ == '__main__':
     parser.add_argument('--article', action='append', dest='article_ids')
     parser.add_argument('--rebuild', action='store_true')
     parser.add_argument('--tolerant', action='store_true')
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument('--app-id')
+    scope.add_argument('--shared-embed', action='store_true')
+    parser.add_argument('--docs-dir', type=Path)
     args = parser.parse_args()
     try:
         ingest(**vars(args))

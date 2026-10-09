@@ -1,5 +1,5 @@
 from ai_runtime.dependencies import *
-from ai_runtime.providers.claude_capabilities import claude_omits_temperature
+from ai_runtime.providers.claude_capabilities import claude_supports_temperature
 from ai_runtime.providers.openai_chat import call_llm_api
 from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
 
@@ -93,7 +93,10 @@ async def call_openrouter_api(messages, model, temperature, max_tokens, prompt, 
         byok=byok,
         extra_body={"reasoning": reasoning} if reasoning is not None else None,
         api_model=api_model,
-        omit_temperature=claude_omits_temperature(api_model or model),
+        omit_temperature=(
+            (api_model or model).startswith("anthropic/")
+            and not claude_supports_temperature(api_model or model)
+        ),
         pending_attachment_refs=pending_attachment_refs,
         strip_device_action_blocks=strip_device_action_blocks,
         billing_reservation_id=billing_reservation_id,

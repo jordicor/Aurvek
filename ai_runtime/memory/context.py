@@ -58,6 +58,8 @@ async def _resolve_memory_context(
         return MemoryContextDecision(
             full_prompt, False, "application_memory_read_disabled", provider="none"
         )
+    from integrations.applications.external_execution import reject_unsupported
+    reject_unsupported("memory")
     try:
         provider = await get_active_memory_provider()
         if application_scope is not None:

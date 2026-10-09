@@ -217,7 +217,8 @@ async def get_messages(
 
         from integrations.applications.web_audio import load_original_recordings
         original_recordings = await load_original_recordings(conn, application_scope,
-            [int(row["message_id"]) for row in rows])
+            [int(row["message_id"]) for row in rows],
+            conversation_id=conversation_id, user_id=conversation["user_id"])
 
         extensions_data = {}
         if conv_row and conv_row["extensions_enabled"]:

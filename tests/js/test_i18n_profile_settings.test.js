@@ -62,6 +62,46 @@ function guardedForm(input) {
     });
 }
 
+test('phone widget restores a saved number after loading without replacing an early edit', async () => {
+    for (const editDuringLoad of [false, true]) {
+        const phone = eventTarget({value: '', dataset: {original: '+12025550123'}});
+        let finishLoading;
+        let cleanCalls = 0;
+        const widget = {
+            promise: new Promise(resolve => { finishLoading = resolve; }),
+            setNumber(number) { phone.value = number; },
+        };
+        const context = vm.createContext({
+            window: {
+                AurvekI18n: {locale: 'en'},
+                intlTelInput() { return widget; },
+                intlTelInputGlobals: {getCountryData() { return [{iso2: 'us'}]; }},
+            },
+            document: {
+                addEventListener() {},
+                getElementById(id) { return id === 'phone' ? phone : null; },
+            },
+            Intl, Promise,
+            FormGuard: {markFieldsClean() { cleanCalls += 1; }},
+        });
+        const source = fs.readFileSync(path.join(repoRoot, 'data/static/js/edit_profile.js'), 'utf8');
+        vm.runInContext(source.slice(
+            source.indexOf('function initPhoneInput()'),
+            source.indexOf('function initializeAlterEgoState()')
+        ), context);
+        vm.runInContext('initPhoneInput()', context);
+        if (editDuringLoad) {
+            phone.value = '555-0100';
+            phone.dispatchEvent({type: 'input'});
+        }
+        finishLoading();
+        await widget.promise;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(phone.value, editDuringLoad ? '555-0100' : '+12025550123');
+        assert.equal(cleanCalls, editDuringLoad ? 0 : 1);
+    }
+});
+
 test('device time zone selects an existing option or adds a missing browser alias once', () => {
     for (const initialOptions of [[], [{ value: 'Europe/Madrid', text: 'Europe / Madrid' }]]) {
         const changes = [];

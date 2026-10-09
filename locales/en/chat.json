@@ -24,6 +24,8 @@
   "click_conversation": "Click to go to conversation",
   "invalid_date": "Invalid date",
   "read_aloud": "Read aloud",
+  "download_audio": "Download original audio",
+  "download_audio_failed": "The original audio could not be downloaded.",
   "audio": "Audio",
   "voice_reply": "Voice reply",
   "voice_note": "Voice note",

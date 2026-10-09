@@ -3,34 +3,73 @@
 import sqlite3
 
 
+ARTICLE_SCHEMA = """
+    CREATE TABLE {table} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        article_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        keywords TEXT NOT NULL DEFAULT '[]',
+        prerequisites TEXT DEFAULT '[]',
+        short_answer TEXT NOT NULL,
+        tool_text TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tool_visible INTEGER NOT NULL DEFAULT 0,
+        approval_status TEXT NOT NULL DEFAULT 'draft'
+            CHECK(approval_status IN ('draft','review','approved')),
+        required_role TEXT CHECK(required_role IS NULL OR required_role IN ('user','admin')),
+        last_reviewed_at TEXT,
+        source_hash TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        knowledge_scope TEXT NOT NULL DEFAULT 'platform',
+        required_capabilities TEXT NOT NULL DEFAULT '[]',
+        required_tools TEXT NOT NULL DEFAULT '[]',
+        UNIQUE(knowledge_scope, article_id)
+    )
+"""
+
+
+def _ensure_article_scope(conn: sqlite3.Connection) -> None:
+    columns = [row[1] for row in conn.execute('PRAGMA table_info(HELP_ARTICLES)')]
+    if not columns:
+        conn.execute(ARTICLE_SCHEMA.format(table='HELP_ARTICLES'))
+        return
+    if 'knowledge_scope' in columns:
+        return
+    # Rebuild only the help table to remove the old global ID/category limits.
+    # Preserve primary keys so translations and FTS rows retain their identity.
+    if conn.in_transaction:
+        raise ValueError('Help schema migration must run before content transactions')
+    foreign_keys = conn.execute('PRAGMA foreign_keys').fetchone()[0]
+    conn.execute('PRAGMA foreign_keys = OFF')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(ARTICLE_SCHEMA.format(table='HELP_ARTICLES_SCOPED'))
+        names = ','.join('"' + name.replace('"', '""') + '"' for name in columns)
+        conn.execute(f'INSERT INTO HELP_ARTICLES_SCOPED ({names}) SELECT {names} FROM HELP_ARTICLES')
+        conn.execute('DROP TABLE HELP_ARTICLES')
+        conn.execute('ALTER TABLE HELP_ARTICLES_SCOPED RENAME TO HELP_ARTICLES')
+        variants_exist = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='HELP_ARTICLE_VARIANTS'").fetchone()
+        if variants_exist and conn.execute('PRAGMA foreign_key_check(HELP_ARTICLE_VARIANTS)').fetchone():
+            raise ValueError('Help translation references failed migration integrity checks')
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute(f'PRAGMA foreign_keys = {foreign_keys}')
+
+
 def ensure_help_schema(conn: sqlite3.Connection) -> None:
     """Create missing help storage without replacing existing articles or logs.
 
     Called before ingestion transactions, by fresh database setup and migration.
     English remains in HELP_ARTICLES; all access controls belong to that row.
     """
+    _ensure_article_scope(conn)
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS HELP_ARTICLES (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            article_id TEXT NOT NULL UNIQUE,
-            title TEXT NOT NULL,
-            category TEXT NOT NULL CHECK(category IN
-                ('whatsapp','telegram','voice','search','chat','settings','media','auth','billing','limitations')),
-            keywords TEXT NOT NULL DEFAULT '[]',
-            prerequisites TEXT DEFAULT '[]',
-            short_answer TEXT NOT NULL,
-            tool_text TEXT NOT NULL,
-            body TEXT NOT NULL,
-            tool_visible INTEGER NOT NULL DEFAULT 0,
-            approval_status TEXT NOT NULL DEFAULT 'draft'
-                CHECK(approval_status IN ('draft','review','approved')),
-            required_role TEXT CHECK(required_role IS NULL OR required_role IN ('user','admin')),
-            last_reviewed_at TEXT,
-            source_hash TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
         CREATE VIRTUAL TABLE IF NOT EXISTS HELP_ARTICLES_FTS USING fts5(
             title, short_answer, body, keywords, tokenize = 'unicode61 remove_diacritics 2'
         );

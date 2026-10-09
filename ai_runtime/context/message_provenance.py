@@ -180,10 +180,13 @@ def _stored_input_metadata(
         "telegram.message": "text",
         "telegram.voice_note": "transcript_only",
         "device.message": "text",
+        "device.live_voice": "transcript_only",
         "phone.live_call": "transcript_only",
     }
     expected = historical_modes.get(normalized_origin)
-    if expected is None or normalized_perception != expected:
+    native_transcript = (normalized_perception == "audio_native" and normalized_origin in {
+        "web.live_voice", "device.live_voice", "phone.live_call"})
+    if expected is None or normalized_perception != expected and not native_transcript:
         return None
     return TrustedInputMetadata(cast(InputOrigin, normalized_origin), expected)
 

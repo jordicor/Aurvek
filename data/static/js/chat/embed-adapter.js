@@ -1,4 +1,4 @@
-/* aurvek_embed.v1: metadata-only bridge; the native chat owns all turns. */
+/* aurvek_embed.v1: scoped commands and metadata events; native chat owns turns. */
 (function (global) {
     'use strict';
     const configNode = document.getElementById('aurvek-embed-config');
@@ -16,6 +16,17 @@
     let pendingConversationUpdate = false;
     let ready = false;
     let lastGenerating = false;
+    let themeRequest = 0;
+    let sendingMessage = false;
+    // This adapter runs before the application's link is parsed. Capture the
+    // actual resource outcome, including a cached load or an HTTP failure.
+    let finishThemeLoad;
+    const themeLoaded = new Promise(resolve => { finishThemeLoad = resolve; });
+    for (const eventName of ['load', 'error']) {
+        document.addEventListener(eventName, event => {
+            if (event.target.id === 'application-theme-css') finishThemeLoad(eventName);
+        }, true);
+    }
     const t = key => global.AurvekI18n.t(`embed.${key}`);
     const scopeHeaders = headers => {
         const result = new Headers(headers || {});
@@ -184,27 +195,94 @@
             emit('error', { code: 'service_unavailable' }, requestId);
         }
     }
+    function setTheme(theme, requestId) {
+        const request = ++themeRequest;
+        const current = document.getElementById('theme-css');
+        if (!current) {
+            emit('error', { code: 'theme_unavailable' }, requestId);
+            return;
+        }
+        if (document.documentElement.dataset.theme === theme) {
+            emit('action_completed', { action: 'theme', theme }, requestId);
+            return;
+        }
+        const url = new URL(current.href);
+        url.pathname = url.pathname.replace(/chat-[a-z0-9_-]+\.css$/, `chat-${theme}.css`);
+        url.search = '';
+        const hash = global.STATIC_HASHES?.[`/static/css/chat/chat-${theme}.css`];
+        if (hash) url.searchParams.set('v', hash);
+        const next = document.createElement('link');
+        next.rel = 'stylesheet';
+        next.media = 'not all';
+        next.onload = () => {
+            if (request !== themeRequest) {
+                next.remove();
+                emit('action_completed', { action: 'theme', theme, superseded: true }, requestId);
+                return;
+            }
+            current.remove();
+            next.id = 'theme-css';
+            next.media = 'all';
+            document.documentElement.dataset.theme = theme;
+            emit('action_completed', { action: 'theme', theme }, requestId);
+        };
+        next.onerror = () => {
+            next.remove();
+            emit('error', { code: 'theme_unavailable' }, requestId);
+        };
+        next.href = url.href;
+        current.after(next);
+    }
+    async function sendHostMessage(text, requestId) {
+        if (typeof text !== 'string' || !text.trim() || text.length > 16000) {
+            emit('error', { code: 'invalid_message' }, requestId);
+            return;
+        }
+        if (sendingMessage || stopPromise) {
+            emit('error', { code: 'operation_in_progress' }, requestId);
+            return;
+        }
+        sendingMessage = true;
+        try {
+            if (!ready) throw new Error('chat_not_ready');
+            if (expired) throw new Error('session_expired');
+            if (!config.capabilities.text) throw new Error('capability_disabled');
+            if (await readActivity() !== 'idle') throw new Error('operation_in_progress');
+            if (stopPromise) throw new Error('operation_in_progress');
+            // Recheck composer state after admission I/O; a user may have typed
+            // or started another action while the activity request was pending.
+            global.AurvekChatActions.sendMessage(text);
+            emit('action_completed', { action: 'send_message' }, requestId);
+        } catch (error) {
+            const code = error.code || error.message;
+            emit('error', { code: /^[a-z_]{1,64}$/.test(code) ? code : 'message_not_admitted' }, requestId);
+        } finally {
+            sendingMessage = false;
+        }
+    }
     function validMessage(event) {
         if (event.source !== global.parent || global.parent === global || event.origin !== config.parent_origin) return false;
         const data = event.data;
         if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-        try { if (new TextEncoder().encode(JSON.stringify(data)).length > 8192) return false; } catch (_) { return false; }
+        const maxBytes = data.event === 'send_message' ? 131072 : 8192;
+        try { if (new TextEncoder().encode(JSON.stringify(data)).length > maxBytes) return false; } catch (_) { return false; }
         if (data.contract_version !== version || data.frame_instance_id !== config.frame_instance_id ||
             data.app_id !== config.app_id || data.external_project_id !== config.external_project_id ||
             data.conversation_id !== config.conversation_id) return false;
         if (!['request_state', 'set_ui_language', 'request_activity_close', 'request_handoff', 'request_return',
-            'request_entry_preference', 'request_focus', 'request_action', 'set_presentation'].includes(data.event)) return false;
+            'request_entry_preference', 'request_focus', 'request_action', 'set_presentation', 'set_theme', 'send_message'].includes(data.event)) return false;
         if (typeof data.request_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(data.request_id)) return false;
         const extra = {
             set_ui_language: ['ui_language'],
             request_handoff: ['operation_id', 'assistant_id', 'mode', 'destination_conversation_id', 'note'],
             request_entry_preference: ['channel', 'assistant_id'], request_return: ['operation_id'],
-            request_action: ['action'], set_presentation: ['presentation'],
+            request_action: ['action'], set_presentation: ['presentation'], set_theme: ['theme'], send_message: ['text'],
         };
-        if (['request_return', 'request_action', 'set_presentation', 'request_focus'].includes(data.event) && !config.application) return false;
+        if (['request_return', 'request_action', 'set_presentation', 'set_theme', 'request_focus', 'send_message'].includes(data.event) && !config.application) return false;
         if (data.event === 'request_return' && (typeof data.operation_id !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(data.operation_id))) return false;
         if (data.event === 'request_action' && !['attachment', 'dictation', 'voice', 'export_pdf', 'export_mp3'].includes(data.action)) return false;
-        if (data.event === 'set_presentation' && !['full', 'compact'].includes(data.presentation)) return false;
+        if (data.event === 'set_presentation' && !['full', 'compact', 'entry'].includes(data.presentation)) return false;
+        if (data.event === 'set_theme' && !['writer', 'coder'].includes(data.theme)) return false;
         if (data.event === 'request_handoff' && (!config.application || !global.AurvekApplication?.validHandoff(data))) return false;
         if (data.event === 'request_entry_preference' && (!config.application || data.channel !== 'web' ||
             !(data.assistant_id === null || (typeof data.assistant_id === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(data.assistant_id))))) return false;
@@ -214,7 +292,9 @@
     global.addEventListener('message', event => {
         if (!validMessage(event)) return;
         const data = event.data;
-        if (data.event === 'set_ui_language') {
+        if (data.event === 'send_message') {
+            void sendHostMessage(data.text, data.request_id);
+        } else if (data.event === 'set_ui_language') {
             if (!languages.has(data.ui_language)) return;
             void setLanguage(data.ui_language, data.request_id);
         } else if (data.event === 'request_activity_close') {
@@ -228,6 +308,8 @@
         } else if (data.event === 'set_presentation') {
             document.documentElement.dataset.embedPresentation = data.presentation;
             emit('action_completed', { action: 'presentation', presentation: data.presentation }, data.request_id);
+        } else if (data.event === 'set_theme') {
+            setTheme(data.theme, data.request_id);
         } else if (data.event === 'request_focus') {
             document.getElementById('message-text')?.focus();
             emit('action_completed', { action: 'focus' }, data.request_id);
@@ -239,6 +321,13 @@
             void readActivity(data.request_id).catch(() => emit('error', { code: 'service_unavailable' }, data.request_id));
             if (config.application) void global.AurvekApplication?.readState(data.request_id);
         }
+    });
+    // Keep the real composer and its draft in place when the host opens the chat.
+    document.addEventListener('input', event => {
+        if (!config.application || event.target.id !== 'message-text' || !event.target.value ||
+            document.documentElement.dataset.embedPresentation !== 'entry') return;
+        document.documentElement.dataset.embedPresentation = 'compact';
+        emit('presentation_changed', { presentation: 'compact' });
     });
     global.AurvekEmbed = Object.freeze({
         config, sessionUrl: `${base}/session`, t, sessionExpired, stopActivity, syncSendControl, emit,
@@ -264,7 +353,14 @@
             url.searchParams.set('embed_conversation', config.conversation_id);
             return url.href;
         },
-        chatReady() {
+        async chatReady() {
+            const themeStylesheet = document.getElementById('application-theme-css');
+            if (themeStylesheet && await themeLoaded !== 'load') {
+                document.querySelectorAll('#form-message button, #form-message textarea, #form-message input').forEach(el => { el.disabled = true; });
+                status('theme_error');
+                emit('error', { code: 'theme_load_failed' });
+                return;
+            }
             ready = true;
             localize();
             const application = config.application ? {

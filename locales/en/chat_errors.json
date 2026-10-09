@@ -70,6 +70,7 @@
   "pdf_paths_required": "No PDF paths provided",
   "mp3_paths_required": "No MP3 paths provided",
   "media_delete_result": "Successfully deleted: {deleted}, Failed: {failed}",
+  "model_voice_only": "This model only supports real-time voice. Choose a chat model.",
   "model_unavailable": "This AI model is no longer available for new replies.",
   "expected_llm_id_required": "Reload the conversation so Aurvek can confirm the selected AI model.",
   "conversation_model_changed": "The AI model changed in another session. Review it and send again.",

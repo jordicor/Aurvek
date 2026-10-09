@@ -1,11 +1,12 @@
-import os
-import requests
 import logging
-from typing import Dict
+import os
+import uuid
 from html import escape
+from typing import Dict
 
-from i18n import Translator
+import requests
 from dotenv import load_dotenv
+from i18n import Translator
 
 load_dotenv()
 
@@ -155,6 +156,63 @@ class EmailService:
             return False
 
         return self._send_verification_via_postmark(to_email, verification_url, is_user, prompt_name, branding, ui_language)
+
+    def send_application_action_email(self, to_email: str, action_url: str,
+                                      application_name: str, purpose: str) -> bool:
+        """Send an application-scoped verification, activation, or recovery link."""
+        if not self.use_email_service or not self.postmark_token:
+            logger.warning("Application action email unavailable: purpose=%s enabled=%s token_configured=%s",
+                           purpose if purpose in {"verify", "activate", "recover"} else "unknown",
+                           self.use_email_service, bool(self.postmark_token))
+            return False
+        labels = {
+            "verify": ("Verify your email", "Verify the email for your account"),
+            "activate": ("Activate your account", "Set your password and activate your account"),
+            "recover": ("Reset your password", "Reset the password for your account"),
+        }
+        if purpose not in labels:
+            raise ValueError("Unsupported application email purpose")
+        title, instruction = labels[purpose]
+        from html import escape
+        safe_name = escape(application_name)
+        safe_url = escape(action_url, quote=True)
+        html_body = (f"<p>{escape(instruction)} at {safe_name}.</p>"
+                     f"<p><a href=\"{safe_url}\">{escape(title)}</a></p>"
+                     "<p>This link expires in 24 hours. Ignore this message if you did not request it.</p>")
+        try:
+            response = requests.post(
+                "https://api.postmarkapp.com/email",
+                headers={"Accept": "application/json", "Content-Type": "application/json",
+                         "X-Postmark-Server-Token": self.postmark_token},
+                json={"From": self.from_email, "To": to_email,
+                      "Subject": f"{application_name}: {title}", "HtmlBody": html_body,
+                      "TextBody": f"{instruction} at {application_name}: {action_url}\n"
+                                  "This link expires in 24 hours.", "MessageStream": "outbound"},
+                timeout=10,
+            )
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            error_code = payload.get("ErrorCode") if isinstance(payload, dict) else None
+            if type(error_code) is not int:
+                error_code = None
+            message_id = payload.get("MessageID") if isinstance(payload, dict) else None
+            try:
+                safe_message_id = str(uuid.UUID(message_id)) if isinstance(message_id, str) else None
+            except ValueError:
+                safe_message_id = None
+            if response.status_code != 200 or error_code != 0 or not safe_message_id:
+                logger.warning("Application action email rejected: purpose=%s http_status=%s "
+                               "postmark_error_code=%s message_id_valid=%s",
+                               purpose, response.status_code, error_code, bool(safe_message_id))
+                return False
+            logger.info("Application action email accepted: purpose=%s message_id=%s",
+                        purpose, safe_message_id)
+            return True
+        except requests.RequestException:
+            logger.error("Application action email transport failed")
+            return False
 
     def send_claim_entitlement_email(self, to_email: str, claim_url: str,
                                       product_name: str = None, branding: Dict = None, ui_language: str = "en") -> bool:

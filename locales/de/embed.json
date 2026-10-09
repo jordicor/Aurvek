@@ -8,6 +8,7 @@
   "memory_notice": "Diese Unterhaltung speichert ihren Verlauf. Erinnerungen aus anderen Unterhaltungen sind deaktiviert.",
   "expired": "Ihr Zugriff ist abgelaufen. Kehren Sie zum Produkt zurück, um sich erneut anzumelden.",
   "error": "Der Vorgang konnte nicht abgeschlossen werden. Prüfen Sie den Status der Unterhaltung, bevor Sie es erneut versuchen.",
+  "theme_error": "Das Chat-Design konnte nicht geladen werden. Laden Sie die Seite neu oder kontaktieren Sie den Betreiber der Anwendung.",
   "ending": "Die aktuelle Aktivität wird beendet…",
   "idle": "Inaktiv",
   "generating": "Antwort wird vorbereitet…",

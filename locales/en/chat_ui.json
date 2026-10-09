@@ -89,6 +89,7 @@
   "role.user": "User",
   "search.clear": "Clear search",
   "search.empty": "No messages found",
+  "search.failed": "Search failed. Please try again.",
   "search.label": "Search messages",
   "search.load_more": "Load more results",
   "search.placeholder": "Search messages...",

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import datetime, timezone
 
 from integrations.embed.models import EmbedError
 from integrations.embed.store import _digest, _json, _one
-from .models import ApplicationContext, AssistantConfig, CONTRACT_VERSION, OpenConversationRequest
+from .models import ApplicationContext, AssistantConfig, CONTRACT_VERSION, ListConversationsRequest, OpenConversationRequest
 from .schema import (SCHEMA, INTERVIEW_BINDING_SQL, column_statements, default_statements,
                      legacy_context_id, legacy_statements, matches_interview_binding)
 
@@ -260,6 +261,62 @@ class ApplicationService:
         if isinstance(actor, ApplicationContext) and context.context_id != actor.context_id:
             raise EmbedError("not_found", 404)
         return context
+
+    async def list_conversations(self, principal, request: ListConversationsRequest):
+        """List resumable, nonempty chats without creating a default context."""
+        request = ListConversationsRequest.model_validate(request)
+        result = {"contract_version": CONTRACT_VERSION, "conversations": []}
+        async with self.store.connection(readonly=True) as connection:
+            live = await self._validated_actor(connection, principal)
+            participant = await _one(connection, """SELECT p.context_id,p.active,c.active AS context_active
+                FROM APPLICATION_PARTICIPANTS p JOIN APPLICATION_CONTEXTS c
+                  ON c.app_id=p.app_id AND c.context_id=p.context_id
+                WHERE p.app_id=? AND p.subject=? AND p.context_ref IS ?""",
+                (live.app_id, live.subject, request.context_ref))
+            if not participant and request.context_ref is None:
+                return result
+            if not participant or not participant["active"] or not participant["context_active"]:
+                raise EmbedError("not_found", 404)
+            context_id = participant["context_id"]
+            if isinstance(live, ApplicationContext) and live.context_id != context_id:
+                raise EmbedError("not_found", 404)
+            # Reuse live assistant admission once per assistant, even when most
+            # recent conversations share it. Native ownership stays in the query.
+            scopes = {}
+            async with connection.execute("""SELECT b.conversation_id,b.assistant_id,b.prompt_id,
+                    c.chat_name,c.last_activity
+                FROM APPLICATION_CONVERSATIONS b JOIN CONVERSATIONS c
+                  ON c.id=b.conversation_id AND c.user_id=b.user_id AND c.role_id=b.prompt_id
+                WHERE b.app_id=? AND b.subject=? AND b.user_id=? AND b.context_id=?
+                  AND COALESCE(c.locked,0)=0
+                  AND EXISTS (SELECT 1 FROM MESSAGES m
+                    WHERE m.conversation_id=c.id AND m.user_id=b.user_id)
+                  AND NOT EXISTS (SELECT 1 FROM EMBED_INTERVIEWS i
+                    WHERE i.conversation_id=c.id AND i.state!='active')
+                ORDER BY c.last_activity DESC,b.conversation_id DESC""",
+                (live.app_id, live.subject, live.user_id, context_id)) as cursor:
+                async for row in cursor:
+                    assistant_id = row["assistant_id"]
+                    if assistant_id not in scopes:
+                        try:
+                            config, _, _, caps = await self._scope(connection, live.app_id,
+                                live.subject, live.user_id, context_id, assistant_id)
+                            scopes[assistant_id] = config.prompt_id if caps.get("text") else None
+                        except EmbedError as error:
+                            if error.status_code not in (403, 404):
+                                raise
+                            scopes[assistant_id] = None
+                    if scopes[assistant_id] != row["prompt_id"]:
+                        continue
+                    updated = datetime.fromisoformat(row["last_activity"])
+                    if updated.tzinfo is None:
+                        updated = updated.replace(tzinfo=timezone.utc)
+                    result["conversations"].append({"conversation_id": row["conversation_id"],
+                        "title": row["chat_name"] or "",
+                        "updated_at": updated.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")})
+                    if len(result["conversations"]) == request.limit:
+                        break
+        return result
 
     async def open_conversation(self, principal, request: OpenConversationRequest, *, entry_channel="web"):
         request = OpenConversationRequest.model_validate(request)

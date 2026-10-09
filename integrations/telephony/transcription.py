@@ -188,9 +188,7 @@ def _is_transcript_event(event: object) -> bool:
 
 
 def _is_utterance_end_event(event: object) -> bool:
-    # Realtime adapters expose this field only on their endpoint marker.  A
-    # structural check also keeps the narrow pre-Scribe test compatibility
-    # path from coupling production assembly back to an old provider module.
+    # Realtime adapters expose this field only on their endpoint marker.
     return hasattr(event, "last_word_end_seconds") and not _is_transcript_event(event)
 
 
@@ -212,12 +210,7 @@ def _bounded_confidence(value: float | None) -> float | None:
     return parsed
 
 
-DeepgramUtteranceAssembler = PhoneUtteranceAssembler
-"""Deprecated source-compatible alias; production uses the generic name."""
-
-
 __all__ = [
-    "DeepgramUtteranceAssembler",
     "FinalPhoneUtterance",
     "PhoneUtteranceAssembler",
     "PhoneTranscriptionError",

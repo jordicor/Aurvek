@@ -24,7 +24,12 @@ PHONE_END_CALL_TOOL = {
             "properties": {
                 "final_message": {
                     "type": "string",
-                    "description": "The natural final sentence to say before hanging up.",
+                    "description": (
+                        "The final spoken reply, ending with a natural farewell. "
+                        "Include any requested findings or answer not already in "
+                        "your response text. Never replace the answer with a claim "
+                        "that you have already explained it."
+                    ),
                 }
             },
             "required": ["final_message"],

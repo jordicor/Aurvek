@@ -116,7 +116,8 @@
         const url = bootstrapUrl(options);
         if (!container?.append) throw fail('invalid_bootstrap');
         let presentation = options.presentation || 'full';
-        if (!['full', 'compact'].includes(presentation)) throw fail('invalid_presentation');
+        let theme = null;
+        if (!['full', 'compact', 'entry'].includes(presentation)) throw fail('invalid_presentation');
         const timeout = options.timeoutMs ?? 20000;
         if (!Number.isFinite(timeout) || timeout < 1000 || timeout > 120000) throw fail('invalid_timeout');
         const frame = document.createElement('iframe');
@@ -154,6 +155,12 @@
             if (!data || typeof data !== 'object' || Array.isArray(data)) return;
             try { if (new TextEncoder().encode(JSON.stringify(data)).length > 32768) return; } catch (_) { return; }
             if (data.contract_version !== version || data.app_id !== appId || data.frame_instance_id !== bootstrap.frame_instance_id) return;
+            if (data.event === 'error' && data.code === 'theme_load_failed') {
+                rejectReady(fail(data.code));
+                notify(data);
+                destroy();
+                return;
+            }
             if (data.event === 'ready') {
                 if (!application(data.application) || String(data.application.conversation_id) !== data.conversation_id ||
                     typeof data.external_project_id !== 'string') return;
@@ -162,9 +169,11 @@
                 global.clearTimeout(readyTimer);
                 if (!initialized) { initialized = true; resolveReady(data); }
                 void request('set_presentation', { presentation }, ['action_completed']).catch(error => notify({ event: 'error', code: error.code }));
+                if (theme) void request('set_theme', { theme }, ['action_completed']).catch(error => notify({ event: 'error', code: error.code }));
             } else {
                 if (!current || data.external_project_id !== current.external_project_id || data.conversation_id !== current.conversation_id) return;
                 if (data.application && !application(data.application)) return;
+                if (data.event === 'presentation_changed' && ['full', 'compact', 'entry'].includes(data.presentation)) presentation = data.presentation;
                 if (data.event === 'session_expired') {
                     for (const item of pending.values()) { global.clearTimeout(item.timer); item.reject(fail('session_expired')); }
                     pending.clear();
@@ -211,6 +220,10 @@
             ready,
             state: () => request('request_state', {}, ['state']),
             focus: () => request('request_focus', {}, ['action_completed']),
+            sendMessage(text) {
+                if (typeof text !== 'string' || !text.trim() || text.length > 16000) return Promise.reject(fail('invalid_message'));
+                return request('send_message', { text }, ['action_completed']);
+            },
             stop: () => request('request_activity_close', {}, ['activity_changed'], 35000),
             handoff(assistantId, settings = {}) {
                 if (!alias(assistantId) || (settings.mode && !['resume', 'new'].includes(settings.mode)) ||
@@ -230,9 +243,14 @@
             setLanguage: uiLanguage => ['en', 'es', 'ja', 'fr', 'pt', 'it', 'de'].includes(uiLanguage)
                 ? request('set_ui_language', { ui_language: uiLanguage }, ['capabilities_changed']) : Promise.reject(fail('invalid_language')),
             setPresentation(value) {
-                if (!['full', 'compact'].includes(value)) return Promise.reject(fail('invalid_presentation'));
+                if (!['full', 'compact', 'entry'].includes(value)) return Promise.reject(fail('invalid_presentation'));
                 presentation = value;
                 return request('set_presentation', { presentation }, ['action_completed']);
+            },
+            setTheme(value) {
+                if (!['writer', 'coder'].includes(value)) return Promise.reject(fail('invalid_theme'));
+                theme = value;
+                return request('set_theme', { theme }, ['action_completed']);
             },
             action(name) {
                 if (!names.has(name)) return Promise.reject(fail('unsupported_action'));

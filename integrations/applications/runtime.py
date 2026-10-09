@@ -68,11 +68,17 @@ async def admit_application_turn(
     if (not resolved.capabilities.get("text", False)
             or not resolved.capabilities.get(required_capability, False)):
         raise EmbedError("application_capability_denied", 403)
-    if channel_context.channel == 'web':
-        live_voice = (channel_context.input_origin == 'web.live_voice'
+    if channel_context.channel in {'web', 'device'}:
+        native_voice = (channel_context.input_origin in {'web.live_voice', 'device.live_voice'}
+                        and channel_context.persistence == 'delegation'
+                        and channel_context.input_perception == 'transcript_only'
+                        and getattr(channel_context.provenance.get('native_audio_bridge'),
+                                    '_aurvek_internal_realtime_bridge', False))
+        live_voice = native_voice or (channel_context.input_origin == 'web.live_voice'
                       and channel_context.persistence == 'deferred'
                       and channel_context.input_perception == 'transcript_only')
         if ((has_attachments and not resolved.capabilities.get('attachments')) or channel_context.ingest_only
+                or (channel_context.channel == 'device' and not native_voice)
                 or (channel_context.input_perception != 'text' and not live_voice)
                 or (live_voice and not all(resolved.capabilities.get(key)
                                           for key in ('voice', 'stt', 'tts')))):
@@ -125,8 +131,10 @@ def application_billing_turn(function):
         user = values.arguments["current_user"]
         conversation_id = values.arguments["conversation_id"]
         context = values.arguments.get("channel_context")
+        from integrations.live.control import live_control_for_context
         if (values.arguments.get("runtime_llm_id") is not None
-                and (context is None or context.channel != "phone")):
+                and (context is None or context.channel != "phone")
+                and live_control_for_context(context, user_id=user.id, conversation_id=conversation_id) is None):
             # Preserve the canonical syntactic rejection before database access.
             return await function(*args, **kwargs)
         operation = current_application_operation(user.id)
@@ -152,10 +160,16 @@ def application_billing_turn(function):
             if context.application is None:
                 return await function(*args, **kwargs)
             operation = await admit_application_billing(context.application)
+            from .external_execution import guarded_response
+            if operation.mode == "external" and (context.channel != "web"
+                    or context.input_perception != "text" or context.ingest_only
+                    or values.arguments.get("files") or values.arguments.get("attachment_refs")
+                    or function.__module__ != "ai_runtime.messages"):
+                raise EmbedError("external_execution_text_only", 409)
             bind_application_admission(admission, operation)
             values.arguments["channel_context"] = replace(context, application=operation.scope)
             return await serialize_user_billing_response(
-                user.id, function(*values.args, **values.kwargs), application_operation=operation)
+                user.id, guarded_response(operation, function(*values.args, **values.kwargs)), application_operation=operation)
         except EmbedError as exc:
             return JSONResponse({"success": False, "error_code": exc.code, "message": exc.code},
                                 status_code=exc.status_code)

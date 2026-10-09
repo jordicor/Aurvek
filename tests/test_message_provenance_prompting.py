@@ -38,7 +38,7 @@ def test_channel_context_uses_closed_server_validated_modes() -> None:
     realtime = ChannelContext(
         channel="phone",
         input_perception="audio_native",
-        provenance={"openai_realtime_bridge": _TrustedRealtimeBridge()},
+        provenance={"native_audio_bridge": _TrustedRealtimeBridge()},
     )
 
     assert (web.input_origin, web.input_perception) == ("web.message", "text")
@@ -168,7 +168,7 @@ def test_phone_factory_marks_only_a_live_trusted_realtime_turn_as_audio_native()
     realtime = create_phone_channel_turn(
         guard,
         turn_id="realtime-turn",
-        openai_realtime_bridge=_TrustedRealtimeBridge(),
+        native_audio_bridge=_TrustedRealtimeBridge(),
         phone_direction="outbound",
         phone_request_source="assistant_tool",
         phone_request_timing="scheduled",
@@ -385,7 +385,7 @@ async def test_history_uses_typed_rows_and_nonce_bound_server_markers(
         {"id": 5, "type": "user", "message": "messaging wins over phone link"},
         {"id": 6, "type": "bot", "message": "reply"},
         {"id": 7, "type": "user", "message": "browser voice transcript"},
-        {"id": 8, "type": "user", "message": "invalid stored perception"},
+        {"id": 8, "type": "user", "message": "native voice transcript"},
     ]
 
     prompt, prepared = await prepare_trusted_history_context(
@@ -405,7 +405,8 @@ async def test_history_uses_typed_rows_and_nonce_bound_server_markers(
     assert "audio_native" not in prompt
     assert "metadata_json" not in prompt
     assert prepared[5] == {"type": "bot", "message": "reply"}
-    assert prepared[7]["message"] == "invalid stored perception"
+    assert prepared[7]["message"] == "[AVCTX:known:h7]\nnative voice transcript"
+    assert "h7 origin=web.live_voice; perception=transcript_only" in prompt
     assert all("id" not in message for message in prepared)
 
 

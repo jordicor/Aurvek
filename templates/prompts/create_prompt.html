@@ -239,30 +239,37 @@
                     </div>
 
                     <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
-                        <label class="form-label"><i class="fas fa-phone me-1 text-muted"></i>{{ t('prompt_editor.text.phone_call_ai') }}</label>
+                        <label class="form-label"><i class="fas fa-phone me-1 text-muted"></i>{{ t('prompt_editor.realtime.title') }}</label>
                         <div class="mb-3">
-                            <label for="phoneLLM" class="form-label">{{ t('prompt_editor.text.model') }}</label>
-                            <select class="form-select" id="phoneLLM" name="phone_llm_id">
+                            <label for="realtimeLLM" class="form-label">{{ t('prompt_editor.realtime.model') }}</label>
+                            <select class="form-select" id="realtimeLLM" name="realtime_llm_id">
                                 <option value="">{{ t('prompt_editor.text.use_the_conversation_model') }}</option>
                             </select>
                             <small class="form-text text-muted">{{ t('prompt_editor.text.gpt_realtime_2_1_mini_is_preselected_for_low_latency_cal') }}</small>
                         </div>
+                        <div class="mb-3" id="realtimeBackendWrap" hidden>
+                            <label for="realtimeBackendLLM" class="form-label">{{ t('prompt_editor.realtime.action_model') }}</label>
+                            <button type="button" class="btn btn-link btn-sm text-muted p-0 ms-1 align-baseline" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="{{ t('prompt_editor.realtime.action_model_help') }}" aria-label="{{ t('prompt_editor.realtime.action_model_why') }}"><i class="fas fa-info-circle" aria-hidden="true"></i></button>
+                            <select class="form-select" id="realtimeBackendLLM" name="realtime_backend_llm_id" disabled>
+                                <option value="">{{ t('prompt_editor.text.use_the_conversation_model') }}</option>
+                            </select>
+                        </div>
                         <div class="mb-3">
-                            <label for="phoneReasoningMode" class="form-label">{{ t('prompt_editor.text.thinking') }}</label>
-                            <select class="form-select" id="phoneReasoningMode" name="phone_reasoning_mode">
+                            <label for="realtimeReasoningMode" class="form-label">{{ t('prompt_editor.text.thinking') }}</label>
+                            <select class="form-select" id="realtimeReasoningMode" name="realtime_reasoning_mode">
                                 <option value="inherit">{{ t('prompt_editor.text.inherit_the_prompt_model_setting') }}</option>
                             </select>
                         </div>
-                        <div class="mb-3" id="phoneReasoningBudgetWrap" hidden>
-                            <label for="phoneReasoningBudget" class="form-label">{{ t('prompt_editor.text.thinking_token_budget') }}</label>
-                            <input class="form-control" id="phoneReasoningBudget" name="phone_reasoning_budget_tokens" type="number">
+                        <div class="mb-3" id="realtimeReasoningBudgetWrap" hidden>
+                            <label for="realtimeReasoningBudget" class="form-label">{{ t('prompt_editor.text.thinking_token_budget') }}</label>
+                            <input class="form-control" id="realtimeReasoningBudget" name="realtime_reasoning_budget_tokens" type="number">
                         </div>
-                        <div class="mb-3" id="phoneRealtimeVoiceWrap" hidden>
-                            <label for="phoneRealtimeVoice" class="form-label">
-                                {{ t('prompt_editor.text.openai_phone_voice') }}
-                                <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="{{ t('prompt_editor.attribute.openai_speech_to_speech_models_use_an_openai_voice_for_c') }}"></i>
+                        <div class="mb-3" id="realtimeVoiceWrap" hidden>
+                            <label for="realtimeVoice" class="form-label">
+                                {{ t('prompt_editor.realtime.voice') }}
+                                <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="{{ t('prompt_editor.realtime.voice_help') }}"></i>
                             </label>
-                            <select class="form-select" id="phoneRealtimeVoice" name="phone_realtime_voice">
+                            <select class="form-select" id="realtimeVoice" name="realtime_voice" disabled>
                                 <option value="marin" selected>{{ t('prompt_editor.text.marin_recommended') }}</option>
                                 <option value="cedar">{{ t('prompt_editor.text.cedar_recommended') }}</option>
                                 <option value="alloy">{{ t('prompt_editor.text.alloy') }}</option>
@@ -274,7 +281,7 @@
                                 <option value="shimmer">{{ t('prompt_editor.text.shimmer') }}</option>
                                 <option value="verse">{{ t('prompt_editor.text.verse') }}</option>
                             </select>
-                            <small class="form-text text-muted">{{ t('prompt_editor.text.used_for_conversational_replies_in_native_openai_realtim') }}</small>
+                            <small class="form-text text-muted">{{ t('prompt_editor.realtime.voice_description') }}</small>
                         </div>
                     </div>
                 </div>
@@ -929,19 +936,34 @@
             document.getElementById('forcedReasoningBudget')
         );
 
-        const phoneModel = catalogModel(document.getElementById('phoneLLM')?.value);
+        const realtimeModel = catalogModel(document.getElementById('realtimeLLM')?.value);
         const mode = document.querySelector('input[name="llm_mode"]:checked')?.value;
         const inheritedModel = mode === 'forced' ? forcedModel : null;
         renderReasoningSelect(
-            document.getElementById('phoneReasoningMode'),
-            phoneModel || inheritedModel,
+            document.getElementById('realtimeReasoningMode'),
+            realtimeModel || inheritedModel,
             'inherit',
             peT('text.inherit_the_prompt_model_setting'),
-            document.getElementById('phoneReasoningBudgetWrap'),
-            document.getElementById('phoneReasoningBudget')
+            document.getElementById('realtimeReasoningBudgetWrap'),
+            document.getElementById('realtimeReasoningBudget')
         );
-        document.getElementById('phoneRealtimeVoiceWrap').hidden =
-            !['openai_realtime', 'openai_live'].includes(phoneModel?.capabilities?.runtime?.kind);
+        const voiceSelect = document.getElementById('realtimeVoice');
+        const runtime = realtimeModel?.capabilities?.runtime;
+        voiceSelect.openaiOptions ??= Array.from(voiceSelect.options, option => option.cloneNode(true));
+        const voiceProvider = runtime?.kind === 'gemini_live' ? 'gemini' : 'openai';
+        if (voiceSelect.dataset.provider !== voiceProvider) {
+            const options = runtime?.voices
+                ? runtime.voices.map(voice => new Option(voice, voice))
+                : voiceSelect.openaiOptions.map(option => option.cloneNode(true));
+            voiceSelect.replaceChildren(...options);
+            voiceSelect.value = runtime?.default_voice || 'marin';
+            voiceSelect.dataset.provider = voiceProvider;
+        }
+        voiceSelect.disabled = !['openai_realtime', 'openai_live', 'gemini_live'].includes(runtime?.kind);
+        document.getElementById('realtimeVoiceWrap').hidden = voiceSelect.disabled;
+        const hasLiveBackend = ['openai_live', 'gemini_live'].includes(realtimeModel?.capabilities?.runtime?.kind);
+        document.getElementById('realtimeBackendWrap').hidden = !hasLiveBackend;
+        document.getElementById('realtimeBackendLLM').disabled = !hasLiveBackend;
     }
 
     function loadLLMs() {
@@ -949,15 +971,17 @@
             fetch('/api/llms').then(response => response.json()),
             fetch('/api/llms?include_realtime=true').then(response => response.json()),
         ])
-            .then(([llms, phoneLlms]) => {
-                promptLLMCatalog = phoneLlms;
+            .then(([llms, realtimeLlms]) => {
+                promptLLMCatalog = realtimeLlms;
                 const select = document.getElementById('forcedLLM');
-                const phoneSelect = document.getElementById('phoneLLM');
+                const realtimeSelect = document.getElementById('realtimeLLM');
+                const backendSelect = document.getElementById('realtimeBackendLLM');
+                backendSelect.replaceChildren(new Option(peT('realtime.inherit_backend'), ''));
                 const preWdSelect = document.getElementById('preWatchdogLLM');
                 const postWdSelect = document.getElementById('postWatchdogLLM');
                 const checkboxList = document.getElementById('llmCheckboxList');
                 select.innerHTML = `<option value="">${escapeHtml(peT('text.select_a_model'))}</option>`;
-                phoneSelect.innerHTML = `<option value="">${escapeHtml(peT('text.use_the_conversation_model'))}</option>`;
+                realtimeSelect.innerHTML = `<option value="">${escapeHtml(peT('text.use_the_conversation_model'))}</option>`;
                 preWdSelect.innerHTML = `<option value="">${escapeHtml(peT('text.select_a_model'))}</option>`;
                 postWdSelect.innerHTML = `<option value="">${escapeHtml(peT('text.select_a_model'))}</option>`;
                 checkboxList.innerHTML = '';
@@ -978,23 +1002,28 @@
                     `;
                     checkboxList.appendChild(div);
                 });
-                phoneLlms
+                realtimeLlms
                     .filter(llm => !['GPTSub', 'GranSabio', 'O1'].includes(llm.machine)
-                        && llm.capabilities?.runtime?.channels?.includes('phone'))
+                        && ['phone', 'live', 'device'].some(channel => llm.capabilities?.runtime?.channels?.includes(channel)))
                     .forEach(llm => {
                         const option = document.createElement('option');
                         option.value = llm.id;
                         option.textContent = `${llm.machine} - ${llm.model}`;
                         option.selected = String(llm.model || '').toLowerCase()
                             === 'gpt-realtime-2.1-mini';
-                        phoneSelect.appendChild(option);
+                        realtimeSelect.appendChild(option);
+                    });
+                realtimeLlms.filter(llm => !['GPTSub', 'GranSabio', 'O1'].includes(llm.machine)
+                    && llm.capabilities?.runtime?.kind === 'standard'
+                    && llm.capabilities?.runtime?.channels?.includes('web')).forEach(llm => {
+                        backendSelect.appendChild(new Option(`${llm.machine} - ${llm.model}`, String(llm.id)));
                     });
                 updatePromptReasoningControls();
-                const defaultPhoneModel = catalogModel(phoneSelect.value);
-                const phoneReasoning = document.getElementById('phoneReasoningMode');
-                if (defaultPhoneModel?.capabilities?.runtime?.kind === 'openai_realtime'
-                        && Array.from(phoneReasoning.options).some(option => option.value === 'minimal')) {
-                    phoneReasoning.value = 'minimal';
+                const defaultRealtimeModel = catalogModel(realtimeSelect.value);
+                const realtimeReasoning = document.getElementById('realtimeReasoningMode');
+                if (defaultRealtimeModel?.capabilities?.runtime?.kind === 'openai_realtime'
+                        && Array.from(realtimeReasoning.options).some(option => option.value === 'minimal')) {
+                    realtimeReasoning.value = 'minimal';
                     updatePromptReasoningControls();
                 }
             })
@@ -1278,9 +1307,9 @@
         var promptMainGroup = FormGuard.createGroup('prompt-main');
 
         document.getElementById('forcedLLM').addEventListener('change', updatePromptReasoningControls);
-        document.getElementById('phoneLLM').addEventListener('change', updatePromptReasoningControls);
+        document.getElementById('realtimeLLM').addEventListener('change', updatePromptReasoningControls);
         document.getElementById('forcedReasoningMode').addEventListener('change', updatePromptReasoningControls);
-        document.getElementById('phoneReasoningMode').addEventListener('change', updatePromptReasoningControls);
+        document.getElementById('realtimeReasoningMode').addEventListener('change', updatePromptReasoningControls);
 
         var voicesReady = loadVoices();
         var categoriesReady = loadCategories();

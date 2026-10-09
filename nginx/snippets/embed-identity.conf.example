@@ -33,6 +33,14 @@ location ^~ /auth/apple/ { include /etc/nginx/snippets/aurvek-identity-private-p
 location = /verify-email { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
 location ^~ /verify-email/ { include /etc/nginx/snippets/aurvek-identity-private-proxy.conf; }
 
+# Stripe TEST sends signed events to this exact public callback. The app
+# verifies Stripe-Signature against its separate test webhook secret.
+location = /api/applications/v1/saas/stripe/webhook {
+    if ($request_method != POST) { return 405; }
+    client_max_body_size 256k;
+    include /etc/nginx/snippets/aurvek-identity-private-proxy.conf;
+}
+
 # Authenticated service callers use direct loopback, never this public proxy.
 location ^~ /api/embed/v1/ { return 404; }
 # Replace this deny with application-backend.conf.example only when enabling

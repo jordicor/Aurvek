@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException, Request
 from starlette.responses import Response
+from tests.test_marketplace_checkout_i18n import checkout_db
 
 
 def _request(
@@ -253,12 +254,17 @@ async def test_legacy_welcome_assets_are_not_served_on_primary_origin(
 async def test_custom_domain_has_landing_only_allowlist_and_primary_auth_redirect(
     isolated_origin_env,
     monkeypatch,
+    checkout_db,
+    tmp_path,
 ):
+    from marketplace.landing import cache, publication
     from marketplace.middleware.custom_domains import (
         CustomDomainMiddleware,
         set_primary_domains,
     )
 
+    monkeypatch.setattr(cache, "get_db_connection", checkout_db[1])
+    monkeypatch.setattr(publication, "_LANDING_SAVE_LOCK_DIR", tmp_path / "locks")
     set_primary_domains(["aurvek.example"])
     middleware = CustomDomainMiddleware(lambda scope, receive, send: None)
 
@@ -303,15 +309,24 @@ async def test_prompt_landing_redirects_before_creator_html_and_preview_is_owner
     isolated_origin_env,
     tmp_path,
     monkeypatch,
+    checkout_db,
 ):
     from marketplace.routes import prompt_landings
+    from marketplace.landing import cache, publication
+
+    _, connect = checkout_db
+    monkeypatch.setattr(cache, "get_db_connection", connect)
+    monkeypatch.setattr(publication, "_LANDING_SAVE_LOCK_DIR", tmp_path / "locks")
+    async with connect() as conn:
+        await conn.execute("INSERT INTO PROMPTS(id,name,public,has_landing_page,landing_trusted) VALUES(17,'Demo',1,1,0)")
+        await conn.commit()
 
     (tmp_path / "home.html").write_text(
         "<html><body><script>window.creatorCode = true</script></body></html>",
         encoding="utf-8",
     )
 
-    async def landing_data(public_id):
+    async def landing_data(public_id, **kwargs):
         return {
             "prompt_id": 17,
             "prompt_name": "Demo",
@@ -396,8 +411,17 @@ async def test_custom_pack_html_is_served_only_on_isolated_origin(
     isolated_origin_env,
     tmp_path,
     monkeypatch,
+    checkout_db,
 ):
     from marketplace.routes import packs
+    from marketplace.landing import publication
+
+    _, connect = checkout_db
+    monkeypatch.setattr(publication, "_LANDING_SAVE_LOCK_DIR", tmp_path / "locks")
+    async with connect() as conn:
+        await conn.execute("INSERT INTO USERS(id,username) VALUES(5,'creator')")
+        await conn.execute("INSERT INTO PACKS(id,name,slug,created_by_user_id,status,is_public,has_custom_landing) VALUES(4,'Pack','pack',5,'published',1,1)")
+        await conn.commit()
 
     (tmp_path / "home.html").write_text(
         "<html><body><script>window.packCreatorCode = true</script></body></html>",
@@ -420,7 +444,7 @@ async def test_custom_pack_html_is_served_only_on_isolated_origin(
         "path": tmp_path,
     }
 
-    async def pack_data(public_id):
+    async def pack_data(public_id, **kwargs):
         return cached
 
     monkeypatch.setattr(packs, "require_public_landings_enabled", lambda translator=None: None)

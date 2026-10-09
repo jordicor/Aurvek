@@ -45,6 +45,7 @@ from storage_quota import delete_generated_file_rows
 from chat.services.message_rendering import process_message
 from chat.services.generated_media import generated_media_path
 from integrations.applications.runtime import authorize_application_read
+from integrations.applications.listing import blocked_application_conversation_ids
 from integrations.embed.models import EmbedError
 from chat.services.privacy import ensure_conversation_privacy_schema
 
@@ -157,21 +158,13 @@ async def media_gallery(request: Request, current_user: User = Depends(get_curre
         await ensure_conversation_privacy_schema()
         await ensure_file_storage_schema()
         async with get_db_connection(readonly=True) as conn:
+            blocked_ids = await blocked_application_conversation_ids(conn, current_user.id)
+            application_filter = ("AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
+            params = (current_user.id, *blocked_ids)
             cursor = await conn.cursor()
 
             await cursor.execute(
-                """
-                SELECT c.id, u.username
-                FROM CONVERSATIONS c
-                JOIN USERS u ON c.user_id = u.id
-                WHERE c.user_id = ?
-                  AND COALESCE(c.hidden_from_history, 0) = 0
-                """,
-                (current_user.id,),
-            )
-
-            await cursor.execute(
-                """
+                f"""
                 SELECT fa.public_id, fa.original_filename, fa.message_id,
                        m.type, m.date
                 FROM FILE_ATTACHMENTS fa
@@ -179,11 +172,12 @@ async def media_gallery(request: Request, current_user: User = Depends(get_curre
                 JOIN MESSAGES m ON m.id = fa.message_id
                 WHERE c.user_id = ?
                   AND COALESCE(c.hidden_from_history, 0) = 0
+                  {application_filter}
                   AND fa.attachment_type = 'image'
                   AND fa.status = 'active'
                 ORDER BY m.date DESC, fa.id DESC
                 """,
-                (current_user.id,),
+                params,
             )
 
             async for row in cursor:
@@ -198,15 +192,16 @@ async def media_gallery(request: Request, current_user: User = Depends(get_curre
                 })
 
             await cursor.execute(
-                """
+                f"""
                 SELECT m.id, m.message, m.type, m.date
                 FROM MESSAGES m
                 JOIN CONVERSATIONS c ON m.conversation_id = c.id
                 WHERE c.user_id = ? AND m.message LIKE '%"type": "image_url"%'
                   AND COALESCE(c.hidden_from_history, 0) = 0
+                  {application_filter}
                 ORDER BY m.date DESC
                 """,
-                (current_user.id,),
+                params,
             )
 
             async for row in cursor:
@@ -264,16 +259,20 @@ async def get_pdfs(request: Request, current_user: User = Depends(get_current_us
         await ensure_conversation_privacy_schema()
         await ensure_file_storage_schema()
         async with get_db_connection(readonly=True) as conn:
+            blocked_ids = await blocked_application_conversation_ids(conn, current_user.id)
+            application_filter = ("AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
+            params = (current_user.id, *blocked_ids)
             cursor = await conn.cursor()
             await cursor.execute(
-                """
+                f"""
                 SELECT c.id, u.username
                 FROM CONVERSATIONS c
                 JOIN USERS u ON c.user_id = u.id
                 WHERE c.user_id = ?
                   AND COALESCE(c.hidden_from_history, 0) = 0
+                  {application_filter}
                 """,
-                (current_user.id,),
+                params,
             )
 
             conversations = []
@@ -281,7 +280,7 @@ async def get_pdfs(request: Request, current_user: User = Depends(get_current_us
                 conversations.append({"id": row["id"], "username": row["username"]})
 
             await cursor.execute(
-                """
+                f"""
                 SELECT fa.public_id, fa.original_filename, fa.message_id,
                        fa.created_at, fb.page_count
                 FROM FILE_ATTACHMENTS fa
@@ -289,12 +288,13 @@ async def get_pdfs(request: Request, current_user: User = Depends(get_current_us
                 JOIN CONVERSATIONS c ON c.id = fa.conversation_id
                 WHERE c.user_id = ?
                   AND COALESCE(c.hidden_from_history, 0) = 0
+                  {application_filter}
                   AND fa.attachment_type = 'pdf'
                   AND fa.status = 'active'
                   AND fb.status = 'ready'
                 ORDER BY fa.created_at DESC, fa.id DESC
                 """,
-                (current_user.id,),
+                params,
             )
 
             async for row in cursor:
@@ -341,16 +341,19 @@ async def get_mp3s(request: Request, current_user: User = Depends(get_current_us
     try:
         await ensure_conversation_privacy_schema()
         async with get_db_connection(readonly=True) as conn:
+            blocked_ids = await blocked_application_conversation_ids(conn, current_user.id)
+            application_filter = ("AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
             cursor = await conn.cursor()
             await cursor.execute(
-                """
+                f"""
                 SELECT c.id, u.username
                 FROM CONVERSATIONS c
                 JOIN USERS u ON c.user_id = u.id
                 WHERE c.user_id = ?
                   AND COALESCE(c.hidden_from_history, 0) = 0
+                  {application_filter}
                 """,
-                (current_user.id,),
+                (current_user.id, *blocked_ids),
             )
             conversations = [{"id": row["id"], "username": row["username"]} async for row in cursor]
 
@@ -428,19 +431,33 @@ async def list_files(request: Request, current_user: User = Depends(get_current_
             },
         )
 
+    await ensure_conversation_privacy_schema()
+    async with get_db_connection(readonly=True) as conn:
+        blocked_ids = await blocked_application_conversation_ids(conn, current_user.id)
+        application_filter = ("AND c.id NOT IN (" + ",".join("?" for _ in blocked_ids) + ")") if blocked_ids else ""
+        cursor = await conn.execute(
+            f"""SELECT c.id FROM CONVERSATIONS c WHERE c.user_id = ?
+                AND COALESCE(c.hidden_from_history, 0) = 0 {application_filter}""",
+            (current_user.id, *blocked_ids),
+        )
+        conversation_ids = [row[0] for row in await cursor.fetchall()]
+
     user_base_path = Path(get_user_directory(current_user.username))
     files_path = user_base_path / "files"
     mp3_files = []
     pdf_files = []
 
-    for root, dirs, files in os.walk(str(files_path)):
-        for file in files:
-            file_path = Path(root) / file
-            relative_path = file_path.relative_to(user_base_path)
-            if file.endswith(".mp3"):
-                mp3_files.append(str(relative_path))
-            elif file.endswith(".pdf"):
-                pdf_files.append(str(relative_path))
+    for conversation_id in conversation_ids:
+        # Exports use files/<first 3 ID digits>/<remaining ID digits>/.
+        conversation_path = files_path / f"{conversation_id:07d}"[:3] / f"{conversation_id:07d}"[3:]
+        for root, dirs, files in os.walk(str(conversation_path)):
+            for file in files:
+                file_path = Path(root) / file
+                relative_path = file_path.relative_to(user_base_path)
+                if file.endswith(".mp3"):
+                    mp3_files.append(str(relative_path))
+                elif file.endswith(".pdf"):
+                    pdf_files.append(str(relative_path))
 
     return JSONResponse(content={"mp3_files": mp3_files, "pdf_files": pdf_files})
 

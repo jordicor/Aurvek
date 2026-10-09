@@ -15,6 +15,7 @@ from common import (
     user_requires_own_keys,
 )
 from database import get_db_connection
+from integrations.applications.billing import application_funding_status
 from i18n import Translator
 from chat.services.attachment_uploads import ATTACHMENT_UPLOAD_CHUNK_SIZE_BYTES
 from llm_catalog import get_selector_llms
@@ -103,6 +104,7 @@ async def render_embed_chat(request, principal, app):
         })
         if application is None:
             models = [model]
+        funding = await application_funding_status(conn, application) if application else None
 
     gransabio_enabled = bool(application and capabilities.get("gransabio") and conversation["gransabio_enabled"])
     controls = {
@@ -151,6 +153,7 @@ async def render_embed_chat(request, principal, app):
             "assistant_id": principal.application.assistant_id,
             "conversation_id": principal.conversation_id,
             "display_name": application_display_name,
+            "funding": funding,
         }
     initial = {
         "id": principal.conversation_id,
@@ -185,6 +188,7 @@ async def render_embed_chat(request, principal, app):
         "presentation": "embedded",
         "embed_config": bootstrap,
         "embed_theme": app.theme,
+        "embed_theme_css_url": app.theme_css_url,
         "ui_language": principal.ui_language,
         "user_id": principal.user_id,
         "username": conversation["username"],

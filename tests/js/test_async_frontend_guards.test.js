@@ -216,6 +216,7 @@ test('profile phone initialization accepts formatting but preserves an early use
     for (const editedDuringLoad of [false, true]) {
         const phone = eventTarget({
             id: 'phone', name: 'phone_number', type: 'tel', value: '+34931234567',
+            dataset: {},
         });
         const { form, context, guard } = formGuardFixture([phone]);
         let finishLoading;

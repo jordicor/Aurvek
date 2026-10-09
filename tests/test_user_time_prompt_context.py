@@ -33,7 +33,8 @@ def test_render_user_time_context_requires_location_when_profile_zone_is_missing
     assert "profile_time_zone=not configured" in context
     assert "current_user_local_datetime=unavailable" in context
     assert "ask for the user's city and country" in context
-    assert "Account Information" in context
+    assert "Account Information" not in context
+    assert "only when schedule_phone_call is available" in context
     assert "Do not call schedule_phone_call" in context
     assert "Never update or claim to update the user's profile" in context
 
@@ -81,4 +82,4 @@ async def test_load_user_time_context_supports_a_rolling_legacy_schema(tmp_path)
         context = await load_user_time_context(conn, 7)
 
     assert "profile_time_zone=not configured" in context
-    assert "Account Information" in context
+    assert "Account Information" not in context

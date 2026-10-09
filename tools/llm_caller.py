@@ -10,7 +10,9 @@ import aiohttp
 import orjson
 from dataclasses import dataclass
 from typing import Optional
-from ai_runtime.providers.claude_capabilities import claude_omits_temperature
+from ai_runtime.providers.claude_capabilities import claude_supports_temperature
+from ai_runtime.providers.openai_capabilities import openai_supports_temperature
+from ai_runtime.providers.gemini_capabilities import gemini_supports_temperature
 
 logger = logging.getLogger("llm_caller")
 
@@ -84,6 +86,8 @@ async def call_llm_non_streaming_with_usage(
         ValueError: If the provider is unsupported or its API key is missing.
         Exception: On HTTP/provider errors (caller should handle).
     """
+    from integrations.applications.external_execution import reject_unsupported
+    reject_unsupported("auxiliary_llm")
     if machine == "Claude":
         return await _call_claude(
             model, system_prompt, user_message, timeout, max_tokens, api_key_override
@@ -136,7 +140,7 @@ async def _call_claude(
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_message}],
     }
-    if not claude_omits_temperature(model):
+    if claude_supports_temperature(model):
         data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
@@ -177,13 +181,14 @@ async def _call_openai(
     }
     data = {
         "model": model,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "temperature": 0.0,
     }
+    if openai_supports_temperature(model):
+        data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -224,8 +229,10 @@ async def _call_gemini(
     combined_prompt = f"{system_prompt}\n\n{user_message}"
     data = {
         "contents": [{"parts": [{"text": combined_prompt}]}],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": max_tokens},
+        "generationConfig": {"maxOutputTokens": max_tokens},
     }
+    if gemini_supports_temperature(model):
+        data["generationConfig"]["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -236,7 +243,7 @@ async def _call_gemini(
                 candidates = result.get("candidates", [])
                 usage = result.get("usageMetadata", {}) or {}
                 input_tokens = int(usage.get("promptTokenCount") or 0)
-                output_tokens = int(usage.get("candidatesTokenCount") or 0)
+                output_tokens = int(usage.get("candidatesTokenCount") or 0) + int(usage.get("thoughtsTokenCount") or 0)
                 total_tokens = int(usage.get("totalTokenCount") or (input_tokens + output_tokens))
                 if candidates:
                     parts = candidates[0].get("content", {}).get("parts", [])
@@ -319,7 +326,10 @@ async def _call_openrouter(
             {"role": "user", "content": user_message},
         ],
     }
-    if not claude_omits_temperature(model):
+    if (
+        (not model.startswith("anthropic/") or claude_supports_temperature(model))
+        and (not model.startswith("openai/") or openai_supports_temperature(model))
+    ):
         data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:

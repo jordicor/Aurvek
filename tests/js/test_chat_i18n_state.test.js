@@ -14,7 +14,7 @@ function payload(language) {
     const resources = {};
     for (const locale of new Set(['en', language])) {
         resources[locale] = {};
-        for (const domain of ['common', 'chat', 'chat_widgets', 'chat_errors', 'embed']) {
+        for (const domain of ['common', 'chat', 'chat_widgets', 'chat_ui', 'chat_errors', 'embed']) {
             resources[locale][domain] = JSON.parse(fs.readFileSync(path.join(__dirname, '../../locales', locale, domain + '.json'), 'utf8'));
         }
     }
@@ -125,6 +125,101 @@ function labelNode() {
         appendChild(child) { this.children.push(child); },
     };
 }
+
+function searchHarness() {
+    function node() {
+        const result = Object.assign(labelNode(), { style: {}, dataset: {}, addEventListener() {} });
+        const classes = new Set();
+        result.classList = { add: name => classes.add(name), remove: name => classes.delete(name),
+            contains: name => classes.has(name) };
+        Object.defineProperty(result, 'innerHTML', { set(value) { if (value === '') this.children = []; } });
+        return result;
+    }
+    const elements = Object.fromEntries(['search-results-list', 'search-results-count', 'search-load-more',
+        'search-empty-state', 'search-results-section'].map(id => [id, node()]));
+    elements['search-results-section'].parentElement = { querySelectorAll: () => [], querySelector: () => null };
+    const i18n = translator('en');
+    const pending = [];
+    const errors = [];
+    const context = {
+        document: { getElementById: id => elements[id], createElement: node,
+            querySelectorAll: () => [], addEventListener() {} },
+        window: {}, AurvekI18n: i18n, AbortController, URLSearchParams, Date,
+        console: { error: (...args) => errors.push(args) },
+        secureFetch: (url, options) => new Promise((resolve, reject) => pending.push({ url, options, resolve, reject })),
+    };
+    vm.createContext(context);
+    vm.runInContext(source('message-search.js'), context);
+    return { elements, i18n, pending, errors, context,
+        start(query, reset = true) {
+            vm.runInContext('messageSearchState.query = ' + JSON.stringify(query), context);
+            return context.executeMessageSearch(reset);
+        } };
+}
+
+function searchResponse(ids, hasMore = false, nextOffset = ids.length) {
+    return { ok: true, json: async () => ({ has_more: hasMore, next_offset: nextOffset,
+        items: ids.map(id => ({ message_id: id, conversation_id: 42, chat_name: 'Chat', type: 'user',
+            date: '2026-10-08 12:00:00', snippet_html: 'Matching message' })) }) };
+}
+
+test('search clears earlier DOM results and shows translated HTTP and network errors without reporting cancellation', async () => {
+    const h = searchHarness();
+    let running = h.start('first');
+    h.pending.at(-1).resolve(searchResponse([1]));
+    await running;
+    assert.equal(h.elements['search-results-list'].children.length, 1);
+
+    running = h.start('next');
+    assert.equal(h.elements['search-results-list'].children.length, 0);
+    assert.equal(h.elements['search-load-more'].style.display, 'none');
+    h.pending.at(-1).resolve({ ok: false, status: 500 });
+    await running;
+    const emptyState = h.elements['search-empty-state'];
+    assert.equal(emptyState.style.display, 'block');
+    assert.equal(emptyState.getAttribute('role'), 'alert');
+    assert.equal(emptyState.textContent, h.i18n.t('chat_ui.search.failed'));
+    h.i18n.setPayload(payload('ja'));
+    assert.equal(emptyState.textContent, h.i18n.t('chat_ui.search.failed'));
+
+    running = h.start('empty');
+    h.pending.at(-1).resolve(searchResponse([]));
+    await running;
+    assert.equal(emptyState.textContent, h.i18n.t('chat_ui.search.empty'));
+    running = h.start('offline');
+    h.pending.at(-1).reject(new TypeError('Network unavailable'));
+    await running;
+    assert.equal(emptyState.textContent, h.i18n.t('chat_ui.search.failed'));
+    assert.equal(h.errors.length, 2);
+
+    running = h.start('cancelled');
+    h.context.deactivateSearchMode();
+    assert.equal(h.pending.at(-1).options.signal.aborted, true);
+    h.pending.at(-1).reject(Object.assign(new Error('Cancelled'), { name: 'AbortError' }));
+    await running;
+    assert.equal(h.errors.length, 2);
+    assert.equal(h.elements['search-results-section'].classList.contains('active'), false);
+    assert.equal(vm.runInContext('messageSearchState.error', h.context), false);
+});
+
+test('cancelled search responses cannot replace current results and a short final page appends once', async () => {
+    const h = searchHarness();
+    const stale = h.start('earlier');
+    const current = h.start('current');
+    assert.equal(h.pending[0].options.signal.aborted, true);
+    h.pending[1].resolve(searchResponse(Array.from({ length: 30 }, (_, index) => index + 1), true, 30));
+    await current;
+    h.pending[0].resolve(searchResponse([99]));
+    await stale;
+    const more = h.start('current', false);
+    assert.match(h.pending[2].url, /offset=30/);
+    h.pending[2].resolve(searchResponse([31, 32], false, 32));
+    await more;
+    assert.deepEqual(h.elements['search-results-list'].children.map(item => item.dataset.messageId),
+        Array.from({ length: 32 }, (_, index) => index + 1));
+    assert.equal(h.elements['search-load-more'].style.display, 'none');
+    assert.equal(h.errors.length, 0);
+});
 
 test('scoped dictation and playback send native CSRF while ordinary audio keeps its endpoints', async () => {
     const requests = [];

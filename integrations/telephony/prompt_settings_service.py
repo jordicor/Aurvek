@@ -21,7 +21,6 @@ from ai_runtime.voice_resolution import (
     provider_from_service_name,
     resolve_prompt_voice,
 )
-from ai_runtime.reasoning import ReasoningValidationError, resolve_and_validate
 from database import get_db_connection
 from integrations.telephony.audio_cache_service import (
     AudioCacheActivationPlan,
@@ -46,7 +45,6 @@ from integrations.telephony.technical_notices import (
     stage_prompt_technical_notice_revision,
 )
 from tools.tts_config import get_tts_profile
-from llm_catalog import normalize_capabilities
 
 
 _STT_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
@@ -54,13 +52,6 @@ _AUDIO_STATUSES = frozenset(
     {"not_generated", "pending", "ready", "failed", "needs_attention"}
 )
 _SUPPORTED_PHONE_TTS_PROVIDERS = frozenset({"elevenlabs", "openai"})
-_BLOCKED_PHONE_LLM_MACHINES = frozenset({"GPTSub", "GranSabio", "O1"})
-_OPENAI_REALTIME_VOICES = frozenset(
-    {
-        "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer",
-        "verse", "marin", "cedar",
-    }
-)
 
 
 class PromptPhoneSettingsError(ValueError):
@@ -108,13 +99,6 @@ class PromptPhonePolicyUpdate:
     interruptible: bool = True
     interrupt_sensitivity: str = "normal"
     ignore_backchannels: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class PromptPhoneAIUpdate:
-    llm_id: int | None = None
-    reasoning_selection: Mapping[str, Any] | None = None
-    realtime_voice: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +207,6 @@ class PromptPhoneSettingsService:
             config = await load_telephony_config(conn=conn)
             settings = await _load_settings_row(conn, prompt_id)
             response = _settings_response(settings, config)
-            response.update(await _prompt_phone_ai_response(conn, prompt_id))
             response.update(await _current_voice_response(conn, prompt_id))
             response["greetings"] = await _active_greeting_response(
                 conn, prompt_id=prompt_id, settings=settings
@@ -245,9 +228,6 @@ class PromptPhoneSettingsService:
         technical_notices: TechnicalNoticeUpdate | None = None,
         billing_user_id: int | None = None,
         voice_id: int | None = None,
-        phone_llm_id: int | None = None,
-        phone_reasoning_selection: Mapping[str, Any] | None = None,
-        phone_realtime_voice: str | None = None,
     ) -> dict[str, Any]:
         normalized_greetings = _normalize_greeting_updates(greetings)
         normalized_notices = _normalize_technical_notice_update(technical_notices)
@@ -255,15 +235,7 @@ class PromptPhoneSettingsService:
             async with self._connection_factory(True) as conn:
                 await _require_prompt(conn, prompt_id)
                 await _load_requested_voice(conn, voice_id)
-        await self._save_policy(
-            prompt_id,
-            policy,
-            PromptPhoneAIUpdate(
-                llm_id=phone_llm_id,
-                reasoning_selection=phone_reasoning_selection,
-                realtime_voice=phone_realtime_voice,
-            ),
-        )
+        await self._save_policy(prompt_id, policy)
 
         async with self._connection_factory(True) as conn:
             settings = await _load_settings_row(conn, prompt_id)
@@ -343,17 +315,11 @@ class PromptPhoneSettingsService:
         self,
         prompt_id: int,
         policy: PromptPhonePolicyUpdate,
-        phone_ai: PromptPhoneAIUpdate,
     ) -> PromptPhonePolicyUpdate:
         async with self._connection_factory(False) as conn:
             await _require_prompt(conn, prompt_id)
             config = await load_telephony_config(conn=conn)
             normalized = _normalize_policy(policy, config)
-            normalized_phone_ai = await _normalize_phone_ai_update(
-                conn,
-                prompt_id=prompt_id,
-                submitted=phone_ai,
-            )
             await conn.execute("BEGIN IMMEDIATE")
             try:
                 await conn.execute(
@@ -400,29 +366,6 @@ class PromptPhoneSettingsService:
                         int(normalized.amd_default),
                     ),
                 )
-                if normalized_phone_ai is not None:
-                    await conn.execute(
-                        """
-                        UPDATE PROMPTS
-                        SET phone_llm_id=?,phone_reasoning_json=?,
-                            phone_realtime_voice=?
-                        WHERE id=?
-                        """,
-                        (
-                            normalized_phone_ai.llm_id,
-                            (
-                                None
-                                if normalized_phone_ai.reasoning_selection is None
-                                else json.dumps(
-                                    normalized_phone_ai.reasoning_selection,
-                                    ensure_ascii=True,
-                                    separators=(",", ":"),
-                                )
-                            ),
-                            normalized_phone_ai.realtime_voice,
-                            prompt_id,
-                        ),
-                    )
                 await conn.commit()
             except BaseException:
                 await conn.rollback()
@@ -611,188 +554,6 @@ async def _require_prompt(conn: Any, prompt_id: int) -> None:
     cursor = await conn.execute("SELECT 1 FROM PROMPTS WHERE id=?", (int(prompt_id),))
     if await cursor.fetchone() is None:
         raise PromptPhoneSettingsNotFound("Prompt not found")
-
-
-async def _prompt_columns(conn: Any) -> set[str]:
-    cursor = await conn.execute("PRAGMA table_info(PROMPTS)")
-    return {str(row[1]) for row in await cursor.fetchall()}
-
-
-def _json_object(value: Any, *, label: str) -> dict[str, Any] | None:
-    if value in (None, ""):
-        return None
-    try:
-        decoded = json.loads(str(value))
-    except (TypeError, ValueError) as exc:
-        raise PromptPhoneSettingsError(f"stored {label} is invalid") from exc
-    if not isinstance(decoded, dict):
-        raise PromptPhoneSettingsError(f"stored {label} is invalid")
-    return decoded
-
-
-async def _load_phone_llm(conn: Any, llm_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
-    cursor = await conn.execute(
-        """
-        SELECT id,machine,model,provider_key,provider_model_id,
-               raw_metadata_json,capabilities_json,manual_overrides_json,
-               COALESCE(enabled,1) AS enabled
-        FROM LLM WHERE id=?
-        """,
-        (int(llm_id),),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise PromptPhoneSettingsError("Selected phone AI model does not exist")
-    item = dict(row)
-    if not bool(item["enabled"]):
-        raise PromptPhoneSettingsError("Selected phone AI model is disabled")
-    if item["machine"] in _BLOCKED_PHONE_LLM_MACHINES:
-        raise PromptPhoneSettingsError(
-            "Selected AI model cannot be used for phone calls"
-        )
-
-    def safe_object(value: Any) -> dict[str, Any]:
-        if not value:
-            return {}
-        try:
-            decoded = json.loads(str(value))
-        except (TypeError, ValueError):
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
-
-    capabilities = normalize_capabilities(
-        item.get("provider_key") or item.get("machine"),
-        item.get("provider_model_id") or item.get("model"),
-        safe_object(item.get("raw_metadata_json")),
-        safe_object(item.get("capabilities_json")),
-        safe_object(item.get("manual_overrides_json")),
-    )
-    if "phone" not in capabilities.get("runtime", {}).get("channels", []):
-        raise PromptPhoneSettingsError(
-            "Selected AI model is not available for phone calls"
-        )
-    return item, capabilities
-
-
-async def _normalize_phone_ai_update(
-    conn: Any,
-    *,
-    prompt_id: int,
-    submitted: PromptPhoneAIUpdate,
-) -> PromptPhoneAIUpdate | None:
-    columns = await _prompt_columns(conn)
-    required = {
-        "phone_llm_id", "phone_reasoning_json", "phone_realtime_voice",
-        "forced_llm_id", "forced_reasoning_json",
-    }
-    if not required <= columns:
-        if (
-            submitted.llm_id is None
-            and submitted.reasoning_selection is None
-            and submitted.realtime_voice is None
-        ):
-            return None
-        raise PromptPhoneSettingsError(
-            "Prompt phone AI settings migration has not been applied"
-        )
-
-    cursor = await conn.execute(
-        "SELECT forced_llm_id FROM PROMPTS WHERE id=?",
-        (prompt_id,),
-    )
-    prompt_row = await cursor.fetchone()
-    if prompt_row is None:
-        raise PromptPhoneSettingsNotFound("Prompt not found")
-    forced_llm_id = prompt_row["forced_llm_id"]
-
-    selected_capabilities: dict[str, Any] | None = None
-    if submitted.llm_id is not None:
-        if isinstance(submitted.llm_id, bool) or int(submitted.llm_id) <= 0:
-            raise PromptPhoneSettingsError("Selected phone AI model is invalid")
-        _, selected_capabilities = await _load_phone_llm(conn, int(submitted.llm_id))
-
-    normalized_reasoning: dict[str, Any] | None = None
-    if submitted.reasoning_selection is not None:
-        target_llm_id = submitted.llm_id or forced_llm_id
-        if target_llm_id is None:
-            raise PromptPhoneSettingsError(
-                "Select a specific phone or prompt model before setting thinking"
-            )
-        if submitted.llm_id is not None:
-            target_capabilities = selected_capabilities
-        else:
-            _, target_capabilities = await _load_phone_llm(
-                conn, int(target_llm_id)
-            )
-        try:
-            normalized_reasoning = resolve_and_validate(
-                submitted.reasoning_selection,
-                target_capabilities,
-            ).to_dict()
-        except ReasoningValidationError as exc:
-            raise PromptPhoneSettingsError(f"Invalid phone thinking: {exc}") from exc
-
-    runtime_kind = (
-        selected_capabilities.get("runtime", {}).get("kind")
-        if selected_capabilities is not None
-        else "standard"
-    )
-    if runtime_kind in {"openai_realtime", "openai_live"}:
-        realtime_voice = str(submitted.realtime_voice or "marin").strip().lower()
-        if realtime_voice not in _OPENAI_REALTIME_VOICES:
-            raise PromptPhoneSettingsError(
-                "Select a supported OpenAI Realtime voice"
-            )
-    else:
-        if submitted.realtime_voice is not None:
-            raise PromptPhoneSettingsError(
-                "An OpenAI phone voice requires an OpenAI Realtime model"
-            )
-        realtime_voice = None
-
-    return PromptPhoneAIUpdate(
-        llm_id=submitted.llm_id,
-        reasoning_selection=normalized_reasoning,
-        realtime_voice=realtime_voice,
-    )
-
-
-async def _prompt_phone_ai_response(conn: Any, prompt_id: int) -> dict[str, Any]:
-    columns = await _prompt_columns(conn)
-    required = {
-        "phone_llm_id", "phone_reasoning_json", "phone_realtime_voice",
-        "forced_llm_id", "forced_reasoning_json",
-    }
-    if not required <= columns:
-        return {
-            "phone_llm_id": None,
-            "phone_reasoning_selection": None,
-            "phone_realtime_voice": None,
-            "inherited_llm_id": None,
-            "inherited_reasoning_selection": None,
-        }
-    cursor = await conn.execute(
-        """
-        SELECT phone_llm_id,phone_reasoning_json,phone_realtime_voice,
-               forced_llm_id,forced_reasoning_json
-        FROM PROMPTS WHERE id=?
-        """,
-        (prompt_id,),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise PromptPhoneSettingsNotFound("Prompt not found")
-    return {
-        "phone_llm_id": row["phone_llm_id"],
-        "phone_reasoning_selection": _json_object(
-            row["phone_reasoning_json"], label="phone thinking"
-        ),
-        "phone_realtime_voice": row["phone_realtime_voice"],
-        "inherited_llm_id": row["forced_llm_id"],
-        "inherited_reasoning_selection": _json_object(
-            row["forced_reasoning_json"], label="prompt thinking"
-        ),
-    }
 
 
 async def _load_settings_row(conn: Any, prompt_id: int) -> dict[str, Any] | None:
@@ -1410,7 +1171,6 @@ __all__ = [
     "GreetingListUpdate",
     "GreetingPhraseUpdate",
     "PromptAudioActivationBackend",
-    "PromptPhoneAIUpdate",
     "PromptPhoneAudioUnavailable",
     "PromptPhonePolicyUpdate",
     "PromptPhoneSettingsError",

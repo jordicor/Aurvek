@@ -795,7 +795,7 @@ async def process_multi_ai_message(
         else:
             user_level = "customer"
         # Assemble system_prompt via global system prompt blocks
-        blocks = await get_effective_blocks()
+        blocks = await get_effective_blocks(embedded=channel_context.application is not None)
         variables = {
             "user_level": user_level,
             "current_datetime_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),

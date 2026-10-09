@@ -88,6 +88,7 @@ function abortActiveBookmarksLoad() {
 function beginConversationViewTransition() {
     currentChatView = 'conversation';
     conversationViewGeneration += 1;
+    setCurrentProviderHealth(null);
     currentModelAvailability = null;
     refreshModelAvailabilityBanner();
     const promptAvatar = document.getElementById('chat-title-avatar');
@@ -142,7 +143,11 @@ function providerHealthFallbackMessage(health) {
     return window.AurvekI18n.t('chat.provider_detected', { provider: providerName });
 }
 
-function setCurrentProviderHealth(health) {
+function setCurrentProviderHealth(health, llmId = null) {
+    const activeLlmId = getCurrentConversationLlmIdForUi();
+    if (llmId != null && activeLlmId != null && Number(llmId) !== Number(activeLlmId)) {
+        return;
+    }
     currentProviderHealth = health || null;
     renderProviderHealthBanner();
 }
@@ -1284,6 +1289,24 @@ function addMessage(author, message, timestampInfo = null, isTemporary = false, 
         };
     
         iconContainer.appendChild(audioIcon);
+        if (originalAudio) {
+            const downloadIcon = document.createElement('i');
+            downloadIcon.classList.add('fas', 'fa-download', 'message-audio-download');
+            downloadIcon.style.cursor = 'pointer';
+            downloadIcon.style.display = 'inline';
+            window.AurvekI18n.bindAttribute(downloadIcon, 'title', 'chat.download_audio');
+            window.AurvekI18n.bindAttribute(downloadIcon, 'aria-label', 'chat.download_audio');
+            downloadIcon.setAttribute('role', 'button');
+            downloadIcon.tabIndex = 0;
+            downloadIcon.onclick = () => downloadOriginalAudio(originalAudio.url, messageId);
+            downloadIcon.onkeydown = event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    downloadIcon.click();
+                }
+            };
+            iconContainer.appendChild(downloadIcon);
+        }
         if (retranscriptionIcon) iconContainer.appendChild(retranscriptionIcon);
         iconContainer.appendChild(bookmarkIcon);
 
@@ -2772,11 +2795,18 @@ function sendMessage(messageText, options = {}) {
                                     }
 	                                showProviderAwareError(window.AurvekI18n.t('chat.ai_error'), parsedData.error, parsedData);
 	                                if (multiAiCarousel?._multiAiApi) {
-                                    multiAiCarousel._multiAiApi.setGlobalError(parsedData.error);
+	                                    multiAiCarousel._multiAiApi.setGlobalError(parsedData.error);
                                 } else if (botMessageParagraph) {
-                                    botMessageParagraph.innerHTML = '';
                                     const errorEl = document.createElement('span');
-                                    errorEl.classList.add('multi-ai-slide-error');
+                                    if (streamContentReceived && botMessageText.trim()) {
+                                        // Keep the answer already streamed; the backend may
+                                        // have saved that partial response before this error.
+                                        errorEl.className = 'message-stream-warning text-warning d-block mt-2';
+                                    } else {
+                                        botMessageParagraph.innerHTML = '';
+                                        errorEl.classList.add('multi-ai-slide-error');
+                                    }
+                                    errorEl.setAttribute('role', 'alert');
                                     if (window.AurvekEmbed) window.AurvekI18n.bindText(errorEl, embeddedErrorKey(parsedData));
                                     else errorEl.textContent = parsedData.error;
                                     botMessageParagraph.appendChild(errorEl);
@@ -3491,7 +3521,9 @@ const renameConversation = withSession(function(conversationId) {
                     conversationElement._conversationData = conversation;
                     renderConversationName(nameSpan, conversation, newName);
                     exitRenameMode();
-                    updateActiveChatName(newName);
+                    if (conversationIdsMatch(currentConversationId, conversationId)) {
+                        updateActiveChatName(newName);
+                    }
                     return;
                 } else {
                     console.error('Error renaming conversation');
@@ -4441,7 +4473,6 @@ function deactivateChat() {
     beginConversationViewTransition();
     currentConversationId = null;
     notifyConversationChannelControls();
-    setCurrentProviderHealth(null);
 }
 
 function removeOverlay() {
@@ -5162,6 +5193,8 @@ async function loadMessages(
     }
 
     const requestController = new AbortController();
+    const modelIdentityRevision =
+        window.modelSelector?.getConversationIdentityRevision?.(conversationId) ?? 0;
     const loadState = {
         conversationId,
         generation: viewGeneration,
@@ -5206,7 +5239,13 @@ async function loadMessages(
             ? {id: conversationId, application: conversationInfo.application} : null;
         setCurrentModelAvailability(conversationInfo.llm_enabled, conversationInfo.llm_id);
         setIncognitoUiState(isConversationIncognitoData(conversationInfo));
-        setCurrentProviderHealth(conversationInfo.provider_health || null);
+        // The header can still show the previous chat's model during navigation.
+        // Only a committed model change since this request makes its health stale.
+        if (modelIdentityRevision === (
+            window.modelSelector?.getConversationIdentityRevision?.(conversationId) ?? 0
+        )) {
+            setCurrentProviderHealth(conversationInfo.provider_health || null);
+        }
         allMessagesLoaded = !data.has_more;
 
         if (!prepend) {
@@ -6526,7 +6565,8 @@ class ModelSelector {
         llmId,
         modelName,
         conversationId = currentConversationId,
-        viewGeneration = conversationViewGeneration
+        viewGeneration = conversationViewGeneration,
+        providerHealth = null
     ) {
         const parsedLlmId = parseInt(llmId, 10);
         if (!Number.isInteger(parsedLlmId) || parsedLlmId <= 0) {
@@ -6545,6 +6585,7 @@ class ModelSelector {
             : 0) + 1;
         window.conversationModelIdentityUnknown = false;
         setCurrentModelAvailability(true, parsedLlmId);
+        setCurrentProviderHealth(providerHealth, parsedLlmId);
 
         const modelData = (window.availableModels || []).find(
             model => Number(model.id) === parsedLlmId
@@ -6619,7 +6660,8 @@ class ModelSelector {
                     parsedLlmId,
                     details.model,
                     conversationId,
-                    conversationViewGeneration
+                    conversationViewGeneration,
+                    details.provider_health
                 );
                 setCurrentModelAvailability(details.llm_enabled, parsedLlmId);
             }
@@ -6666,7 +6708,8 @@ class ModelSelector {
                         committedLlmId,
                         committedModel,
                         state.conversationId,
-                        conversationViewGeneration
+                        conversationViewGeneration,
+                        result.provider_health
                     );
                 }
             }
@@ -6730,7 +6773,8 @@ class ModelSelector {
                 value.llm_id || parsedLlmId,
                 value.model || modelName,
                 state.conversationId,
-                state.viewGeneration
+                state.viewGeneration,
+                value.provider_health
             );
             if (applied) this.showSuccess();
             this.closeDropdown();

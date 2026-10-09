@@ -519,6 +519,7 @@ async def save_content_to_db(
     turn publishes its completed draft and blocks here until the transport
     confirms an exact audible prefix.  Billing and all post-commit side effects
     therefore continue to execute in the original transaction exactly once.
+    Immediate persistence of ``None`` content keeps only the user message.
     """
     bound = current_channel_turn()
     common_kwargs = dict(
@@ -560,6 +561,8 @@ async def save_content_to_db(
         result = await _save_content_to_db_immediate(
             content, input_tokens, output_tokens, total_tokens, conversation_id,
             user_id, model, user_message=user_message,
+            save_assistant_message=content is not None,
+            record_user_only_memory=content is None and not persistence_only,
             channel_context=(bound.context if bound is not None else None),
             channel_confirmed_text=(str(content or "") if bound is not None else None),
             persistence_only=persistence_only,

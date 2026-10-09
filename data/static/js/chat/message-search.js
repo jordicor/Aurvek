@@ -5,6 +5,7 @@ const messageSearchState = {
     items: [],
     offset: 0,
     hasMore: false,
+    error: false,
     selectedResultId: null,
     active: false,
     abortController: null,
@@ -54,7 +55,9 @@ async function executeMessageSearch(reset = true) {
     if (messageSearchState.abortController) {
         messageSearchState.abortController.abort();
     }
-    messageSearchState.abortController = new AbortController();
+    const controller = new AbortController();
+    messageSearchState.abortController = controller;
+    messageSearchState.error = false;
 
     if (reset) {
         messageSearchState.items = [];
@@ -64,6 +67,7 @@ async function executeMessageSearch(reset = true) {
     }
 
     activateSearchMode();
+    if (reset) renderSearchResults(false);
 
     const params = new URLSearchParams({
         q: messageSearchState.query,
@@ -73,22 +77,17 @@ async function executeMessageSearch(reset = true) {
 
     try {
         const response = await secureFetch(`/api/messages/search?${params}`, {
-            signal: messageSearchState.abortController.signal
+            signal: controller.signal
         });
 
-        if (!response) return; // session expired
+        if (controller.signal.aborted || !response) return; // cancelled or session expired
 
         if (!response.ok) {
-            if (response.status === 422) {
-                // Validation error (query too short, etc.)
-                renderSearchResults(false);
-                return;
-            }
-            console.error('Search failed:', response.status);
-            return;
+            throw new Error(`Search failed: ${response.status}`);
         }
 
         const data = await response.json();
+        if (controller.signal.aborted) return;
 
         if (reset) {
             messageSearchState.items = data.items;
@@ -98,14 +97,24 @@ async function executeMessageSearch(reset = true) {
         messageSearchState.hasMore = data.has_more;
         messageSearchState.offset = data.next_offset;
 
-        renderSearchResults(!reset);
+        renderSearchResults(!reset, data.items);
     } catch (err) {
-        if (err.name === 'AbortError') return;
+        if (controller.signal.aborted || err.name === 'AbortError') return;
+        messageSearchState.items = [];
+        messageSearchState.offset = 0;
+        messageSearchState.hasMore = false;
+        messageSearchState.selectedResultId = null;
+        messageSearchState.error = true;
+        renderSearchResults(false);
         console.error('Search error:', err);
+    } finally {
+        if (messageSearchState.abortController === controller) {
+            messageSearchState.abortController = null;
+        }
     }
 }
 
-function renderSearchResults(append = false) {
+function renderSearchResults(append = false, newItems = []) {
     const list = document.getElementById('search-results-list');
     const countEl = document.getElementById('search-results-count');
     const loadMoreBtn = document.getElementById('search-load-more');
@@ -116,7 +125,7 @@ function renderSearchResults(append = false) {
     }
 
     const items = append
-        ? messageSearchState.items.slice(messageSearchState.items.length - 30)
+        ? newItems
         : messageSearchState.items;
 
     items.forEach((item) => {
@@ -161,6 +170,8 @@ function renderSearchResults(append = false) {
     });
 
     loadMoreBtn.style.display = messageSearchState.hasMore ? 'block' : 'none';
+    AurvekI18n.bindText(emptyState, messageSearchState.error ? 'chat_ui.search.failed' : 'chat_ui.search.empty');
+    emptyState.setAttribute('role', messageSearchState.error ? 'alert' : 'status');
     emptyState.style.display = total === 0 ? 'block' : 'none';
 }
 
@@ -195,6 +206,7 @@ function deactivateSearchMode() {
     messageSearchState.items = [];
     messageSearchState.offset = 0;
     messageSearchState.hasMore = false;
+    messageSearchState.error = false;
     messageSearchState.selectedResultId = null;
 
     if (messageSearchState.abortController) {

@@ -24,6 +24,8 @@
   "click_conversation": "Klicken, um zur Unterhaltung zu gelangen",
   "invalid_date": "Ungültiges Datum",
   "read_aloud": "Vorlesen",
+  "download_audio": "Originalaudio herunterladen",
+  "download_audio_failed": "Das Originalaudio konnte nicht heruntergeladen werden.",
   "audio": "Audio",
   "voice_reply": "Sprachantwort",
   "voice_note": "Sprachnachricht",

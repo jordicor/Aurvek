@@ -136,7 +136,22 @@
         return { status: 'opened' };
     }
     const fromControl = name => { void run(name).catch(report); };
-    global.AurvekChatActions = Object.freeze({ run, fromControl, stopExport, activity: () => exporting ? 'generating' : 'idle' });
+    function sendHostMessage(text) {
+        const current = scope();
+        if (!current?.caps.text || current.controls?.text === false) throw error('capability_disabled');
+        if (global.AurvekEmbed?.isExpired()) throw error('session_expired');
+        if (typeof text !== 'string' || !text.trim() || text.length > 16000) throw error('invalid_message');
+        const input = document.getElementById('message-text');
+        const sendButton = document.getElementById('send-button');
+        if (!input || !sendButton || String(current.id) !== String(global.currentConversationId)) throw error('chat_not_ready');
+        if (exporting || sendButton.dataset.streaming === 'true' || compressionInProgress > 0 ||
+            (global.getAudioActivity && global.getAudioActivity() !== 'idle')) throw error('operation_in_progress');
+        if (input.value || attachedFiles.length) throw error('draft_present');
+        if (input.disabled || sendButton.disabled) throw error('message_not_admitted');
+        if (global.sendMessage(text, { filesOverride: [] }) !== true) throw error('message_not_admitted');
+    }
+    global.AurvekChatActions = Object.freeze({ run, fromControl, stopExport, sendMessage: sendHostMessage,
+        activity: () => exporting ? 'generating' : 'idle' });
     document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('[data-application-action]').forEach(node => {
             node.addEventListener('click', () => fromControl(node.dataset.applicationAction));

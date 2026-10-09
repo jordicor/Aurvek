@@ -85,6 +85,40 @@ def _apply_seo_fix(prompt_dir: Path, landing_url: str) -> None:
         pass
 
 
+def _file_snapshot(prompt_dir: Path) -> dict[str, tuple[int, int]]:
+    """Remember file signatures so existing assets cannot prove job success."""
+    files = {}
+    for path in prompt_dir.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            metadata = path.stat()
+            files[path.relative_to(prompt_dir).as_posix()] = (
+                metadata.st_mtime_ns, metadata.st_size,
+            )
+    return files
+
+
+def _page_result(
+    prompt_dir: Path,
+    before: dict[str, tuple[int, int]],
+    result: subprocess.CompletedProcess,
+    required_page: str,
+) -> dict:
+    """Require successful execution and a nonempty page written by this run."""
+    after = _file_snapshot(prompt_dir)
+    changed = sorted(name for name, signature in after.items() if before.get(name) != signature)
+    outcome = {"success": False, "files_created": changed, "return_code": result.returncode}
+    if result.returncode != 0:
+        outcome["error"] = f"Claude exited with status {result.returncode}"
+    elif required_page not in changed or not (prompt_dir / required_page).read_text(encoding="utf-8").strip():
+        outcome["error"] = f"Required page {required_page} was not created or rewritten with content"
+    else:
+        outcome["success"] = True
+        return outcome
+    outcome["stdout"] = result.stdout[:1000] if result.stdout else None
+    outcome["stderr"] = result.stderr[:1000] if result.stderr else None
+    return outcome
+
+
 WIZARD_PROMPT_TEMPLATE = """
 Create a professional, conversion-focused landing page for an AI assistant product.
 
@@ -269,6 +303,7 @@ def generate_landing(
     cmd = _claude_command(15)
 
     try:
+        before = _file_snapshot(prompt_dir)
         # Pass prompt via stdin to avoid Windows CMD issues with newlines and escaping
         result = run_claude_in_sandbox(
             cmd,
@@ -277,46 +312,10 @@ def generate_landing(
             timeout=timeout,
         )
 
-        # Check what files were created
-        home_path = prompt_dir / "home.html"
-        created_files = []
-
-        if home_path.exists():
-            created_files.append("home.html")
-
-        # Check for optional files
-        css_path = prompt_dir / "static" / "css" / "custom.css"
-        js_path = prompt_dir / "static" / "js" / "custom.js"
-
-        if css_path.exists():
-            created_files.append("static/css/custom.css")
-        if js_path.exists():
-            created_files.append("static/js/custom.js")
-
-        # Check for generated images
-        img_dir = prompt_dir / "static" / "img"
-        if img_dir.exists():
-            for img_file in img_dir.iterdir():
-                if img_file.is_file() and img_file.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'}:
-                    created_files.append(f"static/img/{img_file.name}")
-
-        if created_files:
-            # Post-process: fix SEO meta tags with absolute URLs
+        outcome = _page_result(prompt_dir, before, result, "home.html")
+        if outcome["success"]:
             _apply_seo_fix(prompt_dir, landing_url)
-
-            return {
-                "success": True,
-                "files_created": created_files,
-                "return_code": result.returncode
-            }
-        else:
-            return {
-                "success": False,
-                "error": "No files were created. Claude may have encountered an issue.",
-                "stdout": result.stdout[:1000] if result.stdout else None,
-                "stderr": result.stderr[:1000] if result.stderr else None,
-                "return_code": result.returncode
-            }
+        return outcome
 
     except subprocess.TimeoutExpired:
         return {
@@ -540,6 +539,7 @@ def modify_landing(
     cmd = _claude_command(20)
 
     try:
+        before = _file_snapshot(prompt_dir)
         # Pass prompt via stdin to avoid Windows CMD issues with newlines and escaping
         result = run_claude_in_sandbox(
             cmd,
@@ -548,25 +548,11 @@ def modify_landing(
             timeout=timeout,
         )
 
-        # For modify, we consider it successful if Claude ran without error
-        # We can't easily detect what changed, so we trust the process
-        if result.returncode == 0:
-            # Post-process: fix SEO meta tags with absolute URLs
+        outcome = _page_result(prompt_dir, before, result, "home.html")
+        if outcome["success"]:
             _apply_seo_fix(prompt_dir, landing_url)
-
-            return {
-                "success": True,
-                "message": "Modifications applied successfully",
-                "return_code": result.returncode
-            }
-        else:
-            return {
-                "success": False,
-                "error": "Claude encountered an error while modifying files",
-                "stdout": result.stdout[:1000] if result.stdout else None,
-                "stderr": result.stderr[:1000] if result.stderr else None,
-                "return_code": result.returncode
-            }
+            outcome["message"] = "Modifications applied successfully"
+        return outcome
 
     except subprocess.TimeoutExpired:
         return {
@@ -906,6 +892,7 @@ def generate_welcome(
     cmd = _claude_command(15)
 
     try:
+        before = _file_snapshot(prompt_dir)
         # Pass prompt via stdin to avoid Windows CMD issues with newlines and escaping
         result = run_claude_in_sandbox(
             cmd,
@@ -914,44 +901,8 @@ def generate_welcome(
             timeout=timeout,
         )
 
-        # Check what files were created
-        welcome_dir = prompt_dir / "welcome"
-        index_path = welcome_dir / "index.html"
-        created_files = []
-
-        if index_path.exists():
-            created_files.append("welcome/index.html")
-
-        # Check for optional files in welcome/static/
-        css_path = welcome_dir / "static" / "css" / "custom.css"
-        js_path = welcome_dir / "static" / "js" / "custom.js"
-
-        if css_path.exists():
-            created_files.append("welcome/static/css/custom.css")
-        if js_path.exists():
-            created_files.append("welcome/static/js/custom.js")
-
-        # Check for generated images in welcome/static/img/
-        img_dir = welcome_dir / "static" / "img"
-        if img_dir.exists():
-            for img_file in img_dir.iterdir():
-                if img_file.is_file() and img_file.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'}:
-                    created_files.append(f"welcome/static/img/{img_file.name}")
-
-        if created_files:
-            return {
-                "success": True,
-                "files_created": created_files,
-                "return_code": result.returncode
-            }
-        else:
-            return {
-                "success": False,
-                "error": "No files were created. Claude may have encountered an issue.",
-                "stdout": result.stdout[:1000] if result.stdout else None,
-                "stderr": result.stderr[:1000] if result.stderr else None,
-                "return_code": result.returncode
-            }
+        outcome = _page_result(prompt_dir, before, result, "welcome/index.html")
+        return outcome
 
     except subprocess.TimeoutExpired:
         return {
@@ -1119,6 +1070,7 @@ def modify_welcome(
     cmd = _claude_command(20)
 
     try:
+        before = _file_snapshot(prompt_dir)
         # Pass prompt via stdin to avoid Windows CMD issues with newlines and escaping
         result = run_claude_in_sandbox(
             cmd,
@@ -1127,20 +1079,10 @@ def modify_welcome(
             timeout=timeout,
         )
 
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "message": "Welcome page modifications applied successfully",
-                "return_code": result.returncode
-            }
-        else:
-            return {
-                "success": False,
-                "error": "Claude encountered an error while modifying welcome files",
-                "stdout": result.stdout[:1000] if result.stdout else None,
-                "stderr": result.stderr[:1000] if result.stderr else None,
-                "return_code": result.returncode
-            }
+        outcome = _page_result(prompt_dir, before, result, "welcome/index.html")
+        if outcome["success"]:
+            outcome["message"] = "Welcome page modifications applied successfully"
+        return outcome
 
     except subprocess.TimeoutExpired:
         return {
@@ -1286,7 +1228,7 @@ if __name__ == "__main__":
 
     result = generate_landing(
         prompt_dir=args.dir,
-        description=args.description,
+        user_description=args.description,
         style=args.style,
         primary_color=args.primary_color,
         secondary_color=args.secondary_color,

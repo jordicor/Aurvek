@@ -89,6 +89,7 @@
   "role.user": "Benutzer",
   "search.clear": "Suche löschen",
   "search.empty": "Keine Nachrichten gefunden",
+  "search.failed": "Die Suche ist fehlgeschlagen. Bitte versuche es erneut.",
   "search.label": "Nachrichten suchen",
   "search.load_more": "Weitere Ergebnisse laden",
   "search.placeholder": "Nachrichten suchen...",

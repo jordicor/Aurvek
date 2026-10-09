@@ -47,7 +47,10 @@ CREATE TABLE IF NOT EXISTS PROMPTS (
     watchdog_config TEXT DEFAULT NULL,
     is_paid INTEGER DEFAULT 0,
     markup_per_mtokens REAL DEFAULT 0,
-    created_by_user_id INTEGER
+    created_by_user_id INTEGER,
+    forced_llm_id INTEGER, forced_reasoning_json TEXT,
+    realtime_llm_id INTEGER, realtime_backend_llm_id INTEGER,
+    realtime_reasoning_json TEXT, realtime_voice TEXT
 );
 
 CREATE TABLE IF NOT EXISTS LLM (

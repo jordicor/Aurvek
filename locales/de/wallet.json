@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "Guthaben aktualisiert",
+  "payment.credited.detail": "Die Aufladung wurde deinem Guthaben gutgeschrieben.",
+  "payment.crediting.title": "Zahlung eingegangen",
+  "payment.crediting.detail": "Deine Zahlung wurde bestätigt. Dein Guthaben wird noch aktualisiert.",
+  "payment.pending.title": "Zahlung ausstehend",
+  "payment.pending.detail": "Deine Zahlung wurde noch nicht bestätigt.",
+  "payment.not_completed.title": "Aufladung nicht abgeschlossen",
+  "payment.not_completed.detail": "Diese Zahlungssitzung ist abgelaufen, ohne die Aufladung abzuschließen.",
+  "payment.amount_added": "Gutgeschriebener Betrag",
+  "payment.balance": "Aktuelles Guthaben",
+  "payment.check_later": "Die automatische Prüfung ist beendet. Du kannst diese Seite später neu laden, um den Status zu prüfen.",
+  "payment.back_to_wallet": "Zurück zum Guthaben"
+}

@@ -529,6 +529,11 @@ async def test_messages_route_preserves_non_phone_contract_and_owner_gate(
         finally:
             await db.close()
 
+    from file_storage import ensure_file_storage_schema
+    async with route_factory() as db:
+        await ensure_file_storage_schema(db)
+        await db.commit()
+
     async def no_op(*_args, **_kwargs):
         return None
 

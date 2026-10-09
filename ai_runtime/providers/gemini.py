@@ -9,6 +9,7 @@ from billing.usage_reservations import accumulate_ai_provider_call_usage
 from billing.usage_reservations import BillingReservationError
 from billing.hosted_search import prepare_hosted_search
 from ai_runtime.reasoning import ReasoningSelection, parse_reasoning_selection
+from ai_runtime.providers.gemini_capabilities import gemini_supports_temperature
 
 
 def _gemini_thinking_config(
@@ -65,16 +66,19 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
 
     # Determine API key: user's custom key or global
     api_key = user_api_key if user_api_key else gemini_key
-    client = google_genai.Client(api_key=api_key)
+    from integrations.applications.external_execution import gemini_http_options
+    http_options = gemini_http_options()
+    client = google_genai.Client(api_key=api_key, **({"http_options": http_options} if http_options else {}))
     if user_api_key:
         logger.info("Using user's custom Google AI API key")
 
     # Build config
     config = genai_types.GenerateContentConfig(
         system_instruction=prompt,
-        temperature=temperature,
         max_output_tokens=max_tokens,
     )
+    if gemini_supports_temperature(model):
+        config.temperature = temperature
     thinking_config = _gemini_thinking_config(reasoning_selection)
     if thinking_config is not None:
         config.thinking_config = thinking_config
@@ -100,6 +104,8 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
     input_tokens = output_tokens = total_tokens = 0
     function_call_detected = None
     last_chunk = None
+    response_parts = []
+    finish_reason_text = ""
     citations = []
     thinking_open = False
     search_usage = None
@@ -121,6 +127,12 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
             config=config,
         ):
             last_chunk = chunk
+            if chunk.usage_metadata:
+                input_tokens = chunk.usage_metadata.prompt_token_count or 0
+                output_tokens = (chunk.usage_metadata.candidates_token_count or 0) + (
+                    getattr(chunk.usage_metadata, "thoughts_token_count", None) or 0
+                )
+                total_tokens = chunk.usage_metadata.total_token_count or 0
 
             if stop_signals.get(conversation_id):
                 logger.info("Stop signal received, exiting Gemini API call loop.")
@@ -151,21 +163,24 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
             saw_content_parts = False
             if chunk.candidates:
                 for candidate in chunk.candidates:
+                    finish = getattr(candidate, "finish_reason", None)
+                    if finish:
+                        finish_reason_text = getattr(finish, "name", None) or str(finish)
                     if candidate.content and candidate.content.parts:
                         for part in candidate.content.parts:
                             saw_content_parts = True
+                            response_parts.append(part)
                             if part.function_call:
+                                if function_call_detected is not None:
+                                    raise ValueError("Gemini returned multiple tool calls in one turn. Aurvek requires one tool call per turn; no tools were executed.")
                                 fc = part.function_call
                                 function_call_detected = {
                                     'name': fc.name,
                                     'arguments': dict(fc.args) if fc.args else {},
                                     'id': getattr(fc, 'id', None) or '',
-                                    # Retain the SDK Content/Part untouched: Gemini requires
-                                    # its thought_signature for a function-response turn.
-                                    'gemini_content': _serialize_gemini_content(candidate.content),
                                 }
                                 logger.info(f"[call_gemini_api] - Function call detected: {fc.name}")
-                                break
+                                continue
                             part_text = getattr(part, "text", None)
                             if not part_text:
                                 continue
@@ -180,12 +195,6 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
                                     yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
                                 content += part_text
                                 yield f"data: {orjson.dumps({'content': part_text}).decode()}\n\n"
-                    if function_call_detected:
-                        break
-
-            if function_call_detected and search_usage is None:
-                break
-
             # SDK ``chunk.text`` is a convenience aggregate.  Once parts are
             # available, stream them above so thought parts never leak into answer text.
             if not saw_content_parts and chunk.text:
@@ -199,21 +208,22 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
             # candidate and retain unknown/cancelled streams for reconciliation.
             search_usage_complete = search_terminal_seen
 
-        # Get real token usage from the last chunk if available
-        if last_chunk and last_chunk.usage_metadata:
-            input_tokens = last_chunk.usage_metadata.prompt_token_count or 0
-            output_tokens = last_chunk.usage_metadata.candidates_token_count or 0
-            total_tokens = last_chunk.usage_metadata.total_token_count or 0
-        else:
+        # Preserve the complete model turn, including trailing thought signatures.
+        if function_call_detected:
+            function_call_detected['gemini_content'] = _serialize_gemini_content(
+                genai_types.Content(role="model", parts=response_parts)
+            )
+
+        if not total_tokens:
             input_tokens = 0
             output_tokens = estimate_message_tokens(content)
             total_tokens = input_tokens + output_tokens
 
-        if last_chunk and last_chunk.candidates:
-            finish_reason = getattr(last_chunk.candidates[0], "finish_reason", None)
-            finish_reason_text = getattr(finish_reason, "name", None) or str(finish_reason or "")
-            if "MAX_TOKENS" in finish_reason_text.upper():
-                _log_truncated_response("Gemini", model, conversation_id, llm_id, finish_reason_text, max_tokens)
+        if "MAX_TOKENS" in finish_reason_text.upper():
+            _log_truncated_response("Gemini", model, conversation_id, llm_id, finish_reason_text, max_tokens)
+
+        if finish_reason_text and finish_reason_text not in {"STOP", "MAX_TOKENS", "FINISH_REASON_UNSPECIFIED"}:
+            raise ValueError(f"Gemini stopped generation ({finish_reason_text}).")
 
         # Extract grounding metadata for native web search (Phase 3)
         if web_search_mode == 'native' and last_chunk and last_chunk.candidates:
@@ -269,6 +279,7 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
         if search_usage is not None:
             unresolved_search_billing = not await search_usage.finish(
                 complete=search_usage_complete, rejected=search_request_rejected)
+        await client.aio.aclose()
 
     if thinking_open:
         yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
@@ -301,12 +312,30 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
         yield f"data: {orjson.dumps({'error': 'Hosted search usage could not be confirmed; its reservation is retained for reconciliation.', 'error_code': 'hosted_search_usage_unconfirmed'}).decode()}\n\n"
         return
 
+    if error_yielded:
+        return
+
+    if not content.strip() and not function_call_detected and not stop_signals.get(conversation_id):
+        reason = finish_reason_text or "no finish reason"
+        empty_msg = (
+            f"Gemini reached the output limit ({max_tokens} tokens) before returning an answer. Increase the output limit or reduce the thinking level."
+            if finish_reason_text == "MAX_TOKENS"
+            else f"Gemini returned no answer ({reason})."
+        )
+        logger.warning(
+            "Gemini response without text: model=%s conversation=%s finish=%s input_tokens=%s output_tokens=%s max_tokens=%s",
+            model, conversation_id, reason, input_tokens, output_tokens, max_tokens,
+        )
+        await record_provider_error_for_label("Gemini", message=empty_msg, model=model, byok=byok)
+        yield f"data: {orjson.dumps(_provider_error_payload('Gemini', empty_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+        return
+
     # Handle function calls (skip when save_to_db=False, i.e. Multi-AI mode)
     if function_call_detected and save_to_db:
         logger.info(f"[call_gemini_api] - Tool call: {function_call_detected['name']}")
         logger.debug(f"[call_gemini_api] - Tool call args: {function_call_detected['arguments']}")
         await record_provider_success_for_label("Gemini", model=model, byok=byok)
-        yield f"data: {orjson.dumps({'tool_call': {'name': function_call_detected['name'], 'arguments': function_call_detected['arguments'], 'id': function_call_detected['id'], 'gemini_content': function_call_detected.get('gemini_content'), '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}}).decode()}\n\n"
+        yield f"data: {orjson.dumps({'tool_call': {'name': function_call_detected['name'], 'arguments': function_call_detected['arguments'], 'id': function_call_detected['id'], 'gemini_content': function_call_detected.get('gemini_content'), '_billing_usage': {'input_tokens': billing_input_tokens, 'output_tokens': billing_output_tokens}}, 'pre_tool_content': content}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return
 
@@ -315,13 +344,6 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
         if not content.strip():
             if was_stopped:
                 logger.info(f"User stopped stream before content for conversation {conversation_id}. Skipping save.")
-            else:
-                logger.warning(f"Empty bot response for conversation {conversation_id}, user {user_id}. "
-                               f"Provider: gemini. Not saving to DB.")
-                if not error_yielded:
-                    await record_provider_error_for_label("Gemini", message="empty response", model=model, byok=byok)
-                    empty_msg = "The AI returned an empty response. Please try again."
-                    yield f"data: {orjson.dumps(_provider_error_payload('Gemini', empty_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             return
         else:
             try:
@@ -349,11 +371,5 @@ async def call_gemini_api(messages, model, temperature, max_tokens, prompt, conv
     else:
         if content.strip():
             await record_provider_success_for_label("Gemini", model=model, byok=byok)
-        elif not error_yielded:
-            await record_provider_error_for_label("Gemini", message="empty response", model=model, byok=byok)
-            empty_msg = "The AI returned an empty response. Please try again."
-            yield f"data: {orjson.dumps(_provider_error_payload('Gemini', empty_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
-            yield "data: [DONE]\n\n"
-            return
         yield f"data: {orjson.dumps({'token_info': True, 'input_tokens': input_tokens, 'output_tokens': output_tokens}).decode()}\n\n"
         yield "data: [DONE]\n\n"

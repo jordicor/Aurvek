@@ -183,7 +183,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
             ) AS ep ON c.id = ep.value
             LEFT JOIN Prompts p ON c.role_id = p.id
             LEFT JOIN Prompts p2 ON ud.current_prompt_id = p2.id
-            LEFT JOIN USER_ALTER_EGOS ae ON ud.current_alter_ego_id = ae.id
+            LEFT JOIN USER_ALTER_EGOS ae ON ud.current_alter_ego_id = ae.id AND ae.user_id = u.id
             WHERE u.id = ?
               AND ((ep.value IS NULL OR ep.value = '') OR c.id = ?)
             ORDER BY CASE WHEN c.id = ? THEN 0 ELSE 1 END,
@@ -219,7 +219,7 @@ async def handle_get_request(request, user_id, current_user, conn, admin_view=Fa
         llm_models.sort(key=lambda m: (m.get("machine", ""), m.get("display_name") or m.get("model", "")))
         available_voices = orjson.loads(full_data["voices_json"]) if full_data["voices_json"] else []
 
-        if full_data["current_alter_ego_id"]:
+        if full_data["current_alter_ego_id"] and full_data["alter_ego_name"]:
             username = full_data["alter_ego_name"]
             user_profile_picture = full_data["alter_ego_profile_picture"]
         else:

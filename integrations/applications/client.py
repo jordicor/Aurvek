@@ -178,6 +178,10 @@ class AurvekClient:
             "conversation": {"operation_id": operation_id, "context_ref": context_ref,
                 "assistant_id": assistant_id, "mode": mode, "conversation_id": conversation_id}})
 
+    async def list_conversations(self, credential: str, *, context_ref=None, limit=8):
+        return await self.request("list-conversations", {"delegated_credential": credential,
+            "context_ref": context_ref, "limit": limit})
+
     async def bootstrap(self, credential: str, conversation_id: int, *, parent_origin: str,
                         embed_origin: str, frame_instance_id: str, ui_language="en"):
         return await self.request("issue-embed-bootstrap", {"delegated_credential": credential,

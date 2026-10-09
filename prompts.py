@@ -58,14 +58,6 @@ router = APIRouter()
 
 _PERSONAL_SUBSCRIPTION_MACHINE = "GPTSub"
 _PHONE_BLOCKED_MACHINES = frozenset({"GPTSub", "GranSabio"})
-_OPENAI_REALTIME_VOICES = frozenset(
-    {
-        "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer",
-        "verse", "marin", "cedar",
-    }
-)
-
-
 async def _shared_llm_configuration(llm_id: int, translator=None) -> tuple[dict, dict]:
     """Load one enabled shared model and its normalized capabilities."""
 
@@ -158,59 +150,28 @@ async def _validated_reasoning_json(
     return orjson.dumps(selection.to_dict()).decode("utf-8")
 
 
-async def _validate_phone_ai_selection(
-    *,
-    phone_llm_id: int | None,
-    phone_reasoning_mode: str | None,
-    phone_reasoning_budget_tokens: int | None,
-    phone_realtime_voice: str | None,
-    inherited_llm_id: int | None,
-    translator=None,
-) -> tuple[int | None, str | None, str | None]:
-    translator = translator or Translator("en")
-    t = translator.t
-    if not isinstance(phone_llm_id, int) or isinstance(phone_llm_id, bool):
-        phone_llm_id = None
-    if not isinstance(phone_realtime_voice, str):
-        phone_realtime_voice = None
-    capabilities: dict | None = None
-    if phone_llm_id is not None:
-        item, capabilities = await _shared_llm_configuration(phone_llm_id, translator=translator)
-        if item.get("machine") == "O1":
-            raise HTTPException(
-                status_code=400,
-                detail=t('prompt_editor_errors.selected_ai_model_is_not_available_for_phone_calls'),
-            )
-        runtime = capabilities.get("runtime", {})
-        if "phone" not in runtime.get("channels", []):
-            raise HTTPException(
-                status_code=400,
-                detail=t('prompt_editor_errors.selected_ai_model_is_not_available_for_phone_calls'),
-            )
-
-    reasoning_json = await _validated_reasoning_json(
-        llm_id=phone_llm_id or inherited_llm_id,
-        mode=phone_reasoning_mode,
-        budget_tokens=phone_reasoning_budget_tokens,
-        inherit_value="inherit",
-        field_label=t('prompt_editor_errors.phone_thinking'),
-        translator=translator,
-    )
-    runtime_kind = (
-        capabilities.get("runtime", {}).get("kind")
-        if capabilities is not None
-        else "standard"
-    )
-    if runtime_kind in {"openai_realtime", "openai_live"}:
-        realtime_voice = str(phone_realtime_voice or "marin").strip().lower()
-        if realtime_voice not in _OPENAI_REALTIME_VOICES:
-            raise HTTPException(
-                status_code=400,
-                detail=t('prompt_editor_errors.select_a_supported_openai_realtime_voice'),
-            )
-    else:
-        realtime_voice = None
-    return phone_llm_id, reasoning_json, realtime_voice
+async def _validate_realtime_ai_selection(
+    *, realtime_llm_id, realtime_reasoning_mode, realtime_reasoning_budget_tokens,
+    realtime_voice, inherited_llm_id, realtime_backend_llm_id=None, translator=None,
+):
+    from integrations.realtime.configuration import validate_settings
+    # FastAPI Form defaults are used by direct internal create callers too.
+    llm_id = realtime_llm_id if type(realtime_llm_id) is int else None
+    voice = realtime_voice if isinstance(realtime_voice, str) else None
+    mode = realtime_reasoning_mode if isinstance(realtime_reasoning_mode, str) else "inherit"
+    reasoning = None if mode == "inherit" else {"mode": mode}
+    if reasoning is not None and type(realtime_reasoning_budget_tokens) is int:
+        reasoning["budget_tokens"] = realtime_reasoning_budget_tokens
+    try:
+        async with get_db_connection(readonly=True) as connection:
+            values = await validate_settings(connection, llm_id=llm_id,
+                backend_llm_id=realtime_backend_llm_id, reasoning_selection=reasoning,
+                realtime_voice=voice, inherited_llm_id=inherited_llm_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    normalized = values["realtime_reasoning_selection"]
+    return (values["realtime_llm_id"], orjson.dumps(normalized).decode("utf-8") if normalized is not None else None,
+            values["realtime_voice"])
 
 
 def _reasoning_selection_for_template(value: str | None) -> dict:
@@ -281,13 +242,15 @@ async def _validate_prompt_llm_selection(
         )
     if any(not bool(row["enabled"]) for row in rows):
         raise HTTPException(status_code=400, detail=t('prompt_editor_errors.selected_ai_model_is_disabled'))
+    from llm_catalog import normalize_runtime_capability
+
     if any(
-        str(row["model"] or "").strip().lower().startswith(("gpt-realtime-2.1", "gpt-live-1"))
+        "web" not in normalize_runtime_capability(row["machine"], row["model"])["channels"]
         for row in rows
     ):
         raise HTTPException(
             status_code=400,
-            detail=t('prompt_editor_errors.openai_realtime_models_can_only_be_assigned_to_phone_calls'),
+            detail=t('chat_errors.model_voice_only'),
         )
 
 
@@ -694,10 +657,11 @@ async def create_prompt_post(
     forced_reasoning_budget_tokens: Optional[int] = Form(None),
     hide_llm_name: bool = Form(False),
     allowed_llms: Optional[str] = Form(None),
-    phone_llm_id: Optional[int] = Form(None),
-    phone_reasoning_mode: str = Form("inherit"),
-    phone_reasoning_budget_tokens: Optional[int] = Form(None),
-    phone_realtime_voice: Optional[str] = Form(None),
+    realtime_llm_id: Optional[int] = Form(None),
+    realtime_backend_llm_id: Optional[int] = Form(None),
+    realtime_reasoning_mode: str = Form("inherit"),
+    realtime_reasoning_budget_tokens: Optional[int] = Form(None),
+    realtime_voice: Optional[str] = Form(None),
     disable_web_search: bool = Form(False),
     force_web_search: bool = Form(False),
     enable_moderation: bool = Form(False),
@@ -738,15 +702,18 @@ async def create_prompt_post(
         field_label=t('prompt_editor_errors.prompt_thinking'),
         translator=translator,
     )
+    if not isinstance(realtime_backend_llm_id, int) or isinstance(realtime_backend_llm_id, bool):
+        realtime_backend_llm_id = None
     (
-        phone_llm_id,
-        phone_reasoning_json,
-        phone_realtime_voice,
-    ) = await _validate_phone_ai_selection(
-        phone_llm_id=phone_llm_id,
-        phone_reasoning_mode=phone_reasoning_mode,
-        phone_reasoning_budget_tokens=phone_reasoning_budget_tokens,
-        phone_realtime_voice=phone_realtime_voice,
+        realtime_llm_id,
+        realtime_reasoning_json,
+        realtime_voice,
+    ) = await _validate_realtime_ai_selection(
+        realtime_llm_id=realtime_llm_id,
+        realtime_backend_llm_id=realtime_backend_llm_id,
+        realtime_reasoning_mode=realtime_reasoning_mode,
+        realtime_reasoning_budget_tokens=realtime_reasoning_budget_tokens,
+        realtime_voice=realtime_voice,
         inherited_llm_id=forced_llm_id if llm_mode == "forced" else None,
         translator=translator,
     )
@@ -881,15 +848,15 @@ async def create_prompt_post(
             cursor = await conn.execute(
                 """INSERT INTO Prompts (name, prompt, description, voice_id, created_by_user_id, created_at, public,
                    is_paid, markup_per_mtokens, forced_llm_id, forced_reasoning_json,
-                   phone_llm_id, phone_reasoning_json, phone_realtime_voice,
+                   realtime_llm_id, realtime_reasoning_json, realtime_voice, realtime_backend_llm_id,
                    hide_llm_name, disable_web_search, force_web_search,
                    enable_moderation, watchdog_config, allowed_llms,
                    extensions_enabled, extensions_auto_advance, extensions_free_selection,
                    gransabio_enabled, gransabio_config)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (name, prompt, description, voice_id, current_user.id, created_at, public,
                  is_paid_bool, actual_markup, actual_forced_llm_id, forced_reasoning_json,
-                 phone_llm_id, phone_reasoning_json, phone_realtime_voice,
+                 realtime_llm_id, realtime_reasoning_json, realtime_voice, realtime_backend_llm_id,
                  actual_hide_llm_name, disable_web_search, force_web_search,
                  enable_moderation, watchdog_config_json, actual_allowed_llms,
                  extensions_enabled, extensions_auto_advance, extensions_free_selection,

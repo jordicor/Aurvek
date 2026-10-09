@@ -86,7 +86,7 @@ async def warmup_landing_cache():
         logger.error(f"Failed to warm landing cache: {e}")
 
 
-async def get_landing_path_cached(public_id: str) -> dict:
+async def get_landing_path_cached(public_id: str, *, refresh_publication: bool = True) -> dict:
     """
     Get landing path with smart LRU caching.
 
@@ -96,13 +96,17 @@ async def get_landing_path_cached(public_id: str) -> dict:
     on those flags -- the authenticated admin preview path must still be able to
     resolve non-public landings. Enforcement (public = 1 AND has_landing_page = 1
     for public access; trusted vs. isolated serving) happens in the routes.
+    Cache hits reuse identity/path metadata but refresh the mutable serving
+    gates from SQLite, since the wizard writes from a separate process.
+    HTML readers defer that refresh until they hold the publication lock.
     """
     require_public_landings_enabled()
 
     cached = _landing_path_cache.get(public_id)
     if cached is not None:
         _landing_cache_stats["hits"] += 1
-        return cached
+        return ({**cached, **await get_prompt_publication_state(cached["prompt_id"])}
+                if refresh_publication else cached)
 
     if public_id not in _landing_cache_locks:
         _landing_cache_locks[public_id] = asyncio.Lock()
@@ -113,7 +117,8 @@ async def get_landing_path_cached(public_id: str) -> dict:
         cached = _landing_path_cache.get(public_id)
         if cached is not None:
             _landing_cache_stats["hits"] += 1
-            return cached
+            return ({**cached, **await get_prompt_publication_state(cached["prompt_id"])}
+                    if refresh_publication else cached)
 
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
@@ -152,6 +157,23 @@ async def get_landing_path_cached(public_id: str) -> dict:
             _landing_cache_locks.clear()
 
         return result
+
+
+async def get_prompt_publication_state(prompt_id: int) -> dict:
+    """Read mutable serving gates freshly, including writes from subprocesses."""
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            "SELECT public, has_landing_page, landing_trusted FROM PROMPTS WHERE id = ?",
+            (prompt_id,),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    return {
+        "public": row[0] or 0,
+        "has_landing_page": row[1] or 0,
+        "landing_trusted": row[2] or 0,
+    }
 
 
 def invalidate_landing_cache(public_id: str):

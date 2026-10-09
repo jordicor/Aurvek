@@ -1,12 +1,17 @@
 import asyncio
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 
+import orjson
+
 from ai_runtime.dependencies import *
+from chat.services.stop_signals import stop_signals
 from billing.usage_reservations import (
     BillingReservationError,
     InsufficientBalanceError,
     extend_ai_reservation,
+    estimate_structured_usage_tokens,
     revalidate_user_billing,
 )
 from tools import function_handlers
@@ -40,8 +45,116 @@ from integrations.telephony.user_service import (
 )
 
 
+APPLICATION_HTTP_TIMEOUT_SECONDS = 120
+
 TOOL_RESULT_MAX_BYTES = 64 * 1024
 TOOL_CALL_SERIALIZATION_BYTES_PER_OUTPUT_TOKEN = 16
+
+# Private model input for a call that repeats the previous one.
+REPEATED_TOOL_CALL_RESULT = orjson.dumps({
+    "ok": False, "error_code": "repeated_tool_call",
+    "instruction": "This identical call already ran in this reply and was not run again. "
+                   "Answer now with the results you already have.",
+}).decode()
+
+
+@dataclass
+class ToolLoop:
+    """One reply's opt-in chain of application tool calls.
+
+    get_ai_response runs every call through its normal tool path. A follow-up
+    only offers the tools and records the model's next call here. Reaching the
+    cap, or repeating the previous call, leaves a final answer without tools.
+    """
+
+    max_rounds: int
+    rounds: int = 0
+    final: bool = False
+    previous: bytes | None = None
+    next_call: dict | None = None
+    next_text: str = ""
+    texts: list[str] = field(default_factory=list)
+    settled: bool = False
+
+    def start_round(self, tool_call: dict, text: str) -> bool:
+        """Count a call; False means it repeats the previous one and must not run."""
+        self.texts.append(text)
+        signature = orjson.dumps([tool_call.get("name"), tool_call.get("arguments")],
+                                 option=orjson.OPT_SORT_KEYS)
+        if signature == self.previous:
+            self.final = True
+            return False
+        self.previous = signature
+        self.rounds += 1
+        return True
+
+    def offers_tools(self) -> bool:
+        return not self.final and self.rounds < self.max_rounds
+
+    @staticmethod
+    def offered(provider_tools) -> list:
+        """Callable tools only; hosted search belongs to the first request."""
+        return [tool for tool in provider_tools or []
+                if tool.get("name") or tool.get("function", {}).get("name")]
+
+    def capture(self, tool_call: dict, text: str) -> None:
+        self.next_call, self.next_text = tool_call, text
+
+    def take_next(self) -> tuple[dict | None, str]:
+        call, text = self.next_call, self.next_text
+        self.next_call, self.next_text = None, ""
+        return call, text
+
+    def observe(self, chunk):
+        """Pass a chunk through, noting when the turn was saved or ended terminally."""
+        if isinstance(chunk, str) and chunk.startswith("data: "):
+            try:
+                event = orjson.loads(chunk[6:].strip())
+            except orjson.JSONDecodeError:
+                return chunk
+            if isinstance(event, dict) and any(key in event for key in (
+                    "message_ids", "persistence_error", "delegation_complete", "terminal")):
+                self.settled = True
+        return chunk
+
+    def unfinished(self) -> bool:
+        """A call was dispatched, but nothing saved or terminally ended the turn."""
+        return bool(self.texts) and not self.settled
+
+    def visible_text(self) -> str:
+        """Text streamed before each call, the reply produced so far."""
+        return "\n\n".join(text.strip() for text in self.texts if text.strip())
+
+
+def _resolve_tool_call_billing_usage(
+    tool_call: dict,
+    *,
+    input_fallback: int,
+    output_cap: int,
+    pre_tool_content: str = "",
+) -> tuple[int, int]:
+    """Use provider usage for a tool call, falling back conservatively."""
+    usage = tool_call.pop("_billing_usage", None) or {}
+    try:
+        input_tokens = max(0, int(usage.get("input_tokens") or 0))
+    except (TypeError, ValueError):
+        input_tokens = 0
+    try:
+        output_tokens = max(0, int(usage.get("output_tokens") or 0))
+    except (TypeError, ValueError):
+        output_tokens = 0
+    if input_tokens == 0:
+        input_tokens = max(1, int(input_fallback or 0))
+    if output_tokens == 0:
+        output_tokens = min(
+            max(1, int(output_cap or 1)),
+            estimate_structured_usage_tokens(
+                tool_call.get("name"),
+                tool_call.get("arguments"),
+                pre_tool_content,
+            ),
+        )
+    return input_tokens, output_tokens
 
 
 def _phone_schedule_idempotency_key(
@@ -75,7 +188,7 @@ async def finish_pending_realtime_tool_output(api_func_override=None) -> bool:
     bound_channel = current_channel_turn()
     if bound_channel is None or bound_channel.context.channel != "phone":
         return False
-    bridge = bound_channel.context.provenance.get("openai_realtime_bridge")
+    bridge = bound_channel.context.provenance.get("native_audio_bridge")
     if not getattr(bridge, "_aurvek_internal_realtime_bridge", False):
         return False
     finish_pending = getattr(bridge, "finish_pending_output", None)
@@ -633,9 +746,14 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                                 tool_call: dict | None = None,
                                 provider_tools: list | None = None,
                                 api_func_override=None,
-                                application_tool_budget=None):
+                                application_tool_budget=None,
+                                tool_loop: ToolLoop | None = None):
     save_to_db = True
     final_content = ""
+    from integrations.live.control import revalidate_live_delegation
+    bound_live_turn = current_channel_turn()
+    await revalidate_live_delegation(bound_live_turn.context if bound_live_turn else None,
+                                     user_id=current_user.id, conversation_id=conversation_id)
     delivery_ack = None
     deferred_delivery_chunks = []
     realtime_tool_continuation = api_func_override is not None
@@ -648,19 +766,28 @@ async def handle_function_call(function_name, function_arguments, messages, mode
         current_application_operation, revalidate_application_operation,
     )
     from integrations.embed.models import EmbedError
+    if stop_signals.get(conversation_id, False):
+        await finish_pending_realtime_tool_output(api_func_override)
+        return
     application_operation = current_application_operation(current_user.id)
     application_context = None
     if application_operation is not None:
         from integrations.applications.tools import authorize_application_tool
         application_context = await authorize_application_tool(
             current_user.id, conversation_id, function_name, function_arguments)
+    # An application HTTP call and its model follow-up share one deadline.
+    http_deadline = None
 
     async def _application_effect_error():
+        if stop_signals.get(conversation_id, False):
+            return 'data: {"error":"Assistant actions stopped. Existing runs remain available in your workspace."}\n\n'
         try:
             await revalidate_application_operation(application_operation)
         except EmbedError as exc:
             await finish_pending_realtime_tool_output(api_func_override)
             return f"data: {orjson.dumps({'error': exc.code}).decode()}\n\n"
+        if stop_signals.get(conversation_id, False):
+            return 'data: {"error":"Assistant actions stopped. Existing runs remain available in your workspace."}\n\n'
         return None
 
     async def _extend_followup_hold_once() -> str | None:
@@ -693,11 +820,17 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             yield admission_error
             return
 
+    if stop_signals.get(conversation_id, False):
+        await finish_pending_realtime_tool_output(api_func_override)
+        return
+
     # Initialize with pre-tool content from Claude (if any)
     content_to_save = content + "\n\n" if content else ""
 
     if application_context is not None and (
             function_name.startswith("app_http_") or function_name == "set_entry_assistant"):
+        if function_name.startswith("app_http_"):
+            http_deadline = asyncio.get_running_loop().time() + APPLICATION_HTTP_TIMEOUT_SECONDS
         # Both success and failure are private model input, using the existing
         # provider-native tool roundtrip and the same sponsored reservation.
         if application_tool_budget is None:
@@ -734,10 +867,16 @@ async def handle_function_call(function_name, function_arguments, messages, mode
                 operation = current_application_operation(current_user.id)
                 if operation is None:
                     raise EmbedError("application_funding_required", 403)
+                call_ref = (tool_call or {}).get("id") or (
+                    f"round-{tool_loop.rounds}" if tool_loop is not None else "single-tool")
                 operation_id = hashlib.sha256((operation.operation_id + ":" + function_name + ":" +
-                    str((tool_call or {}).get("id") or "single-tool")).encode()).hexdigest()
-                result = await ApplicationHTTPToolService(await _services()).run_http_tool(
-                    application_context, function_name, function_arguments, operation_id)
+                    str(call_ref)).encode()).hexdigest()
+                try:
+                    async with asyncio.timeout_at(http_deadline):
+                        result = await ApplicationHTTPToolService(await _services()).run_http_tool(
+                            application_context, function_name, function_arguments, operation_id)
+                except TimeoutError:
+                    raise EmbedError("tool_operation_ambiguous", 504) from None
         except EmbedError as exc:
             result = {"ok": False, "error_code": exc.code,
                       "instruction": "Explain that the operation could not be confirmed. Do not claim success or repeat it."}
@@ -1260,6 +1399,22 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             realtime_tool_result = orjson.dumps(result).decode()
             force_provider_tool_followup = True
 
+        elif function_name == "end_live_session":
+            from integrations.live.control import LiveSessionControl
+            bound_channel = current_channel_turn()
+            controller = (bound_channel.context.provenance.get("live_session_control")
+                          if bound_channel is not None else None)
+            try:
+                if not isinstance(controller, LiveSessionControl):
+                    raise EmbedError("live_session_control_unavailable", 403)
+                result = await controller.request(function_arguments, bound_channel.context,
+                    user_id=current_user.id, conversation_id=conversation_id)
+            except EmbedError as exc:
+                yield f"data: {orjson.dumps({'error': exc.code}).decode()}\n\n"
+                return
+            content = result["final_message"]
+            yield f"data: {orjson.dumps({'content': content, 'action': result['status']}).decode()}\n\n"
+
         elif function_name == "end_call":
             bound_channel = current_channel_turn()
             controller = (
@@ -1679,6 +1834,12 @@ async def handle_function_call(function_name, function_arguments, messages, mode
         if client == "Claude" and provider_tools:
             second_kwargs["tools"] = provider_tools
             second_kwargs["tool_choice"] = {"type": "none"}
+        chaining = tool_loop is not None and tool_loop.offers_tools()
+        if chaining:
+            # The model may call another tool. get_ai_response runs it through
+            # the same path as the first call, including a fresh authorization.
+            second_kwargs["tools"] = tool_loop.offered(provider_tools)
+            second_kwargs.pop("tool_choice", None)
 
         followup_api = api_func_override
         if followup_api is None and force_provider_tool_followup:
@@ -1727,24 +1888,57 @@ async def handle_function_call(function_name, function_arguments, messages, mode
             if admission_error:
                 yield admission_error
                 return
+        if content and (http_deadline is not None or tool_loop is not None):
+            yield "data: " + orjson.dumps({"content": "\n\n"}).decode() + "\n\n"
+        await revalidate_live_delegation(bound_live_turn.context if bound_live_turn else None,
+                                         user_id=current_user.id, conversation_id=conversation_id)
+        next_tool = None
+        next_content = ""
+        continuation_failed = False
         try:
-            async for chunk in followup_api(**second_kwargs):
-                if pending_application_handoff is not None and chunk.startswith("data: "):
-                    try:
-                        ids = orjson.loads(chunk[6:]).get("message_ids", {})
-                        if ids.get("bot"):
-                            from integrations.applications.tool_handoff import record_tool_handoff_message
-                            record_tool_handoff_message(pending_application_handoff, ids["bot"])
-                    except (orjson.JSONDecodeError, AttributeError):
-                        pass
-                yield chunk
+            async with asyncio.timeout_at(http_deadline):
+                async for chunk in followup_api(**second_kwargs):
+                    if chaining and chunk.startswith("data: "):
+                        try:
+                            event = orjson.loads(chunk[6:])
+                        except orjson.JSONDecodeError:
+                            event = {}
+                        if isinstance(event, dict):
+                            if event.get("error") or event.get("persistence_error") or event.get("terminal"):
+                                continuation_failed = True
+                            if "tool_call" in event:
+                                if next_tool is not None:
+                                    raise EmbedError("multiple_tool_calls_unsupported", 422)
+                                next_tool = event["tool_call"]
+                                next_content = event.get("pre_tool_content") or next_content
+                                continue
+                            if event.get("tool_call_pending"):
+                                continue
+                            if isinstance(event.get("content"), str):
+                                next_content += event["content"]
+                    if pending_application_handoff is not None and chunk.startswith("data: "):
+                        try:
+                            ids = orjson.loads(chunk[6:]).get("message_ids", {})
+                            if ids.get("bot"):
+                                from integrations.applications.tool_handoff import record_tool_handoff_message
+                                record_tool_handoff_message(pending_application_handoff, ids["bot"])
+                        except (orjson.JSONDecodeError, AttributeError):
+                            pass
+                    yield chunk
+        except TimeoutError:
+            yield 'data: {"error":"The assistant reached its time limit. Check your saved work before starting anything again."}\n\n'
+            return
+        except EmbedError as exc:
+            yield f"data: {orjson.dumps({'error': exc.code}).decode()}\n\n"
+            return
         finally:
             await finish_pending_realtime_tool_output(api_func_override)
-        # The provider persists its natural confirmation/failure response.
-        # Never persist the private function result as an assistant message.
+        if continuation_failed:
+            return
+        if next_tool is not None:
+            tool_loop.capture(next_tool, next_content)
+        # The final adapter owns persistence and settlement for the whole turn.
         return
-
-    #logger.info(f"antes de save_content_to_db, content: {content}")
     if save_to_db:
         if not content_to_save.strip():
             logger.warning(f"Empty content after function call '{function_name}' for conversation {conversation_id}. Not saving to DB.")

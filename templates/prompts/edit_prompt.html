@@ -1052,38 +1052,43 @@
 
 </form>
 
-<!-- Saved independently because the phone audio bundle activates atomically. -->
-<div class="section-container" id="phoneSettingsSection">
-    <div class="section-title"><i class="fas fa-phone me-2"></i>{{ t('prompt_editor.text.phone_calls') }}</div>
-    <div id="phoneSettingsStatus" class="alert alert-secondary py-2" role="status">
-        {{ t('prompt_editor.text.loading_phone_settings') }}
-    </div>
+<div class="section-container" id="realtimeSettingsSection">
+    <div class="section-title"><i class="fas fa-microphone me-2"></i>{{ t('prompt_editor.realtime.title') }}</div>
+    <p class="text-muted">{{ t('prompt_editor.realtime.description') }}</p>
+    <div id="realtimeSettingsStatus" role="status" class="alert alert-secondary py-2"></div>
     <div class="mb-4 p-3" style="border: 1px solid var(--border-color); border-radius: 8px;">
-        <div class="fw-semibold mb-3"><i class="fas fa-robot me-1 text-muted"></i>{{ t('prompt_editor.text.phone_call_ai') }}</div>
+        <div class="fw-semibold mb-3"><i class="fas fa-robot me-1 text-muted"></i>{{ t('prompt_editor.realtime.title') }}</div>
         <div class="row g-3">
             <div class="col-12 col-lg-6">
-                <label for="phoneCallLLM" class="form-label">{{ t('prompt_editor.text.model') }}</label>
-                <select id="phoneCallLLM" class="form-select">
+                <label for="realtimeLLM" class="form-label">{{ t('prompt_editor.realtime.model') }}</label>
+                <select id="realtimeLLM" class="form-select">
                     <option value="">{{ t('prompt_editor.text.use_the_conversation_model') }}</option>
                 </select>
-                <small class="form-text text-muted">{{ t('prompt_editor.text.a_phone_only_override_keeps_the_same_conversation_prompt') }}</small>
+                <small class="form-text text-muted">{{ t('prompt_editor.realtime.description') }}</small>
+            </div>
+            <div class="col-12 col-lg-6" id="realtimeBackendWrap" hidden>
+                <label for="realtimeBackendLLM" class="form-label">{{ t('prompt_editor.realtime.action_model') }}</label>
+                <button type="button" class="btn btn-link btn-sm text-muted p-0 ms-1 align-baseline" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="{{ t('prompt_editor.realtime.action_model_help') }}" aria-label="{{ t('prompt_editor.realtime.action_model_why') }}"><i class="fas fa-info-circle" aria-hidden="true"></i></button>
+                <select id="realtimeBackendLLM" class="form-select">
+                    <option value="">{{ t('prompt_editor.text.use_the_conversation_model') }}</option>
+                </select>
             </div>
             <div class="col-12 col-lg-6">
-                <label for="phoneCallReasoning" class="form-label">{{ t('prompt_editor.text.thinking') }}</label>
-                <select id="phoneCallReasoning" class="form-select">
+                <label for="realtimeReasoning" class="form-label">{{ t('prompt_editor.text.thinking') }}</label>
+                <select id="realtimeReasoning" class="form-select">
                     <option value="inherit">{{ t('prompt_editor.text.inherit_the_prompt_model_setting') }}</option>
                 </select>
             </div>
-            <div class="col-12 col-lg-6" id="phoneCallReasoningBudgetWrap" hidden>
-                <label for="phoneCallReasoningBudget" class="form-label">{{ t('prompt_editor.text.thinking_token_budget') }}</label>
-                <input id="phoneCallReasoningBudget" class="form-control" type="number">
+            <div class="col-12 col-lg-6" id="realtimeReasoningBudgetWrap" hidden>
+                <label for="realtimeReasoningBudget" class="form-label">{{ t('prompt_editor.text.thinking_token_budget') }}</label>
+                <input id="realtimeReasoningBudget" class="form-control" type="number">
             </div>
-            <div class="col-12 col-lg-6" id="phoneCallRealtimeVoiceWrap" hidden>
-                <label for="phoneCallRealtimeVoice" class="form-label">
-                    {{ t('prompt_editor.text.openai_phone_voice') }}
-                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="{{ t('prompt_editor.attribute.openai_speech_to_speech_models_use_an_openai_voice_for_c') }}"></i>
+            <div class="col-12 col-lg-6" id="realtimeVoiceWrap" hidden>
+                <label for="realtimeVoice" class="form-label">
+                    {{ t('prompt_editor.realtime.voice') }}
+                    <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="{{ t('prompt_editor.realtime.voice_help') }}"></i>
                 </label>
-                <select id="phoneCallRealtimeVoice" class="form-select">
+                <select id="realtimeVoice" class="form-select">
                     <option value="marin">{{ t('prompt_editor.text.marin_recommended') }}</option>
                     <option value="cedar">{{ t('prompt_editor.text.cedar_recommended') }}</option>
                     <option value="alloy">{{ t('prompt_editor.text.alloy') }}</option>
@@ -1095,9 +1100,18 @@
                     <option value="shimmer">{{ t('prompt_editor.text.shimmer') }}</option>
                     <option value="verse">{{ t('prompt_editor.text.verse') }}</option>
                 </select>
-                <small class="form-text text-muted">{{ t('prompt_editor.text.used_for_conversational_replies_in_native_openai_realtim') }}</small>
+                <small class="form-text text-muted">{{ t('prompt_editor.realtime.voice_description') }}</small>
             </div>
         </div>
+    </div>
+    <button type="button" id="saveRealtimeSettings" class="btn btn-primary">{{ t('prompt_editor.realtime.save') }}</button>
+</div>
+
+<!-- Saved independently because the phone audio bundle activates atomically. -->
+<div class="section-container" id="phoneSettingsSection">
+    <div class="section-title"><i class="fas fa-phone me-2"></i>{{ t('prompt_editor.text.phone_calls') }}</div>
+    <div id="phoneSettingsStatus" class="alert alert-secondary py-2" role="status">
+        {{ t('prompt_editor.text.loading_phone_settings') }}
     </div>
     <div class="flex-row">
         <div class="flex-column">
@@ -1356,8 +1370,8 @@
         let effectiveTechnicalNotices = {};
         let customTechnicalNoticeDraft = {};
         let displayedTechnicalNoticeMode = 'inherit';
-        let phoneModels = [];
-        let inheritedPhoneLlmId = null;
+        let realtimeModels = [];
+        let inheritedRealtimeLlmId = null;
         const reasoningLabels = {
             default: peT('runtime.provider_default'), off: peT('text.off'), auto: peT('runtime.automatic'),
             minimal: peT('runtime.minimal'), low: peT('runtime.low'), medium: peT('runtime.medium'), high: peT('runtime.high'),
@@ -1375,16 +1389,16 @@
             return document.querySelector(`.phone-greeting-editor[data-direction="${direction}"]`);
         }
 
-        function phoneModel(id) {
+        function realtimeModel(id) {
             const numericId = Number.parseInt(id, 10);
-            return phoneModels.find(item => Number(item.id) === numericId) || null;
+            return realtimeModels.find(item => Number(item.id) === numericId) || null;
         }
 
-        function renderPhoneAiControls(requestedSelection = null) {
-            const model = phoneModel(
-                document.getElementById('phoneCallLLM').value || inheritedPhoneLlmId
+        function renderRealtimeControls(requestedSelection = null) {
+            const model = realtimeModel(
+                document.getElementById('realtimeLLM').value || inheritedRealtimeLlmId
             );
-            const select = document.getElementById('phoneCallReasoning');
+            const select = document.getElementById('realtimeReasoning');
             const previous = requestedSelection?.mode || select.value || 'inherit';
             select.replaceChildren(new Option(peT('text.inherit_the_prompt_model_setting'), 'inherit'));
             const reasoning = model?.capabilities?.reasoning;
@@ -1396,8 +1410,8 @@
             if (Array.from(select.options).some(option => option.value === previous)) {
                 select.value = previous;
             }
-            const budgetWrap = document.getElementById('phoneCallReasoningBudgetWrap');
-            const budgetInput = document.getElementById('phoneCallReasoningBudget');
+            const budgetWrap = document.getElementById('realtimeReasoningBudgetWrap');
+            const budgetInput = document.getElementById('realtimeReasoningBudget');
             const budget = reasoning?.budget_tokens || {};
             if (select.value === 'custom') {
                 budgetWrap.hidden = false;
@@ -1412,25 +1426,52 @@
                 budgetInput.disabled = true;
                 budgetInput.value = '';
             }
-            const selectedOverride = phoneModel(document.getElementById('phoneCallLLM').value);
-            document.getElementById('phoneCallRealtimeVoiceWrap').hidden =
-                !['openai_realtime', 'openai_live'].includes(selectedOverride?.capabilities?.runtime?.kind);
+            const selectedOverride = realtimeModel(document.getElementById('realtimeLLM').value);
+            document.getElementById('realtimeBackendWrap').hidden =
+                !['openai_live', 'gemini_live'].includes(selectedOverride?.capabilities?.runtime?.kind);
+            const voiceSelect = document.getElementById('realtimeVoice');
+            const runtime = selectedOverride?.capabilities?.runtime;
+            voiceSelect.openaiOptions ??= Array.from(voiceSelect.options, option => option.cloneNode(true));
+            const voiceProvider = runtime?.kind === 'gemini_live' ? 'gemini' : 'openai';
+            if (voiceSelect.dataset.provider !== voiceProvider) {
+                const options = runtime?.voices
+                    ? runtime.voices.map(voice => new Option(voice, voice))
+                    : voiceSelect.openaiOptions.map(option => option.cloneNode(true));
+                voiceSelect.replaceChildren(...options);
+                voiceSelect.value = runtime?.default_voice || 'marin';
+                voiceSelect.dataset.provider = voiceProvider;
+            }
+            document.getElementById('realtimeVoiceWrap').hidden =
+                !['openai_realtime', 'openai_live', 'gemini_live'].includes(runtime?.kind);
         }
 
-        async function loadPhoneModels(currentId) {
+        async function loadRealtimeModels(currentId, backendId) {
             const query = new URLSearchParams({include_realtime: 'true'});
-            if (currentId) query.set('preserve_ids', String(currentId));
+            const preservedIds = [currentId, backendId].filter(Boolean);
+            if (preservedIds.length) query.set('preserve_ids', preservedIds.join(','));
             const response = await fetch(`/api/llms?${query.toString()}`);
-            if (!response.ok) throw new Error(peT('runtime.could_not_load_phone_ai_models'));
-            phoneModels = (await response.json()).filter(llm =>
-                !['GPTSub', 'GranSabio', 'O1'].includes(llm.machine)
-                && llm.capabilities?.runtime?.channels?.includes('phone')
-            );
-            const select = document.getElementById('phoneCallLLM');
+            if (!response.ok) throw new Error(peT('realtime.load_error'));
+            const catalog = (await response.json()).filter(llm =>
+                !['GPTSub', 'GranSabio', 'O1'].includes(llm.machine));
+            realtimeModels = catalog.filter(llm =>
+                ['phone', 'live', 'device'].some(channel => llm.capabilities?.runtime?.channels?.includes(channel)));
+
+            const backendSelect = document.getElementById('realtimeBackendLLM');
+            backendSelect.replaceChildren(new Option(peT('realtime.inherit_backend'), ''));
+            catalog.filter(llm => llm.capabilities?.runtime?.kind === 'standard'
+                && llm.capabilities?.runtime?.channels?.includes('web')).forEach(llm => {
+                backendSelect.appendChild(new Option(llm.display_name || llm.model, String(llm.id)));
+            });
+            const select = document.getElementById('realtimeLLM');
             select.replaceChildren(new Option(peT('text.use_the_conversation_model'), ''));
-            phoneModels.forEach(llm => {
+            realtimeModels.forEach(llm => {
                 select.appendChild(new Option(`${llm.machine} - ${llm.model}`, llm.id));
             });
+            for (const [element, id] of [[select, currentId], [backendSelect, backendId]]) {
+                if (id && !Array.from(element.options).some(option => option.value === String(id))) {
+                    element.add(new Option(peT('realtime.unavailable_model'), String(id)));
+                }
+            }
         }
 
         function addPhrase(direction, phrase, index) {
@@ -1587,12 +1628,6 @@
         function applySettings(value) {
             if (value.voice_code) currentVoiceId = value.voice_code;
             currentVoiceCatalogId = value.voice_id === null ? null : Number(value.voice_id);
-            inheritedPhoneLlmId = value.inherited_llm_id === null
-                ? null : Number(value.inherited_llm_id);
-            document.getElementById('phoneCallLLM').value = value.phone_llm_id ?? '';
-            renderPhoneAiControls(value.phone_reasoning_selection);
-            document.getElementById('phoneCallRealtimeVoice').value =
-                value.phone_realtime_voice || 'marin';
             document.getElementById('voiceCatalogId').value =
                 currentVoiceCatalogId === null ? '' : String(currentVoiceCatalogId);
             document.getElementById('phoneSttLocale').value = value.stt_locale;
@@ -1645,7 +1680,6 @@
                 const response = await fetch(endpoint, {headers: {'Accept': 'application/json'}});
                 const value = await response.json();
                 if (!response.ok) throw new Error(value.detail || peT('runtime.could_not_load_phone_settings'));
-                await loadPhoneModels(value.phone_llm_id);
                 applySettings(value);
             } catch (error) {
                 status(error.message || peT('runtime.could_not_load_phone_settings_message'), 'danger');
@@ -1707,30 +1741,84 @@
             return value;
         }
 
-        function collectSettingsPayload() {
-            const silenceEnabled = document.getElementById('phoneSilenceEnabled').checked;
-            const milestones = document.getElementById('phoneMilestones').value
-                .split(',').map(value => value.trim()).filter(Boolean)
-                .map(value => Number.parseInt(value, 10));
-            const phoneLlmValue = document.getElementById('phoneCallLLM').value;
-            const reasoningMode = document.getElementById('phoneCallReasoning').value;
+        function collectRealtimePayload() {
+            const realtimeLlmValue = document.getElementById('realtimeLLM').value;
+            const reasoningMode = document.getElementById('realtimeReasoning').value;
             const reasoningSelection = reasoningMode === 'inherit'
                 ? null
                 : {
                     mode: reasoningMode,
                     ...(reasoningMode === 'custom'
                         ? {budget_tokens: Number.parseInt(
-                            document.getElementById('phoneCallReasoningBudget').value, 10
+                            document.getElementById('realtimeReasoningBudget').value, 10
                         )}
                         : {}),
                 };
-            const selectedPhoneModel = phoneModel(phoneLlmValue);
-            const payload = {
-                llm_id: phoneLlmValue ? Number.parseInt(phoneLlmValue, 10) : null,
+            const selectedRealtimeModel = realtimeModel(realtimeLlmValue);
+            return {
+                llm_id: realtimeLlmValue ? Number.parseInt(realtimeLlmValue, 10) : null,
+                backend_llm_id: ['openai_live', 'gemini_live'].includes(selectedRealtimeModel?.capabilities?.runtime?.kind)
+                    ? integerOrNull('realtimeBackendLLM') : null,
                 reasoning_selection: reasoningSelection,
-                realtime_voice: ['openai_realtime', 'openai_live'].includes(selectedPhoneModel?.capabilities?.runtime?.kind)
-                    ? document.getElementById('phoneCallRealtimeVoice').value
-                    : null,
+                realtime_voice: ['openai_realtime', 'openai_live', 'gemini_live'].includes(selectedRealtimeModel?.capabilities?.runtime?.kind)
+                    ? document.getElementById('realtimeVoice').value
+                    : null
+            };
+        }
+
+        function realtimeStatus(message, kind = 'secondary') {
+            const target = document.getElementById('realtimeSettingsStatus');
+            target.textContent = message;
+            target.className = `alert alert-${kind} py-2`;
+        }
+
+        function applyRealtimeSettings(value) {
+            inheritedRealtimeLlmId = value.inherited_llm_id === null
+                ? null : Number(value.inherited_llm_id);
+            document.getElementById('realtimeLLM').value = value.realtime_llm_id ?? '';
+            document.getElementById('realtimeBackendLLM').value = value.realtime_backend_llm_id ?? '';
+            renderRealtimeControls(value.realtime_reasoning_selection);
+            document.getElementById('realtimeVoice').value =
+                value.realtime_voice || realtimeModel(value.realtime_llm_id)?.capabilities?.runtime?.default_voice || 'marin';
+        }
+
+        async function loadRealtimeSettings() {
+            const button = document.getElementById('saveRealtimeSettings');
+            button.disabled = true;
+            try {
+                const response = await fetch(`/api/prompts/{{ prompt_id }}/realtime-settings`);
+                const value = await response.json();
+                if (!response.ok) throw new Error(value.detail || peT('realtime.load_error'));
+                await loadRealtimeModels(value.realtime_llm_id, value.realtime_backend_llm_id);
+                applyRealtimeSettings(value);
+                realtimeStatus(peT('realtime.description'));
+                button.disabled = false;
+            } catch (error) { realtimeStatus(error.message, 'danger'); }
+        }
+
+        async function saveRealtimeSettings() {
+            const button = document.getElementById('saveRealtimeSettings');
+            button.disabled = true;
+            try {
+                const response = await fetch(`/api/prompts/{{ prompt_id }}/realtime-settings`, {
+                    method: 'PUT', headers: {'Content-Type': 'application/json', 'X-GPTSub-CSRF': csrfToken},
+                    body: JSON.stringify(collectRealtimePayload())
+                });
+                const value = await response.json();
+                if (!response.ok) throw new Error(Array.isArray(value.detail)
+                    ? value.detail.map(item => item.msg).join(' ') : value.detail || peT('realtime.save_error'));
+                applyRealtimeSettings(value);
+                realtimeStatus(peT('realtime.saved'), 'success');
+            } catch (error) { realtimeStatus(error.message, 'danger'); }
+            finally { button.disabled = false; }
+        }
+
+        function collectSettingsPayload() {
+            const silenceEnabled = document.getElementById('phoneSilenceEnabled').checked;
+            const milestones = document.getElementById('phoneMilestones').value
+                .split(',').map(value => value.trim()).filter(Boolean)
+                .map(value => Number.parseInt(value, 10));
+            const payload = {
                 stt_locale: document.getElementById('phoneSttLocale').value.trim(),
                 endpointing_ms: integerOrNull('phoneEndpointing'),
                 interruptible: document.getElementById('phoneInterruptible').checked,
@@ -1799,17 +1887,19 @@
                 );
             });
             document.getElementById('phoneSilenceEnabled').addEventListener('change', toggleSilenceInputs);
-            document.getElementById('phoneCallLLM').addEventListener(
-                'change', () => renderPhoneAiControls()
+            document.getElementById('realtimeLLM').addEventListener(
+                'change', () => renderRealtimeControls()
             );
-            document.getElementById('phoneCallReasoning').addEventListener(
-                'change', () => renderPhoneAiControls()
+            document.getElementById('realtimeReasoning').addEventListener(
+                'change', () => renderRealtimeControls()
             );
             document.getElementById('phoneTechnicalNoticeMode').addEventListener(
                 'change', updateTechnicalNoticeMode
             );
             document.getElementById('savePhoneSettings').addEventListener('click', saveSettings);
             settingsLoadPromise = loadSettings();
+            void loadRealtimeSettings();
+            document.getElementById('saveRealtimeSettings').addEventListener('click', saveRealtimeSettings);
 
             const promptForm = document.getElementById('editPromptForm');
             promptForm.addEventListener('submit', async event => {

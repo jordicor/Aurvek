@@ -267,8 +267,8 @@ def verify_content_token(
     return payload
 
 
-def creator_content_unavailable_response(translator=None) -> HTMLResponse:
-    """Return a non-sensitive fail-closed response for unconfigured isolation."""
+def creator_content_unavailable_response(translator=None, *, retry_after_seconds: int = 300) -> HTMLResponse:
+    """Return a non-sensitive temporary response for unavailable creator content."""
     from i18n import Translator
     from html import escape
 
@@ -280,7 +280,7 @@ def creator_content_unavailable_response(translator=None) -> HTMLResponse:
         f"</head><body><main><h1>{escape(translator.t('public_shell.unavailable'))}</h1>"
         f"<p>{escape(translator.t('public_shell.retry'))}</p></main></body></html>",
         status_code=503,
-        headers={"Retry-After": "300", "Cache-Control": "no-store", "Content-Language": translator.language},
+        headers={"Retry-After": str(retry_after_seconds), "Cache-Control": "no-store", "Content-Language": translator.language},
     )
 
 

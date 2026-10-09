@@ -1,9 +1,11 @@
 import asyncio
 import inspect
 import math
+from contextlib import aclosing
 from integrations.embed.models import EmbedError as ApplicationRuntimeError
 
 from ai_runtime.dependencies import *
+from llm_catalog import normalize_runtime_capability
 from chat.services.message_requests import unavailable_model_response
 from billing.usage_reservations import (
     ai_reservation_provider_started,
@@ -12,7 +14,6 @@ from billing.usage_reservations import (
     VariableBillingRates,
     estimate_customer_charge_from_api_cost,
     estimate_structured_billing_tokens,
-    estimate_structured_usage_tokens,
     get_user_billing_availability,
     get_variable_billing_rates,
     refund_fixed_usage,
@@ -61,6 +62,7 @@ from ai_runtime.config import (
 )
 from ai_runtime.context.assembly import (
     apply_rate_limit,
+    build_assistant_prompt_context,
     build_full_prompt_context,
     check_own_only_gransabio,
     run_input_moderation,
@@ -79,10 +81,6 @@ from ai_runtime.context.message_provenance import (
     render_current_input_context,
 )
 from ai_runtime.context.system import assemble_system_prompt, get_effective_blocks
-from ai_runtime.context.user_language import load_user_language_context
-from ai_runtime.context.user_time import load_user_time_context, render_user_time_context
-from ai_runtime.context.user_language import render_user_language_context
-from integrations.applications.profile import conversation_profile, personal_context
 from ai_runtime.context.warmup import (
     _build_warmup_cache_key_from_state,
     _copy_warmup_context_messages,
@@ -97,6 +95,7 @@ from ai_runtime.channel_turns import (
 )
 from ai_runtime.persistence.messages import (
     persistence_error_payload,
+    persistence_result_payload,
     save_content_to_db,
     save_interrupted_channel_turn,
 )
@@ -111,9 +110,12 @@ from ai_runtime.providers.xai import call_xai_responses_api
 from ai_runtime.streaming import _stream_with_sse_keepalives
 from ai_runtime.tooling.catalog import tools_in_app
 from ai_runtime.tooling.execution import (
+    REPEATED_TOOL_CALL_RESULT,
     TOOL_CALL_SERIALIZATION_BYTES_PER_OUTPUT_TOKEN,
     TOOL_RESULT_MAX_BYTES,
+    ToolLoop,
     _build_tool_response_messages,
+    _resolve_tool_call_billing_usage,
     finish_pending_realtime_tool_output,
     handle_function_call,
     truncate_tool_result_for_ai,
@@ -132,6 +134,7 @@ from ai_runtime.watchdog.prompting import (
 )
 from ai_runtime.watchdog.takeover import watchdog_takeover_response
 from integrations.telephony.tooling import phone_tools_for_context
+from integrations.live.control import live_tools_for_context
 from llm_catalog import normalize_capabilities
 
 
@@ -221,7 +224,7 @@ def _stale_channel_terminal_payload(*, persistence_error: bool = False) -> dict:
 def _has_trusted_realtime_phone_bridge(context: ChannelContext) -> bool:
     """Accept the native route only with the server-created phone bridge."""
 
-    bridge = context.provenance.get("openai_realtime_bridge")
+    bridge = context.provenance.get("native_audio_bridge")
     return bool(
         context.channel == "phone"
         and context.persistence == "deferred"
@@ -292,68 +295,11 @@ def storage_quota_notice_from_response(response, *, translator=None) -> str | No
     return platform_reply_quota_message(usage_bytes, quota_bytes, translator=translator)
 
 
-def _resolve_tool_call_billing_usage(
-    tool_call: dict,
-    *,
-    input_fallback: int,
-    output_cap: int,
-    pre_tool_content: str = "",
-) -> tuple[int, int]:
-    """Use provider usage for a tool call, falling back conservatively."""
-    usage = tool_call.pop("_billing_usage", None) or {}
-    try:
-        input_tokens = max(0, int(usage.get("input_tokens") or 0))
-    except (TypeError, ValueError):
-        input_tokens = 0
-    try:
-        output_tokens = max(0, int(usage.get("output_tokens") or 0))
-    except (TypeError, ValueError):
-        output_tokens = 0
-    if input_tokens == 0:
-        input_tokens = max(1, int(input_fallback or 0))
-    if output_tokens == 0:
-        output_tokens = min(
-            max(1, int(output_cap or 1)),
-            estimate_structured_usage_tokens(
-                tool_call.get("name"),
-                tool_call.get("arguments"),
-                pre_tool_content,
-            ),
-        )
-    return input_tokens, output_tokens
-
-
 async def _load_prompt_runtime_policy(conn, prompt_id: int | None) -> dict:
-    empty = {
-        "forced_llm_id": None,
-        "forced_reasoning_json": None,
-        "phone_llm_id": None,
-        "phone_reasoning_json": None,
-    }
+    from integrations.realtime.configuration import CONFIG_COLUMNS, load_prompt_configuration
     if prompt_id is None:
-        return empty
-    try:
-        cursor = await conn.execute(
-            """
-            SELECT forced_llm_id,forced_reasoning_json,
-                   phone_llm_id,phone_reasoning_json
-            FROM PROMPTS WHERE id=?
-            """,
-            (int(prompt_id),),
-        )
-        row = await cursor.fetchone()
-    except Exception as exc:
-        # Compatibility for a process started briefly before this additive
-        # migration is applied, and for narrow legacy-schema test databases.
-        if "no such column" in str(exc).lower():
-            return empty
-        raise
-    if row is None:
-        return empty
-    return {
-        key: row[index]
-        for index, key in enumerate(empty)
-    }
+        return dict.fromkeys(CONFIG_COLUMNS)
+    return await load_prompt_configuration(conn, prompt_id)
 
 
 def _stored_reasoning_selection(value) -> ReasoningSelection:
@@ -364,51 +310,6 @@ def _stored_reasoning_selection(value) -> ReasoningSelection:
     except orjson.JSONDecodeError as exc:
         raise ReasoningValidationError("stored prompt reasoning is invalid") from exc
     return parse_reasoning_selection(decoded)
-
-
-async def _load_phone_runtime_llm(conn, llm_id: int) -> dict | None:
-    cursor = await conn.execute(
-        """
-        SELECT id,machine,model,
-               COALESCE(input_token_cost,0),COALESCE(output_token_cost,0),
-               COALESCE(max_output_tokens,0),capabilities_json,
-               COALESCE(enabled,1),provider_key,provider_model_id,
-               raw_metadata_json,manual_overrides_json
-        FROM LLM WHERE id=?
-        """,
-        (int(llm_id),),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
-    values = tuple(row)
-
-    def object_value(value):
-        if not value:
-            return {}
-        try:
-            decoded = orjson.loads(value) if isinstance(value, (str, bytes)) else value
-        except orjson.JSONDecodeError:
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
-
-    capabilities = normalize_capabilities(
-        values[8] or values[1],
-        values[9] or values[2],
-        object_value(values[10]),
-        object_value(values[6]),
-        object_value(values[11]),
-    )
-    return {
-        "id": int(values[0]),
-        "machine": str(values[1] or ""),
-        "model": str(values[2] or ""),
-        "input_token_cost": float(values[3] or 0),
-        "output_token_cost": float(values[4] or 0),
-        "max_output_tokens": int(values[5] or 0),
-        "capabilities": capabilities,
-        "enabled": bool(values[7]),
-    }
 
 
 from integrations.applications.runtime import application_billing_turn
@@ -450,13 +351,20 @@ async def process_save_message(
             persistence="immediate",
         )
     runtime_kind = "standard"
+    live_control = None
+    if runtime_llm_id is not None and channel_context.channel in {"web", "device"}:
+        from integrations.live.control import LiveSessionControl
+        control = channel_context.provenance.get("live_session_control")
+        if isinstance(control, LiveSessionControl) and control.matches(
+                channel_context, user_id=current_user.id, conversation_id=conversation_id):
+            live_control = control
     if runtime_llm_id is not None:
-        if channel_context.channel != "phone":
+        if channel_context.channel != "phone" and live_control is None:
             return JSONResponse(
                 content={
                     "success": False,
                     "error_code": "runtime_model_override_forbidden",
-                    "message": "A runtime model override is available only for phone turns.",
+                    "message": "A runtime model override requires an authorized real-time turn.",
                 },
                 status_code=403,
             )
@@ -692,36 +600,48 @@ async def process_save_message(
         if not channel_context.ingest_only and runtime_llm_id is None and not llm_enabled:
             return unavailable_model_response(conversation_llm_id, model)
 
+        if (
+            not channel_context.ingest_only
+            and runtime_llm_id is None
+            and "web" not in normalize_runtime_capability(
+                machine, model, capabilities=orjson.loads(llm_capabilities_json or "{}")
+            )["channels"]
+        ):
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "error_code": "model_voice_only",
+                    "message": "This model only supports real-time voice. Choose a chat model.",
+                },
+                status_code=422,
+            )
+
         prompt_runtime_policy = await _load_prompt_runtime_policy(
             conn_ro,
             effective_prompt_id,
         )
         if runtime_llm_id is not None:
-            configured_phone_llm_id = prompt_runtime_policy["phone_llm_id"]
-            authorized_runtime_llm_id = (
-                conversation_model_fence_id
-                if configured_phone_llm_id is None
-                else int(configured_phone_llm_id)
-            )
-            if int(runtime_llm_id) != authorized_runtime_llm_id:
-                return JSONResponse(
-                    content={
-                        "success": False,
-                        "error_code": "phone_runtime_model_changed",
-                        "message": "The prompt phone model changed after this call was captured.",
-                    },
-                    status_code=409,
-                )
-            runtime_model = await _load_phone_runtime_llm(conn_ro, runtime_llm_id)
-            if runtime_model is None:
-                return JSONResponse(
-                    content={
-                        "success": False,
-                        "error_code": "phone_runtime_model_unavailable",
-                        "message": "The phone runtime model is unavailable.",
-                    },
-                    status_code=409,
-                )
+            from integrations.realtime.configuration import RealtimeConfigurationError, resolve_selection
+            from integrations.embed.models import EmbedError
+            try:
+                if live_control is not None:
+                    await live_control.session.check_access(generation=True)
+                    if not live_control.matches(channel_context, user_id=current_user.id, conversation_id=conversation_id):
+                        raise EmbedError("live_configuration_changed", 409)
+                selection = await resolve_selection(conn_ro, prompt_id=effective_prompt_id,
+                    conversation_llm_id=conversation_model_fence_id,
+                    channel=("device" if channel_context.channel == "device" else
+                             "live" if live_control is not None else "phone"),
+                    configuration=prompt_runtime_policy)
+                runtime_model = selection.backend if channel_context.persistence == "delegation" else selection.model
+                if runtime_model is None or runtime_model["id"] != runtime_llm_id:
+                    raise EmbedError("realtime_model_changed", 409)
+                if live_control is not None and not selection.matches(live_control.session.settings["selection"]):
+                    raise EmbedError("live_configuration_changed", 409)
+            except (RealtimeConfigurationError, EmbedError) as exc:
+                return JSONResponse(content={"success": False, "error_code": exc.code,
+                    "message": "The real-time configuration is unavailable or changed. Review the assistant settings and reconnect."},
+                    status_code=getattr(exc, "status_code", 409))
             runtime_kind = (
                 runtime_model["capabilities"].get("runtime") or {}
             ).get("kind")
@@ -749,7 +669,7 @@ async def process_save_message(
                 )
             if (
                 not runtime_model["enabled"]
-                or runtime_model["machine"] in {"GPTSub", "GranSabio"}
+                or runtime_model["machine"] in {"GPTSub", "GranSabio", "O1"}
             ):
                 return JSONResponse(
                     content={
@@ -760,13 +680,13 @@ async def process_save_message(
                     status_code=409,
                 )
             # From this point onward the existing provider, token budgeting,
-            # billing and persistence path must use the effective phone model.
+            # billing and persistence path must use the authorized runtime model.
             conversation_llm_id = int(runtime_model["id"])
             machine = runtime_model["machine"]
             model = runtime_model["model"]
             input_token_cost = runtime_model["input_token_cost"]
             output_token_cost = runtime_model["output_token_cost"]
-            llm_max_output_tokens = runtime_model["max_output_tokens"]
+            llm_max_output_tokens = int(runtime_model.get("max_output_tokens") or 0)
             llm_capabilities_json = orjson.dumps(
                 runtime_model["capabilities"]
             ).decode("utf-8")
@@ -1059,6 +979,12 @@ async def process_save_message(
                         )
                     input_tokens += _estimate_pdf_input_tokens_for_preflight(page_count_for_cost, machine)
 
+        from integrations.applications.external_execution import (
+            current as external_execution,
+        )
+        external_operation = external_execution()
+        if external_operation is not None and (machine not in {"GPT", "Claude", "Gemini", "xAI", "OpenRouter"} or gransabio_enabled_col or prompt_is_paid):
+            raise ApplicationRuntimeError("external_execution_unsupported_chat_configuration", 409)
         billing_availability = (
             {"available": 0.0}
             if channel_context.ingest_only
@@ -1166,7 +1092,12 @@ async def process_save_message(
                     return await _attachment_error_response(f'API key required for {preflight_provider}.')
                 is_byok = preflight_key is not None
 
-            if is_byok:
+            if external_operation is not None:
+                # The remote execution already holds its entire budget.
+                # Its physical request gate checks the final token bound.
+                output_tokens = model_output_cap
+                billing_preflight_amount = 0.0
+            elif is_byok:
                 # BYOK: no API cost to platform. Only need balance for paid prompt markup.
                 if (prompt_is_paid and not channel_context.ingest_only
                         and current_balance < BYOK_MIN_BALANCE_PAID_PROMPT):
@@ -2058,6 +1989,9 @@ async def get_ai_response(
 
     user_id = current_user.id
     async def _revalidate_application_provider_call():
+        from integrations.live.control import revalidate_live_delegation
+        await revalidate_live_delegation(bound_input_turn.context if bound_input_turn else None,
+                                         user_id=user_id, conversation_id=conversation_id)
         from integrations.applications.billing import (
             current_application_operation, revalidate_application_operation,
         )
@@ -2068,6 +2002,7 @@ async def get_ai_response(
     ai_reservation_id = None
     ai_reserved_maximum = 0.0
     realtime_tool_pending = False
+    tool_loop = None
     logger.debug(f"User ID: {user_id}")
     context_messages = flatten_multi_ai_context(context_messages)
     context_messages = filter_invalid_context_messages(context_messages)
@@ -2115,6 +2050,7 @@ async def get_ai_response(
                     LEFT JOIN USER_DETAILS ud ON ud.user_id = ?
                     LEFT JOIN USERS u ON u.id = ?
                     LEFT JOIN PROMPT_EXTENSIONS pe ON c.active_extension_id = pe.id
+                        AND pe.prompt_id = COALESCE(c.role_id, ud.current_prompt_id)
                     WHERE c.id = ? AND c.user_id = ?
                 """, (user_id, user_id, conversation_id, user_id))
 
@@ -2173,80 +2109,23 @@ async def get_ai_response(
                     from integrations.embed.runtime import is_embed_conversation
 
                     embed_interview = await is_embed_conversation(conversation_id)
-                    app_profile = await conversation_profile(conn_ro, conversation_id) if embed_interview else None
-                    if embed_interview:
-                        user_info = personal_context(app_profile) if app_profile is not None else None
-                        current_alter_ego_id = None
-
-                    if current_alter_ego_id:
-                        # Get alter-ego information
-                        await cursor_ro.execute("""
-                            SELECT name, description
-                            FROM USER_ALTER_EGOS
-                            WHERE id = ? AND user_id = ?
-                        """, (current_alter_ego_id, user_id))
-                        alter_ego_row = await cursor_ro.fetchone()
-                        if alter_ego_row:
-                            alter_ego_name, alter_ego_description = alter_ego_row
-                            # Use alter-ego info instead of user info
-                            if alter_ego_description:
-                                prompt_base = f"User info:\nName: {alter_ego_name}\n{alter_ego_description}\n\n-----\nSystem info:\n{prompt}"
-                            else:
-                                prompt_base = f"User info:\nName: {alter_ego_name}\n\n-----\nSystem info:\n{prompt}"
-                        else:
-                            # If alter-ego not found, use user info
-                            if user_info:
-                                prompt_base = f"User info:\n{user_info}\n\n-----\nSystem info:\n{prompt}"
-                            else:
-                                prompt_base = prompt
-                    else:
-                        # No alter-ego selected, use user info
-                        if user_info:
-                            prompt_base = f"User info:\n{user_info}\n\n-----\nSystem info:\n{prompt}"
-                        else:
-                            prompt_base = prompt
-
-                    # --- Extensions: inject active extension prompt and level context ---
-                    has_extensions = False
-                    if extensions_enabled and extension_prompt_text:
-                        prompt_base = (
-                            f"{prompt_base}\n\n"
-                            f"--- ACTIVE EXTENSION: {extension_name} ---\n"
-                            f"{extension_prompt_text}\n"
-                            f"--- END EXTENSION ---"
-                        )
-
-                    if extensions_enabled and extensions_auto_advance:
-                        async with get_db_connection(readonly=True) as conn_ext:
-                            async with conn_ext.cursor() as cursor_ext:
-                                await cursor_ext.execute(
-                                    "SELECT id, name, display_order, description FROM PROMPT_EXTENSIONS WHERE prompt_id = ? ORDER BY display_order",
-                                    (effective_role_id,)
-                                )
-                                all_extensions = await cursor_ext.fetchall()
-                                if all_extensions:
-                                    has_extensions = True
-                                    ext_list = "\n".join([
-                                        f"  - [{e[0]}] {e[1]}{' (CURRENT)' if e[0] == active_extension_id else ''}: {e[3] or 'No description'}"
-                                        for e in all_extensions
-                                    ])
-                                    extensions_context = (
-                                        f"\n\n--- EXTENSION LEVELS ---\n"
-                                        f"This conversation has the following levels/phases. You are currently on the one marked (CURRENT).\n"
-                                        f"When you determine the current level's objectives are sufficiently covered, "
-                                        f"use the advanceExtension tool to transition to the next level.\n"
-                                        f"{ext_list}\n"
-                                        f"--- END EXTENSION LEVELS ---"
-                                    )
-                                    prompt_base += extensions_context
-
-                    # User-local time and channel state are trusted, ephemeral
-                    # inputs. Both must be identical for the pre-watchdog and
-                    # main model, including native OpenAI Realtime turns.
+                    assistant_context = await build_assistant_prompt_context(
+                        conn_ro, user_id=user_id, conversation_id=conversation_id,
+                        prompt=prompt, user_info=user_info,
+                        current_alter_ego_id=current_alter_ego_id,
+                        effective_role_id=effective_role_id,
+                        extensions_enabled=extensions_enabled,
+                        extensions_auto_advance=extensions_auto_advance,
+                        active_extension_id=active_extension_id,
+                        extension_name=extension_name,
+                        extension_prompt_text=extension_prompt_text,
+                        embedded=embed_interview,
+                    )
+                    prompt_base = assistant_context["prompt_base"]
+                    has_extensions = assistant_context["has_extensions"]
                     internal_turn_context = merge_internal_turn_context(
                         internal_turn_context,
-                        render_user_time_context(app_profile.timezone_name if app_profile else None) if embed_interview else await load_user_time_context(conn_ro, user_id),
-                        render_user_language_context(app_profile.preferred_languages) if app_profile is not None else (None if embed_interview else await load_user_language_context(conn_ro, user_id)),
+                        assistant_context["internal_turn_context"],
                         current_input_context,
                     )
                     _, pre_watchdog_prompt_context = (
@@ -2436,7 +2315,7 @@ async def get_ai_response(
                                 watchdog_hint_eval_id = hint_row[2]
 
                     # Assemble full_prompt via global system prompt blocks
-                    blocks = await get_effective_blocks()
+                    blocks = await get_effective_blocks(embedded=embed_interview)
                     variables = {
                         "user_level": user_level,
                         "current_datetime_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -2832,6 +2711,9 @@ async def get_ai_response(
                     filtered_tools.extend(
                         phone_tools_for_context(bound_channel.context)
                     )
+                    filtered_tools.extend(live_tools_for_context(
+                        bound_channel.context, user_id=current_user.id,
+                        conversation_id=conversation_id))
                 if not bool(getattr(current_user, "can_generate_images", False)):
                     filtered_tools = [
                         tool
@@ -2965,7 +2847,7 @@ async def get_ai_response(
                 if runtime_kind == "openai_realtime":
                     kwargs["realtime_bridge"] = (
                         bound_channel.context.provenance.get(
-                            "openai_realtime_bridge"
+                            "native_audio_bridge"
                         )
                         if bound_channel is not None
                         else None
@@ -3298,34 +3180,53 @@ async def get_ai_response(
                     # Yield normal content to frontend
                     yield chunk
 
-                # If a tool call was collected, handle it
-                if collected_tool_call:
+                # If a tool call was collected, handle it. An application assistant
+                # can opt in to chain more calls; each one takes this same path.
+                tool_spent_amount = 0.0
+                tool_call_input_fallback = provider_input_tokens
+
+                def _tool_round_chunk(chunk):
+                    return tool_loop.observe(chunk) if tool_loop is not None else chunk
+
+                while collected_tool_call:
+                    if stop_signals.get(conversation_id, False):
+                        return
+                    realtime_tool_pending = runtime_kind == "openai_realtime"
+                    if collected_tool_call['name'] not in {
+                            tool.get('function', {}).get('name') for tool in filtered_tools}:
+                        error_code = ("application_tool_denied" if application_tool_context is not None
+                                      else "tool_not_available")
+                        yield f"data: {orjson.dumps({'error': error_code, 'error_code': error_code}).decode()}\n\n"
+                        return
                     if application_tool_context is not None:
                         from integrations.applications.tools import authorize_application_tool
                         from integrations.embed.models import EmbedError
                         try:
-                            if collected_tool_call['name'] not in {
-                                    tool.get('function', {}).get('name') for tool in filtered_tools}:
-                                raise EmbedError("application_tool_denied", 403)
                             await authorize_application_tool(current_user.id, conversation_id,
                                 collected_tool_call['name'], collected_tool_call['arguments'],
                                 offered_tools=filtered_tools)
                         except EmbedError as exc:
                             yield f"data: {orjson.dumps({'error': exc.code}).decode()}\n\n"
                             return
-                    realtime_tool_pending = runtime_kind == "openai_realtime"
+                        if tool_loop is None and runtime_kind == "standard":
+                            from integrations.applications.tools import application_tool_rounds
+                            max_tool_rounds = await application_tool_rounds(application_tool_context)
+                            if max_tool_rounds > 1:
+                                tool_loop = ToolLoop(max_tool_rounds)
                     function_name = collected_tool_call['name']
                     function_arguments = collected_tool_call['arguments']
                     application_tool_budget = None
                     if application_tool_context is not None and function_name != "transfer_to_assistant":
                         from ai_runtime.tooling.context_budget import prepare_application_tool_budget
+                        # Later calls keep this reply's earlier call/result pairs intact.
                         application_tool_budget = await prepare_application_tool_budget(api_messages, collected_tool_call,
                             machine=machine, full_prompt=full_prompt, llm_id=llm_id, prompt_id=prompt_id,
-                            max_tokens=max_tokens, provider_tools=provider_tools)
+                            max_tokens=max_tokens, provider_tools=provider_tools,
+                            allow_history_trim=tool_loop is None or tool_loop.rounds == 0)
                     initial_tool_input_tokens, initial_tool_output_tokens = (
                         _resolve_tool_call_billing_usage(
                             collected_tool_call,
-                            input_fallback=provider_input_tokens,
+                            input_fallback=tool_call_input_fallback,
                             output_cap=max_tokens,
                             pre_tool_content=pre_tool_content,
                         )
@@ -3339,7 +3240,7 @@ async def get_ai_response(
                     )
                     if application_tool_budget is not None:
                         # The tool call (including signed reasoning) is known.
-                        # App continuations bound the result and disable tools;
+                        # App continuations bound the result and token reservation;
                         # do not budget another maximum-size serialized call.
                         second_input_tokens = application_tool_budget.maximum_input_tokens(
                             full_prompt, provider_tools)
@@ -3376,9 +3277,11 @@ async def get_ai_response(
                         + initial_tool_output_tokens
                         * billing_rates.output_per_token
                     )
+                    # Finished calls of this reply count at their known usage.
+                    tool_spent_amount += first_call_actual_upper
                     additional_hold = max(
                         0.0,
-                        first_call_actual_upper
+                        tool_spent_amount
                         + second_call_maximum
                         - ai_reserved_maximum,
                     )
@@ -3401,9 +3304,141 @@ async def get_ai_response(
                             return "AI billing is temporarily unavailable"
                         return None
 
+                    async def _stream_lookup_follow_up():
+                        """Answer after a lookup or a repeated call. A chaining assistant may
+                        call another tool; otherwise only the bound Live session can close."""
+                        chaining = tool_loop is not None and tool_loop.offers_tools()
+                        closing_tools = []
+                        if (not chaining and bound_channel is not None and live_tools_for_context(
+                                bound_channel.context, user_id=user_id,
+                                conversation_id=conversation_id)):
+                            candidates = [tool for tool in filtered_tools
+                                if tool.get("function", {}).get("name") == "end_live_session"]
+                            if candidates:
+                                scope, catalog = await application_tool_catalog(
+                                    user_id, conversation_id, candidates)
+                                if scope != application_tool_context:
+                                    raise ApplicationRuntimeError("application_scope_mismatch", 403)
+                                if live_tools_for_context(bound_channel.context, user_id=user_id,
+                                                          conversation_id=conversation_id):
+                                    closing_tools = [tool for tool in catalog
+                                        if tool.get("function", {}).get("name") == "end_live_session"]
+                        closing_provider_tools = [tool for tool in (provider_tools or [])
+                            if (tool.get("name") or tool.get("function", {}).get("name")) == "end_live_session"]
+                        second_kwargs = dict(kwargs, messages=api_messages, web_search_mode=None)
+                        if chaining:
+                            second_kwargs["tools"] = tool_loop.offered(provider_tools)
+                            second_kwargs.pop("tool_choice", None)
+                        elif closing_tools and closing_provider_tools:
+                            second_kwargs["tools"] = closing_provider_tools
+                            second_kwargs.pop("tool_choice", None)
+                        else:
+                            closing_tools = []
+                            if machine == "Claude":
+                                # Keep signed tool-use history valid without allowing another action.
+                                second_kwargs["tool_choice"] = {"type": "none"}
+                            else:
+                                second_kwargs.pop("tools", None)
+                        if machine in ("OpenRouter", "MiniMax", "Kimi"):
+                            if api_messages and api_messages[0].get("role") == "system":
+                                api_messages.pop(0)
+                        if not await revalidate_user_billing(user_id, billing_preflight_amount):
+                            yield 'data: {"error_code":"insufficient_balance","error":"Insufficient balance"}\n\n'
+                            return
+                        await _revalidate_application_provider_call()
+
+                        next_tool = None
+                        next_content = ""
+                        failed = False
+                        multiple_tools = False
+                        async with aclosing(api_func(**second_kwargs)) as stream:
+                            async for chunk in stream:
+                                data = {}
+                                if isinstance(chunk, str) and chunk.startswith("data: "):
+                                    try:
+                                        parsed = orjson.loads(chunk[6:].strip())
+                                        if isinstance(parsed, dict):
+                                            data = parsed
+                                    except orjson.JSONDecodeError:
+                                        pass
+                                failed |= bool(data.get("error") or data.get("persistence_error")
+                                               or data.get("terminal"))
+                                if "tool_call" in data:
+                                    multiple_tools |= next_tool is not None
+                                    next_tool = data["tool_call"]
+                                    next_content = data.get("pre_tool_content", "")
+                                    continue
+                                if data.get("tool_call_pending"):
+                                    continue
+                                yield chunk
+                        # Drain provider usage before rejecting a failed or unauthorized action.
+                        if failed or next_tool is None:
+                            return
+                        if chaining and not multiple_tools and isinstance(next_tool, dict):
+                            # The chain runs it through the same path as the first call.
+                            tool_loop.capture(next_tool, next_content)
+                            return
+                        if (multiple_tools or not closing_tools or not isinstance(next_tool, dict)
+                                or next_tool.get("name") != "end_live_session"):
+                            code = "application_tool_denied" if application_tool_context else "tool_not_available"
+                            yield f"data: {orjson.dumps({'error': code, 'error_code': code}).decode()}\n\n"
+                            return
+                        if application_tool_context is not None:
+                            from integrations.applications.tools import authorize_application_tool
+                            scope = await authorize_application_tool(user_id, conversation_id,
+                                next_tool["name"], next_tool.get("arguments"), offered_tools=closing_tools)
+                            if scope != application_tool_context:
+                                raise ApplicationRuntimeError("application_scope_mismatch", 403)
+                        if not await revalidate_user_billing(user_id, billing_preflight_amount):
+                            yield 'data: {"error_code":"insufficient_balance","error":"Insufficient balance"}\n\n'
+                            return
+                        call_input, call_output = _resolve_tool_call_billing_usage(
+                            next_tool, input_fallback=second_input_tokens,
+                            output_cap=max_tokens, pre_tool_content=next_content)
+                        # Both adapters have accumulated usage into the same reservation.
+                        # The closing handler commits it without a third model call.
+                        async for chunk in handle_function_call(
+                            "end_live_session", next_tool.get("arguments"), api_messages,
+                            model, temperature, max_tokens, next_content, conversation_id,
+                            current_user, request, call_input, call_output, call_input + call_output,
+                            None, user_id, machine, full_prompt, user_message,
+                            input_token_fallback=input_token_fallback, user_api_key=resolved_key,
+                            api_model=openrouter_model_id if pdf_redirect_active else None,
+                            pdf_error_metadata=pdf_error_metadata, prompt_id=prompt_id,
+                            watchdog_config=watchdog_config, watchdog_hint_active=watchdog_hint_active,
+                            watchdog_hint_eval_id=watchdog_hint_eval_id, llm_id=llm_id, byok=byok,
+                            reasoning_selection=reasoning_selection,
+                            pending_attachment_refs=pending_attachment_refs,
+                            strip_device_action_blocks=strip_device_action_blocks,
+                            billing_preflight_amount=billing_preflight_amount,
+                            billing_reservation_id=ai_reservation_id,
+                            billing_first_call_accumulated=bool(ai_reservation_id), tool_call=next_tool,
+                        ):
+                            yield chunk
+
+                    if stop_signals.get(conversation_id, False):
+                        return
+
                     logger.info(f"[get_ai_response] - Processing tool call: {function_name}")
 
-                    if function_name == "query_perplexity":
+                    if tool_loop is not None and not tool_loop.start_round(collected_tool_call, pre_tool_content):
+                        # A repeat of the previous call does not run again: the model
+                        # answers from the results it already has, without tools.
+                        follow_up_error = await _extend_for_tool_follow_up()
+                        if follow_up_error:
+                            yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
+                            return
+                        if application_tool_budget is not None:
+                            api_messages[:] = application_tool_budget.result_messages(REPEATED_TOOL_CALL_RESULT)
+                        else:
+                            _build_tool_response_messages(api_messages, collected_tool_call,
+                                                          REPEATED_TOOL_CALL_RESULT, machine)
+                        if pre_tool_content:
+                            yield f"data: {orjson.dumps({'content': '\n\n'}).decode()}\n\n"
+                        async for chunk in _stream_lookup_follow_up():
+                            yield _tool_round_chunk(chunk)
+
+                    elif function_name == "query_perplexity":
                         # === SECOND PASS FLOW ===
                         # The AI decided to search the web. We call Perplexity silently,
                         # feed the results back to the AI, and let it formulate its own answer.
@@ -3428,6 +3463,8 @@ async def get_ai_response(
 
                         try:
                             # 2. Get Perplexity results (non-streaming)
+                            if stop_signals.get(conversation_id, False):
+                                return
                             perplexity_result = await get_billed_perplexity_result(
                                 query,
                                 user_id=current_user.id,
@@ -3446,39 +3483,12 @@ async def get_ai_response(
                         else:
                             _build_tool_response_messages(api_messages, collected_tool_call, perplexity_result, machine)
 
-                        # 4. Preserve Claude's declared tools so its signed tool_use
-                        #    round-trip remains valid, but forbid another tool call.
-                        second_kwargs = dict(kwargs)
-                        if machine == "Claude":
-                            second_kwargs["tool_choice"] = {"type": "none"}
-                        else:
-                            second_kwargs.pop("tools", None)
-                        second_kwargs["web_search_mode"] = None
-                        second_kwargs["messages"] = api_messages
-
-                        # System prompt dedup for Chat Completions providers:
-                        # call_llm_api does messages.insert(0, {"role": "system", ...}) mutating the list.
-                        # The first call already inserted it, so pop it before the second call.
-                        # GPT and xAI excluded: their Responses API functions don't mutate the caller's message list.
-                        if machine in ("OpenRouter", "MiniMax", "Kimi"):
-                            if api_messages and isinstance(api_messages[0], dict) and api_messages[0].get("role") == "system":
-                                api_messages.pop(0)
-
-                        # 5. Tell frontend search is done, AI response about to stream
+                        # 4. Tell frontend search is done, AI response about to stream
                         yield f"data: {orjson.dumps({'searching': False}).decode()}\n\n"
 
-                        # 6. Stream the second pass response from the original AI
-                        if not await revalidate_user_billing(
-                            current_user.id,
-                            billing_preflight_amount,
-                        ):
-                            yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
-                            return
-                        await _revalidate_application_provider_call()
-                        async for chunk in api_func(**second_kwargs):
-                            yield chunk
-                        # api_func handles save_to_db internally
-                        return
+                        # 5. Answer, chain another call, or close the bound Live session.
+                        async for chunk in _stream_lookup_follow_up():
+                            yield _tool_round_chunk(chunk)
 
                     elif function_name == "lookup_platform_help":
                         # === PLATFORM HELP SECOND PASS ===
@@ -3509,8 +3519,21 @@ async def get_ai_response(
                         user_role = role_map.get(live_role_id, 'customer')
 
                         # 2. Query the KB
+                        help_context = application_tool_context
+                        help_tools = filtered_tools
+                        if help_context is not None:
+                            # Help may describe other tools, so refresh their
+                            # availability as well as the lookup tool's grant.
+                            help_context, help_tools = await application_tool_catalog(
+                                current_user.id, conversation_id, filtered_tools)
+                            if help_context is None or help_context.app_id != application_tool_context.app_id:
+                                raise EmbedError("application_scope_mismatch", 403)
+                        if stop_signals.get(conversation_id, False):
+                            return
                         help_result, results_count, top_article = await lookup_platform_help(
                             conn_ro, query, category, user_role, locale=help_locale, english_query=english_query,
+                            application_context=help_context,
+                            available_tools={tool['function']['name'] for tool in help_tools},
                         )
 
                         # 3. Log the query for gap analysis (fire-and-forget)
@@ -3525,35 +3548,15 @@ async def get_ai_response(
                         else:
                             _build_tool_response_messages(api_messages, collected_tool_call, help_result, machine)
 
-                        # 5. Keep Claude's tool declaration for its signed
-                        #    continuation, while forbidding another tool call.
-                        second_kwargs = dict(kwargs)
-                        if machine == "Claude":
-                            second_kwargs["tool_choice"] = {"type": "none"}
-                        else:
-                            second_kwargs.pop("tools", None)
-                        second_kwargs["web_search_mode"] = None
-                        second_kwargs["messages"] = api_messages
-
-                        if machine in ("OpenRouter", "MiniMax", "Kimi"):
-                            if api_messages and isinstance(api_messages[0], dict) and api_messages[0].get("role") == "system":
-                                api_messages.pop(0)
-
-                        # 6. Stream the AI's answer incorporating KB results
+                        # 5. Answer, chain another call, or close the bound Live session.
                         follow_up_error = await _extend_for_tool_follow_up()
                         if follow_up_error:
                             yield f"data: {orjson.dumps({'error': follow_up_error}).decode()}\n\n"
                             return
-                        if not await revalidate_user_billing(
-                            current_user.id,
-                            billing_preflight_amount,
-                        ):
-                            yield f"data: {orjson.dumps({'error_code': 'insufficient_balance', 'error': 'Insufficient balance'}).decode()}\n\n"
-                            return
-                        await _revalidate_application_provider_call()
-                        async for chunk in api_func(**second_kwargs):
-                            yield chunk
-                        return
+                        if pre_tool_content:
+                            yield f"data: {orjson.dumps({'content': '\n\n'}).decode()}\n\n"
+                        async for chunk in _stream_lookup_follow_up():
+                            yield _tool_round_chunk(chunk)
 
                     else:
                         # === EXISTING FLOW for all other tools ===
@@ -3601,8 +3604,21 @@ async def get_ai_response(
                                 if runtime_kind == "openai_realtime"
                                 else None
                             ),
+                            tool_loop=tool_loop,
                         ):
-                            yield chunk
+                            yield _tool_round_chunk(chunk)
+                        if tool_loop is not None and tool_loop.next_call is not None:
+                            # The follow-up that chose the next call first extended
+                            # the hold by additional_hold.
+                            ai_reserved_maximum += additional_hold
+
+                    if tool_loop is None:
+                        break
+                    collected_tool_call, pre_tool_content = tool_loop.take_next()
+                    if stop_signals.get(conversation_id, False):
+                        # Stop ends the chain; the reply keeps what it produced.
+                        collected_tool_call = None
+                    tool_call_input_fallback = second_input_tokens
 
     except ApplicationRuntimeError as exc:
         yield f"data: {orjson.dumps({'error': exc.code, 'error_code': exc.code}).decode()}\n\n"
@@ -3610,10 +3626,12 @@ async def get_ai_response(
         raise
     except ValueError as ve:
         logger.error(f"[get_ai_response] - Database connection error: {ve}")
+        tool_loop = None  # The terminal event below is the turn's outcome.
         yield f"data: {orjson.dumps({'terminal': 'persistence_error', **persistence_error_payload()}).decode()}\n\n"
     except Exception as e:
         logger.error(f"[get_ai_response] - Error getting response from {machine}: {e}")
         logger.error(f"[get_ai_response] - Traceback: {traceback.format_exc()}")
+        tool_loop = None  # The terminal event below is the turn's outcome.
         yield f"data: {orjson.dumps({'terminal': 'persistence_error', **persistence_error_payload()}).decode()}\n\n"
     finally:
         if realtime_tool_pending:
@@ -3631,9 +3649,23 @@ async def get_ai_response(
                 prompt_id=prompt_id,
                 byok=byok,
             )
+        import sys
+        reply = tool_loop.visible_text() if tool_loop is not None else ""
+        if (tool_loop is not None and tool_loop.unfinished() and sys.exc_info()[0] is None
+                and (reply or user_message is not None)):
+            # A refusal can end a chain after its actions ran. Keep the turn with
+            # the text produced so far, or with only the user message. Its usage
+            # was settled above from the reservation.
+            user_message_id, bot_message_id = await save_content_to_db(
+                reply or None, 0, 0, 0, conversation_id, user_id, model, user_message=user_message,
+                prompt_id=prompt_id, llm_id=llm_id, pending_attachment_refs=pending_attachment_refs,
+                strip_device_action_blocks=strip_device_action_blocks, persistence_only=True)
+            persisted = ({"message_ids": {"user": user_message_id, "bot": bot_message_id}}
+                         if user_message_id or bot_message_id
+                         else persistence_result_payload(user_message_id, bot_message_id))
+            yield f"data: {orjson.dumps(persisted).decode()}\n\n"
         # A transfer tool has no second provider call. Only after the source
         # transcript and every reservation are committed can its session move.
-        import sys
         if sys.exc_info()[0] is None:
             from integrations.applications.tool_handoff import complete_tool_handoff
             from integrations.embed.models import EmbedError

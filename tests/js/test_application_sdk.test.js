@@ -32,6 +32,62 @@ function setup() {
     return { instance, frame, nodes, bootstrap, timers, handlers, sent, events, submissions, receive, metadata, global, node };
 }
 
+test('host text is bounded and sent once to the authorized frame until native admission', async () => {
+    const context = setup();
+    context.receive();
+    await context.instance.ready;
+    await settle();
+    const baseline = context.sent.length;
+    for (const text of ['', ' \n ', null, {}, 'x'.repeat(16001)]) {
+        await assert.rejects(context.instance.sendMessage(text), { code: 'invalid_message' });
+    }
+    assert.equal(context.sent.length, baseline);
+    let admitted = false;
+    const text = '日本語: plan this story';
+    const pending = context.instance.sendMessage(text).then(value => { admitted = true; return value; });
+    await settle();
+    const sent = context.sent.at(-1);
+    assert.equal(sent.origin, 'https://chat.example');
+    assert.equal(sent.data.event, 'send_message');
+    assert.equal(sent.data.text, text);
+    assert.equal(sent.data.conversation_id, '12');
+    context.receive({ event: 'action_completed', action: 'send_message', request_id: sent.data.request_id }, 'https://wrong.example');
+    await settle();
+    assert.equal(admitted, false);
+    context.receive({ event: 'action_completed', action: 'send_message', request_id: sent.data.request_id });
+    assert.equal((await pending).action, 'send_message');
+    const failed = context.instance.sendMessage('second');
+    await settle();
+    const requestId = context.sent.at(-1).data.request_id;
+    context.receive({ event: 'error', code: 'draft_present', request_id: requestId });
+    await assert.rejects(failed, { code: 'draft_present' });
+    assert.equal(context.sent.length, baseline + 2);
+    context.instance.destroy();
+});
+
+test('entry presentation and base theme use the bound frame without submitting another bootstrap', async () => {
+    const context = setup();
+    context.receive();
+    await context.instance.ready;
+    await assert.rejects(context.instance.setTheme('katari-shoji'), {code: 'invalid_theme'});
+    for (const [event, key, value, action] of [
+        ['set_presentation', 'presentation', 'entry', 'presentation'],
+        ['set_theme', 'theme', 'coder', 'theme'],
+    ]) {
+        const result = key === 'theme' ? context.instance.setTheme(value) : context.instance.setPresentation(value);
+        await settle();
+        const command = context.sent.at(-1).data;
+        assert.equal(command.event, event);
+        assert.equal(command[key], value);
+        assert.equal(command.conversation_id, '12');
+        context.receive({event: 'action_completed', request_id: command.request_id, action, [key]: value});
+        await result;
+    }
+    assert.equal(context.submissions.length, 1);
+    assert.equal(context.frame.removed, undefined);
+    context.instance.destroy();
+});
+
 test('profile frame has no conversation, exact origin validation and closing does not send chat stop', async () => {
     const context = setup(); context.instance.destroy();
     const bootstrap = {...context.bootstrap, surface: 'profile', embed_url: 'https://chat.example/embed/profile/bootstrap'};
@@ -48,6 +104,21 @@ test('profile frame has no conversation, exact origin validation and closing doe
     await panel.close(); assert.equal(frame.removed, true);
     assert.equal(context.sent.length, 0);
     assert.equal(context.submissions.at(-1).action, 'https://chat.example/embed/profile/bootstrap');
+});
+
+test('an authenticated theme load failure rejects readiness and removes the failed frame', async () => {
+    const context = setup();
+    const failure = { event: 'error', code: 'theme_load_failed' };
+    context.receive(failure, 'https://wrong.example');
+    context.receive(failure, 'https://chat.example', {});
+    context.receive({ ...failure, app_id: 'another-app' });
+    context.receive({ ...failure, frame_instance_id: 'another-frame' });
+    assert.equal(context.events.length, 0);
+    context.receive(failure);
+    await assert.rejects(context.instance.ready, { code: 'theme_load_failed' });
+    assert.equal(context.frame.removed, true);
+    assert.equal(context.timers.size, 0);
+    assert.equal(context.events[0].code, 'theme_load_failed');
 });
 
 test('mount posts only the short ticket and accepts ready only from its exact frame, origin and context', async () => {

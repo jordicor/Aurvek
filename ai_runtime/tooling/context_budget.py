@@ -45,7 +45,7 @@ class ApplicationToolBudget:
 
         return estimate_structured_billing_tokens(
             full_prompt, _serializable(self._messages("")),
-            _serializable(provider_tools) if self.machine == "Claude" else None,
+            _serializable(provider_tools),
         ) + TOOL_RESULT_MAX_BYTES + 2048
 
     def result_messages(self, result: Any):
@@ -72,19 +72,19 @@ class ApplicationToolBudget:
 
 
 async def prepare_application_tool_budget(messages, tool_call, *, machine, full_prompt,
-                                           llm_id, prompt_id=None, max_tokens=0, provider_tools=None):
+                                           llm_id, prompt_id=None, max_tokens=0, provider_tools=None, allow_history_trim=True):
     """Validate room before any effect; trim old history, never the current turn."""
     limit = await model_input_token_limit(llm_id)
     if limit <= 0:
         # Unknown model limits use the operator's conservative context setting.
         limit, _ = await resolve_no_memory_context_max_tokens(llm_id=llm_id, prompt_id=prompt_id)
     budget = limit - estimate_message_tokens(full_prompt or "") - max(0, int(max_tokens)) - 256
-    if machine == "Claude" and provider_tools:
-        budget -= _tokens(provider_tools)  # Required again for signed tool_use.
+    if provider_tools:
+        budget -= _tokens(provider_tools)  # Tool schemas count against every provider context.
     prepared = ApplicationToolBudget(list(messages), tool_call, machine, budget)
     # Keep useful result room in addition to the complete opaque tool roundtrip.
     probe = "x " * 512
-    while len(prepared.prefix) > 1 and _tokens(prepared._messages(probe)) > budget:
+    while allow_history_trim and len(prepared.prefix) > 1 and _tokens(prepared._messages(probe)) > budget:
         prepared.prefix.pop(0)
     if _tokens(prepared._messages(probe)) > budget:
         raise EmbedError("tool_context_too_large", 413)

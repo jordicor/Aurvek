@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shutil
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
@@ -16,7 +15,7 @@ from unicodedata import normalize
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
-from filelock import FileLock, Timeout as FileLockTimeout
+from filelock import Timeout as FileLockTimeout
 from PIL import Image as PilImage, UnidentifiedImageError
 
 from auth import get_current_user, unauthenticated_response
@@ -46,13 +45,13 @@ from log_config import logger
 from marketplace.config import require_creator_tools_enabled
 from marketplace.landing.cache import invalidate_landing_cache
 from marketplace.landing.jobs import (
-    JOBS_DIR,
     get_active_job_for_prompt,
     get_active_welcome_job_for_prompt,
     get_job,
     start_job,
 )
 from marketplace.landing.paths import get_active_custom_domain
+from marketplace.landing.publication import _landing_save_lock, _revoke_landing_publication, _set_welcome_page_publication
 from marketplace.landing.wizard import (
     delete_all_landing_files,
     delete_all_welcome_files,
@@ -81,8 +80,6 @@ ALLOWED_COMPONENT_TYPES = {"html", "css", "js"}
 ALLOWED_EXTENSIONS = {"webp", "jpg", "jpeg", "png", "gif", "ico"}
 PUBLICATION_VERIFICATION_UNAVAILABLE = "Publication verification is unavailable."
 _PROMPT_PIPELINE_DIR = Path(__file__).resolve().parents[2] / "tools" / "prompt_pipeline"
-_LANDING_SAVE_LOCK_DIR = JOBS_DIR / "save-locks"
-_LANDING_SAVE_LOCK_TIMEOUT_SECONDS = 30
 
 
 def _run_landing_publication_check(prompt_id: int, content: str, translator=None) -> List[str]:
@@ -113,46 +110,6 @@ async def _get_landing_publication_errors(prompt_id: int, content: str, translat
         content,
         translator=translator,
     )
-
-
-async def _revoke_landing_publication(prompt_id: int) -> None:
-    """Fail closed before checking freshly written landing content."""
-    async with get_db_connection() as conn:
-        await conn.execute(
-            "UPDATE PROMPTS SET has_landing_page = 0, landing_trusted = 0 WHERE id = ?",
-            (prompt_id,),
-        )
-        cursor = await conn.execute(
-            "SELECT public_id FROM PROMPTS WHERE id = ?",
-            (prompt_id,),
-        )
-        row = await cursor.fetchone()
-        await conn.commit()
-
-    if row and row[0]:
-        invalidate_landing_cache(row[0])
-
-
-@asynccontextmanager
-async def _landing_save_lock(prompt_id: int):
-    """Serialize a prompt's revoke/write/verify/publish sequence across workers."""
-    _LANDING_SAVE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(_LANDING_SAVE_LOCK_DIR / f"prompt-{prompt_id}.lock"))
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _LANDING_SAVE_LOCK_TIMEOUT_SECONDS
-    while True:
-        try:
-            lock.acquire(timeout=0)
-            break
-        except FileLockTimeout:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise
-            await asyncio.sleep(min(0.05, remaining))
-    try:
-        yield
-    finally:
-        lock.release()
 
 
 async def _persist_landing_page(
@@ -540,18 +497,22 @@ async def create_landing_page(
         )
         page_path = os.path.join(prompt_dir, f"{page_name}.html")
 
-        if os.path.exists(page_path):
-            return JSONResponse({"success": False, "message": tr.t('landing_builder.response.page_already_exists')}, status_code=400)
+        async with _landing_save_lock(prompt_id):
+            if os.path.exists(page_path):
+                return JSONResponse({"success": False, "message": tr.t('landing_builder.response.page_already_exists')}, status_code=400)
 
-        default_dir = os.path.join(prompt_dir, "default")
-        default_template = os.path.join(default_dir, f"{page_name}.html")
+            if page_name == "home":
+                await _revoke_landing_publication(prompt_id)
 
-        if os.path.exists(default_template):
-            shutil.copy(default_template, page_path)
-        else:
-            with open(page_path, "w", encoding="utf-8") as f:
-                f.write(
-                    f"""<!DOCTYPE html>
+            default_dir = os.path.join(prompt_dir, "default")
+            default_template = os.path.join(default_dir, f"{page_name}.html")
+
+            if os.path.exists(default_template):
+                shutil.copy(default_template, page_path)
+            else:
+                with open(page_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -566,10 +527,15 @@ async def create_landing_page(
     </div>
 </body>
 </html>"""
-                )
+                    )
 
         return JSONResponse({"success": True, "message": tr.t('landing_builder.response.page_value1_created_successfully', value1=page_name)})
 
+    except FileLockTimeout:
+        return JSONResponse({
+            "success": False,
+            "message": tr.t('landing_builder.response.another_landing_save_is_still_in_progress_try_again'),
+        }, status_code=503)
     except Exception as e:
         logger.error(f"Error creating landing page: {e}")
         return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
@@ -1319,31 +1285,15 @@ async def delete_landing_files(request: Request, prompt_id: int, current_user: U
         prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
 
-        if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
-
-        logger.info(f"Deleting landing files for prompt {prompt_id}, user {current_user.id}")
-        result = delete_all_landing_files(str(prompt_dir), keep_images=True)
+        async with _landing_save_lock(prompt_id):
+            await _revoke_landing_publication(prompt_id)
+            if not prompt_dir or not os.path.exists(prompt_dir):
+                return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
+            logger.info(f"Deleting landing files for prompt {prompt_id}, user {current_user.id}")
+            result = delete_all_landing_files(str(prompt_dir), keep_images=True)
 
         if result["success"]:
             logger.info(f"Deleted {result.get('deleted_count', 0)} files for prompt {prompt_id}")
-            async with get_db_connection() as conn:
-                cursor = await conn.execute("SELECT public_id FROM PROMPTS WHERE id = ?", (prompt_id,))
-                row = await cursor.fetchone()
-                # Retire the landing and drop its trust flag so it cannot keep a
-                # dangling trusted state if it is later re-created by a non-admin.
-                await conn.execute(
-                    "UPDATE PROMPTS SET has_landing_page = 0, landing_trusted = 0 WHERE id = ?",
-                    (prompt_id,),
-                )
-                await conn.commit()
-
-            # Drop the cached resolution so the new has_landing_page=0 /
-            # landing_trusted=0 policy takes effect immediately (a stale entry
-            # would keep serving it).
-            if row and row[0]:
-                invalidate_landing_cache(row[0])
-
             return JSONResponse(
                 {
                     "success": True,
@@ -1361,6 +1311,9 @@ async def delete_landing_files(request: Request, prompt_id: int, current_user: U
             status_code=500,
         )
 
+    except FileLockTimeout:
+        return JSONResponse({"success": False, "message": tr.t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again')}, status_code=503)
     except Exception as e:
         logger.error(f"Error in delete_landing_files: {e}")
         return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
@@ -1543,6 +1496,10 @@ async def modify_welcome_with_wizard(
     if len(instructions) < 10:
         return JSONResponse({"success": False, "message": tr.t('landing_builder.response.instructions_must_be_at_least_10_characters')}, status_code=400)
 
+    language = data.get("language", "es")
+    if language not in ("es", "en"):
+        language = "es"
+
     try:
         timeout_minutes = int(data.get("timeout_minutes", 5))
     except (ValueError, TypeError):
@@ -1605,6 +1562,7 @@ async def modify_welcome_with_wizard(
 
         params = {
             "instructions": instructions,
+            "language": language,
             "timeout": timeout_seconds,
             "product_name": prompt_info["name"],
             "ai_system_prompt": ai_system_prompt,
@@ -1683,12 +1641,6 @@ async def get_welcome_job_status(
 
         if job["status"] == "completed":
             response["files_created"] = job.get("files_created", [])
-            try:
-                async with get_db_connection() as db:
-                    await db.execute("UPDATE PROMPTS SET has_welcome_page = 1 WHERE id = ?", (prompt_id,))
-                    await db.commit()
-            except Exception as db_err:
-                logger.warning(f"Could not update has_welcome_page for prompt {prompt_id}: {db_err}")
         elif job["status"] in ("failed", "timeout"):
             response["error"] = tr.t('landing_builder.ui.the_ai_job_did_not_complete_please_try_again')
 
@@ -1774,20 +1726,15 @@ async def delete_welcome_files(request: Request, prompt_id: int, current_user: U
 
         prompt_info = await get_prompt_info(prompt_id, translator=tr)
         prompt_dir = get_prompt_path(prompt_id, prompt_info)
-        if not prompt_dir or not os.path.exists(prompt_dir):
-            return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
-
-        logger.info(f"Deleting welcome files for prompt {prompt_id}, user {current_user.id}")
-        result = delete_all_welcome_files(str(prompt_dir), keep_images=True)
+        async with _landing_save_lock(prompt_id):
+            await _set_welcome_page_publication(prompt_id, published=False)
+            if not prompt_dir or not os.path.exists(prompt_dir):
+                return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
+            logger.info(f"Deleting welcome files for prompt {prompt_id}, user {current_user.id}")
+            result = delete_all_welcome_files(str(prompt_dir), keep_images=True)
 
         if result["success"]:
             logger.info(f"Deleted {result.get('deleted_count', 0)} welcome files for prompt {prompt_id}")
-            try:
-                async with get_db_connection() as db:
-                    await db.execute("UPDATE PROMPTS SET has_welcome_page = 0 WHERE id = ?", (prompt_id,))
-                    await db.commit()
-            except Exception as db_err:
-                logger.warning(f"Could not update has_welcome_page for prompt {prompt_id}: {db_err}")
             return JSONResponse(
                 {
                     "success": True,
@@ -1805,6 +1752,9 @@ async def delete_welcome_files(request: Request, prompt_id: int, current_user: U
             status_code=500,
         )
 
+    except FileLockTimeout:
+        return JSONResponse({"success": False, "message": tr.t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again')}, status_code=503)
     except Exception as e:
         logger.error(f"Error in delete_welcome_files: {e}")
         return JSONResponse({"success": False, "message": tr.t('landing_builder.response.internal_server_error')}, status_code=500)
@@ -1841,16 +1791,18 @@ async def edit_landing_page(
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-        if not os.path.exists(file_path):
-            example_file = os.path.join(default_dir, f"{section}.html")
-            if os.path.exists(example_file):
-                shutil.copy(example_file, file_path)
-            else:
-                with open(file_path, "w", encoding="utf-8") as file:
-                    file.write(f"<h1>Welcome to the {section} page</h1>")
-
-        with open(file_path, "r", encoding="utf-8") as file:
-            section_content = file.read()
+        async with _landing_save_lock(prompt_id):
+            if not os.path.exists(file_path):
+                if section.lower() == "home":
+                    await _revoke_landing_publication(prompt_id)
+                example_file = os.path.join(default_dir, f"{section}.html")
+                if os.path.exists(example_file):
+                    shutil.copy(example_file, file_path)
+                else:
+                    with open(file_path, "w", encoding="utf-8") as file:
+                        file.write(f"<h1>Welcome to the {section} page</h1>")
+            with open(file_path, "r", encoding="utf-8") as file:
+                section_content = file.read()
 
         async with get_db_connection(readonly=True) as conn:
             async with conn.execute(
@@ -1878,6 +1830,9 @@ async def edit_landing_page(
         )
         return templates.TemplateResponse("web/web_edit.html", context)
 
+    except FileLockTimeout:
+        raise HTTPException(status_code=503, detail=tr.t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again'))
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:

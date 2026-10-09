@@ -21,6 +21,7 @@ from models import User, Pack
 from auth import get_current_user
 from i18n import get_translator, template_context, Translator
 from marketplace.services.checkout_localization import discount_error_message
+from marketplace.services.acquisition import apply_landing_config_to_user
 from billing.discounts import (
     DiscountError,
     claim_discount_usage_for_checkout,
@@ -54,6 +55,8 @@ from save_images import resize_image_cover
 from security_guard_llm import check_security, is_security_guard_enabled
 from marketplace.landing.wizard import is_claude_available, list_prompt_files, list_welcome_files, delete_all_landing_files, delete_all_welcome_files
 from marketplace.landing.jobs import start_job, get_job, get_active_job_for_pack, get_active_welcome_job_for_pack
+from marketplace.landing.publication import _landing_save_lock, _revoke_landing_publication, _set_welcome_page_publication
+from filelock import Timeout as FileLockTimeout
 from marketplace.landing.isolation import (
     build_creator_content_url,
     creator_content_unavailable_response,
@@ -105,11 +108,11 @@ _pack_landing_cache_stats = {"hits": 0, "misses": 0}
 # Pack Landing Cache Functions
 # ---------------------------------------------------------------------------
 
-async def get_pack_landing_cached(public_id: str) -> dict:
+async def get_pack_landing_cached(public_id: str, *, refresh_publication: bool = True) -> dict:
     """
     Get pack landing data with smart LRU caching.
 
-    - Cache HIT: O(1), zero DB queries
+    - Cache HIT: reuse metadata, refresh publication gates with one query
     - Cache MISS: 1 query, result cached for future requests
     - LRU eviction: Least recently used entries removed when cache is full
     - Singleflight: Concurrent requests for same public_id share one DB query
@@ -125,7 +128,10 @@ async def get_pack_landing_cached(public_id: str) -> dict:
     cached = _pack_landing_cache.get(public_id)
     if cached is not None:
         _pack_landing_cache_stats["hits"] += 1
-        return cached
+        if not refresh_publication:
+            return cached
+        publication = await _get_pack_publication_state(cached["pack_id"])
+        return {**cached, **publication} if publication else None
 
     # Singleflight: get or create lock for this public_id (atomic via setdefault)
     lock = _pack_landing_cache_locks.setdefault(public_id, asyncio.Lock())
@@ -135,7 +141,10 @@ async def get_pack_landing_cached(public_id: str) -> dict:
         cached = _pack_landing_cache.get(public_id)
         if cached is not None:
             _pack_landing_cache_stats["hits"] += 1
-            return cached
+            if not refresh_publication:
+                return cached
+            publication = await _get_pack_publication_state(cached["pack_id"])
+            return {**cached, **publication} if publication else None
 
         # Query DB
         async with get_db_connection(readonly=True) as conn:
@@ -186,6 +195,18 @@ async def get_pack_landing_cached(public_id: str) -> dict:
                 _pack_landing_cache_locks.pop(k, None)
 
         return result
+
+
+async def _get_pack_publication_state(pack_id: int) -> dict | None:
+    """Publication gates cannot remain cached across wizard worker writes."""
+    async with get_db_connection(readonly=True) as conn:
+        cursor = await conn.execute(
+            "SELECT status, is_public, has_custom_landing FROM PACKS WHERE id = ?", (pack_id,),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return {"status": row[0], "is_public": row[1], "has_custom_landing": row[2]}
 
 
 def invalidate_pack_landing_cache(public_id: str):
@@ -1804,9 +1825,6 @@ async def pack_ai_wizard_status(
 
     if job["status"] == "completed":
         response["files_created"] = job.get("files_created", [])
-        # Update has_custom_landing based on whether home.html exists now
-        pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
-        await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
     elif job["status"] in ("failed", "timeout"):
         response["error"] = tr.t('landing_builder.ui.the_ai_job_did_not_complete_please_try_again')
 
@@ -1988,6 +2006,10 @@ async def pack_welcome_wizard_modify(
     if not instructions or len(instructions) < 10:
         raise HTTPException(status_code=400, detail=translator.t('marketplace_admin.response.instructions_must_be_at_least_10_characters'))
 
+    language = body.get("language", "es")
+    if language not in ("es", "en"):
+        language = "es"
+
     try:
         timeout_minutes = int(body.get("timeout_minutes", 5))
     except (ValueError, TypeError):
@@ -2027,6 +2049,7 @@ async def pack_welcome_wizard_modify(
 
     params = {
         "instructions": instructions,
+        "language": language,
         "timeout": timeout_seconds,
         "product_name": pack_row["name"],
         "ai_system_prompt": "",
@@ -2097,14 +2120,6 @@ async def pack_welcome_wizard_status(
 
     if job["status"] == "completed":
         response["files_created"] = job.get("files_created", [])
-        # Update has_welcome_page flag in PACKS table
-        try:
-            async with get_db_connection() as db:
-                await db.execute("UPDATE PACKS SET has_welcome_page = 1 WHERE id = ?", (pack_id,))
-                await db.commit()
-        except Exception as e:
-            # Column may not exist yet until migration runs
-            logger.warning("Could not update has_welcome_page for pack %s: %s", pack_id, e)
     elif job["status"] in ("failed", "timeout"):
         response["error"] = translator.t("marketplace_admin.response.job_timeout" if job["status"] == "timeout" else "marketplace_admin.response.job_failed")
 
@@ -2191,19 +2206,18 @@ async def pack_welcome_delete_all_files(
 
     pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=translator)
 
-    if not pack_dir.exists():
-        return JSONResponse({"success": True, "message": translator.t('marketplace_admin.response.no_files_to_delete'), "deleted_count": 0})
-
-    logger.info("Deleting welcome files for pack %s, user %s", pack_id, current_user.id)
-    result = delete_all_welcome_files(str(pack_dir), keep_images=True)
+    try:
+        async with _landing_save_lock(pack_id=pack_id):
+            await _set_welcome_page_publication(pack_id=pack_id, published=False)
+            if not pack_dir.exists():
+                return JSONResponse({"success": True, "message": translator.t('marketplace_admin.response.no_files_to_delete'), "deleted_count": 0})
+            logger.info("Deleting welcome files for pack %s, user %s", pack_id, current_user.id)
+            result = delete_all_welcome_files(str(pack_dir), keep_images=True)
+    except FileLockTimeout:
+        raise HTTPException(status_code=503, detail=translator.t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again'))
 
     if result["success"]:
-        try:
-            async with get_db_connection() as db:
-                await db.execute("UPDATE PACKS SET has_welcome_page = 0 WHERE id = ?", (pack_id,))
-                await db.commit()
-        except Exception as e:
-            logger.warning("Could not update has_welcome_page for pack %s: %s", pack_id, e)
         return JSONResponse({
             "success": True,
             "message": translator.t("marketplace_admin.response.files_deleted"),
@@ -2267,14 +2281,16 @@ async def pack_landing_delete_all_files(
 
     pack_dir, _ = await _get_pack_dir_and_info(pack_id, pack_row, translator=tr)
 
-    if not pack_dir.exists():
-        return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
-
-    logger.info("Deleting landing files for pack %s, user %s", pack_id, current_user.id)
-    result = delete_all_landing_files(str(pack_dir), keep_images=True)
-
-    # Update has_custom_landing to False since we just deleted everything
-    await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
+    try:
+        async with _landing_save_lock(pack_id=pack_id):
+            await _revoke_landing_publication(pack_id=pack_id)
+            if not pack_dir.exists():
+                return JSONResponse({"success": True, "message": tr.t('landing_builder.ui.no_files_to_delete'), "deleted_count": 0})
+            logger.info("Deleting landing files for pack %s, user %s", pack_id, current_user.id)
+            result = delete_all_landing_files(str(pack_dir), keep_images=True)
+    except FileLockTimeout:
+        raise HTTPException(status_code=503, detail=tr.t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again'))
 
     if result["success"]:
         return JSONResponse({
@@ -2320,13 +2336,18 @@ async def pack_landing_create_page(
     if not pack_dir.exists():
         create_pack_directory(username, pack_id, pack_row["name"])
 
-    page_path = pack_dir / f"{page_name}.html"
-    if page_path.exists():
-        raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.page_already_exists'))
+    try:
+        async with _landing_save_lock(pack_id=pack_id):
+            page_path = pack_dir / f"{page_name}.html"
+            if page_path.exists():
+                raise HTTPException(status_code=400, detail=tr.t('landing_builder.response.page_already_exists'))
 
-    # Create with basic template
-    page_path.write_text(
-        f"""<!DOCTYPE html>
+            if page_name == "home":
+                await _revoke_landing_publication(pack_id=pack_id)
+
+            # Create with basic template
+            page_path.write_text(
+                f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2341,12 +2362,18 @@ async def pack_landing_create_page(
     </div>
 </body>
 </html>""",
-        encoding="utf-8",
-    )
+                encoding="utf-8",
+            )
 
-    # Update has_custom_landing if we just created home
-    if page_name == "home":
-        await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
+            # Update has_custom_landing if we just created home
+            if page_name == "home":
+                await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
+
+    except FileLockTimeout:
+        raise HTTPException(
+            status_code=503,
+            detail=tr.t('landing_builder.response.another_landing_save_is_still_in_progress_try_again'),
+        )
 
     return JSONResponse({"success": True, "message": tr.t('landing_builder.response.page_value1_created_successfully', value1=page_name)})
 
@@ -2426,13 +2453,18 @@ async def pack_landing_edit_page(
     # Create the folder structure if it doesn't exist
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-    # If file doesn't exist, create with default content
-    if not os.path.exists(file_path):
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"<h1>Welcome to the {section} page</h1>")
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        section_content = f.read()
+    try:
+        async with _landing_save_lock(pack_id=pack_id):
+            if not os.path.exists(file_path):
+                if section.lower() == "home":
+                    await _revoke_landing_publication(pack_id=pack_id)
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(f"<h1>Welcome to the {section} page</h1>")
+            with open(file_path, "r", encoding="utf-8") as f:
+                section_content = f.read()
+    except FileLockTimeout:
+        raise HTTPException(status_code=503, detail=tr.t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again'))
 
     # Build prompt_info-like dict for template compatibility
     pack_info = {"name": pack_row["name"], "created_by_username": username}
@@ -2505,12 +2537,23 @@ async def pack_landing_save_page(
     validated_path = validate_path_within_directory(f"{section}.html", pack_dir)
     os.makedirs(os.path.dirname(str(validated_path)), exist_ok=True)
 
-    with open(str(validated_path), "w", encoding="utf-8") as f:
-        f.write(content)
+    try:
+        async with _landing_save_lock(pack_id=pack_id):
+            if section.lower() == "home":
+                await _revoke_landing_publication(pack_id=pack_id)
 
-    # Update has_custom_landing if section is home
-    if section.lower() == "home":
-        await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
+            with open(str(validated_path), "w", encoding="utf-8") as f:
+                f.write(content)
+
+            # Update has_custom_landing if section is home
+            if section.lower() == "home":
+                await _update_has_custom_landing(pack_id, pack_dir, pack_row["public_id"])
+
+    except FileLockTimeout:
+        raise HTTPException(
+            status_code=503,
+            detail=tr.t('landing_builder.response.another_landing_save_is_still_in_progress_try_again'),
+        )
 
     return JSONResponse({"success": True, "message": tr.t('landing_builder.response.changes_saved_successfully')})
 
@@ -3416,30 +3459,9 @@ async def _apply_pack_config_to_user(conn, pack, user_id, discount_pct=0, *, tra
     except Exception:
         return
 
-    # Read current values to enforce "only expand, never restrict"
-    ud_cursor = await conn.execute(
-        """SELECT public_prompts_access, billing_account_id,
-                  allow_file_upload, allow_image_generation
-           FROM USER_DETAILS WHERE user_id = ?""",
-        (user_id,)
-    )
-    ud_row = await ud_cursor.fetchone()
-    cur_public = ud_row[0] if ud_row else 0
-    cur_billing = ud_row[1] if ud_row else None
-    cur_file = ud_row[2] if ud_row else 0
-    cur_imggen = ud_row[3] if ud_row else 0
-
-    updates = []
-    params = []
-
-    ib = float(lrc.get("initial_balance", 0))
-    if ib > 0:
-        # Scale initial_balance by discount: 100% discount = $0 initial_balance
-        scaled_ib = ib * (1 - discount_pct / 100) if discount_pct > 0 else ib
-        if scaled_ib > 0:
-            updates.append("balance = balance + ?")
-            params.append(scaled_ib)
-
+    # Free packs retain their existing rejection when the creator cannot fund
+    # user_pays. The shared helper reuses this result rather than reading twice.
+    creator_balance = None
     if lrc.get("billing_mode") == "user_pays":
         creator_balance = await get_balance(pack["created_by_user_id"])
         if creator_balance <= 0:
@@ -3447,54 +3469,15 @@ async def _apply_pack_config_to_user(conn, pack, user_id, discount_pct=0, *, tra
                 status_code=503,
                 detail=translator.t("marketplace.checkout.pack_unavailable")
             )
-        # Only set billing_account_id if not already managed by someone else
-        if cur_billing is None:
-            updates.append("billing_account_id = ?")
-            params.append(pack["created_by_user_id"])
-            # Set billing limits when newly assigning billing account
-            bl = lrc.get("billing_limit")
-            if bl is not None:
-                updates.append("billing_limit = ?")
-                params.append(float(bl))
-            bla = lrc.get("billing_limit_action", "block")
-            updates.append("billing_limit_action = ?")
-            params.append(bla)
-            bara = lrc.get("billing_auto_refill_amount", 10.0)
-            updates.append("billing_auto_refill_amount = ?")
-            params.append(float(bara))
-            bml = lrc.get("billing_max_limit")
-            if bml is not None:
-                updates.append("billing_max_limit = ?")
-                params.append(float(bml))
-        else:
-            logger.warning(
-                "Pack config: billing_account_id not overwritten for user %s (already set to %s)",
-                user_id, cur_billing
-            )
 
-    # Only expand boolean permissions, never restrict
-    if "public_prompts_access" in lrc:
-        if lrc["public_prompts_access"] and not cur_public:
-            updates.append("public_prompts_access = 1")
-        elif not lrc["public_prompts_access"] and cur_public:
-            logger.warning("Pack config: skipping public_prompts_access downgrade for user %s", user_id)
-
-    if "allow_file_upload" in lrc:
-        if lrc["allow_file_upload"] and not cur_file:
-            updates.append("allow_file_upload = 1")
-        elif not lrc["allow_file_upload"] and cur_file:
-            logger.warning("Pack config: skipping allow_file_upload downgrade for user %s", user_id)
-
-    if "allow_image_generation" in lrc:
-        if lrc["allow_image_generation"] and not cur_imggen:
-            updates.append("allow_image_generation = 1")
-        elif not lrc["allow_image_generation"] and cur_imggen:
-            logger.warning("Pack config: skipping allow_image_generation downgrade for user %s", user_id)
-
-    if updates:
-        params.append(user_id)
-        sql = f"UPDATE USER_DETAILS SET {', '.join(updates)} WHERE user_id = ?"
-        await conn.execute(sql, params)
+    return await apply_landing_config_to_user(
+        conn,
+        lrc,
+        user_id,
+        creator_user_id=pack["created_by_user_id"],
+        discount_pct=discount_pct,
+        creator_balance=creator_balance,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3654,67 +3637,72 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
         if not re.match(r'^[a-zA-Z0-9]{8}$', public_id):
             return _landing_404(translator)
 
-        cached = await get_pack_landing_cached(public_id)
+        cached = await get_pack_landing_cached(public_id, refresh_publication=False)
         if not cached:
             return _landing_404(translator)
 
-        # Only serve published, public packs
-        if cached["status"] != "published" or not cached["is_public"]:
-            return _landing_404(translator)
+        async with _landing_save_lock(pack_id=cached["pack_id"], timeout_seconds=1):
+            current_publication = await _get_pack_publication_state(cached["pack_id"])
+            if current_publication is None:
+                return _landing_404(translator)
+            cached = {**cached, **current_publication}
+            # Only serve published, public packs
+            if cached["status"] != "published" or not cached["is_public"]:
+                return _landing_404(translator)
 
-        if slug != cached["slug"]:
-            return _landing_404(translator)
+            if slug != cached["slug"]:
+                return _landing_404(translator)
 
-        pack_id = cached["pack_id"]
-        is_preview = request.query_params.get("preview") == "1"
-        is_embed = request.query_params.get("embed") == "1"
+            pack_id = cached["pack_id"]
+            is_preview = request.query_params.get("preview") == "1"
+            is_embed = request.query_params.get("embed") == "1"
 
-        # Check for custom landing page first
-        if cached["has_custom_landing"]:
-            if is_creator_content_request(request):
-                if is_preview:
-                    expected = {
-                        "purpose": "pack_preview",
-                        "pack_id": int(pack_id),
-                    }
-                    if verify_content_token(
-                        request.query_params.get("preview_token"),
-                        expected=expected,
-                    ) is None:
-                        return _landing_404(translator)
-            elif is_preview:
-                if not await _can_preview_pack(request, cached["created_by_user_id"]):
-                    raise HTTPException(status_code=403, detail=translator.t("pack_public.access_denied"))
-                preview_token = sign_content_token(
-                    {"purpose": "pack_preview", "pack_id": int(pack_id)},
-                    ttl_seconds=300,
-                )
-                isolated_url = build_creator_content_url(
-                    f"/pack/{public_id}/{slug}/",
-                    {"preview": 1, "preview_token": preview_token},
-                )
-                if not isolated_url or not preview_token:
-                    return creator_content_unavailable_response(get_translator(request))
-                return RedirectResponse(
-                    isolated_url,
-                    status_code=302,
-                    headers={"Cache-Control": "no-store"},
-                )
-            else:
-                isolated_url = build_creator_content_url(
-                    f"/pack/{public_id}/{slug}/",
-                    {"embed": 1} if is_embed else None,
-                )
-                if not isolated_url:
-                    return creator_content_unavailable_response(get_translator(request))
-                return RedirectResponse(isolated_url, status_code=302)
+            # Check for custom landing page first
+            if cached["has_custom_landing"]:
+                if is_creator_content_request(request):
+                    if is_preview:
+                        expected = {
+                            "purpose": "pack_preview",
+                            "pack_id": int(pack_id),
+                        }
+                        if verify_content_token(
+                            request.query_params.get("preview_token"),
+                            expected=expected,
+                        ) is None:
+                            return _landing_404(translator)
+                elif is_preview:
+                    if not await _can_preview_pack(request, cached["created_by_user_id"]):
+                        raise HTTPException(status_code=403, detail=translator.t("pack_public.access_denied"))
+                    preview_token = sign_content_token(
+                        {"purpose": "pack_preview", "pack_id": int(pack_id)},
+                        ttl_seconds=300,
+                    )
+                    isolated_url = build_creator_content_url(
+                        f"/pack/{public_id}/{slug}/",
+                        {"preview": 1, "preview_token": preview_token},
+                    )
+                    if not isolated_url or not preview_token:
+                        return creator_content_unavailable_response(get_translator(request))
+                    return RedirectResponse(
+                        isolated_url,
+                        status_code=302,
+                        headers={"Cache-Control": "no-store"},
+                    )
+                else:
+                    isolated_url = build_creator_content_url(
+                        f"/pack/{public_id}/{slug}/",
+                        {"embed": 1} if is_embed else None,
+                    )
+                    if not isolated_url:
+                        return creator_content_unavailable_response(get_translator(request))
+                    return RedirectResponse(isolated_url, status_code=302)
 
-            html_path = cached["path"] / "home.html"
-            if html_path.is_file():
-                html_content = html_path.read_text(encoding="utf-8")
-                if not is_preview:
-                    html_content = _inject_pack_analytics(html_content, pack_id)
-                return HTMLResponse(content=html_content)
+                html_path = cached["path"] / "home.html"
+                if html_path.is_file():
+                    html_content = html_path.read_text(encoding="utf-8")
+                    if not is_preview:
+                        html_content = _inject_pack_analytics(html_content, pack_id)
+                    return HTMLResponse(content=html_content)
 
         if is_creator_content_request(request):
             return _landing_404(translator)
@@ -3774,6 +3762,8 @@ async def pack_landing_page(request: Request, public_id: str, slug: str):
             template_html = _inject_pack_analytics(template_html, pack_id)
         return HTMLResponse(content=template_html, headers={"Content-Language": translator.language, "Vary": "Cookie, Accept-Language"})
 
+    except FileLockTimeout:
+        return creator_content_unavailable_response(translator, retry_after_seconds=5)
     except HTTPException:
         raise
     except Exception as e:

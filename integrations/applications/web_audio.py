@@ -149,9 +149,14 @@ async def render_message_audio(conversation_id: int, request: Request):
     return FileResponse(path, media_type="audio/ogg", headers={"Cache-Control": "private, no-store"})
 
 
-async def load_original_recordings(connection, scope, message_ids):
+async def load_original_recordings(connection, scope, message_ids, *, conversation_id=None, user_id=None):
     """One batch for the current history page, using its authorized scope."""
-    if scope is None or not scope.capabilities.get("voice") or not message_ids:
+    from file_storage import attachment_content_url
+    if not message_ids or (scope is not None and not scope.capabilities.get("voice")):
+        return {}
+    if scope is not None:
+        conversation_id, user_id = scope.conversation_id, scope.user_id
+    if conversation_id is None or user_id is None:
         return {}
     placeholders = ",".join("?" for _ in message_ids)
     cursor = await connection.execute(
@@ -160,13 +165,14 @@ async def load_original_recordings(connection, scope, message_ids):
         WHERE a.conversation_id=? AND a.user_id=? AND m.conversation_id=a.conversation_id
           AND a.attachment_type='audio' AND a.status='active' AND b.status='ready'
           AND a.message_id IN ({placeholders}) ORDER BY a.id""",
-        (scope.conversation_id, scope.user_id, *message_ids))
+        (conversation_id, user_id, *message_ids))
     return {int(row["message_id"]): {
-        "original_audio_url": f"/api/conversations/{scope.conversation_id}/voice/audio?"
-            + urlencode({"attachment_ref": row["public_id"]}),
+        "original_audio_url": (f"/api/conversations/{conversation_id}/voice/audio?"
+            + urlencode({"attachment_ref": row["public_id"]}) if scope is not None
+            else attachment_content_url(row["public_id"])),
         "original_audio_mime": row["mime_detected"],
     } for row in await cursor.fetchall()
-        if scope.capabilities.get("stt" if row["type"] == "user" else "tts")}
+        if scope is None or scope.capabilities.get("stt" if row["type"] == "user" else "tts")}
 
 
 @router.get("/api/conversations/{conversation_id}/voice/audio")
@@ -216,6 +222,34 @@ class VoiceRecording:
 
     async def retain_input(self, audio):
         self.input_ref = await self._retain(audio, "browser-voice-input.wav", "audio/wav")
+
+    async def retain_pcm(self, audio, *, role):
+        """Keep native samples, without decoding or synthesizing another voice."""
+        if not audio:
+            return
+        import audioop
+        import wave
+        rate = 16000 if role == "user" else 24000
+        # Continuous native streams include idle microphone/playout silence.
+        # Trim only quiet edges, keeping 500 ms of context and every sample
+        # inside the turn. Keep entirely quiet clips intact (e.g. whispers).
+        step, padding = rate // 50 * 2, rate
+        start, end = 0, len(audio)
+        while start < end and audioop.rms(audio[start:start + step], 2) <= 64:
+            start += step
+        if start < end:
+            while end > start and audioop.rms(audio[max(start, end - step):end], 2) <= 64:
+                end -= step
+            audio = audio[max(0, start - padding):min(len(audio), end + padding)]
+        output = io.BytesIO()
+        with wave.open(output, "wb") as recording:
+            recording.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+            recording.writeframes(audio)
+        reference = await self._retain(output.getvalue(), f"live-{role}.wav", "audio/wav")
+        if role == "user":
+            self.input_ref = reference
+        else:
+            self.reply_ref = reference
 
     async def retain_reply(self):
         if self.reply_ref or not self.played_segments:

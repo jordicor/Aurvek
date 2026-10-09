@@ -343,6 +343,33 @@ function resolveOriginalAudioUrl(url) {
     return resolved.href;
 }
 
+async function downloadOriginalAudio(url, messageId) {
+    try {
+        const response = await fetch(resolveOriginalAudioUrl(url), {credentials: 'same-origin'});
+        if (!response.ok) throw new Error(`Audio download failed: ${response.status}`);
+        const mime = (response.headers.get('Content-Type') || '').split(';')[0].toLowerCase();
+        const extensions = {
+            'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/ogg': 'ogg',
+            'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/webm': 'webm',
+            'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/flac': 'flac',
+            'audio/opus': 'opus', 'audio/basic': 'au'
+        };
+        const extension = extensions[mime];
+        if (!extension) throw new Error(`Unsupported audio type: ${mime}`);
+        const objectUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = `audio-${/^\d+$/.test(String(messageId)) ? messageId : 'recording'}.${extension}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (error) {
+        console.error('Could not download original audio:', error);
+        NotificationModal.error(AurvekI18n.t('chat.error'), AurvekI18n.t('chat.download_audio_failed'));
+    }
+}
+
 function markAudioPlaybackError(audioIcon, label) {
     if (!audioIcon) return;
     const message = AurvekI18n.t('chat_widgets.audio.playback_failed', {label});

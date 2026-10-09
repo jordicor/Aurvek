@@ -25,6 +25,7 @@ from integrations.telephony.repository import (
     TelephonyStateError,
 )
 from integrations.telephony.realtime_call import OpenAIRealtimeCallBridge
+from integrations.telephony.purge import PhoneDataPurgeRepository
 from integrations.telephony.routes import (
     MEDIA_STREAM_PATH,
     TelephonyProviderRuntime,
@@ -352,6 +353,7 @@ def app_for(repository, **overrides):
         auth_token=AUTH_TOKEN,
         elevenlabs_api_key_provider=lambda: "fake-elevenlabs",
         repository=repository,
+        purge_repository=PhoneDataPurgeRepository(repository.connection_factory),
         readiness_check=ready,
         notice_loader=notice_loader,
         greeting_loader=greeting_loader,

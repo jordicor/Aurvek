@@ -8,6 +8,7 @@
   "memory_notice": "Cette conversation conserve son historique. La mémoire des autres conversations est désactivée.",
   "expired": "Votre accès a expiré. Retournez au produit pour vous reconnecter.",
   "error": "L’opération n’a pas pu être effectuée. Vérifiez l’état de la conversation avant de réessayer.",
+  "theme_error": "L’apparence du chat n’a pas pu être chargée. Rechargez la page ou contactez le responsable de l’application.",
   "ending": "Fin de l’activité en cours…",
   "idle": "Inactif",
   "generating": "Préparation de la réponse…",

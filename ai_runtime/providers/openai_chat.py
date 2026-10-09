@@ -1,5 +1,10 @@
+import codecs
+
 from ai_runtime.dependencies import *
-from ai_runtime.config import _is_gpt5_model, safe_log_headers, _log_truncated_response
+from integrations.applications.external_execution import provider_request, reject_unsupported
+from integrations.embed.models import EmbedError
+from ai_runtime.config import _is_gpt_reasoning_model, safe_log_headers, _log_truncated_response
+from ai_runtime.providers.openai_capabilities import openai_supports_temperature
 from ai_runtime.errors import _extract_human_error_message, _human_exception_error, _provider_error_payload
 from ai_runtime.persistence.messages import persistence_error_payload, persistence_result_payload, save_content_to_db
 from ai_runtime.reasoning_tags import TaggedThinkingStreamParser
@@ -34,6 +39,7 @@ async def call_o1_api(messages, model, temperature, max_tokens, prompt, conversa
                       billing_reservation_id: str | None = None,
                       reasoning_selection: ReasoningSelection | dict | str | None = None):
     global stop_signals
+    reject_unsupported("o1_transport")
     logger.debug("enters call_o1_api")
 
     user_id = current_user.id
@@ -233,6 +239,8 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
 
     user_id = current_user.id
     error_yielded = False
+    stream_interruption: BaseException | None = None
+    deferred_error_event = None
 
     messages.insert(0, {"role": "system", "content": prompt})
     headers = {
@@ -249,12 +257,13 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
         "messages": messages,
         "stream": True,
     }
-    if _is_gpt5_model(model) or use_max_completion_tokens:
+    request_model = api_model or model
+    is_openai = provider_label == "OpenAI (GPT)" or request_model.startswith("openai/")
+    if is_openai or _is_gpt_reasoning_model(request_model) or use_max_completion_tokens:
         data["max_completion_tokens"] = max_tokens
     else:
         data["max_tokens"] = max_tokens
-    # GPT-5+ and a few OpenAI-compatible providers reject custom temperature.
-    if not _is_gpt5_model(model) and not omit_temperature:
+    if not omit_temperature and (not is_openai or openai_supports_temperature(request_model)):
         data["temperature"] = temperature
     if include_stream_usage:
         data["stream_options"] = {"include_usage": True}
@@ -265,6 +274,8 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
     if tools:
         data["tools"] = list(tools)
         data["tool_choice"] = "auto"  # Let the model decide when to use tools
+        if provider_label in {"OpenAI (GPT)", "xAI (Grok)"}:
+            data["parallel_tool_calls"] = False
 
     content, function_name, function_arguments = "", "", ""
     tagged_thinking_parser = TaggedThinkingStreamParser()
@@ -276,6 +287,27 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
     reasoning_details_for_message: list[dict] = []
     reasoning_detail_positions: dict[tuple, int] = {}
     reasoning_detail_keys: list[tuple] = []
+    stream_failed = False
+    last_finish_reason = None
+    stream_done = False
+    tool_stream_invalid = False
+    tool_seen = False
+    multiple_tool_calls = False
+    tool_identity = None
+    tool_format = None
+
+    def _accept_tool_delta(call, choice_index, *, legacy=False) -> bool:
+        nonlocal tool_seen, tool_identity, tool_format, multiple_tool_calls, tool_call_id
+        identity = (choice_index, call.get("index", 0))
+        call_id = call.get("id")
+        call_format = "function_call" if legacy else "tool_calls"
+        if tool_seen and (identity != tool_identity or call_format != tool_format
+                          or (call_id and tool_call_id and call_id != tool_call_id)):
+            multiple_tool_calls = True
+            return False
+        tool_seen, tool_identity, tool_format = True, identity, call_format
+        tool_call_id = call_id or tool_call_id
+        return True
 
     def _merge_streamed_value(previous, current) -> tuple[str, str]:
         """Return the reconstructed value and the newly arrived suffix."""
@@ -351,22 +383,25 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.post(api_url, headers=headers, json=data) as response:
+            async with provider_request(session, api_url, headers=headers, json=data) as response:
                 if response.status == 200:
                     # JSON buffer for handling incomplete chunks
                     json_buffer = ""
+                    utf8_decoder = codecs.getincrementaldecoder("utf-8")()
                     input_tokens = output_tokens = total_tokens = 0
 
                     async for chunk in response.content.iter_chunked(1024):
+                        if stream_failed:
+                            break
                         if stop_signals.get(conversation_id):
                             logger.info("Stop signal received, exiting LLM API call loop.")
                             break
 
-                        chunk_str = chunk.decode("utf-8")
+                        chunk_str = utf8_decoder.decode(chunk)
                         json_buffer += chunk_str
 
                         # Process complete lines from buffer
-                        while "\n\n" in json_buffer:
+                        while "\n\n" in json_buffer and not stream_failed:
                             line_data, json_buffer = json_buffer.split("\n\n", 1)
 
                             for line in line_data.split("\n"):
@@ -376,11 +411,26 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
                                     data_part = line[6:]  # Remove 'data: ' prefix
 
                                     if data_part == "[DONE]":
+                                        stream_done = True
                                         break
 
                                     if data_part.startswith("{"):
                                         try:
                                             chunk_data = orjson.loads(data_part)
+                                            usage = chunk_data.get("usage") or {}
+                                            input_tokens = usage.get("prompt_tokens", input_tokens)
+                                            output_tokens = usage.get("completion_tokens", output_tokens)
+                                            total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+
+                                            if chunk_data.get('error'):
+                                                human_msg = _extract_human_error_message(data_part, 200, provider_label)
+                                                logger.error("[%s] Stream error for model=%s, conversation_id=%s: %s",
+                                                             provider_label, model, conversation_id, human_msg)
+                                                await record_provider_error_for_label(
+                                                    provider_label, message=human_msg, model=model, byok=byok)
+                                                yield f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+                                                error_yielded = stream_failed = True
+                                                break
 
                                             if 'choices' in chunk_data and chunk_data['choices']:
                                                 for choice in chunk_data['choices']:
@@ -396,28 +446,30 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
                                                                 yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
                                                             yield f"data: {orjson.dumps({'thinking': reasoning_chunk, 'type': 'thinking'}).decode()}\n\n"
 
-                                                        # Handle tool_calls (new OpenAI format)
+                                                        # The round owns one choice/index/ID, including interleaved deltas.
                                                         if 'tool_calls' in delta:
+                                                            if len(delta['tool_calls']) > 1:
+                                                                multiple_tool_calls = True
                                                             for tc in delta['tool_calls']:
-                                                                if tc.get('id'):
-                                                                    tool_call_id = tc['id']
-                                                                if tc.get('function'):
-                                                                    fn = tc['function']
-                                                                    if fn.get('name'):
-                                                                        function_name = fn['name']
-                                                                        function_arguments = ""
-                                                                    if fn.get('arguments'):
-                                                                        function_arguments += fn['arguments']
+                                                                if not _accept_tool_delta(tc, choice.get('index', 0)):
+                                                                    continue
+                                                                fn = tc.get('function') or {}
+                                                                if fn.get('name'):
+                                                                    if function_name and fn['name'] != function_name:
+                                                                        multiple_tool_calls = True
+                                                                    function_name = fn['name']
+                                                                function_arguments += fn.get('arguments') or ""
 
-                                                        # Handle function_call (deprecated but still supported)
+                                                        # Legacy providers can return name and arguments together.
                                                         elif 'function_call' in delta:
-                                                            function_chunk = delta['function_call']
-                                                            if function_chunk is not None:
-                                                                if 'name' in function_chunk:
-                                                                    function_name = function_chunk['name']
-                                                                    function_arguments = ""
-                                                                elif 'arguments' in function_chunk:
-                                                                    function_arguments += function_chunk['arguments']
+                                                            fn = delta['function_call']
+                                                            if fn is not None and _accept_tool_delta(
+                                                                    fn, choice.get('index', 0), legacy=True):
+                                                                if fn.get('name'):
+                                                                    if function_name and fn['name'] != function_name:
+                                                                        multiple_tool_calls = True
+                                                                    function_name = fn['name']
+                                                                function_arguments += fn.get('arguments') or ""
 
                                                         # Handle content
                                                         if 'content' in delta:
@@ -446,8 +498,11 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
 
                                                     # Check finish_reason for tool_calls
                                                     finish_reason = choice.get('finish_reason')
-                                                    if finish_reason == 'tool_calls' or finish_reason == 'function_call':
-                                                        # Tool call completed - will be processed after loop
+                                                    if finish_reason:
+                                                        last_finish_reason = finish_reason
+                                                    if finish_reason in {'tool_calls', 'function_call'}:
+                                                        tool_seen = True
+                                                        tool_format = tool_format or finish_reason
                                                         continue
                                                     elif finish_reason == 'stop':
                                                         continue
@@ -463,18 +518,16 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
                                                                 max_tokens,
                                                             )
 
-                                            # Handle usage information
-                                            if 'usage' in chunk_data and chunk_data['usage'] and 'total_tokens' in chunk_data['usage']:
-                                                input_tokens = chunk_data['usage']['prompt_tokens']
-                                                output_tokens = chunk_data['usage']['completion_tokens']
-                                                total_tokens = chunk_data['usage']['total_tokens']
-
                                         except orjson.JSONDecodeError as e:
+                                            tool_stream_invalid = True
                                             # Log JSON errors but don't stop processing for Grok reasoning models
                                             if "grok" in model.lower():
                                                 logger.warning(f"JSON decode warning for {model}: {e}")
                                             else:
                                                 logger.error(f"[call_llm_api] - Error decoding JSON fragment: {e} , data: {data_part[:200]}...")
+                    else:
+                        utf8_decoder.decode(b"", final=True)
+                        tool_stream_invalid |= bool(json_buffer.strip())
                 else:
                     error_body = await response.text()
                     raw_log = f"[call_llm_api] - Error: Received status code {response.status}. Response body: {error_body}"
@@ -501,12 +554,14 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
                     except:
                         logger.error("Could not parse error response as JSON")
 
+        except (asyncio.CancelledError, GeneratorExit) as exc:
+            stream_interruption = exc
         except asyncio.TimeoutError as exc:
             error_message = f"[call_llm_api] - Request timed out after {timeout_seconds} seconds for model {model}"
             logger.error(error_message)
             human_msg = _human_exception_error(exc, provider_label)
             await record_provider_error_for_label(provider_label, message=human_msg, exception=exc, model=model, byok=byok)
-            yield f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+            deferred_error_event = f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             error_yielded = True
 
         except aiohttp.ClientError as exc:
@@ -514,7 +569,13 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
             logger.error(error_message)
             human_msg = _human_exception_error(exc, provider_label)
             await record_provider_error_for_label(provider_label, message=human_msg, exception=exc, model=model, byok=byok)
-            yield f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+            deferred_error_event = f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+            error_yielded = True
+
+        except EmbedError as exc:
+            # Application accounting refused or revoked the call: not a provider fault.
+            logger.warning(f"[call_llm_api] - Application refused the call: {exc.code}")
+            deferred_error_event = f"data: {orjson.dumps({'error': exc.code, 'error_code': exc.code}).decode()}\n\n"
             error_yielded = True
 
         except Exception as exc:
@@ -522,63 +583,99 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
             logger.error(error_message)
             human_msg = _human_exception_error(exc, provider_label)
             await record_provider_error_for_label(provider_label, message=human_msg, exception=exc, model=model, byok=byok)
-            yield f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
+            deferred_error_event = f"data: {orjson.dumps(_provider_error_payload(provider_label, human_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             error_yielded = True
 
-    for tagged_type, tagged_chunk in tagged_thinking_parser.finalize():
-        if tagged_type == 'thinking':
-            if not thinking_open:
-                thinking_open = True
-                yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
-            yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
-        elif tagged_type == 'thinking_end':
-            if thinking_open:
-                thinking_open = False
-                yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
-        elif tagged_type == 'content' and tagged_chunk:
-            if thinking_open:
-                thinking_open = False
-                yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
-            content += tagged_chunk
-            yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
+    try:
+        if stream_interruption is None:
+            for tagged_type, tagged_chunk in tagged_thinking_parser.finalize():
+                if tagged_type == 'thinking':
+                    if not thinking_open:
+                        thinking_open = True
+                        yield f"data: {orjson.dumps({'type': 'thinking_start'}).decode()}\n\n"
+                    yield f"data: {orjson.dumps({'thinking': tagged_chunk, 'type': 'thinking'}).decode()}\n\n"
+                elif tagged_type == 'thinking_end':
+                    if thinking_open:
+                        thinking_open = False
+                        yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                elif tagged_type == 'content' and tagged_chunk:
+                    if thinking_open:
+                        thinking_open = False
+                        yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+                    content += tagged_chunk
+                    yield f"data: {orjson.dumps({'content': tagged_chunk}).decode()}\n\n"
 
-    if thinking_open:
-        yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
-
-    billing_input_tokens = input_tokens
-    billing_output_tokens = output_tokens
-    if (
-        billing_reservation_id
-        and save_to_db
-        and (content or function_name or input_tokens or output_tokens)
-    ):
-        billing_input_tokens, billing_output_tokens = (
-            await accumulate_ai_provider_call_usage(
-                reservation_id=billing_reservation_id,
-                user_id=current_user.id,
-                reported_input_tokens=input_tokens,
-                reported_output_tokens=output_tokens,
-                input_payload=messages,
-                output_payload=(content, function_name, function_arguments),
-                input_token_fallback=input_token_fallback,
-                output_token_cap=max_tokens,
-                llm_id=llm_id,
-                model=model,
-                prompt_id=prompt_id,
-                byok=byok,
+            if thinking_open:
+                yield f"data: {orjson.dumps({'type': 'thinking_end'}).decode()}\n\n"
+    finally:
+        # Closing an SSE consumer must not discard usage already received.
+        billing_input_tokens = input_tokens
+        billing_output_tokens = output_tokens
+        if (
+            billing_reservation_id
+            and save_to_db
+            and (content or tool_seen or input_tokens or output_tokens)
+        ):
+            billing_input_tokens, billing_output_tokens = (
+                await accumulate_ai_provider_call_usage(
+                    reservation_id=billing_reservation_id,
+                    user_id=current_user.id,
+                    reported_input_tokens=input_tokens,
+                    reported_output_tokens=output_tokens,
+                    input_payload=messages,
+                    output_payload=(content, function_name, function_arguments),
+                    input_token_fallback=input_token_fallback,
+                    output_token_cap=max_tokens,
+                    llm_id=llm_id,
+                    model=model,
+                    prompt_id=prompt_id,
+                    byok=byok,
+                )
             )
-        )
 
-    # If a tool call was detected, emit it and return without saving to DB
-    # The caller (get_ai_response) will handle the tool call and save the result
-    # When save_to_db=False (Multi-AI), skip tool handling entirely
-    if function_name and save_to_db:
-        try:
-            # Parse the accumulated arguments as JSON
-            parsed_args = orjson.loads(function_arguments) if function_arguments else {}
-        except orjson.JSONDecodeError:
-            logger.error(f"[call_llm_api] - Failed to parse tool arguments: {function_arguments}")
-            parsed_args = {}
+    if stream_interruption is not None:
+        raise stream_interruption
+
+    # Report exceptions only after accounting for the received output.
+    if deferred_error_event is not None:
+        yield deferred_error_event
+
+    if stream_failed:
+        # Account for partial usage, but never execute an incomplete tool call
+        # or persist a response that the provider explicitly rejected.
+        return
+
+    if not content.strip() and not function_name and not error_yielded:
+        logger.warning("[%s] Empty stream: model=%s, conversation_id=%s, finish_reason=%s, "
+                       "input_tokens=%s, output_tokens=%s, max_tokens=%s, reasoning_characters=%s",
+                       provider_label, model, conversation_id, last_finish_reason,
+                       input_tokens, output_tokens, max_tokens, len(reasoning_content_for_message))
+
+    # Partial usage is retained, but only a complete, single call may leave the adapter.
+    if tool_seen and save_to_db:
+        tool_error = None
+        # MiniMax's documented tool responses may finish with stop rather than tool_calls.
+        valid_tool_finish = (last_finish_reason == tool_format
+                             or (provider_label == "MiniMax" and last_finish_reason == "stop"))
+        if multiple_tool_calls:
+            tool_error = "multiple_tool_calls_unsupported"
+        elif (error_yielded or tool_stream_invalid or not stream_done or truncated
+              or not valid_tool_finish or not function_name
+              or (tool_format == "tool_calls" and not tool_call_id)
+              or stop_signals.get(conversation_id, False)):
+            tool_error = "tool_call_incomplete"
+        else:
+            try:
+                parsed_args = orjson.loads(function_arguments)
+                if not isinstance(parsed_args, dict):
+                    tool_error = "invalid_tool_arguments"
+            except (orjson.JSONDecodeError, TypeError):
+                tool_error = "invalid_tool_arguments"
+        if tool_error:
+            if not error_yielded:
+                await record_provider_error_for_label(provider_label, message=tool_error, model=model, byok=byok)
+                yield f"data: {orjson.dumps({'error': tool_error, 'error_code': tool_error}).decode()}\n\n"
+            return
 
         logger.info(f"[call_llm_api] - Tool call detected: {function_name}")
         logger.debug(f"[call_llm_api] - Tool call args: {parsed_args}")
@@ -597,7 +694,9 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
             tool_call_payload["reasoning_content"] = reasoning_content_for_message
         if reasoning_details_for_message:
             tool_call_payload["reasoning_details"] = reasoning_details_for_message
-        yield f"data: {orjson.dumps({'tool_call': tool_call_payload}).decode()}\n\n"
+        if stop_signals.get(conversation_id, False):
+            return
+        yield f"data: {orjson.dumps({'tool_call': tool_call_payload, 'pre_tool_content': content}).decode()}\n\n"
         yield f"data: {orjson.dumps({'tool_call_pending': True}).decode()}\n\n"
         return  # Don't save to DB - handler will do it
 
@@ -616,7 +715,8 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
                     yield f"data: {orjson.dumps(_provider_error_payload(provider_label, empty_msg, user_message, pdf_error_metadata, current_user, conversation_id)).decode()}\n\n"
             return
         else:
-            await record_provider_success_for_label(provider_label, model=model, byok=byok)
+            if not error_yielded:
+                await record_provider_success_for_label(provider_label, model=model, byok=byok)
             user_message_id, bot_message_id = await save_content_to_db(content, input_tokens, output_tokens, total_tokens, conversation_id, current_user.id, model, user_message=user_message,
                                                                         input_token_fallback=input_token_fallback,
                                                                         prompt_id=prompt_id, watchdog_config=watchdog_config, watchdog_hint_active=watchdog_hint_active, watchdog_hint_eval_id=watchdog_hint_eval_id,
@@ -631,7 +731,7 @@ async def call_llm_api(messages, model, temperature, max_tokens, prompt, convers
 
         yield content.strip()
     else:
-        if content.strip():
+        if content.strip() and not error_yielded:
             await record_provider_success_for_label(provider_label, model=model, byok=byok)
         elif not error_yielded:
             await record_provider_error_for_label(provider_label, message="empty response", model=model, byok=byok)

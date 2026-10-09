@@ -544,7 +544,10 @@ async def _fetch_official_status(provider: str) -> dict[str, Any]:
     if provider == "openai":
         return await _fetch_statuspage_json("https://status.openai.com/api/v2/status.json")
     if provider == "anthropic":
-        return await _fetch_statuspage_json("https://status.claude.com/api/v2/status.json")
+        return await _fetch_statuspage_json(
+            "https://status.claude.com/api/v2/summary.json",
+            component_name="Claude API (api.anthropic.com)",
+        )
     if provider == "google":
         return await _fetch_google_cloud_incidents()
     if provider == "openrouter":
@@ -554,7 +557,7 @@ async def _fetch_official_status(provider: str) -> dict[str, Any]:
     return {"indicator": None, "source": "unsupported"}
 
 
-async def _fetch_statuspage_json(url: str) -> dict[str, Any]:
+async def _fetch_statuspage_json(url: str, *, component_name: str | None = None) -> dict[str, Any]:
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_SECONDS)) as session:
         async with session.get(url) as response:
             body = await response.read()
@@ -563,6 +566,25 @@ async def _fetch_statuspage_json(url: str) -> dict[str, Any]:
     status = payload.get("status") or {}
     indicator = status.get("indicator")
     description = status.get("description")
+    if component_name is not None:
+        # A provider's website or desktop products can be degraded while its
+        # inference API remains operational. Use only the requested service.
+        component = next((item for item in payload.get("components", [])
+                          if item.get("name") == component_name), None)
+        indicators = {
+            "operational": "none",
+            "degraded_performance": "minor",
+            "partial_outage": "major",
+            "major_outage": "critical",
+            "under_maintenance": "minor",
+        }
+        if component is None or component.get("status") not in indicators:
+            raise ValueError(f"Missing or unknown status for {component_name}")
+        indicator = indicators[component["status"]]
+        description = next((incident.get("name") for incident in payload.get("incidents", [])
+                            if incident.get("status") not in {"resolved", "postmortem"}
+                            and any(item.get("id") == component["id"]
+                                    for item in incident.get("components", []))), None)
     return {
         "indicator": "none" if indicator in (None, "", "none") else indicator,
         "incident": description,

@@ -266,7 +266,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         return data;
     }
-    let applicationFunding = null;
+    const embedConfig = window.AurvekEmbed?.config;
+    let applicationFunding = embedConfig?.application ? {
+        conversationId: embedConfig.conversation_id,
+        funding: embedConfig.application.funding
+    } : null;
     const nativeBalanceMessage = insufficientBalanceMessage?.innerHTML;
     window.currentConversationApplicationFunding = function() {
         const currentId = typeof currentConversationId !== 'undefined' ? currentConversationId : null;

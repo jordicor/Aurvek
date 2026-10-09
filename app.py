@@ -193,6 +193,8 @@ from file_storage import (
     prune_unreferenced_blobs,
 )
 from welcome_service import build_world, user_has_pack_access, user_has_prompt_access, serve_welcome_world
+from marketplace.landing.publication import _landing_save_lock, _set_welcome_page_publication
+from filelock import Timeout as FileLockTimeout
 from tools.tts import handle_tts_request, resolve_playback_voice
 from ai_runtime.voice_resolution import CanonicalVoiceResolutionError
 from system_prompt_defaults import (
@@ -786,7 +788,13 @@ from integrations.applications.web_exports import router as application_exports_
 app.include_router(embed_api_router)
 app.include_router(embed_pages_router)
 app.include_router(applications_api_router)
+from importlib.util import find_spec as _find_private_module
+if _find_private_module("application_saas") is not None:
+    from application_saas.api import router as application_saas_router
+    app.include_router(application_saas_router)
 app.include_router(application_voice_router)
+from integrations.live.routes import router as native_live_router
+app.include_router(native_live_router)
 app.include_router(application_sources_router)
 app.include_router(application_tools_router)
 app.include_router(application_exports_router)
@@ -3957,10 +3965,15 @@ async def edit_profile(
                 else:
                     logger.info(f"No voice_id found for voice_code: {sample_voice_id}")
 
-            if alter_ego_id == "" or alter_ego_id == "0":
-                await cursor.execute("UPDATE USER_DETAILS SET current_alter_ego_id = NULL WHERE user_id = ?", (user_id,))
-            elif alter_ego_id:
-                await cursor.execute("UPDATE USER_DETAILS SET current_alter_ego_id = ? WHERE user_id = ?", (alter_ego_id, user_id))
+            if alter_ego_id is not None:
+                from alter_egos import set_current_alter_ego
+
+                try:
+                    selected_id = int(alter_ego_id) if alter_ego_id else None
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=t("navigation.alter_ego.unavailable"))
+                if not await set_current_alter_ego(conn, user_id, selected_id or None):
+                    raise HTTPException(status_code=404, detail=t("navigation.alter_ego.unavailable"))
 
             await conn.commit()
 
@@ -4125,10 +4138,59 @@ async def get_alter_egos(current_user: User = Depends(get_current_user)):
 
     async with get_db_connection(readonly=True) as conn:
         cursor = await conn.cursor()
-        await cursor.execute("SELECT id, name FROM USER_ALTER_EGOS WHERE user_id = ?", (current_user.id,))
+        await cursor.execute("SELECT id, name, profile_picture FROM USER_ALTER_EGOS WHERE user_id = ? ORDER BY name, id", (current_user.id,))
         alter_egos = await cursor.fetchall()
+        await cursor.execute(
+            """SELECT u.username, u.profile_picture, ud.current_alter_ego_id
+               FROM USERS u JOIN USER_DETAILS ud ON ud.user_id = u.id WHERE u.id = ?""",
+            (current_user.id,),
+        )
+        profile = await cursor.fetchone()
+    if profile is None:
+        raise HTTPException(status_code=404, detail=t("account.profile.user_missing"))
 
-    return JSONResponse(content={"success": True, "alterEgos": [{"id": ae[0], "name": ae[1]} for ae in alter_egos]})
+    expiration = datetime.now(timezone.utc) + timedelta(hours=AVATAR_TOKEN_EXPIRE_HOURS)
+
+    def identity_option(identity_id, name, picture):
+        picture_url = None
+        if picture:
+            picture_path = f"{picture}_32.webp"
+            token = generate_img_token(picture_path, expiration, current_user)
+            picture_url = f"{CLOUDFLARE_BASE_URL}{picture_path}?token={token}"
+        return {"id": identity_id, "name": name, "profilePicture": picture_url}
+
+    return JSONResponse(content={
+        "success": True,
+        "alterEgos": [identity_option(*ae) for ae in alter_egos],
+        "profile": identity_option(None, profile[0], profile[1]),
+        "currentAlterEgoId": profile[2] or None,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/active-alter-ego")
+async def select_active_alter_ego(request: Request, current_user: User = Depends(get_current_user)):
+    """Switch the native chat identity without submitting unrelated settings."""
+    if current_user is None:
+        return unauthenticated_response()
+    from alter_egos import set_current_alter_ego
+    from request_security import validate_mutation_request
+
+    rejection = validate_mutation_request(request)
+    if rejection is not None:
+        return rejection
+    t = get_translator(request, current_user).t
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict) or "alter_ego_id" not in payload:
+        return JSONResponse({"success": False, "message": t("navigation.alter_ego.unavailable")}, status_code=400)
+    selected_id = payload["alter_ego_id"]
+    async with get_db_connection() as conn:
+        if not await set_current_alter_ego(conn, current_user.id, selected_id):
+            return JSONResponse({"success": False, "message": t("navigation.alter_ego.unavailable")}, status_code=404)
+        await conn.commit()
+    return JSONResponse({"success": True, "currentAlterEgoId": selected_id})
 
 @app.get("/api/get-alter-ego-details/{alter_ego_id}")
 async def get_alter_ego_details(alter_ego_id: int, current_user: User = Depends(get_current_user)):
@@ -5959,6 +6021,9 @@ async def update_user(
             billing_max_limit_value,
         )
         if requested_billing_configuration != current_billing_configuration:
+            # An explicit managed-account policy replaces its purchase origin,
+            # including a limit change that keeps the same payer.
+            update_details_query += ", billing_acquisition_ref = NULL"
             # Reap expired holds before deciding that billing is still busy.
             # The write transaction below then prevents a fresh reservation
             # from appearing between the final check and this configuration
@@ -6963,8 +7028,8 @@ async def _apply_llm_reassignment(conn: aiosqlite.Connection, old_llm_id: int, n
     cursor = await conn.execute(
         """
         UPDATE PROMPTS
-        SET phone_llm_id = ?, phone_reasoning_json = NULL
-        WHERE phone_llm_id = ?
+        SET realtime_llm_id = ?, realtime_reasoning_json = NULL
+        WHERE realtime_llm_id = ?
         """,
         (new_llm_id, old_llm_id),
     )
@@ -7105,9 +7170,9 @@ async def _repair_orphan_llm_references(conn: aiosqlite.Connection, fallback_mod
     cursor = await conn.execute(
         """
         UPDATE PROMPTS
-        SET phone_llm_id = NULL, phone_reasoning_json = NULL
-        WHERE phone_llm_id IS NOT NULL
-          AND phone_llm_id NOT IN (SELECT id FROM LLM)
+        SET realtime_llm_id = NULL, realtime_reasoning_json = NULL
+        WHERE realtime_llm_id IS NOT NULL
+          AND realtime_llm_id NOT IN (SELECT id FROM LLM)
         """
     )
     metrics["phone_prompts"] = cursor.rowcount or 0
@@ -13106,11 +13171,12 @@ WELCOME_HTML_ALLOWED_ATTRIBUTES = {
 
 
 def sanitize_welcome_html(html: str) -> str:
-    """Sanitize welcome HTML once at save time using nh3. <style> tag is allowed because content renders inside Shadow DOM, preventing CSS leaks."""
+    """Sanitize once at save time; styles remain within the isolated welcome."""
     return nh3.clean(
         html,
         tags=WELCOME_HTML_ALLOWED_TAGS,
         attributes=WELCOME_HTML_ALLOWED_ATTRIBUTES,
+        clean_content_tags={"script"},
         link_rel="noopener noreferrer",
         url_schemes={"http", "https", "mailto"},
     )
@@ -13847,12 +13913,13 @@ async def get_prompt_welcome(prompt_id: int, current_user: User = Depends(get_cu
             raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        pi = await get_prompt_info(prompt_id)
-        prompt_dir = get_prompt_path(prompt_id, pi)
-        welcome_path = os.path.join(prompt_dir, "welcome", "index.html")
-        if os.path.isfile(welcome_path):
-            with open(welcome_path, 'r', encoding='utf-8') as f:
-                return JSONResponse(content={"html": f.read()})
+        async with _landing_save_lock(prompt_id, timeout_seconds=1):
+            world = await build_world("prompt", prompt_id)
+            if world:
+                with open(os.path.join(world["path"], "welcome", "index.html"), 'r', encoding='utf-8') as f:
+                    return JSONResponse(content={"html": f.read()})
+    except FileLockTimeout:
+        return JSONResponse(content={"html": ""}, status_code=503, headers={"Retry-After": "5", "Cache-Control": "no-store"})
     except Exception:
         pass
     return JSONResponse(content={"html": ""}, status_code=404)
@@ -13869,13 +13936,13 @@ async def get_pack_welcome(pack_id: int, current_user: User = Depends(get_curren
             raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        pack_info = await _get_pack_info_for_path(pack_id)
-        if pack_info:
-            pack_dir = get_pack_path(pack_id, pack_info)
-            welcome_path = os.path.join(pack_dir, "welcome", "index.html")
-            if os.path.isfile(welcome_path):
-                with open(welcome_path, 'r', encoding='utf-8') as f:
+        async with _landing_save_lock(pack_id=pack_id, timeout_seconds=1):
+            world = await build_world("pack", pack_id)
+            if world:
+                with open(os.path.join(world["path"], "welcome", "index.html"), 'r', encoding='utf-8') as f:
                     return JSONResponse(content={"html": f.read()})
+    except FileLockTimeout:
+        return JSONResponse(content={"html": ""}, status_code=503, headers={"Retry-After": "5", "Cache-Control": "no-store"})
     except Exception:
         pass
     return JSONResponse(content={"html": ""}, status_code=404)
@@ -13901,15 +13968,22 @@ async def save_prompt_welcome(prompt_id: int, request: Request, current_user: Us
     prompt_dir = get_prompt_path(prompt_id, pi)
     welcome_path = os.path.join(prompt_dir, "welcome", "index.html")
 
-    if html_content.strip():
-        clean_html = sanitize_welcome_html(html_content)
-        os.makedirs(os.path.join(prompt_dir, "welcome"), exist_ok=True)
-        with open(welcome_path, 'w', encoding='utf-8') as f:
-            f.write(clean_html)
-    else:
-        # Empty content = remove welcome
-        if os.path.isfile(welcome_path):
-            os.remove(welcome_path)
+    clean_html = sanitize_welcome_html(html_content) if html_content.strip() else ""
+    try:
+        async with _landing_save_lock(prompt_id):
+            await _set_welcome_page_publication(prompt_id, published=False)
+            if html_content.strip():
+                os.makedirs(os.path.join(prompt_dir, "welcome"), exist_ok=True)
+                with open(welcome_path, 'w', encoding='utf-8') as f:
+                    f.write(clean_html)
+                if clean_html.strip():
+                    await _set_welcome_page_publication(prompt_id, published=True)
+            elif os.path.isfile(welcome_path):
+                # Empty content = remove welcome
+                os.remove(welcome_path)
+    except FileLockTimeout:
+        raise HTTPException(status_code=503, detail=get_translator(request, current_user).t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again'))
 
     return JSONResponse(content={"success": True})
 
@@ -13945,14 +14019,21 @@ async def save_pack_welcome(pack_id: int, request: Request, current_user: User =
     pack_dir = get_pack_path(pack_id, pack_info)
     welcome_path = os.path.join(pack_dir, "welcome", "index.html")
 
-    if html_content.strip():
-        clean_html = sanitize_welcome_html(html_content)
-        os.makedirs(os.path.join(pack_dir, "welcome"), exist_ok=True)
-        with open(welcome_path, 'w', encoding='utf-8') as f:
-            f.write(clean_html)
-    else:
-        if os.path.isfile(welcome_path):
-            os.remove(welcome_path)
+    clean_html = sanitize_welcome_html(html_content) if html_content.strip() else ""
+    try:
+        async with _landing_save_lock(pack_id=pack_id):
+            await _set_welcome_page_publication(pack_id=pack_id, published=False)
+            if html_content.strip():
+                os.makedirs(os.path.join(pack_dir, "welcome"), exist_ok=True)
+                with open(welcome_path, 'w', encoding='utf-8') as f:
+                    f.write(clean_html)
+                if clean_html.strip():
+                    await _set_welcome_page_publication(pack_id=pack_id, published=True)
+            elif os.path.isfile(welcome_path):
+                os.remove(welcome_path)
+    except FileLockTimeout:
+        raise HTTPException(status_code=503, detail=get_translator(request, current_user).t(
+            'landing_builder.response.another_landing_save_is_still_in_progress_try_again'))
 
     return JSONResponse(content={"success": True})
 

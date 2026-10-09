@@ -77,7 +77,7 @@ def render_user_time_context(
 
     lines.extend(
         (
-            "Phone-call scheduling policy:",
+            "Phone-call scheduling policy (only when schedule_phone_call is available):",
             "- A time zone or city and country explicitly supplied for the current "
             "request overrides profile_time_zone for that call only. Otherwise use "
             "profile_time_zone.",
@@ -104,9 +104,7 @@ def render_user_time_context(
                 "already provide enough location or time-zone information, ask for the "
                 "user's city and country only when they are trying to schedule a phone "
                 "call, and explain why it is needed.",
-                "- When asking, mention that saving a time zone in Account Information "
-                "will avoid this question for future calls. Do not call "
-                "schedule_phone_call until a valid IANA zone has been resolved.",
+                "- Do not call schedule_phone_call until a valid IANA zone has been resolved.",
             )
         )
     lines.append(_BLOCK_END)

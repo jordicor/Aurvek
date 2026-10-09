@@ -23,9 +23,54 @@ function setup(capabilities, responses = []) {
         setTimeout, clearTimeout };
     const document = { getElementById: id => nodes.get(id), createElement: element,
         querySelector: () => ({ content: 'native-csrf' }), querySelectorAll: () => [], addEventListener() {} };
-    vm.runInNewContext(source, { window: global, document, URL, Headers });
-    return { global, nodes, calls, emitted, dictation: () => dictation, voice: () => voice };
+    const runtime = { window: global, document, URL, Headers, attachedFiles: [], compressionInProgress: 0 };
+    vm.runInNewContext(source, runtime);
+    return { global, nodes, calls, emitted, runtime, dictation: () => dictation, voice: () => voice };
 }
+
+test('host text admission preserves existing drafts and attachments and uses native sending', () => {
+    const context = setup({ text: true });
+    const input = { value: '', disabled: false };
+    const button = { dataset: { streaming: 'false' }, disabled: false };
+    context.nodes.set('message-text', input);
+    context.nodes.set('send-button', button);
+    const sent = [];
+    context.global.sendMessage = (text, options) => { sent.push({ text, options }); return true; };
+    const send = text => context.global.AurvekChatActions.sendMessage(text);
+    input.value = 'My unfinished draft';
+    assert.throws(() => send('host text'), { code: 'draft_present' });
+    assert.equal(input.value, 'My unfinished draft');
+    input.value = '';
+    context.runtime.attachedFiles.push({ name: 'private.txt' });
+    assert.throws(() => send('host text'), { code: 'draft_present' });
+    assert.equal(context.runtime.attachedFiles.length, 1);
+    context.runtime.attachedFiles.length = 0;
+    button.dataset.streaming = 'true';
+    assert.throws(() => send('host text'), { code: 'operation_in_progress' });
+    button.dataset.streaming = 'false';
+    context.runtime.compressionInProgress = 1;
+    assert.throws(() => send('host text'), { code: 'operation_in_progress' });
+    context.runtime.compressionInProgress = 0;
+    context.global.getAudioActivity = () => 'call';
+    assert.throws(() => send('host text'), { code: 'operation_in_progress' });
+    context.global.getAudioActivity = () => 'idle';
+    input.disabled = true;
+    assert.throws(() => send('host text'), { code: 'message_not_admitted' });
+    input.disabled = false;
+    context.global.currentConversationId = 13;
+    assert.throws(() => send('host text'), { code: 'capability_disabled' });
+    context.global.currentConversationId = 12;
+    assert.equal(sent.length, 0);
+    send('Accepted message');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, 'Accepted message');
+    assert.equal(sent[0].options.filesOverride.length, 0);
+    assert.equal(input.value, '');
+    context.global.sendMessage = () => false;
+    assert.throws(() => send('blocked natively'), { code: 'message_not_admitted' });
+    context.global.applicationConversation.application.capabilities.text = false;
+    assert.throws(() => send('no permission'), { code: 'capability_disabled' });
+});
 
 test('host attachment opens a real picker control inside the frame without faking activation', async () => {
     const context = setup({ attachments: true });

@@ -62,7 +62,8 @@
         const sendButton = document.getElementById('send-button');
         const fileInput = document.getElementById('chat-files');
 
-        const trackedInputs = [messageText, sendButton, fileInput];
+        const trackedInputs = [messageText, sendButton, fileInput,
+            document.getElementById('plus-native-live'), document.getElementById('voice-native-open')];
         const previousStates = new Map();
 
         function lockChatInputs(lock) {
@@ -456,9 +457,11 @@
                 } else {
                     voiceAvailability = payload;
                 }
-                window.setApplicationConversationFunding?.(
-                    conversationId, response.ok ? (payload.application_funding ?? null) : null
-                );
+                if (!window.AurvekEmbed) {
+                    window.setApplicationConversationFunding?.(
+                        conversationId, response.ok ? (payload.application_funding ?? null) : null
+                    );
+                }
                 applyVoiceAvailability(
                     Boolean(voiceAvailability.available),
                     voiceAvailability.reason,

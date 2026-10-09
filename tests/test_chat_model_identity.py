@@ -25,6 +25,30 @@ class _JsonRequest:
         return self._payload
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("machine,model", [
+    ("Gemini", "gemini-3.8-live"), ("GPT", "gpt-live-1"),
+])
+async def test_voice_only_models_cannot_create_chat_or_change_chat_model(mock_db, monkeypatch, machine, model):
+    monkeypatch.setattr(pages, "get_db_connection", mock_db)
+    async with mock_db() as conn:
+        await _ensure_model_identity_schema(conn)
+        await conn.execute("CREATE TEMP TABLE USER_DETAILS(user_id INTEGER, llm_id INTEGER, current_prompt_id INTEGER)")
+        await conn.execute("INSERT INTO USER_DETAILS(user_id,llm_id) VALUES(1,2)")
+        await conn.execute("INSERT INTO LLM(id,machine,model) VALUES(2,?,?)", (machine, model))
+        with pytest.raises(ValueError, match="real-time voice"):
+            await create_conversation_core(1, await conn.cursor(), SimpleNamespace(id=1))
+        assert (await (await conn.execute("SELECT COUNT(*) FROM CONVERSATIONS")).fetchone())[0] == 0
+        await conn.execute("INSERT INTO CONVERSATIONS(id,user_id,llm_id) VALUES(2193,1,2)")
+        await conn.commit()
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as error:
+        await pages.update_conversation_model(2193, _JsonRequest({"llm_id": 2}), current_user=SimpleNamespace(id=1))
+    assert error.value.status_code == 400
+    assert "real-time voice" in error.value.detail
+
+
 async def _ensure_model_identity_schema(conn):
     cursor = await conn.execute("PRAGMA table_info(CONVERSATIONS)")
     conversation_columns = {row[1] for row in await cursor.fetchall()}
@@ -94,6 +118,37 @@ async def test_new_chat_rejects_disabled_inherited_default(mock_db):
             await create_conversation_core(1, cursor, SimpleNamespace(id=1))
         await cursor.execute("SELECT COUNT(*) FROM CONVERSATIONS")
         assert (await cursor.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_model_change_and_details_report_selected_provider_health(mock_db, monkeypatch):
+    monkeypatch.setattr(pages, "get_db_connection", mock_db)
+    monkeypatch.setattr(pages, "touch_provider_activity", lambda provider: {
+        "provider": provider,
+        "status": "degraded" if provider == "anthropic" else "healthy",
+    })
+    async with mock_db() as conn:
+        await _ensure_model_identity_schema(conn)
+        await conn.executemany(
+            "INSERT INTO LLM (id, machine, model) VALUES (?, ?, ?)",
+            [(596, "Claude", "claude-opus-4-8"), (820, "Gemini", "gemini-3.8-flash")],
+        )
+        await conn.execute(
+            "INSERT INTO CONVERSATIONS (id, user_id, llm_id) VALUES (2193, 1, 596)"
+        )
+        await conn.commit()
+
+    user = SimpleNamespace(id=1)
+    for llm_id, provider, status in [(820, "google", "healthy"), (596, "anthropic", "degraded")]:
+        response = await pages.update_conversation_model(
+            2193, _JsonRequest({"llm_id": llm_id}), current_user=user,
+        )
+        changed = json.loads(response.body)
+        assert changed["updated"] is True
+        assert changed["provider_health"] == {"provider": provider, "status": status}
+        details = json.loads((await pages.get_conversation_details(2193, user)).body)
+        assert details["llm_id"] == llm_id
+        assert details["provider_health"] == changed["provider_health"]
 
 
 @pytest.mark.asyncio
@@ -649,9 +704,13 @@ async def test_non_phone_turn_cannot_supply_runtime_model_override():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enabled,expected_llm_id", [(1, 817), (0, 605)])
+@pytest.mark.parametrize("enabled,expected_llm_id,machine,model,expected_error", [
+    (1, 817, "GPTSub", "gpt-5.6-luna", "conversation_model_changed"),
+    (0, 605, "GPTSub", "gpt-5.6-luna", "model_unavailable"),
+    (1, 605, "Gemini", "gemini-3.8-live", "model_voice_only"),
+])
 async def test_runtime_model_admission_stops_before_provider_or_persistence(
-    monkeypatch, enabled, expected_llm_id
+    monkeypatch, enabled, expected_llm_id, machine, model, expected_error
 ):
     row = (
         0,  # locked
@@ -661,8 +720,8 @@ async def test_runtime_model_admission_stops_before_provider_or_persistence(
         None,  # effective prompt
         None,  # extension
         0,  # last message
-        "GPTSub",
-        "gpt-5.6-luna",
+        machine,
+        model,
         0,
         0,
         0,
@@ -725,10 +784,11 @@ async def test_runtime_model_admission_stops_before_provider_or_persistence(
     )
     payload = json.loads(response.body)
 
+    assert payload["error_code"] == expected_error
+    if expected_error == "model_voice_only":
+        assert response.status_code == 422
+        return
     assert response.status_code == 409
-    assert payload["error_code"] == (
-        "conversation_model_changed" if enabled else "model_unavailable"
-    )
     assert payload["llm_id"] == 605
 
     def inference_gate_must_not_run(*_args, **_kwargs):

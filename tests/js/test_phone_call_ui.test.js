@@ -227,6 +227,9 @@ test('phone errors present actionable codes from the API without displaying diag
         error_code: 'scheduled_call_started', detail: 'The scheduled call was claimed concurrently',
     }), tr('scheduled_already_started'));
     assert.equal(present({status: 400}, {detail: 'Private provider diagnostic'}), tr('request_failed'));
+    assert.equal(present({status: 400}, {
+        error_code: 'phone_backend_model_unavailable', detail: 'GPTSub runtime diagnostic',
+    }), tr('backend_model_unavailable'));
 });
 
 test('conversation menus expose phone assignment and management in normal and folder rows', () => {

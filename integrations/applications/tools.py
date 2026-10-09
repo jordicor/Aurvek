@@ -1,6 +1,8 @@
 """Application selection over Aurvek's existing tool catalog and executor."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 from jsonschema import Draft202012Validator
 
 from integrations.embed.models import EmbedError
@@ -71,19 +73,30 @@ async def application_tool_catalog(user_id, conversation_id, native_tools, *, se
     context = await service.resolve_runtime_context(conversation_id, user_id)
     if context is None:
         return None, list(native_tools)
+    from ai_runtime.channel_turns import current_channel_turn
+    from integrations.live.control import live_tools_for_context
+    turn = current_channel_turn()
+    # Closing the current voice session is a lifecycle control, like Stop in
+    # the browser. It grants no business tool or access to another conversation.
+    session_tools = []
+    if (turn is not None and all(context.capabilities.get(key) for key in ("voice", "stt", "tts"))
+            and turn.context.application is not None
+            # Admission adds the operation's payer; membership resolution does not.
+            # Funding is revalidated by the operation before executing the tool.
+            and replace(turn.context.application, payer_user_id=context.payer_user_id) == context):
+        session_tools = live_tools_for_context(turn.context, user_id=user_id, conversation_id=conversation_id)
     if not context.capabilities.get("tools"):
-        return context, []
+        return context, session_tools
     async with service.store.connection(readonly=True) as connection:
         config, _, _, _ = await service._scope(connection, context.app_id, context.subject,
             context.user_id, context.context_id, context.assistant_id)
     selected = set(config.tools)
-    from ai_runtime.channel_turns import current_channel_turn
-    turn = current_channel_turn()
     if turn is not None and turn.context.channel != "web":
         selected.difference_update(WEB_MEDIA_TOOLS)
     catalog = [tool for tool in native_tools
         if (name := tool.get("function", {}).get("name")) in selected
         and context.capabilities.get(NATIVE_TOOL_CAPABILITIES.get(name, ""), False)]
+    catalog.extend(session_tools)
     from .handoff import ApplicationHandoffService
     state = await ApplicationHandoffService(service.store).state(context, conversation_id)
     aliases = [item["assistant_id"] for item in state["assistants"]]
@@ -135,6 +148,15 @@ async def authorize_application_tool(user_id, conversation_id, name, arguments, 
     if name == "dream_of_consciousness" and arguments.get("conversation_id") != context.conversation_id:
         raise EmbedError("application_tool_resource_denied", 403)
     return context
+
+
+async def application_tool_rounds(context, *, service=None) -> int:
+    """How many tool calls one reply of this assistant may chain."""
+    service = await _services(service)
+    async with service.store.connection(readonly=True) as connection:
+        config, _, _, _ = await service._scope(connection, context.app_id, context.subject,
+            context.user_id, context.context_id, context.assistant_id)
+    return config.max_tool_rounds
 
 
 async def set_entry_from_tool(context, arguments, *, service=None):

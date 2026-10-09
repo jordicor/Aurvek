@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "Saldo actualizado",
+  "payment.credited.detail": "La recarga se ha abonado a tu saldo.",
+  "payment.crediting.title": "Pago recibido",
+  "payment.crediting.detail": "El pago está confirmado. El saldo todavía se está actualizando.",
+  "payment.pending.title": "Pago pendiente",
+  "payment.pending.detail": "El pago todavía no se ha confirmado.",
+  "payment.not_completed.title": "Recarga no completada",
+  "payment.not_completed.detail": "Esta sesión de pago ha caducado sin completar la recarga.",
+  "payment.amount_added": "Importe abonado",
+  "payment.balance": "Saldo actual",
+  "payment.check_later": "La comprobación automática ha terminado. Puedes recargar esta página más tarde para consultar el estado.",
+  "payment.back_to_wallet": "Volver al saldo"
+}

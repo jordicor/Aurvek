@@ -1,0 +1,14 @@
+{
+  "payment.credited.title": "Saldo atualizado",
+  "payment.credited.detail": "O carregamento foi creditado no seu saldo.",
+  "payment.crediting.title": "Pagamento recebido",
+  "payment.crediting.detail": "O pagamento está confirmado. O saldo ainda está a ser atualizado.",
+  "payment.pending.title": "Pagamento pendente",
+  "payment.pending.detail": "O pagamento ainda não foi confirmado.",
+  "payment.not_completed.title": "Carregamento não concluído",
+  "payment.not_completed.detail": "Esta sessão de pagamento expirou sem concluir o carregamento.",
+  "payment.amount_added": "Montante creditado",
+  "payment.balance": "Saldo atual",
+  "payment.check_later": "A verificação automática terminou. Pode recarregar esta página mais tarde para consultar o estado.",
+  "payment.back_to_wallet": "Voltar ao saldo"
+}

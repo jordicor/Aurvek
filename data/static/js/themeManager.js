@@ -268,6 +268,8 @@ const ThemeManager = {
                 const submenuWidth = submenu.getBoundingClientRect().width;
                 const maxLeft = Math.max(8, viewportWidth - submenuWidth - 8);
                 submenu.style.left = Math.max(8, Math.min(rect.right + 4, maxLeft)) + 'px';
+                dropend.querySelector('.dropdown-toggle')?.setAttribute('aria-expanded', 'true');
+                submenu.dispatchEvent(new Event('settings-submenu:show'));
             };
 
             const hideSubmenu = () => {
@@ -275,6 +277,7 @@ const ThemeManager = {
                 submenu.style.display = 'none';
                 // Return to original parent
                 originalParent.appendChild(submenu);
+                dropend.querySelector('.dropdown-toggle')?.setAttribute('aria-expanded', 'false');
             };
 
             // Show on hover over the dropend trigger
@@ -292,12 +295,20 @@ const ThemeManager = {
             submenu.addEventListener('mouseenter', () => {
                 isSubmenuVisible = true;
             });
+            submenu.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    hideSubmenu();
+                    toggle?.focus();
+                }
+            });
 
             // Hide when leaving both
             dropend.addEventListener('mouseleave', (e) => {
                 // Check if moving to submenu
                 setTimeout(() => {
-                    if (!submenu.matches(':hover') && !dropend.matches(':hover')) {
+                    if (!submenu.matches(':hover') && !dropend.matches(':hover') && !submenu.contains(document.activeElement)) {
                         hideSubmenu();
                     }
                 }, 100);
@@ -305,7 +316,7 @@ const ThemeManager = {
 
             submenu.addEventListener('mouseleave', (e) => {
                 setTimeout(() => {
-                    if (!submenu.matches(':hover') && !dropend.matches(':hover')) {
+                    if (!submenu.matches(':hover') && !dropend.matches(':hover') && !submenu.contains(document.activeElement)) {
                         hideSubmenu();
                     }
                 }, 100);

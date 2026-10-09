@@ -99,13 +99,9 @@ def is_ios_client(request: Any) -> bool:
     return "aurvek-ios" in user_agent
 
 
-def ios_purchases_enabled() -> bool:
-    """True only after StoreKit/iOS purchase handling is explicitly enabled."""
-    return _env_bool("IOS_PURCHASES_ENABLED", default=False)
-
-
 def ios_purchase_blocked(request: Any) -> bool:
-    return is_ios_client(request) and not ios_purchases_enabled()
+    """Native purchases remain unavailable until StoreKit handling exists."""
+    return is_ios_client(request)
 
 
 def ios_purchase_disabled_response(*, message: str | None = None) -> JSONResponse:
@@ -113,7 +109,7 @@ def ios_purchase_disabled_response(*, message: str | None = None) -> JSONRespons
         {
             "error": IOS_PURCHASE_DISABLED_ERROR,
             "reason": IOS_PURCHASE_DISABLED_REASON,
-            "message": message if message is not None else "Purchases are unavailable in the iOS client until in-app purchases are configured.",
+            "message": message if message is not None else "Purchases are unavailable in the iOS client until in-app purchases are implemented.",
             "purchase_available": False,
         },
         status_code=409,
@@ -155,7 +151,7 @@ def purchase_metadata_for_request(
 
     return {
         "purchase_available": True,
-        "purchase_provider": "storekit" if is_ios_client(request) else "stripe",
+        "purchase_provider": "stripe",
         "purchase_unavailable_reason": None,
     }
 
@@ -177,7 +173,6 @@ def legal_urls_for_request(request: Any) -> dict[str, Any]:
 
 def mobile_config_payload(request: Any) -> dict[str, Any]:
     ios_client = is_ios_client(request)
-    ios_storekit_ready = ios_purchases_enabled()
     apple_sign_in = get_apple_sign_in_status()
     return {
         "api_version": "mobile-v1",
@@ -190,8 +185,8 @@ def mobile_config_payload(request: Any) -> dict[str, Any]:
             "attachments": True,
             "voice_calls": _env_bool("MOBILE_VOICE_CALLS_ENABLED", default=False),
             "delete_account": True,
-            "native_purchases": (not ios_client) or ios_storekit_ready,
-            "ios_storekit_purchases": ios_storekit_ready,
+            "native_purchases": not ios_client,
+            "ios_storekit_purchases": False,
         },
         "auth": {
             "session_cookie": "session",
@@ -201,8 +196,8 @@ def mobile_config_payload(request: Any) -> dict[str, Any]:
             "apple_sign_in": apple_sign_in,
         },
         "purchase_policy": {
-            "ios_purchases_enabled": ios_storekit_ready,
-            "ios_purchases_unavailable_reason": None if ios_storekit_ready else IOS_PURCHASE_DISABLED_REASON,
+            "ios_purchases_enabled": False,
+            "ios_purchases_unavailable_reason": IOS_PURCHASE_DISABLED_REASON,
         },
         "legal": legal_urls_for_request(request),
     }

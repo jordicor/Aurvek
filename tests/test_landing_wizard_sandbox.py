@@ -65,6 +65,67 @@ def test_start_job_refuses_to_create_worker_without_sandbox(monkeypatch, tmp_pat
     assert after == before
 
 
+@pytest.mark.parametrize("target", ["landing", "welcome"])
+@pytest.mark.parametrize("case", ["failed", "missing", "empty", "unchanged", "new", "rewritten"])
+def test_generated_result_requires_fresh_nonempty_page(monkeypatch, tmp_path, target, case):
+    from marketplace.landing import wizard
+
+    page = tmp_path / ("home.html" if target == "landing" else "welcome/index.html")
+    page.parent.mkdir(parents=True, exist_ok=True)
+    image = page.parent / "static/img/avatar.webp"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"existing avatar")
+    if case in ("failed", "unchanged", "rewritten"):
+        page.write_text("<main>Previous page</main>", encoding="utf-8")
+        os.utime(page, (1, 1))
+    partial = page.parent / "static/css/custom.css"
+
+    def runner(command, **kwargs):
+        if case != "missing":
+            partial.parent.mkdir(parents=True)
+            partial.write_text("main {color: blue}", encoding="utf-8")
+        if case in ("empty", "new", "rewritten"):
+            page.write_text(" \n" if case == "empty" else "<main>New page</main>", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1 if case == "failed" else 0, stdout="", stderr="")
+
+    monkeypatch.setattr(wizard, "run_claude_in_sandbox", runner)
+    result = getattr(wizard, f"generate_{target}")(str(tmp_path), "Create a new page")
+    assert result["success"] is (case in ("new", "rewritten"))
+    assert not any("avatar" in name for name in result["files_created"])
+    if result["success"]:
+        assert result["files_created"] == sorted([
+            page.relative_to(tmp_path).as_posix(), partial.relative_to(tmp_path).as_posix(),
+        ])
+    if case == "failed":
+        assert result["files_created"] == [partial.relative_to(tmp_path).as_posix()]
+
+
+@pytest.mark.parametrize("target", ["landing", "welcome"])
+@pytest.mark.parametrize("writes_page", [False, True])
+def test_modify_reports_only_actual_changes_and_preserves_welcome_language(
+    monkeypatch, tmp_path, target, writes_page,
+):
+    from marketplace.landing import wizard
+
+    page = tmp_path / ("home.html" if target == "landing" else "welcome/index.html")
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("<main>Previous page</main>", encoding="utf-8")
+    os.utime(page, (1, 1))
+
+    def runner(command, **kwargs):
+        if target == "welcome":
+            assert "All text content must be in English (US)" in kwargs["prompt"]
+        if writes_page:
+            page.write_text("<main>Modified page</main>", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(wizard, "run_claude_in_sandbox", runner)
+    kwargs = {"language": "en"} if target == "welcome" else {}
+    result = getattr(wizard, f"modify_{target}")(str(tmp_path), "Change the page", **kwargs)
+    assert result["success"] is writes_page
+    assert result["files_created"] == ([page.relative_to(tmp_path).as_posix()] if writes_page else [])
+
+
 def test_sandbox_runner_gets_minimal_environment_and_workspace_only(
     monkeypatch,
     tmp_path,
@@ -264,7 +325,7 @@ async def test_publication_gate_blocks_missing_or_failed_truth(
 
 @pytest.mark.asyncio
 async def test_revoke_landing_publication_clears_flags_and_cache(monkeypatch):
-    from marketplace.routes import prompt_landing_builder
+    from marketplace.landing import publication
 
     executed = []
     committed = False
@@ -287,14 +348,14 @@ async def test_revoke_landing_publication_clears_flags_and_cache(monkeypatch):
         yield Connection()
 
     invalidated = []
-    monkeypatch.setattr(prompt_landing_builder, "get_db_connection", fake_connection)
+    monkeypatch.setattr(publication, "get_db_connection", fake_connection)
     monkeypatch.setattr(
-        prompt_landing_builder,
+        publication,
         "invalidate_landing_cache",
         invalidated.append,
     )
 
-    await prompt_landing_builder._revoke_landing_publication(17)
+    await publication._revoke_landing_publication(17)
 
     assert executed[0] == (
         "UPDATE PROMPTS SET has_landing_page = 0, landing_trusted = 0 WHERE id = ?",
@@ -367,11 +428,11 @@ async def test_persist_home_revokes_before_write_and_verification(
 
 @pytest.mark.asyncio
 async def test_landing_save_lock_serializes_same_prompt(monkeypatch, tmp_path):
-    from marketplace.routes import prompt_landing_builder
+    from marketplace.landing import publication
 
-    monkeypatch.setattr(prompt_landing_builder, "_LANDING_SAVE_LOCK_DIR", tmp_path)
+    monkeypatch.setattr(publication, "_LANDING_SAVE_LOCK_DIR", tmp_path)
     monkeypatch.setattr(
-        prompt_landing_builder,
+        publication,
         "_LANDING_SAVE_LOCK_TIMEOUT_SECONDS",
         2,
     )
@@ -382,13 +443,13 @@ async def test_landing_save_lock_serializes_same_prompt(monkeypatch, tmp_path):
     second_entered = asyncio.Event()
 
     async def first_save():
-        async with prompt_landing_builder._landing_save_lock(31):
+        async with publication._landing_save_lock(31):
             first_entered.set()
             await release_first.wait()
 
     async def second_save():
         second_started.set()
-        async with prompt_landing_builder._landing_save_lock(31):
+        async with publication._landing_save_lock(31):
             second_entered.set()
 
     first_task = asyncio.create_task(first_save())

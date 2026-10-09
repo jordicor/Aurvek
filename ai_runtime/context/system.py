@@ -3,6 +3,7 @@ from system_prompt_defaults import (
     DEFAULT_SYSTEM_BLOCKS,
     SYSTEM_BLOCK_METADATA,
     MANDATORY_SYSTEM_KEYS,
+    APPLICATION_HELP_POLICY,
 )
 
 _BLOCK_VAR_PATTERN = re.compile(r'\{(user_level|current_datetime_utc)\}')
@@ -33,12 +34,23 @@ def _resolve_system_block(sys_key: str, content: str, is_enabled: bool) -> dict 
     }
 
 
-async def get_effective_blocks() -> list[dict]:
+def _scope_help_policy(blocks: list[dict], embedded: bool) -> list[dict]:
+    if not embedded:
+        return blocks
+    return [{**block, 'content': APPLICATION_HELP_POLICY}
+            if block.get('system_key') == 'platform_help_policy' else block for block in blocks]
+
+
+async def get_effective_blocks(*, embedded: bool | None = None) -> list[dict]:
     """Fetch blocks for runtime prompt assembly.
     Known system blocks are resolved via _resolve_system_block (normalized, policy-enforced).
     Custom blocks: enabled only, as-is from DB.
     Missing system blocks: filled from code defaults.
     All sorted by position then display_order."""
+    if embedded is None:
+        from ai_runtime.channel_turns import current_channel_turn
+        turn = current_channel_turn()
+        embedded = turn is not None and turn.context.application is not None
     try:
         async with get_db_connection(readonly=True) as conn:
             cursor = await conn.execute(
@@ -52,8 +64,8 @@ async def get_effective_blocks() -> list[dict]:
             rows = await cursor.fetchall()
     except Exception:
         logger.warning("Failed to read SYSTEM_PROMPT_BLOCKS, using code defaults")
-        return sorted(DEFAULT_SYSTEM_BLOCKS.values(),
-                      key=lambda b: (0 if b["position"] == "pre_prompt" else 1, b["display_order"]))
+        return _scope_help_policy(sorted(DEFAULT_SYSTEM_BLOCKS.values(),
+                      key=lambda b: (0 if b["position"] == "pre_prompt" else 1, b["display_order"])), embedded)
 
     blocks = []
     seen_system_keys = set()
@@ -86,7 +98,7 @@ async def get_effective_blocks() -> list[dict]:
             blocks.append(default)
 
     blocks.sort(key=lambda b: (0 if b["position"] == "pre_prompt" else 1, b.get("display_order", 0)))
-    return blocks
+    return _scope_help_policy(blocks, embedded)
 
 
 def _render_block(block: dict, variables: dict) -> str:

@@ -8,35 +8,29 @@ sanitization, snippet XSS protection, and async execution.
 import html
 import re
 
+from integrations.applications.listing import blocked_application_conversation_ids
+
 
 def build_fts_query(raw_query: str) -> str:
     """
     Build a safe FTS5 query string from raw user input.
 
-    - Extracts double-quoted phrases verbatim (e.g. "visa interview")
-    - Extracts loose tokens split by whitespace
-    - Strips dangerous FTS5 operators: * ^ { } ( ) [ ] | :
+    - Preserves double-quoted phrases (e.g. "visa interview")
+    - Treats loose whitespace-separated terms as literals, including operators
+    - Escapes embedded quotes and removes NUL before sending text to SQLite
     - Combines all parts with spaces (FTS5 implicit AND)
     - Returns empty string if nothing remains after cleaning
     """
-    if not raw_query or not raw_query.strip():
+    raw_query = (raw_query or "").replace("\x00", "")
+    if not raw_query.strip():
         return ""
 
     parts = []
-    phrase_pattern = re.compile(r'"([^"]*)"')
-    phrases = phrase_pattern.findall(raw_query)
-    for phrase in phrases:
-        stripped = phrase.strip()
-        if stripped:
-            parts.append(f'"{stripped}"')
-
-    remaining = phrase_pattern.sub("", raw_query).strip()
-    dangerous_chars = re.compile(r'[*^{}\(\)\[\]|:]')
-    if remaining:
-        for token in remaining.split():
-            cleaned = dangerous_chars.sub("", token).strip()
-            if cleaned:
-                parts.append(cleaned)
+    for match in re.finditer(r'"((?:[^"]|"")*)"|(\S+)', raw_query):
+        phrase, token = match.groups()
+        text = (phrase.replace('""', '"') if phrase is not None else token).strip()
+        if text:
+            parts.append('"' + text.replace('"', '""') + '"')
 
     return " ".join(parts)
 
@@ -67,7 +61,8 @@ JOIN MESSAGES m ON m.id = f.rowid
 JOIN CONVERSATIONS c ON c.id = m.conversation_id
 WHERE MESSAGES_FTS MATCH :fts_query
   AND c.user_id = :user_id
-  {privacy_filter}
+  AND COALESCE(c.hidden_from_history, 0) = 0
+  {application_filter}
   {conv_filter}
 ORDER BY rank ASC, m.id DESC
 LIMIT :limit OFFSET :offset
@@ -98,19 +93,6 @@ async def execute_search(
     else:
         conv_filter = ""
 
-    privacy_filter = ""
-    try:
-        cursor = await conn.execute("PRAGMA table_info(CONVERSATIONS)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "hidden_from_history" in columns:
-            privacy_filter = "AND COALESCE(c.hidden_from_history, 0) = 0"
-    except Exception:
-        privacy_filter = ""
-
-    sql = SEARCH_SQL.replace("{privacy_filter}", privacy_filter).replace(
-        "{conv_filter}", conv_filter
-    )
-
     params = {
         "fts_query": fts_query,
         "user_id": user_id,
@@ -120,6 +102,17 @@ async def execute_search(
     if conversation_id is not None:
         params["conversation_id"] = conversation_id
 
+    blocked_ids = await blocked_application_conversation_ids(conn, user_id)
+    application_filter = ""
+    if blocked_ids:
+        placeholders = []
+        for index, blocked_id in enumerate(blocked_ids):
+            name = f"blocked_{index}"
+            placeholders.append(f":{name}")
+            params[name] = blocked_id
+        application_filter = f"AND c.id NOT IN ({','.join(placeholders)})"
+
+    sql = SEARCH_SQL.format(application_filter=application_filter, conv_filter=conv_filter)
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
 

@@ -1771,13 +1771,13 @@ async def _load_context_messages(conversation_id: int) -> list[dict]:
     return flatten_multi_ai_context(context_dicts)
 
 
-async def _deliver_to_platform(platform: str, ctx: dict, text: str):
-    await deliver_to_platform(platform, ctx, text)
+async def _deliver_to_platform(platform: str, ctx: dict, text: str, *, user=None, is_current=None) -> bool:
+    return await deliver_to_platform(platform, ctx, text, user=user, is_current=is_current)
 
 
-async def _send_platform_error(platform: str, ctx: dict, error_code: str, *, translator=None):
+async def _send_platform_error(platform: str, ctx: dict, error_code: str, *, translator=None, is_current=None) -> bool:
     """Best-effort error delivery to external channel."""
-    await send_platform_error(platform, ctx, error_code, translator=translator)
+    return await send_platform_error(platform, ctx, error_code, translator=translator, is_current=is_current)
 
 
 async def _recover_external_stale_user_turn(
@@ -1934,6 +1934,7 @@ async def _process_gransabio_external_inner(
             message_provenance,
         )
     prompt_id = None
+    user_obj = None
     turn_persisted = False
     recovery_user_message = user_message
     from chat.services.localization import chat_translator
@@ -1957,17 +1958,18 @@ async def _process_gransabio_external_inner(
         )
         return False
 
+    async def delivery_is_current() -> bool:
+        return await foreground_is_current(recover_inbound=not turn_persisted)
+
     async def guarded_platform_error(error_code: str) -> bool:
-        if not await foreground_is_current(recover_inbound=not turn_persisted):
-            return False
-        await _send_platform_error(platform, platform_context, error_code, translator=tr)
-        return True
+        return await _send_platform_error(
+            platform, platform_context, error_code, translator=tr, is_current=delivery_is_current,
+        )
 
     async def guarded_platform_delivery(text: str) -> bool:
-        if not await foreground_is_current(recover_inbound=not turn_persisted):
-            return False
-        await _deliver_to_platform(platform, platform_context, text)
-        return True
+        return await _deliver_to_platform(
+            platform, platform_context, text, user=user_obj, is_current=delivery_is_current,
+        )
 
     try:
         if not await foreground_is_current():
@@ -2040,9 +2042,7 @@ async def _process_gransabio_external_inner(
         flagged, _categories = await run_input_moderation(user_message, None, bool(enable_moderation))
         if flagged:
             recovery_user_message = "[Blocked Message]"
-            await guarded_platform_delivery(
-                tr.t("chat_errors.moderation_blocked"),
-            )
+            await guarded_platform_error("moderation_blocked")
             return
 
         # --- 6. Update chat name if first message ---

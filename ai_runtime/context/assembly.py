@@ -129,127 +129,79 @@ async def run_input_moderation(
         return (False, None)
 
 
-def _resolve_system_block(sys_key: str, content: str, is_enabled: bool) -> dict | None:
-    """Resolve a system block from DB row, applying runtime policy.
-    Returns the resolved block dict, or None if it should be excluded."""
-    if sys_key not in SYSTEM_BLOCK_METADATA:
-        return None
-    meta = SYSTEM_BLOCK_METADATA[sys_key]
-    default = DEFAULT_SYSTEM_BLOCKS[sys_key]
-    if sys_key in MANDATORY_SYSTEM_KEYS:
-        effective_content = content.strip() if content and content.strip() else default["content"]
-        return {
-            "system_key": sys_key,
-            "content": effective_content,
-            "position": meta["position"],
-            "condition": meta["condition"],
-        }
-    if not is_enabled:
-        return None
-    effective_content = content.strip() if content and content.strip() else default["content"]
+
+async def build_assistant_prompt_context(
+    connection, *, user_id: int, conversation_id: int, prompt: str | None,
+    user_info: str | None, current_alter_ego_id: int | None,
+    effective_role_id: int | None, extensions_enabled: bool,
+    extensions_auto_advance: bool, active_extension_id: int | None,
+    extension_name: str | None, extension_prompt_text: str | None,
+    embedded: bool,
+) -> dict:
+    """Build shared assistant context from already resolved conversation fields.
+
+    This only reads local context. Memory retrieval, watchdog evaluation and
+    prompt selection writes belong to the caller's turn pipeline.
+    """
+    app_profile = await conversation_profile(connection, conversation_id) if embedded else None
+    if embedded:
+        user_info = personal_context(app_profile) if app_profile is not None else None
+        current_alter_ego_id = None
+    if current_alter_ego_id:
+        cursor = await connection.execute(
+            "SELECT name, description FROM USER_ALTER_EGOS WHERE id = ? AND user_id = ?",
+            (current_alter_ego_id, user_id),
+        )
+        alter_ego = await cursor.fetchone()
+        if alter_ego:
+            name, description = alter_ego
+            user_info = f"Name: {name}" + (f"\n{description}" if description else "")
+    prompt_base = prompt or ""
+    if user_info:
+        prompt_base = f"User info:\n{user_info}\n\n-----\nSystem info:\n{prompt_base}"
+    if extensions_enabled and extension_prompt_text:
+        prompt_base += (
+            f"\n\n--- ACTIVE EXTENSION: {extension_name} ---\n"
+            f"{extension_prompt_text}\n--- END EXTENSION ---"
+        )
+
+    has_extensions = False
+    if extensions_enabled and extensions_auto_advance:
+        cursor = await connection.execute(
+            "SELECT id, name, display_order, description FROM PROMPT_EXTENSIONS "
+            "WHERE prompt_id = ? ORDER BY display_order",
+            (effective_role_id,),
+        )
+        extensions = await cursor.fetchall()
+        if extensions:
+            has_extensions = True
+            levels = "\n".join(
+                f"  - [{item[0]}] {item[1]}{' (CURRENT)' if item[0] == active_extension_id else ''}: "
+                f"{item[3] or 'No description'}" for item in extensions
+            )
+            prompt_base += (
+                "\n\n--- EXTENSION LEVELS ---\n"
+                "This conversation has the following levels/phases. "
+                "You are currently on the one marked (CURRENT).\n"
+                "When you determine the current level's objectives are sufficiently covered, "
+                "use the advanceExtension tool to transition to the next level.\n"
+                f"{levels}\n--- END EXTENSION LEVELS ---"
+            )
+
+    internal_context = merge_internal_turn_context(
+        render_user_time_context(app_profile.timezone_name if app_profile else None)
+        if embedded else await load_user_time_context(connection, user_id),
+        render_user_language_context(app_profile.preferred_languages)
+        if app_profile is not None else (
+            None if embedded else await load_user_language_context(connection, user_id)
+        ),
+    )
     return {
-        "system_key": sys_key,
-        "content": effective_content,
-        "position": meta["position"],
-        "condition": meta["condition"],
+        "prompt_base": prompt_base,
+        "internal_turn_context": internal_context,
+        "has_extensions": has_extensions,
     }
 
-
-async def get_effective_blocks() -> list[dict]:
-    """Fetch blocks for runtime prompt assembly.
-    Known system blocks are resolved via _resolve_system_block (normalized, policy-enforced).
-    Custom blocks: enabled only, as-is from DB.
-    Missing system blocks: filled from code defaults.
-    All sorted by position then display_order."""
-    try:
-        async with get_db_connection(readonly=True) as conn:
-            cursor = await conn.execute(
-                """SELECT system_key, content, position, condition,
-                          is_enabled, is_system, display_order
-                   FROM SYSTEM_PROMPT_BLOCKS
-                   WHERE is_system = 1 OR is_enabled = 1
-                   ORDER BY CASE WHEN position = 'pre_prompt' THEN 0 ELSE 1 END,
-                            display_order ASC, id ASC"""
-            )
-            rows = await cursor.fetchall()
-    except Exception:
-        logger.warning("Failed to read SYSTEM_PROMPT_BLOCKS, using code defaults")
-        return sorted(DEFAULT_SYSTEM_BLOCKS.values(),
-                      key=lambda b: (0 if b["position"] == "pre_prompt" else 1, b["display_order"]))
-
-    blocks = []
-    seen_system_keys = set()
-
-    for sys_key, content, position, condition, is_enabled, is_system, display_order in rows:
-        if sys_key and sys_key in SYSTEM_BLOCK_METADATA:
-            if sys_key in seen_system_keys:
-                logger.warning("Duplicate system block '%s', skipping", sys_key)
-                continue
-            seen_system_keys.add(sys_key)
-            resolved = _resolve_system_block(sys_key, content, is_enabled)
-            if resolved is None:
-                continue
-            resolved["display_order"] = SYSTEM_BLOCK_METADATA[sys_key]["display_order"]
-            blocks.append(resolved)
-        elif not sys_key and not is_system:
-            blocks.append({
-                "system_key": None,
-                "content": content,
-                "position": position,
-                "condition": condition,
-                "display_order": display_order,
-            })
-        else:
-            logger.warning("Dropping invalid block row: system_key=%s, is_system=%s", sys_key, is_system)
-
-    for key, default in DEFAULT_SYSTEM_BLOCKS.items():
-        if key not in seen_system_keys:
-            logger.warning("System block '%s' missing from DB, using code default", key)
-            blocks.append(default)
-
-    blocks.sort(key=lambda b: (0 if b["position"] == "pre_prompt" else 1, b.get("display_order", 0)))
-    return blocks
-
-
-def _render_block(block: dict, variables: dict) -> str:
-    """Render a block's content with variable substitution."""
-    rendered = _BLOCK_VAR_PATTERN.sub(
-        lambda m: variables.get(m.group(1), m.group(0)), block["content"]
-    )
-    return rendered.strip()
-
-
-def assemble_system_prompt(blocks: list[dict], variables: dict, prompt_base: str,
-                           watchdog_enabled: bool, watchdog_hint_block: str = "") -> str:
-    """Assemble the full system prompt from blocks, prompt_base, and optional watchdog hint."""
-    pre_parts = []
-    post_parts = []
-    hint_inserted = False
-
-    for block in blocks:
-        if block["condition"] == "watchdog_only" and not watchdog_enabled:
-            continue
-        rendered = _render_block(block, variables)
-        if not rendered:
-            continue
-        if block["position"] == "pre_prompt":
-            pre_parts.append(rendered)
-        else:
-            post_parts.append(rendered)
-            if (block.get("system_key") == "watchdog_preamble"
-                    and watchdog_hint_block and not hint_inserted):
-                hint = watchdog_hint_block.strip()
-                if hint:
-                    post_parts.append(hint)
-                    hint_inserted = True
-
-    if watchdog_enabled and watchdog_hint_block and not hint_inserted:
-        hint = watchdog_hint_block.strip()
-        if hint:
-            post_parts.append(hint)
-
-    all_parts = pre_parts + [prompt_base.strip()] + post_parts
-    return "\n\n".join(p for p in all_parts if p)
 
 async def build_full_prompt_context(
     user_id: int, prompt_id: int, conversation_id: int, user_message: str,
@@ -320,6 +272,7 @@ async def build_full_prompt_context(
                 LEFT JOIN USER_DETAILS ud ON ud.user_id = ?
                 LEFT JOIN USERS u ON u.id = ?
                 LEFT JOIN PROMPT_EXTENSIONS pe ON c.active_extension_id = pe.id
+                    AND pe.prompt_id = COALESCE(c.role_id, ud.current_prompt_id)
                 WHERE c.id = ? AND c.user_id = ?
             """, (user_id, user_id, conversation_id, user_id))
 
@@ -361,9 +314,6 @@ async def build_full_prompt_context(
                     extensions_free_selection = bool(pr[4]) if pr[4] is not None else True
                     result["gransabio_config_raw"] = gransabio_config_raw
 
-            if not prompt:
-                prompt = ""
-
             # User level (request-free: resolve from DB role_id)
             user_level = "customer"
             if user_role_id:
@@ -381,66 +331,22 @@ async def build_full_prompt_context(
             from integrations.embed.runtime import is_embed_conversation
 
             embed_interview = await is_embed_conversation(conversation_id)
-            app_profile = await conversation_profile(conn_ro, conversation_id) if embed_interview else None
-            if embed_interview:
-                user_info = personal_context(app_profile) if app_profile is not None else None
-                current_alter_ego_id = None
-
-            # --- Alter-ego / user_info injection ---
-            if current_alter_ego_id:
-                await cursor_ro.execute(
-                    "SELECT name, description FROM USER_ALTER_EGOS WHERE id = ? AND user_id = ?",
-                    (current_alter_ego_id, user_id),
-                )
-                ae_row = await cursor_ro.fetchone()
-                if ae_row:
-                    ae_name, ae_desc = ae_row
-                    if ae_desc:
-                        prompt_base = f"User info:\nName: {ae_name}\n{ae_desc}\n\n-----\nSystem info:\n{prompt}"
-                    else:
-                        prompt_base = f"User info:\nName: {ae_name}\n\n-----\nSystem info:\n{prompt}"
-                else:
-                    prompt_base = f"User info:\n{user_info}\n\n-----\nSystem info:\n{prompt}" if user_info else prompt
-            else:
-                prompt_base = f"User info:\n{user_info}\n\n-----\nSystem info:\n{prompt}" if user_info else prompt
-
-            # --- Extensions injection ---
-            if extensions_enabled and extension_prompt_text:
-                prompt_base = (
-                    f"{prompt_base}\n\n"
-                    f"--- ACTIVE EXTENSION: {extension_name} ---\n"
-                    f"{extension_prompt_text}\n"
-                    f"--- END EXTENSION ---"
-                )
-
-            if extensions_enabled and extensions_auto_advance:
-                async with get_db_connection(readonly=True) as conn_ext:
-                    cursor_ext = await conn_ext.execute(
-                        "SELECT id, name, display_order, description FROM PROMPT_EXTENSIONS WHERE prompt_id = ? ORDER BY display_order",
-                        (effective_role_id,),
-                    )
-                    all_extensions = await cursor_ext.fetchall()
-                    if all_extensions:
-                        ext_list = "\n".join([
-                            f"  - [{e[0]}] {e[1]}{' (CURRENT)' if e[0] == active_extension_id else ''}: {e[3] or 'No description'}"
-                            for e in all_extensions
-                        ])
-                        prompt_base += (
-                            f"\n\n--- EXTENSION LEVELS ---\n"
-                            f"This conversation has the following levels/phases. "
-                            f"You are currently on the one marked (CURRENT).\n"
-                            f"When you determine the current level's objectives are sufficiently covered, "
-                            f"use the advanceExtension tool to transition to the next level.\n"
-                            f"{ext_list}\n--- END EXTENSION LEVELS ---"
-                        )
+            assistant_context = await build_assistant_prompt_context(
+                conn_ro, user_id=user_id, conversation_id=conversation_id,
+                prompt=prompt, user_info=user_info, current_alter_ego_id=current_alter_ego_id,
+                effective_role_id=effective_role_id, extensions_enabled=extensions_enabled,
+                extensions_auto_advance=extensions_auto_advance, active_extension_id=active_extension_id,
+                extension_name=extension_name, extension_prompt_text=extension_prompt_text,
+                embedded=embed_interview,
+            )
+            prompt_base = assistant_context["prompt_base"]
 
             # User-local time and channel state are trusted, ephemeral inputs.
             # Apply them once before pre-watchdog so the evaluator and main
             # model see the exact same scheduling and channel context.
             internal_turn_context = merge_internal_turn_context(
                 internal_turn_context,
-                render_user_time_context(app_profile.timezone_name if app_profile else None) if embed_interview else await load_user_time_context(conn_ro, user_id),
-                render_user_language_context(app_profile.preferred_languages) if app_profile is not None else (None if embed_interview else await load_user_language_context(conn_ro, user_id)),
+                assistant_context["internal_turn_context"],
             )
             prompt_base, pre_watchdog_prompt_context = (
                 prepare_pre_watchdog_and_model_prompt(
@@ -585,7 +491,7 @@ async def build_full_prompt_context(
                         watchdog_hint_eval_id = hint_row[2]
 
             # --- Final assembly with global system prompt blocks ---
-            blocks = await get_effective_blocks()
+            blocks = await get_effective_blocks(embedded=embed_interview)
             variables = {
                 "user_level": user_level,
                 "current_datetime_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),

@@ -1,8 +1,9 @@
 {% extends 'base.html' %}
 
-{% block title %}Payment Successful - AURVEK{% endblock %}
+{% block title %}{{ t('wallet.payment.' ~ payment_state ~ '.title') }} - AURVEK{% endblock %}
 
 {% block styles %}
+{% if refresh_url %}<meta http-equiv="refresh" content="3;url={{ refresh_url }}">{% endif %}
 {# Theme CSS loaded by theme-loader.js #}
 <style>
     .success-container {
@@ -54,36 +55,39 @@
 {% block toolbar %}{% endblock %}
 
 {% block content %}
-<div class="success-container">
+<div class="success-container" role="status">
     <div class="success-icon">
-        <i class="fas fa-check-circle"></i>
+        <i class="fas {{ 'fa-check-circle' if payment_state == 'credited' else 'fa-clock' if payment_state in ['pending', 'crediting'] else 'fa-times-circle' }}"></i>
     </div>
 
-    <h1 class="mb-3">Payment Successful!</h1>
-    <p class="text-muted mb-4">Your balance has been updated successfully.</p>
+    <h1 class="mb-3">{{ t('wallet.payment.' ~ payment_state ~ '.title') }}</h1>
+    <p class="text-muted mb-4">{{ t('wallet.payment.' ~ payment_state ~ '.detail') }}</p>
+    {% if payment_state in ['pending', 'crediting'] and not refresh_url %}
+    <p class="text-muted">{{ t('wallet.payment.check_later') }}</p>
+    {% endif %}
 
     {% if payment_amount %}
     <div class="payment-details">
-        <div class="balance-label">Amount Added</div>
+        <div class="balance-label">{{ t('wallet.payment.amount_added') }}</div>
         <div class="text-accent-bold">
-            +${{ "%.2f"|format(payment_amount) }}
+            +{{ format_currency(payment_amount) }}
         </div>
     </div>
     {% endif %}
 
     {% if new_balance is not none %}
     <div class="balance-display">
-        <div class="balance-label">Your New Balance</div>
-        <div class="balance-amount">${{ "%.2f"|format(new_balance) }}</div>
+        <div class="balance-label">{{ t('wallet.payment.balance') }}</div>
+        <div class="balance-amount">{{ format_currency(new_balance) }}</div>
     </div>
     {% endif %}
 
     <div class="d-grid gap-2 mt-4">
         <a href="/" class="btn btn-primary btn-lg">
-            <i class="fas fa-comments me-2"></i>Start Chatting
+            <i class="fas fa-comments me-2"></i>{{ t('common.action.back_to_chat') }}
         </a>
         <a href="/payment" class="btn btn-outline-secondary">
-            <i class="fas fa-plus me-2"></i>Add More Balance
+            <i class="fas fa-wallet me-2"></i>{{ t('wallet.payment.back_to_wallet') }}
         </a>
     </div>
 </div>

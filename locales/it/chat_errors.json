@@ -70,6 +70,7 @@
   "pdf_paths_required": "Nessun percorso PDF fornito",
   "mp3_paths_required": "Nessun percorso MP3 fornito",
   "media_delete_result": "Eliminati correttamente: {deleted}, non riusciti: {failed}",
+  "model_voice_only": "Questo modello supporta solo la voce in tempo reale. Scegli un modello di chat.",
   "model_unavailable": "Questo modello IA non è più disponibile per nuove risposte.",
   "expected_llm_id_required": "Ricarica la conversazione affinché Aurvek possa confermare il modello IA selezionato.",
   "conversation_model_changed": "Il modello IA è stato modificato in un’altra sessione. Controllalo e invia di nuovo.",

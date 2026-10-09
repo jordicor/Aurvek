@@ -11,14 +11,14 @@ keywords:
 required_role: public
 tool_visible: true
 approval_status: approved
-last_reviewed: 2026-09-04
+last_reviewed: 2026-09-13
 locale: pt
-base_source_hash: d28dd6f8f08df51ce23978820fe8844e2486a8bbdd846dea5f0f6aeef3480319
+base_source_hash: b3c1ef1899fa03562f45b2774ce0b7d2121a2ed97f46e036e5ae1b9968a2ac6d
 ---
 
 ## Resposta breve
 
-Pode exportar toda a conversa para MP3. Áudio original mantido de chamadas ou notas de voz WhatsApp/Telegram é preservado; as restantes mensagens usam voz e todos os segmentos são unidos por ordem.
+Pode exportar toda a conversa para MP3. Cada chamada terminada usa uma única vez a sua gravação contínua guardada, preservando ambas as vozes, pausas e falas simultâneas. Os restantes áudios guardados, incluindo notas de voz do WhatsApp/Telegram, mantêm a ordem da conversa. Só as mensagens sem áudio utilizável precisam de síntese de voz (TTS).
 
 ## Passos
 
@@ -28,6 +28,7 @@ Pode exportar toda a conversa para MP3. Áudio original mantido de chamadas ou n
 
 ## Notas
 
+- A gravação completa é usada quando a chamada pertence inteiramente a esta conversa e as suas mensagens formam um bloco consecutivo. Nos outros casos, ou se a gravação não estiver disponível, são usados os áudios individuais disponíveis das mensagens.
 - Pode demorar conforme o tamanho da conversa.
 - Áudio mantido conserva as vozes; mensagens sem áudio usam as vozes do prompt e da conta.
 - Gravações excecionalmente longas podem usar TTS para garantir a exportação.

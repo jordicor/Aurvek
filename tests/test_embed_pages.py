@@ -157,7 +157,8 @@ def test_session_without_language_preserves_contract_and_invalid_is_rejected(mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("application_options", [False, True])
-async def test_embed_render_uses_only_bound_conversation_and_keeps_native_preferences(monkeypatch, application_options):
+@pytest.mark.parametrize("theme_css_url", [None, "https://product.example/aurvek.css?v=2&variant=light"])
+async def test_embed_render_uses_only_bound_conversation_and_keeps_native_preferences(monkeypatch, application_options, theme_css_url):
     connection = await aiosqlite.connect(":memory:")
     connection.row_factory = aiosqlite.Row
     await connection.executescript("""
@@ -194,6 +195,8 @@ async def test_embed_render_uses_only_bound_conversation_and_keeps_native_prefer
     monkeypatch.setattr(page_context, "user_has_valid_api_keys", AsyncMock(return_value=False))
     monkeypatch.setattr(page_context, "get_user_api_key_mode", AsyncMock(return_value="system_only"))
     monkeypatch.setattr(page_context, "get_subscription_auth_enabled", AsyncMock(return_value=False))
+    funding_status = AsyncMock(return_value={"sponsored": True, "available": True})
+    monkeypatch.setattr(page_context, "application_funding_status", funding_status)
     monkeypatch.setattr(page_context, "templates", SimpleNamespace(TemplateResponse=lambda name, context: (name, context)))
     principal = SimpleNamespace(
         app_id="sample", subject="subject", user_id=7, prompt_id=10, conversation_id=12,
@@ -208,13 +211,18 @@ async def test_embed_render_uses_only_bound_conversation_and_keeps_native_prefer
         await connection.execute("UPDATE PROMPTS SET allowed_llms='[22,23]',extensions_enabled=1 WHERE id=10")
     request = Request({"type": "http", "headers": [(b"accept-language", b"de")]})
     template, context = await page_context.render_embed_chat(
-        request, principal, SimpleNamespace(display_name="Sample", theme="katarishoji")
+        request, principal, SimpleNamespace(display_name="Sample", theme="katarishoji", theme_css_url=theme_css_url)
     )
     assert request.state.i18n.language == "ja"
     assert request.state.i18n.browser_payload()["language"] == "ja"
     assert template == "/chat/chat.html"
     assert [row["id"] for row in context["initial_conversations"]] == [12]
     assert {row["id"] for row in context["llm_models"]} == ({22, 23} if application_options else {22})
+    if application_options:
+        funding_status.assert_awaited_once_with(connection, principal.application)
+        assert context["embed_config"]["application"]["funding"] == {"sponsored": True, "available": True}
+    else:
+        funding_status.assert_not_awaited()
     controls = context["embed_config"]["controls"]
     assert controls["model_selection"] is application_options
     assert controls["reasoning"] is application_options
@@ -240,10 +248,18 @@ async def test_embed_render_uses_only_bound_conversation_and_keeps_native_prefer
     assert 'src="/static/js/theme-loader.js"' not in html
     assert 'src="/sdk/elevenlabs-client.js"' not in html
     assert "Other product private title" not in html
+    assert context["embed_theme_css_url"] == theme_css_url
+    if theme_css_url:
+        assert 'href="https://product.example/aurvek.css?v=2&amp;variant=light"' in html
+        assert html.index('id="application-theme-css"') > html.index('/static/css/chat/embed.css')
+    else:
+        assert 'id="application-theme-css"' not in html
+    native_html = env.get_template("chat/chat.html").render({**context, "presentation": "native"})
+    assert 'id="application-theme-css"' not in native_html
     if application_options:
         await connection.execute("UPDATE PROMPTS SET forced_llm_id=22,forced_reasoning_json='{}' WHERE id=10")
         _, forced_context = await page_context.render_embed_chat(
-            request, principal, SimpleNamespace(display_name="Sample", theme="katarishoji"),
+            request, principal, SimpleNamespace(display_name="Sample", theme="katarishoji", theme_css_url=theme_css_url),
         )
         assert [row["id"] for row in forced_context["llm_models"]] == [22]
         forced_controls = forced_context["embed_config"]["controls"]
@@ -252,7 +268,7 @@ async def test_embed_render_uses_only_bound_conversation_and_keeps_native_prefer
         principal.capabilities["gransabio"] = True
         await connection.execute("UPDATE PROMPTS SET gransabio_enabled=1,forced_llm_id=NULL,forced_reasoning_json=NULL WHERE id=10")
         _, gs_context = await page_context.render_embed_chat(
-            request, principal, SimpleNamespace(display_name="Sample", theme="katarishoji"),
+            request, principal, SimpleNamespace(display_name="Sample", theme="katarishoji", theme_css_url=theme_css_url),
         )
         gs_controls = gs_context["embed_config"]["controls"]
         assert gs_controls["gransabio"]

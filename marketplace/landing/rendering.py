@@ -5,7 +5,7 @@ from html import escape
 from pathlib import Path
 
 from cachetools import TTLCache
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, Response
 
 from common import slugify
 from database import get_db_connection
@@ -83,10 +83,15 @@ def media_type_for_path(path) -> str:
     return LANDING_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
-def file_response_for_landing_static(path, *, cache: bool = False) -> FileResponse:
-    """Create a FileResponse for a landing static asset."""
+def file_response_for_landing_static(path, *, cache: bool = False, content: bytes | None = None) -> Response:
+    """Use the same MIME/cache metadata for streamed or already-loaded assets."""
     headers = {"Cache-Control": "public, max-age=3600"} if cache else None
-    return FileResponse(path, media_type=media_type_for_path(path), headers=headers)
+    response = FileResponse(path, media_type=media_type_for_path(path), headers=headers)
+    if content is None:
+        return response
+    response.set_stat_headers(path.stat())
+    del response.headers["Accept-Ranges"]
+    return Response(content, media_type=response.media_type, headers=dict(response.headers))
 
 
 async def get_related_landing_links(prompt_id: int, max_links: int) -> list:

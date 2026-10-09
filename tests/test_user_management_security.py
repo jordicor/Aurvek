@@ -131,6 +131,7 @@ def user_management_db(tmp_path, monkeypatch):
             user_api_keys TEXT,
             category_access TEXT,
             billing_account_id INTEGER,
+            billing_acquisition_ref TEXT DEFAULT NULL,
             billing_limit REAL,
             billing_limit_action TEXT DEFAULT 'block',
             billing_auto_refill_amount REAL DEFAULT 10,

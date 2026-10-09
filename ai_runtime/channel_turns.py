@@ -33,6 +33,7 @@ InputOrigin = Literal[
     "telegram.message",
     "telegram.voice_note",
     "device.message",
+    "device.live_voice",
     "phone.live_call",
 ]
 InputPerception = Literal["text", "transcript_only", "audio_native"]
@@ -58,7 +59,7 @@ _ALLOWED_INPUT_ORIGINS: dict[ChannelName, frozenset[InputOrigin]] = {
         {"whatsapp.message", "whatsapp.voice_note", "whatsapp.audio"}
     ),
     "telegram": frozenset({"telegram.message", "telegram.voice_note"}),
-    "device": frozenset({"device.message"}),
+    "device": frozenset({"device.message", "device.live_voice"}),
     "phone": frozenset({"phone.live_call"}),
 }
 _SPOKEN_INPUT_ORIGINS = frozenset(
@@ -67,6 +68,7 @@ _SPOKEN_INPUT_ORIGINS = frozenset(
         "whatsapp.audio",
         "telegram.voice_note",
         "web.live_voice",
+        "device.live_voice",
         "phone.live_call",
     }
 )
@@ -152,8 +154,11 @@ class ChannelContext:
         if self.persistence not in {"immediate", "deferred", "ingest_only", "delegation"}:
             raise ValueError(f"Unsupported persistence mode: {self.persistence}")
         if self.persistence == "delegation":
-            if self.channel != "phone" or not isinstance(self.delegation_result, VoiceDelegationResult):
-                raise ValueError("Voice delegation requires a phone result sink")
+            if (self.channel not in {"phone", "web", "device"}
+                    or not isinstance(self.delegation_result, VoiceDelegationResult)
+                    or self.channel != "phone" and not getattr(
+                        self.provenance.get("native_audio_bridge"), "_aurvek_internal_realtime_bridge", False)):
+                raise ValueError("Voice delegation requires a trusted native session and result sink")
         elif self.delegation_result is not None:
             raise ValueError("A delegation result requires delegation persistence")
         if self.persistence == "deferred" and self.turn_key is None:
@@ -219,9 +224,9 @@ class ChannelContext:
                 f"Text input origin {input_origin!r} requires text perception"
             )
         if input_perception == "audio_native":
-            bridge = provenance.get("openai_realtime_bridge")
+            bridge = provenance.get("native_audio_bridge")
             if (
-                self.channel != "phone"
+                self.channel not in {"phone", "web", "device"}
                 or not getattr(bridge, "_aurvek_internal_realtime_bridge", False)
             ):
                 raise ValueError(
@@ -236,7 +241,7 @@ class ChannelContext:
     def bypass_gransabio(self) -> bool:
         return (
             self.channel == "phone"
-            or self.persistence == "ingest_only"
+            or self.persistence in {"ingest_only", "delegation"}
             or (self.application is not None
                 and not self.application.capabilities.get("gransabio", False))
         )

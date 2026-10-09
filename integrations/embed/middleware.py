@@ -26,13 +26,13 @@ _FRAME_PAGE = re.compile(r"^/embed/([a-z][a-z0-9_-]{0,63})/([A-Za-z0-9_-]{16,128
 _PROFILE_PAGE = re.compile(r"^/embed/([a-z][a-z0-9_-]{0,63})/([A-Za-z0-9_-]{16,128})/profile(?:/(state|save|language|phone|channel))?$")
 _CONVERSATION = re.compile(r"^/api/conversations/([1-9][0-9]*)/([a-z_-]+(?:/[a-z_-]+)?)$")
 _EXPORT = re.compile(r"^/api/conversations/([1-9][0-9]*)/exports/(pdf|mp3)(?:/([A-Za-z0-9_-]{32})(?:/(stop|content))?)?$")
-_VOICE_SOCKET = re.compile(r"^/ws/conversations/([1-9][0-9]*)/voice$")
+_VOICE_SOCKET = re.compile(r"^/ws/conversations/([1-9][0-9]*)/(?:voice|live)$")
 _ATTACHMENT = re.compile(r"^/api/attachments/([A-Za-z0-9_-]{1,128})(?:/(content|download))?$")
 _STATIC = re.compile(r"^/static/(?:css|js|font|fonts|img|images)/[A-Za-z0-9_./@-]+$")
 _READ_OPERATIONS = {"messages", "details", "last_message_id", "status", "provider-health", "web-search-status"}
 _CONTROL_OPERATIONS = {"rename", "rollback", "bookmark"}
 _ATTACHMENT_OPERATIONS = {"attachments/chunk", "attachments/complete", "attachments/status", "attachments/discard"}
-_VOICE_READ = {"elevenlabs/config", "elevenlabs/availability", "voice/availability"}
+_VOICE_READ = {"elevenlabs/config", "elevenlabs/availability", "voice/availability", "live/config"}
 _VOICE_WRITE = {"elevenlabs/session", "elevenlabs/complete", "elevenlabs/stop"}
 
 
@@ -90,7 +90,7 @@ def _route_kind(path: str, method: str) -> tuple[str, str | None] | None:
     if match and ((match[2] and method in {"GET", "HEAD"})
                   or (not match[2] and method == "DELETE")):
         return "attachment", "attachments"
-    if path in {"/sdk/elevenlabs-client.js", "/sdk/elevenlabs-client.js.map"} and method in {"GET", "HEAD"}:
+    if path in {"/sdk/elevenlabs-client.js", "/sdk/elevenlabs-client.js.map", "/sdk/native-live-worklet.js"} and method in {"GET", "HEAD"}:
         return "sdk", "voice"
     return None
 

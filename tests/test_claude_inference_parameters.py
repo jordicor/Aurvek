@@ -5,7 +5,7 @@ import pytest
 
 import security_guard_llm
 from ai_runtime.providers import claude, openrouter
-from ai_runtime.providers.claude_capabilities import claude_omits_temperature
+from ai_runtime.providers.claude_capabilities import claude_supports_temperature
 from tools import llm_caller
 
 
@@ -77,17 +77,22 @@ _CLAUDE_STREAM = [
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
-        ("claude-opus-5", True),
-        ("CLAUDE-OPUS-5", True),
-        ("anthropic/claude-opus-5-fast", True),
-        ("anthropic.claude-opus-5", True),
-        ("claude-opus-4-8", True),
-        ("claude-opus-4-5-20251101", False),
-        ("claude-haiku-4-5", False),
+        ("claude-opus-5", False),
+        ("CLAUDE-OPUS-5", False),
+        ("anthropic/claude-opus-5-fast", False),
+        ("anthropic.claude-opus-5", False),
+        ("claude-fable-5-1", False),
+        ("claude-future-model", False),
+        ("claude-opus-4-7", False),
+        ("claude-opus-4-8", False),
+        ("claude-opus-4-6", True),
+        ("anthropic/claude-sonnet-4.6", True),
+        ("claude-opus-4-5-20251101", True),
+        ("claude-haiku-4-5", True),
     ],
 )
 def test_claude_temperature_capability(model, expected):
-    assert claude_omits_temperature(model) is expected
+    assert claude_supports_temperature(model) is expected
 
 
 def test_claude_image_context_keeps_user_uploads_and_image_only_assistant_authorship():
@@ -108,6 +113,10 @@ def test_claude_image_context_keeps_user_uploads_and_image_only_assistant_author
     ("model", "expected_temperature"),
     [
         ("claude-opus-5", None),
+        ("claude-fable-5-1", None),
+        ("claude-future-model", None),
+        ("claude-opus-4-7", None),
+        ("claude-opus-4-6", 0.37),
         ("claude-opus-4-5-20251101", 0.37),
     ],
 )
@@ -239,6 +248,7 @@ async def test_claude_tool_call_keeps_signed_thinking_blocks(monkeypatch):
             messages=[{"role": "user", "content": "hello"}], model="claude-opus-4-5-20251101",
             temperature=0.37, max_tokens=100, prompt="system", conversation_id=987658,
             current_user=_User(), request=None, user_api_key="test-key",
+            tools=[{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
         )
     ]
 
@@ -250,6 +260,17 @@ async def test_claude_tool_call_keeps_signed_thinking_blocks(monkeypatch):
     assert tool_event["claude_content_blocks"][0] == {
         "type": "thinking", "thinking": "plan", "signature": "signed"
     }
+    assert captured["json"]["tool_choice"] == {
+        "type": "auto", "disable_parallel_tool_use": True,
+    }
+    from ai_runtime.tooling.execution import _build_tool_response_messages
+
+    continuation = []
+    _build_tool_response_messages(continuation, tool_event, "Lookup result", "Claude")
+    requested_ids = {
+        block["id"] for block in continuation[-2]["content"] if block["type"] == "tool_use"
+    }
+    assert requested_ids == {block["tool_use_id"] for block in continuation[-1]["content"]}
 
 
 @pytest.mark.asyncio

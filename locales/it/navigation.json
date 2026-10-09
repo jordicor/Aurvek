@@ -1,4 +1,11 @@
 {
+  "menu.alter_egos": "Alter ego",
+  "alter_ego.real_profile": "Profilo reale",
+  "alter_ego.loading": "Caricamento...",
+  "alter_ego.load_failed": "Impossibile caricare gli alter ego. Premi per riprovare.",
+  "alter_ego.unavailable": "Questo alter ego non è disponibile.",
+  "alter_ego.change_failed": "Impossibile cambiare alter ego. Riprova.",
+  "alter_ego.finish_activity": "Termina la risposta o la chiamata in corso prima di cambiare alter ego.",
   "menu.applications": "Applicazioni",
   "action.back_to_home": "Torna alla home",
   "aria.toggle_navigation": "Attiva/disattiva navigazione",

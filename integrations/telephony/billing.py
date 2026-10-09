@@ -1991,16 +1991,6 @@ class PhoneLiveBillingMeter:
         if session_id:
             self._stt_session_id = str(session_id)[:500]
 
-    def note_deepgram_metadata(
-        self, *, duration_seconds: float | None, request_id: str | None
-    ) -> None:
-        """Deprecated compatibility alias for callers migrating to generic STT."""
-
-        self.note_stt_metadata(
-            duration_seconds=duration_seconds,
-            session_id=request_id,
-        )
-
     async def finalize_stt_usage(self) -> dict[str, float | int] | None:
         if not self.include_stt:
             return None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -16,6 +17,7 @@ from marketplace.services.acquisition import apply_landing_config_to_user
 from marketplace.services.entitlements import (
     ASSET_TYPE_PACK,
     ASSET_TYPE_PROMPT,
+    active_entitlement_condition,
     grant_pack_entitlement,
     grant_prompt_entitlement,
     refund_entitlement,
@@ -172,20 +174,18 @@ async def _handle_pack_checkout_completed(session, metadata: dict) -> dict:
             buyer_balance_before = bal_row[0] if bal_row else 0
 
             initial_balance_cost = 0
+            landing_config = {}
             if pack_data and pack_data[1]:
-                try:
-                    landing_config = json.loads(pack_data[1]) if isinstance(pack_data[1], str) else pack_data[1]
-                    initial_balance_cost = await _apply_pack_landing_config_for_webhook(
-                        cursor,
-                        landing_config,
-                        buyer_user_id,
-                        creator_id,
-                        pack_id,
-                        creator_share,
-                        discount_value,
-                    )
-                except Exception as lrc_err:
-                    logger.warning("Failed to apply pack landing config: %s", lrc_err)
+                landing_config = json.loads(pack_data[1]) if isinstance(pack_data[1], str) else pack_data[1]
+                initial_balance_cost = await apply_landing_config_to_user(
+                    conn,
+                    landing_config,
+                    buyer_user_id,
+                    creator_user_id=creator_id,
+                    discount_pct=discount_value,
+                    creator_share=creator_share,
+                    billing_acquisition_ref=session_id,
+                )
 
             creator_net = creator_share - initial_balance_cost
             if creator_net < 0:
@@ -196,6 +196,8 @@ async def _handle_pack_checkout_completed(session, metadata: dict) -> dict:
                     "UPDATE USER_DETAILS SET pending_earnings = COALESCE(pending_earnings, 0) + ? WHERE user_id = ?",
                     (creator_net, creator_id),
                 )
+                if cursor.rowcount != 1:
+                    raise ValueError("Creator details unavailable for purchase earnings")
                 # Record the sale in the creator ledger alongside the wallet increment.
                 # Idempotent via the PACK_PURCHASES existence guard above (this block runs
                 # only on first fulfillment) plus the partial UNIQUE index on source_ref.
@@ -257,6 +259,20 @@ async def _handle_pack_checkout_completed(session, metadata: dict) -> dict:
                     ),
                 )
 
+            await _record_purchase_fulfillment(
+                conn,
+                session_id=session_id,
+                buyer_user_id=buyer_user_id,
+                asset_type=ASSET_TYPE_PACK,
+                asset_id=pack_id,
+                balance_credit=initial_balance_cost,
+                creator_id=creator_id,
+                creator_net=creator_net if creator_id else 0,
+                earnings_recorded=bool(creator_id and creator_net > 0 and first_prompt_row),
+                billing_support_creator_id=(
+                    creator_id if landing_config.get("billing_mode") == "user_pays" else None
+                ),
+            )
             await conn.commit()
             logger.info(
                 "Pack purchase processed: buyer=%s, pack=%s, creator_net=$%.2f",
@@ -270,87 +286,6 @@ async def _handle_pack_checkout_completed(session, metadata: dict) -> dict:
             await conn.rollback()
             logger.error("Error processing pack purchase webhook: %s", exc)
             raise HTTPException(status_code=500, detail="Error processing pack purchase") from exc
-
-
-async def _apply_pack_landing_config_for_webhook(
-    cursor,
-    landing_config: dict,
-    buyer_user_id: int,
-    creator_id: int | None,
-    pack_id: int,
-    creator_share: float,
-    discount_value: float,
-) -> float:
-    initial_balance_cost = 0
-    ib = float(landing_config.get("initial_balance", 0))
-    if ib > 0:
-        scale = (1 - discount_value / 100) if discount_value > 0 else 1
-        scaled_ib = ib * scale
-        if scaled_ib > creator_share:
-            logger.warning(
-                "Pack %s: initial_balance %.2f exceeds creator_share %.2f, clamping",
-                pack_id,
-                scaled_ib,
-                creator_share,
-            )
-            scaled_ib = creator_share
-        if scaled_ib > 0:
-            initial_balance_cost = scaled_ib
-            await cursor.execute(
-                "UPDATE USER_DETAILS SET balance = balance + ? WHERE user_id = ?",
-                (scaled_ib, buyer_user_id),
-            )
-
-    ud_cur = await cursor.execute(
-        """SELECT public_prompts_access, billing_account_id,
-                  allow_file_upload, allow_image_generation
-           FROM USER_DETAILS WHERE user_id = ?""",
-        (buyer_user_id,),
-    )
-    ud_row = await ud_cur.fetchone()
-    cur_public = ud_row[0] if ud_row else 0
-    cur_billing = ud_row[1] if ud_row else None
-    cur_file = ud_row[2] if ud_row else 0
-    cur_imggen = ud_row[3] if ud_row else 0
-
-    if landing_config.get("billing_mode") == "user_pays" and creator_id:
-        if cur_billing is None:
-            await cursor.execute(
-                "UPDATE USER_DETAILS SET billing_account_id = ? WHERE user_id = ?",
-                (creator_id, buyer_user_id),
-            )
-        else:
-            logger.warning(
-                "Webhook: billing_account_id not overwritten for user %s (already %s)",
-                buyer_user_id,
-                cur_billing,
-            )
-    if "public_prompts_access" in landing_config:
-        if landing_config["public_prompts_access"] and not cur_public:
-            await cursor.execute(
-                "UPDATE USER_DETAILS SET public_prompts_access = 1 WHERE user_id = ?",
-                (buyer_user_id,),
-            )
-        elif not landing_config["public_prompts_access"] and cur_public:
-            logger.warning("Webhook: skipping public_prompts_access downgrade for user %s", buyer_user_id)
-    if "allow_file_upload" in landing_config:
-        if landing_config["allow_file_upload"] and not cur_file:
-            await cursor.execute(
-                "UPDATE USER_DETAILS SET allow_file_upload = 1 WHERE user_id = ?",
-                (buyer_user_id,),
-            )
-        elif not landing_config["allow_file_upload"] and cur_file:
-            logger.warning("Webhook: skipping allow_file_upload downgrade for user %s", buyer_user_id)
-    if "allow_image_generation" in landing_config:
-        if landing_config["allow_image_generation"] and not cur_imggen:
-            await cursor.execute(
-                "UPDATE USER_DETAILS SET allow_image_generation = 1 WHERE user_id = ?",
-                (buyer_user_id,),
-            )
-        elif not landing_config["allow_image_generation"] and cur_imggen:
-            logger.warning("Webhook: skipping allow_image_generation downgrade for user %s", buyer_user_id)
-
-    return initial_balance_cost
 
 
 async def _handle_prompt_checkout_completed(session, metadata: dict) -> dict:
@@ -461,19 +396,18 @@ async def _handle_prompt_checkout_completed(session, metadata: dict) -> dict:
             buyer_balance_before = bal_row[0] if bal_row else 0
 
             initial_balance_cost = 0
+            landing_config = {}
             if prompt_data and prompt_data[1]:
-                try:
-                    landing_config = json.loads(prompt_data[1]) if isinstance(prompt_data[1], str) else prompt_data[1]
-                    initial_balance_cost = await apply_landing_config_to_user(
-                        conn,
-                        landing_config,
-                        buyer_user_id,
-                        creator_user_id=creator_id,
-                        discount_pct=discount_value,
-                        creator_share=creator_share,
-                    )
-                except Exception as lrc_err:
-                    logger.warning("Failed to apply prompt landing config: %s", lrc_err)
+                landing_config = json.loads(prompt_data[1]) if isinstance(prompt_data[1], str) else prompt_data[1]
+                initial_balance_cost = await apply_landing_config_to_user(
+                    conn,
+                    landing_config,
+                    buyer_user_id,
+                    creator_user_id=creator_id,
+                    discount_pct=discount_value,
+                    creator_share=creator_share,
+                    billing_acquisition_ref=session_id,
+                )
 
             creator_net = creator_share - initial_balance_cost
             if creator_net < 0:
@@ -484,6 +418,8 @@ async def _handle_prompt_checkout_completed(session, metadata: dict) -> dict:
                     "UPDATE USER_DETAILS SET pending_earnings = COALESCE(pending_earnings, 0) + ? WHERE user_id = ?",
                     (creator_net, creator_id),
                 )
+                if cursor.rowcount != 1:
+                    raise ValueError("Creator details unavailable for purchase earnings")
                 # Record the sale in the creator ledger alongside the wallet increment.
                 # Idempotent via the PROMPT_PURCHASES existence guard above (this block runs
                 # only on first fulfillment) plus the partial UNIQUE index on source_ref.
@@ -537,6 +473,20 @@ async def _handle_prompt_checkout_completed(session, metadata: dict) -> dict:
                     ),
                 )
 
+            await _record_purchase_fulfillment(
+                conn,
+                session_id=session_id,
+                buyer_user_id=buyer_user_id,
+                asset_type=ASSET_TYPE_PROMPT,
+                asset_id=prompt_id,
+                balance_credit=initial_balance_cost,
+                creator_id=creator_id,
+                creator_net=creator_net if creator_id else 0,
+                earnings_recorded=bool(creator_id and creator_net > 0),
+                billing_support_creator_id=(
+                    creator_id if landing_config.get("billing_mode") == "user_pays" else None
+                ),
+            )
             await conn.commit()
             logger.info(
                 "Prompt purchase processed: buyer=%s, prompt=%s, creator_net=$%.2f",
@@ -552,209 +502,267 @@ async def _handle_prompt_checkout_completed(session, metadata: dict) -> dict:
             raise HTTPException(status_code=500, detail="Error processing prompt purchase") from exc
 
 
+async def _record_purchase_fulfillment(
+    conn, *, session_id: str, buyer_user_id: int, asset_type: str, asset_id: int,
+    balance_credit: float, creator_id: int | None, creator_net: float,
+    earnings_recorded: bool, billing_support_creator_id: int | None,
+) -> None:
+    # Missing ledger rows are meaningful only with this fulfillment evidence:
+    # zero earnings and a pack without an active prompt otherwise look alike.
+    snapshot = {
+        "balance_credit": balance_credit,
+        "creator_id": creator_id,
+        "creator_net": creator_net,
+        "earnings_recorded": earnings_recorded,
+    }
+    cursor = await conn.execute(
+        """UPDATE ENTITLEMENTS
+           SET metadata_json = json_set(COALESCE(metadata_json, '{}'),
+                                        '$.purchase_fulfillment', json(?),
+                                        '$.billing_support_creator_id', ?)
+           WHERE user_id = ? AND asset_type = ? AND asset_id = ?
+             AND source_ref_type = 'stripe_session' AND source_ref_id = ?""",
+        (json.dumps(snapshot), billing_support_creator_id, buyer_user_id,
+         asset_type, asset_id, session_id),
+    )
+    if cursor.rowcount != 1:
+        raise ValueError("Purchase entitlement unavailable for fulfillment evidence")
+
+
+def _refund_evidence_error(reason: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=f"Purchase refund requires reconciliation: {reason}")
+
+
 async def handle_marketplace_chargeback(session, metadata: dict, payment_intent_id: str):
     checkout_type = metadata.get("type")
-    if checkout_type == "pack_purchase":
-        return await _handle_pack_chargeback(session, metadata, payment_intent_id)
-    if checkout_type == "prompt_purchase":
-        return await _handle_prompt_chargeback(session, metadata, payment_intent_id)
-    return {"status": "ignored", "reason": "not_marketplace_checkout"}
+    if checkout_type not in MARKETPLACE_CHECKOUT_TYPES:
+        return {"status": "ignored", "reason": "not_marketplace_checkout"}
+    asset_type = ASSET_TYPE_PACK if checkout_type == "pack_purchase" else ASSET_TYPE_PROMPT
+    return await _handle_product_chargeback(session, metadata, payment_intent_id, asset_type)
 
 
-async def _handle_pack_chargeback(session, metadata: dict, payment_intent_id: str) -> dict:
+async def _handle_product_chargeback(session, metadata: dict, payment_intent_id: str, asset_type: str) -> dict:
     session_id = _session_id(session)
-    pack_id = int(metadata["pack_id"])
+    asset_id = int(metadata[f"{asset_type}_id"])
     buyer_user_id = int(metadata["buyer_user_id"])
-    final_amount = float(metadata.get("final_amount", 0))
-    discount_value = float(metadata.get("discount_value", 0))
+    purchase_table = "PACK_PURCHASES" if asset_type == ASSET_TYPE_PACK else "PROMPT_PURCHASES"
+    purchase_type = f"{asset_type}_purchase"
 
     async with get_db_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
-
-        check_cursor = await conn.execute(
-            "SELECT status FROM PACK_PURCHASES WHERE payment_reference = ?",
-            (session_id,),
-        )
-        purchase_check = await check_cursor.fetchone()
-        if not purchase_check:
-            await conn.rollback()
-            logger.warning(
-                "Pack chargeback arrived before purchase completion: session=%s",
-                session_id,
-            )
-            raise HTTPException(
-                status_code=409,
-                detail="Original pack purchase has not been processed yet",
-            )
-        if purchase_check and purchase_check[0] == "refunded":
-            await conn.rollback()
-            logger.info("Chargeback already processed for payment_intent=%s", payment_intent_id)
-            return {"status": "already_processed"}
-
         try:
-            await refund_entitlement(
-                conn,
-                user_id=buyer_user_id,
-                asset_type=ASSET_TYPE_PACK,
-                asset_id=pack_id,
-                source_ref_type="stripe_session",
-                source_ref_id=session_id,
-                metadata={"event": "charge.dispute.created"},
+            cursor = await conn.execute(
+                f"SELECT id, status, buyer_user_id, {asset_type}_id, amount FROM {purchase_table} WHERE payment_reference = ?",
+                (session_id,),
             )
+            purchases = await cursor.fetchall()
+            if not purchases:
+                raise HTTPException(status_code=409, detail=f"Original {asset_type} purchase has not been processed yet")
+            if len(purchases) != 1:
+                raise _refund_evidence_error("ambiguous purchase records")
+            purchase = purchases[0]
+            if purchase[2] != buyer_user_id or purchase[3] != asset_id:
+                raise _refund_evidence_error("purchase attribution does not match the session")
+            if purchase[1] == "refunded":
+                await conn.rollback()
+                return {"status": "already_processed"}
+            if purchase[1] != "completed":
+                raise _refund_evidence_error("original purchase is not completed")
+
+            cursor = await conn.execute(
+                """SELECT metadata_json FROM ENTITLEMENTS
+                   WHERE user_id = ? AND asset_type = ? AND asset_id = ?
+                     AND source_ref_type = 'stripe_session' AND source_ref_id = ?""",
+                (buyer_user_id, asset_type, asset_id, session_id),
+            )
+            entitlement = await cursor.fetchone()
+            if entitlement is None:
+                raise _refund_evidence_error("purchase entitlement is missing")
+            try:
+                entitlement_metadata = json.loads(entitlement[0]) if entitlement[0] else {}
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise _refund_evidence_error("invalid purchase metadata") from exc
+            if not isinstance(entitlement_metadata, dict):
+                raise _refund_evidence_error("invalid purchase metadata")
+
+            cursor = await conn.execute(
+                "SELECT user_id, type, amount FROM TRANSACTIONS WHERE reference_id = ? AND type IN (?, 'balance_credit')",
+                (session_id, purchase_type),
+            )
+            transactions = await cursor.fetchall()
+            sale_rows = [row for row in transactions if row[1] == purchase_type]
+            credit_rows = [row for row in transactions if row[1] == "balance_credit"]
+            if (len(sale_rows) != 1 or sale_rows[0][0] != buyer_user_id
+                    or not math.isclose(float(sale_rows[0][2]), float(purchase[4]))
+                    or len(credit_rows) > 1 or any(row[0] != buyer_user_id for row in credit_rows)):
+                raise _refund_evidence_error("original transaction records are missing or inconsistent")
+            balance_credit = float(credit_rows[0][2]) if credit_rows else 0
+
+            cursor = await conn.execute(
+                """SELECT id, creator_id, consumer_id, earning_type, pack_id,
+                          net_earnings, gross_amount
+                   FROM CREATOR_EARNINGS WHERE source_ref = ?""",
+                (session_id,),
+            )
+            earning = await cursor.fetchone()
+            if earning is not None and (
+                earning[2] != buyer_user_id or earning[3] != purchase_type
+                or earning[4] != (asset_id if asset_type == ASSET_TYPE_PACK else None)
+                or not math.isclose(float(earning[6]), float(purchase[4]))
+            ):
+                raise _refund_evidence_error("creator earnings attribution is inconsistent")
+
+            snapshot = entitlement_metadata.get("purchase_fulfillment")
+            if snapshot is None:
+                # Legacy rows need both positive records; absence cannot prove
+                # a zero credit or zero earnings (packs historically skipped it).
+                if not credit_rows or earning is None:
+                    raise _refund_evidence_error("historical fulfillment amounts are incomplete")
+                creator_id, creator_net = earning[1], float(earning[5])
+            else:
+                try:
+                    expected_credit = float(snapshot["balance_credit"])
+                    creator_id = snapshot["creator_id"]
+                    creator_net = float(snapshot["creator_net"])
+                    earnings_recorded = snapshot["earnings_recorded"]
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise _refund_evidence_error("invalid fulfillment amounts") from exc
+                if (not math.isclose(balance_credit, expected_credit)
+                        or not isinstance(earnings_recorded, bool)
+                        or earnings_recorded != (earning is not None)
+                        or (earning is not None and (earning[1] != creator_id
+                            or not math.isclose(float(earning[5]), creator_net)))):
+                    raise _refund_evidence_error("fulfillment records do not agree")
+            if (not math.isfinite(balance_credit) or balance_credit < 0
+                    or not math.isfinite(creator_net) or creator_net < 0
+                    or (creator_net > 0 and not creator_id)):
+                raise _refund_evidence_error("invalid credited amounts")
+
+            cursor = await conn.execute("SELECT balance FROM USER_DETAILS WHERE user_id = ?", (buyer_user_id,))
+            buyer = await cursor.fetchone()
+            if buyer is None:
+                raise _refund_evidence_error("buyer details are missing")
+            balance_before = float(buyer[0] or 0)
+            balance_after = max(0, balance_before - balance_credit)
+            balance_debit = balance_before - balance_after
+            await conn.execute("UPDATE USER_DETAILS SET balance = ? WHERE user_id = ?", (balance_after, buyer_user_id))
+            if creator_net > 0:
+                cursor = await conn.execute(
+                    "UPDATE USER_DETAILS SET pending_earnings = COALESCE(pending_earnings, 0) - ? WHERE user_id = ?",
+                    (creator_net, creator_id),
+                )
+                if cursor.rowcount != 1:
+                    raise _refund_evidence_error("creator details are missing")
+            if earning is not None:
+                # Preserve the sale and offset it, so existing earnings reports
+                # show the reversal. A paid-out sale becomes local pending debt.
+                await conn.execute(
+                    """INSERT INTO CREATOR_EARNINGS
+                       (creator_id, prompt_id, consumer_id, referral_id, tokens_consumed,
+                        gross_amount, platform_commission, net_earnings, earning_type, source_ref, pack_id)
+                       SELECT creator_id, prompt_id, consumer_id, referral_id, 0,
+                              -gross_amount, -platform_commission, -net_earnings, ?, ?, pack_id
+                       FROM CREATOR_EARNINGS WHERE id = ?""",
+                    (purchase_type + "_refund", "refund:" + session_id, earning[0]),
+                )
             await conn.execute(
-                "UPDATE PACK_PURCHASES SET status = 'refunded' WHERE pack_id = ? AND buyer_user_id = ? AND payment_reference = ?",
-                (pack_id, buyer_user_id, session_id),
+                """INSERT INTO TRANSACTIONS
+                   (user_id, type, amount, balance_before, balance_after, description, reference_id)
+                   VALUES (?, 'chargeback_reversal', ?, ?, ?, ?, ?)""",
+                (buyer_user_id, balance_debit, balance_before, balance_after,
+                 f"Chargeback reversal for {asset_type}: {asset_id}; credited=${balance_credit:.2f}", session_id),
             )
-
-            pricing = await get_pricing_config()
-            commission_rate = pricing.get("commission", 0.30)
-            creator_share = final_amount * (1 - commission_rate)
-
-            initial_balance_cost = 0
-            pack_cursor = await conn.execute(
-                "SELECT created_by_user_id, landing_reg_config FROM PACKS WHERE id = ?",
-                (pack_id,),
-            )
-            pack_data = await pack_cursor.fetchone()
-            creator_id = pack_data[0] if pack_data else None
-
-            if pack_data and pack_data[1]:
-                try:
-                    lrc = json.loads(pack_data[1]) if isinstance(pack_data[1], str) else pack_data[1]
-                    ib = float(lrc.get("initial_balance", 0))
-                    if ib > 0:
-                        scale = (1 - discount_value / 100) if discount_value > 0 else 1
-                        scaled_ib = ib * scale
-                        if scaled_ib > 0:
-                            initial_balance_cost = scaled_ib
-                except Exception:
-                    pass
-
-            if initial_balance_cost > 0:
-                await conn.execute(
-                    "UPDATE USER_DETAILS SET balance = MAX(0, balance - ?) WHERE user_id = ?",
-                    (initial_balance_cost, buyer_user_id),
-                )
-
-            creator_net = creator_share - initial_balance_cost
-            if creator_net < 0:
-                creator_net = 0
-            if creator_id and creator_net > 0:
-                await conn.execute(
-                    "UPDATE USER_DETAILS SET pending_earnings = MAX(0, COALESCE(pending_earnings, 0) - ?) WHERE user_id = ?",
-                    (creator_net, creator_id),
-                )
-
-            await conn.commit()
-            logger.warning(
-                "Chargeback processed: revoked access for user=%s, pack=%s, reverted ib=$%.2f, creator_net=$%.2f",
-                buyer_user_id,
-                pack_id,
-                initial_balance_cost,
-                creator_net,
-            )
-            return {"status": "success"}
-        except Exception:
-            await conn.rollback()
-            raise
-
-
-async def _handle_prompt_chargeback(session, metadata: dict, payment_intent_id: str) -> dict:
-    session_id = _session_id(session)
-    prompt_id = int(metadata["prompt_id"])
-    buyer_user_id = int(metadata["buyer_user_id"])
-    final_amount = float(metadata.get("final_amount", 0))
-    discount_value = float(metadata.get("discount_value", 0))
-
-    async with get_db_connection() as conn:
-        await conn.execute("BEGIN IMMEDIATE")
-
-        check_cursor = await conn.execute(
-            "SELECT id, status FROM PROMPT_PURCHASES WHERE payment_reference = ?",
-            (session_id,),
-        )
-        purchase_check = await check_cursor.fetchone()
-        if not purchase_check:
-            await conn.rollback()
-            logger.warning(
-                "Prompt chargeback arrived before purchase completion: session=%s",
-                session_id,
-            )
-            raise HTTPException(
-                status_code=409,
-                detail="Original prompt purchase has not been processed yet",
-            )
-        if purchase_check and purchase_check[1] == "refunded":
-            await conn.rollback()
-            logger.info("Prompt chargeback already processed for payment_intent=%s", payment_intent_id)
-            return {"status": "already_processed"}
-
-        purchase_id = purchase_check[0] if purchase_check else None
-
-        try:
             await refund_entitlement(
-                conn,
-                user_id=buyer_user_id,
-                asset_type=ASSET_TYPE_PROMPT,
-                asset_id=prompt_id,
-                source_ref_type="stripe_session",
-                source_ref_id=session_id,
+                conn, user_id=buyer_user_id, asset_type=asset_type, asset_id=asset_id,
+                source_ref_type="stripe_session", source_ref_id=session_id,
                 metadata={"event": "charge.dispute.created"},
             )
-            if purchase_id:
-                await conn.execute(
-                    "UPDATE PROMPT_PURCHASES SET status = 'refunded' WHERE id = ?",
-                    (purchase_id,),
-                )
-
-            pricing = await get_pricing_config()
-            commission_rate = pricing.get("commission", 0.30)
-            creator_share = final_amount * (1 - commission_rate)
-
-            initial_balance_cost = 0
-            prompt_cursor = await conn.execute(
-                "SELECT created_by_user_id, landing_registration_config FROM PROMPTS WHERE id = ?",
-                (prompt_id,),
-            )
-            prompt_data = await prompt_cursor.fetchone()
-            creator_id = prompt_data[0] if prompt_data else None
-
-            if prompt_data and prompt_data[1]:
-                try:
-                    lrc = json.loads(prompt_data[1]) if isinstance(prompt_data[1], str) else prompt_data[1]
-                    ib = float(lrc.get("initial_balance", 0))
-                    if ib > 0:
-                        scale = (1 - discount_value / 100) if discount_value > 0 else 1
-                        scaled_ib = ib * scale
-                        if scaled_ib > 0:
-                            initial_balance_cost = scaled_ib
-                except Exception:
-                    pass
-
-            if initial_balance_cost > 0:
-                await conn.execute(
-                    "UPDATE USER_DETAILS SET balance = MAX(0, balance - ?) WHERE user_id = ?",
-                    (initial_balance_cost, buyer_user_id),
-                )
-
-            creator_net = creator_share - initial_balance_cost
-            if creator_net < 0:
-                creator_net = 0
-            if creator_id and creator_net > 0:
-                await conn.execute(
-                    "UPDATE USER_DETAILS SET pending_earnings = MAX(0, COALESCE(pending_earnings, 0) - ?) WHERE user_id = ?",
-                    (creator_net, creator_id),
-                )
-
+            await conn.execute(f"UPDATE {purchase_table} SET status = 'refunded' WHERE id = ?", (purchase[0],))
+            await _revoke_unsupported_acquisition_billing(conn, buyer_user_id)
             await conn.commit()
             logger.warning(
-                "Prompt chargeback processed: revoked access for user=%s, prompt=%s, reverted ib=$%.2f, creator_net=$%.2f",
-                buyer_user_id,
-                prompt_id,
-                initial_balance_cost,
-                creator_net,
+                "Chargeback processed: session=%s, user=%s, asset=%s:%s, credit=$%.2f, debited=$%.2f, earnings=$%.2f",
+                session_id, buyer_user_id, asset_type, asset_id, balance_credit, balance_debit, creator_net,
             )
             return {"status": "success"}
         except Exception:
             await conn.rollback()
             raise
+
+
+async def _revoke_unsupported_acquisition_billing(conn, user_id: int) -> None:
+    cursor = await conn.execute(
+        "SELECT billing_account_id, billing_acquisition_ref FROM USER_DETAILS WHERE user_id = ?",
+        (user_id,),
+    )
+    payer_id, origin_ref = await cursor.fetchone()
+    if payer_id is None or origin_ref is None:
+        return  # Historical and administrative assignments have no purchase origin.
+
+    cursor = await conn.execute(
+        """SELECT asset_type, asset_id, status, metadata_json FROM ENTITLEMENTS
+           WHERE user_id = ? AND source_ref_type = 'stripe_session' AND source_ref_id = ?""",
+        (user_id, origin_ref),
+    )
+    origins = await cursor.fetchall()
+    if len(origins) != 1:
+        logger.warning("Billing origin needs reconciliation for user=%s, source=%s", user_id, origin_ref)
+        return
+    origin = origins[0]
+    try:
+        origin_metadata = json.loads(origin[3] or '{}')
+    except (TypeError, json.JSONDecodeError):
+        return
+    if (not isinstance(origin_metadata, dict)
+            or type(origin_metadata.get("billing_support_creator_id")) is not int
+            or origin_metadata["billing_support_creator_id"] != payer_id
+            or origin[0] not in (ASSET_TYPE_PACK, ASSET_TYPE_PROMPT)
+            or origin[2] != "refunded"):
+        return
+    # A may have assigned billing and then been refunded while B supported it.
+    # Refunding B must still review A's durable origin, without selecting B's
+    # different limits or a replacement payer.
+    origin_table = "PACK_PURCHASES" if origin[0] == ASSET_TYPE_PACK else "PROMPT_PURCHASES"
+    cursor = await conn.execute(
+        f"""SELECT 1 FROM {origin_table}
+            WHERE buyer_user_id = ? AND {origin[0]}_id = ?
+              AND payment_reference = ? AND status = 'refunded'""",
+        (user_id, origin[1], origin_ref),
+    )
+    if await cursor.fetchone() is None:
+        return
+    cursor = await conn.execute(
+        f"""SELECT e.metadata_json FROM ENTITLEMENTS e
+            WHERE e.user_id = ? AND e.asset_type IN ('pack', 'prompt')
+              AND {active_entitlement_condition('e')}""",
+        (user_id,),
+    )
+    for row in await cursor.fetchall():
+        try:
+            support = json.loads(row[0] or '{}')
+        except (TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(support, dict) or "billing_support_creator_id" not in support:
+            logger.warning("Historical billing support needs reconciliation for user=%s", user_id)
+            return
+        supporter = support["billing_support_creator_id"]
+        if supporter == payer_id or (
+            supporter is not None and (type(supporter) is not int or supporter <= 0)
+        ):
+            return
+
+    cursor = await conn.execute(
+        "SELECT 1 FROM BILLING_USAGE_RESERVATIONS WHERE user_id = ? AND status = 'active' LIMIT 1",
+        (user_id,),
+    )
+    if await cursor.fetchone() is not None:
+        raise HTTPException(status_code=409, detail="Billing usage is in progress; retry purchase refund")
+    await conn.execute(
+        """UPDATE USER_DETAILS SET billing_account_id = NULL, billing_acquisition_ref = NULL,
+                  billing_limit = NULL, billing_limit_action = 'block',
+                  billing_auto_refill_amount = 10, billing_max_limit = NULL,
+                  billing_current_month_spent = 0, billing_month_reset_date = NULL,
+                  billing_auto_refill_count = 0
+           WHERE user_id = ?""",
+        (user_id,),
+    )

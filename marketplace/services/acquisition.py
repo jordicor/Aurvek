@@ -13,10 +13,16 @@ async def apply_landing_config_to_user(
     creator_user_id: int = None,
     discount_pct: float = 0,
     creator_share: float = None,
+    *,
+    creator_balance: float | None = None,
+    billing_acquisition_ref: str | None = None,
 ) -> float:
     """Apply a prompt/pack landing_registration_config to an existing user.
 
     Expand-only: never restricts existing permissions or overwrites billing.
+    A creator_share identifies a paid purchase: assign its billing policy even
+    when the creator has no funds; usage reservations check funds when spent.
+    Free callers can reuse a creator_balance they have already checked.
     Does not commit; caller owns the transaction.
     """
     ud_cursor = await conn.execute(
@@ -29,6 +35,8 @@ async def apply_landing_config_to_user(
     )
     ud_row = await ud_cursor.fetchone()
     if not ud_row:
+        if creator_share is not None:
+            raise ValueError(f"User details unavailable for paid acquisition: {user_id}")
         return 0
 
     cur_public, cur_billing, cur_file, cur_imggen = ud_row
@@ -52,22 +60,23 @@ async def apply_landing_config_to_user(
             params.append(scaled_balance)
 
     if config.get("billing_mode") == "user_pays" and creator_user_id:
-        creator_balance = await get_balance(creator_user_id)
-        if creator_balance <= 0:
-            logger.warning(
-                "Landing config: creator %s has zero balance, skipping billing setup for user %s",
-                creator_user_id,
-                user_id,
-            )
-        elif cur_billing is not None:
+        if cur_billing is not None:
             logger.warning(
                 "Landing config: billing_account_id not overwritten for user %s (already %s)",
                 user_id,
                 cur_billing,
             )
+        elif creator_share is None and (
+            creator_balance if creator_balance is not None else await get_balance(creator_user_id)
+        ) <= 0:
+            logger.warning(
+                "Landing config: creator %s has zero balance, skipping billing setup for user %s",
+                creator_user_id,
+                user_id,
+            )
         else:
-            updates.append("billing_account_id = ?")
-            params.append(creator_user_id)
+            updates.extend(["billing_account_id = ?", "billing_acquisition_ref = ?"])
+            params.extend([creator_user_id, billing_acquisition_ref])
             billing_limit = config.get("billing_limit")
             if billing_limit is not None:
                 updates.append("billing_limit = ?")

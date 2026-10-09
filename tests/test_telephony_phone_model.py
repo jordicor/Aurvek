@@ -22,9 +22,10 @@ async def _database():
             id INTEGER PRIMARY KEY,
             forced_llm_id INTEGER,
             forced_reasoning_json TEXT,
-            phone_llm_id INTEGER,
-            phone_reasoning_json TEXT,
-            phone_realtime_voice TEXT
+            realtime_llm_id INTEGER,
+            realtime_backend_llm_id INTEGER,
+            realtime_reasoning_json TEXT,
+            realtime_voice TEXT
         );
         CREATE TABLE LLM(
             id INTEGER PRIMARY KEY,
@@ -70,13 +71,30 @@ async def _insert_model(
 
 
 @pytest.mark.asyncio
+async def test_gemini_live_uses_native_runtime_and_google_voice():
+    conn = await _database()
+    try:
+        await _insert_model(conn, 1, machine="Gemini", model="gemini-3.8-live", provider="google")
+        await _insert_model(conn, 2, machine="GPT", model="gpt-5.6-luna", provider="openai")
+        await conn.execute("INSERT INTO PROMPTS(id,realtime_llm_id) VALUES(1,1)")
+        result = await _resolve_phone_model_selection(conn, prompt_id=1, conversation_llm_id=2)
+        assert result[1] == "gemini_live"
+        assert result[4] == "Kore"
+        await conn.execute("UPDATE PROMPTS SET realtime_voice='marin' WHERE id=1")
+        with pytest.raises(PhoneSnapshotError, match="Gemini Live voice"):
+            await _resolve_phone_model_selection(conn, prompt_id=1, conversation_llm_id=2)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_phone_model_override_and_reasoning_are_resolved_together():
     conn = await _database()
     try:
         await _insert_model(conn, 1, model="claude-opus-4-6")
         await _insert_model(conn, 2)
         await conn.execute(
-            "INSERT INTO PROMPTS VALUES(1,1,?,2,?,NULL)",
+            "INSERT INTO PROMPTS(id,forced_llm_id,forced_reasoning_json,realtime_llm_id,realtime_reasoning_json) VALUES(1,1,?,2,?)",
             (json.dumps({"mode": "high"}), json.dumps({"mode": "off"})),
         )
         result = await _resolve_phone_model_selection(
@@ -91,6 +109,7 @@ async def test_phone_model_override_and_reasoning_are_resolved_together():
         "claude-sonnet-4-6",
         {"mode": "off"},
         None,
+        None,
     )
 
 
@@ -100,14 +119,14 @@ async def test_inherited_phone_model_inherits_forced_reasoning_only_without_phon
     try:
         await _insert_model(conn, 1)
         await conn.execute(
-            "INSERT INTO PROMPTS VALUES(1,1,?,NULL,NULL,NULL)",
+            "INSERT INTO PROMPTS(id,forced_llm_id,forced_reasoning_json) VALUES(1,1,?)",
             (json.dumps({"mode": "low"}),),
         )
         inherited = await _resolve_phone_model_selection(
             conn, prompt_id=1, conversation_llm_id=1
         )
         await conn.execute(
-            "UPDATE PROMPTS SET phone_llm_id=1 WHERE id=1"
+            "UPDATE PROMPTS SET realtime_llm_id=1 WHERE id=1"
         )
         explicit = await _resolve_phone_model_selection(
             conn, prompt_id=1, conversation_llm_id=1
@@ -149,15 +168,15 @@ async def test_realtime_model_captures_default_voice_and_validates_override():
             provider="openai",
         )
         await conn.execute(
-            "INSERT INTO PROMPTS(id,phone_llm_id) VALUES(1,2)"
+            "INSERT INTO PROMPTS(id,realtime_llm_id) VALUES(1,2)"
         )
         resolved = await _resolve_phone_model_selection(
             conn, prompt_id=1, conversation_llm_id=2
         )
         await conn.execute(
-            "UPDATE PROMPTS SET phone_realtime_voice='invalid' WHERE id=1"
+            "UPDATE PROMPTS SET realtime_voice='invalid' WHERE id=1"
         )
-        with pytest.raises(PhoneSnapshotError, match="Realtime voice"):
+        with pytest.raises(PhoneSnapshotError, match="OpenAI voice"):
             await _resolve_phone_model_selection(
                 conn, prompt_id=1, conversation_llm_id=2
             )
@@ -170,6 +189,7 @@ async def test_realtime_model_captures_default_voice_and_validates_override():
         "gpt-realtime-2.1-mini",
         {"mode": "default"},
         "marin",
+        None,
     )
 
 

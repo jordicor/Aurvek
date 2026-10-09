@@ -9,7 +9,6 @@ from billing.usage_reservations import serialize_user_billing_response
 from clients import async_twilio, twilio_validator
 from common import (
     PRIMARY_APP_DOMAIN,
-    cache_directory,
     validate_twilio_media_url,
 )
 from database import get_db_connection
@@ -24,6 +23,7 @@ from integrations.conversations import (
     get_chats_list,
     set_external_conversation,
 )
+from integrations.delivery import chunk_whatsapp_response, whatsapp_audio_url
 from integrations.media import (
     download_external_audio,
     download_external_media,
@@ -39,9 +39,8 @@ from integrations.whatsapp import ingress
 from log_config import logger
 from prompt_access import get_user_accessible_prompts
 from prompts import can_user_access_prompt
-from save_images import get_or_generate_img_token
 from storage_quota import StorageQuotaExceededError
-from tools.tts import handle_tts_request, insert_tts_break
+from tools.tts import handle_tts_request
 
 from integrations.applications.messaging import (
     resolve_messaging, application_command, application_messaging_turn,
@@ -817,20 +816,18 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
                 await check_messaging(application_state, "tts", delivery=True)
                 audio_path, error = await handle_tts_request(None, {"text": text, "author": "bot", "conversationId": conversation_id}, current_user, is_whatsapp=True, tts_context="external", billing_adapter=messaging_tts_billing(application_state))
 
-                if error:
+                if error or not audio_path:
                     error_message = tr.t("channel_notices.voice_fallback")
-                    await twilio_client.send_message(
-                        body=f"{error_message}\n\n{text}",
-                        from_=to_number,
-                        to=from_number
-                    )
+                    for chunk in await chunk_whatsapp_response(f"{error_message}\n\n{text}"):
+                        await twilio_client.send_message(
+                            body=chunk,
+                            from_=to_number,
+                            to=from_number
+                        )
                     logger.error(f"Error generating voice message: {error}")
                     return
 
-                token = await get_or_generate_img_token(current_user)
-                relative_path = audio_path[len(str(cache_directory)):]
-                media_url = f"{request.url.scheme}://{request.url.hostname}/get-audio{relative_path}?token={token}"
-                media_url = media_url.replace('\\', '/')
+                media_url = await whatsapp_audio_url(audio_path, current_user, request=request)
                 logger.debug("Generated TTS media URL for WhatsApp")
                 await twilio_client.send_message(
                     media_url=[media_url],
@@ -850,9 +847,8 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
             if not text or not text.strip():
                 return
 
-            if chunk_long_text and len(text) >= 900:
-                text_chunks = await insert_tts_break(text, min_length=700, max_length=900, look_ahead=100)
-                for text_chunk in text_chunks:
+            if chunk_long_text:
+                for text_chunk in await chunk_whatsapp_response(text):
                     await send_whatsapp_text_message(text_chunk)
                 return
 
@@ -1075,13 +1071,8 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
 
             if not persistence_error:
                 for item in buffered_items:
-                    if isinstance(item, str) and len(item) >= 900:
-                        chunks = await insert_tts_break(
-                            item,
-                            min_length=700,
-                            max_length=900,
-                            look_ahead=100,
-                        )
+                    if isinstance(item, str):
+                        chunks = await chunk_whatsapp_response(item)
                         await send_chunks(chunks)
                     else:
                         await send_chunks([item])

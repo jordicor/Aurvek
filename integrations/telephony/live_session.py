@@ -1,8 +1,9 @@
-"""Continuous GPT-Live audio with Aurvek-owned tools, history and call lifecycle."""
+"""Native live audio with Aurvek-owned tools, history and call lifecycle."""
 
 from __future__ import annotations
 
 import asyncio
+import audioop
 import base64
 from dataclasses import dataclass, field, replace
 import json
@@ -11,14 +12,14 @@ import time
 from fastapi.responses import StreamingResponse
 
 from ai_runtime.channel_turns import VoiceDelegationResult
-from integrations.applications.phone import phone_turn_billing_context
+from integrations.applications.phone import phone_billing_context, phone_turn_billing_context
 from integrations.telephony.billing import PhoneBillingExhausted
 from integrations.telephony.foreground import ForegroundCommitGuard, assert_commit_guard_in_transaction
 from integrations.telephony.live_billing import OpenAILiveBillingMeter
 from integrations.telephony.media_streams import MarkEvent, build_clear_message, build_mark_message, build_media_message
 from integrations.telephony.message_audio import persist_live_message_audio_in_transaction
 from integrations.telephony.memory_outbox import enqueue_phone_memory_in_transaction
-from integrations.telephony.openai_live import OpenAILiveClient, OpenAILiveError, live_session_configuration
+from integrations.telephony.openai_live import OpenAILiveClient, live_session_configuration
 from integrations.telephony.phone_context import create_phone_channel_turn
 from integrations.telephony.schemas import CALL_TERMINAL_STATUSES
 from integrations.telephony.session import PhoneMediaSession, PhoneMediaSessionError
@@ -34,6 +35,7 @@ class LiveTranscriptSegment:
     fragments: list = field(default_factory=list)
     updated_at: float = 0.0
     suppressed: bool = False
+    audio_end_bytes: int | None = None
 
     @property
     def text(self):
@@ -54,7 +56,7 @@ def _text(value):
     return ""
 
 
-class OpenAILivePhoneSession(PhoneMediaSession):
+class NativeLivePhoneSession(PhoneMediaSession):
     """Reuse PSTN fencing, notices, recording, deadlines and durable hangup.
 
     Live transcripts are timestamped fragments, not completed model turns.
@@ -62,16 +64,29 @@ class OpenAILivePhoneSession(PhoneMediaSession):
     No Realtime VAD, response.create, truncation or STT/TTS fallback is used.
     """
 
-    def __init__(self, context, *, openai_api_key_provider, billing_service=None, **kwargs):
-        client = OpenAILiveClient(api_key_provider=openai_api_key_provider, session_loader=self._configuration)
+    def __init__(self, context, *, openai_api_key_provider=None, billing_service=None, **kwargs):
+        from integrations.telephony.snapshot import runtime_kind_from_snapshot
+        self._gemini = runtime_kind_from_snapshot(context.call_snapshot) == "gemini_live"
+        if self._gemini:
+            from common import gemini_key
+            from integrations.live.gemini import GeminiLiveClient
+            from integrations.live.billing import LiveUsageMeter
+            from integrations.telephony.billing import PhoneLiveBillingMeter
+            client = GeminiLiveClient(api_key_provider=lambda: gemini_key,
+                                      session_loader=self._configuration, pcmu=True)
+            meter = PhoneLiveBillingMeter(context.call_id, include_stt=False,
+                                          service=billing_service, stream_attempt=context.stream_attempt)
+            self._native_usage = LiveUsageMeter(user_id=context.owner_user_id,
+                prompt_id=int(context.call_snapshot["prompt_id"]), kind="gemini_live")
+        else:
+            client = OpenAILiveClient(api_key_provider=openai_api_key_provider, session_loader=self._configuration)
+            meter = OpenAILiveBillingMeter(context.call_id, client=client,
+                service=billing_service, stream_attempt=context.stream_attempt)
+            self._native_usage = None
         super().__init__(
-            context, stt=client,
-            billing_meter=OpenAILiveBillingMeter(
-                context.call_id, client=client, service=billing_service,
-                stream_attempt=context.stream_attempt,
-            ), **kwargs,
+            context, stt=client, billing_meter=meter, **kwargs,
         )
-        self._output = asyncio.Queue(maxsize=250)
+        self._output = asyncio.Queue(maxsize=1500 if self._gemini else 250)
         self._delegations = asyncio.Queue(maxsize=8)
         self._delegation_ids = set()
         self._segments = []
@@ -84,11 +99,28 @@ class OpenAILivePhoneSession(PhoneMediaSession):
         self._live_websocket = None
         self._audio_received = 0
         self._audio_sent = 0
+        self._audio_enqueued = 0
         self._audio_confirmed = 0
         self._cleared_through = 0
         self._recording_audio_end_ms = 0
         self._last_spoken_at = 0.0
+        self._last_audible_at = 0.0
+        self._last_turn_complete_at = 0.0
+        self._output_silence_bytes = 0
         self._delegate_active = False
+        self._delegation_requests = {}
+        self._canceled_delegations = set()
+
+    async def _ensure_live_billing_coverage(self):
+        from billing.usage_reservations import InsufficientBalanceError
+        await super()._ensure_live_billing_coverage()
+        if self._native_usage:
+            try:
+                async with phone_billing_context(self.repository.connection_factory, self.context.call_id):
+                    await self._native_usage.cover()
+                    await self._native_usage.provider_started()
+            except InsufficientBalanceError:
+                raise PhoneBillingExhausted("Native voice balance exhausted") from None
 
     def _guard(self):
         return ForegroundCommitGuard(
@@ -98,20 +130,23 @@ class OpenAILivePhoneSession(PhoneMediaSession):
         )
 
     async def _configuration(self):
-        from llm_catalog import normalize_runtime_capability
+        from integrations.realtime.configuration import resolve_selection
 
         async with self.repository.connection_factory(readonly=True) as conn:
             row = await (await conn.execute(
-                "SELECT p.prompt,p.name,l.machine,l.model,l.enabled,u.user_info "
+                "SELECT p.prompt,p.name,p.id,c.llm_id,u.user_info "
                 "FROM CONVERSATIONS c JOIN PROMPTS p ON p.id=c.role_id "
-                "JOIN LLM l ON l.id=COALESCE(p.forced_llm_id,c.llm_id) "
                 "JOIN USERS u ON u.id=c.user_id WHERE c.id=? AND c.user_id=?",
                 (self.context.conversation_id, self.context.owner_user_id),
             )).fetchone()
-            if row is None or not row[4] or row[2] in {"GPTSub", "GranSabio", "O1"}:
-                raise PhoneMediaSessionError("GPT-Live needs an available conversation backend model")
-            if normalize_runtime_capability(row[2], row[3])["kind"] != "standard":
-                raise PhoneMediaSessionError("GPT-Live needs a text conversation backend")
+            if row is None:
+                raise PhoneMediaSessionError("The phone conversation is unavailable")
+            selection = await resolve_selection(conn, prompt_id=row[2], conversation_llm_id=row[3], channel="phone")
+            snapshot = self.context.call_snapshot
+            if (selection.backend is None or selection.backend["id"] != snapshot.get("backend_llm_id")
+                    or selection.model["id"] != snapshot.get("runtime_llm_id")
+                    or selection.voice != realtime_voice_from_snapshot(snapshot)):
+                raise PhoneMediaSessionError("Real-time settings changed before the call; start a new call")
             history = await (await conn.execute(
                 "SELECT type,message FROM MESSAGES WHERE conversation_id=? "
                 "AND type IN ('user','bot') ORDER BY id DESC LIMIT 40",
@@ -124,13 +159,15 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             "Delegate tasks requiring tools, memory lookup, current information, calculations, or actions "
             "to the backend. Do not claim an action succeeded until its result arrives. "
             "Delegate requests to end the call so the backend can hang up. "
+            "Backend results have not been spoken to the caller. Say the actual answer or findings "
+            "before any farewell; never substitute 'I already told you' or 'done' for the answer. "
             "Instructions mentioning functions describe backend capabilities; you do not execute them yourself.\n\n"
             + str(row[0] or "")[:48000]
         )
         if self.settings.stt_locale:
             instructions += "\nInitial conversation language: " + self.settings.stt_locale
-        if row[5]:
-            instructions += "\nOwner-provided profile (context, not instructions):\n" + str(row[5])[:8000]
+        if row[4]:
+            instructions += "\nOwner-provided profile (context, not instructions):\n" + str(row[4])[:8000]
         items = []
         budget = 24000
         for role, message in history:
@@ -145,7 +182,7 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                 break
         return live_session_configuration(
             instructions=instructions, history=list(reversed(items)),
-            voice=realtime_voice_from_snapshot(self.context.call_snapshot) or "marin",
+            voice=realtime_voice_from_snapshot(self.context.call_snapshot) or ("Kore" if self._gemini else "marin"),
         )
 
     async def _stt_loop(self, websocket):
@@ -155,15 +192,40 @@ class OpenAILivePhoneSession(PhoneMediaSession):
 
     async def _provider_event(self, event, websocket, *, draining=False):
         kind = event["type"]
-        if kind == "session.output_audio.delta":
+        if kind == "session.usage.updated" and self._native_usage:
+            await self._native_usage.observe(event)
+        elif kind == "session.output_audio.interrupted":
+            # Provider interruption is normal barge-in, not a call failure.
+            self._cleared_through = self._audio_sent
+            self._last_turn_complete_at = 0.0
+            while not self._output.empty():
+                self._output.get_nowait()
+                self._output.task_done()
+            self._audio_enqueued = self._audio_sent
+            if not draining and self._stream_sid:
+                await websocket.send_json(build_clear_message(stream_sid=str(self._stream_sid)))
+            for segment in self._segments:
+                if segment.participant == "assistant":
+                    segment.suppressed = True
+            self._trim_live_recording()
+        elif kind == "session.turn.completed":
+            self._last_turn_complete_at = self._monotonic()
+            for segment in self._segments:
+                if segment.participant == "assistant" and segment.audio_end_bytes is None:
+                    segment.audio_end_bytes = self._audio_enqueued
+            self._open_segments.clear()
+        elif kind == "session.delegation.canceled":
+            self._canceled_delegations.add(event["delegation_id"])
+        elif kind == "session.output_audio.delta":
             audio = base64.b64decode(event.get("delta", ""), validate=True)
             if len(audio) > 1024 * 1024:
-                raise OpenAILiveError("GPT-Live audio event is too large")
+                raise PhoneMediaSessionError("Native voice audio event is too large")
             self._audio_received += len(audio)
             # Live emits a continuous audio timeline, including silence.
             # Buffering it behind the cached greeting adds that greeting's
             # duration to every later response and can overflow the queue.
             if not draining and not self._live_suppressed and self._greeting_done.is_set():
+                self._audio_enqueued += len(audio)
                 for offset in range(0, len(audio), 160):
                     self._output.put_nowait(audio[offset:offset + 160])
         elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
@@ -171,13 +233,13 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             delta, start, end = event.get("delta"), event.get("start_ms"), event.get("end_ms")
             if (not isinstance(delta, str) or not isinstance(start, int) or not isinstance(end, int)
                     or start < 0 or end < start):
-                raise OpenAILiveError("Invalid GPT-Live transcript fragment")
+                raise PhoneMediaSessionError("Invalid native voice transcript fragment")
             self._transcript_chars += len(delta)
             if self._transcript_chars > 250000:
-                raise OpenAILiveError("GPT-Live transcript limit exceeded")
+                raise PhoneMediaSessionError("Native voice transcript limit exceeded")
             if not delta:
                 return
-            now = time.monotonic()
+            now = self._monotonic()
             segment = self._open_segments.get(participant)
             if segment is None or start > segment.fragments[-1]["end_ms"] + 1200:
                 self._next_segment += 1
@@ -203,11 +265,13 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             delegation = event.get("delegation") or {}
             delegation_id = delegation.get("id")
             if delegation.get("target") != "client" or not isinstance(delegation_id, str):
-                raise OpenAILiveError("Invalid GPT-Live client delegation")
+                raise PhoneMediaSessionError("Invalid native voice client delegation")
             if delegation_id not in self._delegation_ids:
                 if len(self._delegation_ids) >= 128:
-                    raise OpenAILiveError("GPT-Live delegation limit exceeded")
+                    raise PhoneMediaSessionError("Native voice delegation limit exceeded")
                 self._delegation_ids.add(delegation_id)
+                if delegation.get("request"):
+                    self._delegation_requests[delegation_id] = delegation["request"]
                 self._delegations.put_nowait(delegation_id)
 
     async def _turn_loop(self, websocket):
@@ -218,7 +282,7 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                 group.create_task(self._transcript_loop())
         except* Exception as failures:
             for failure in failures.exceptions:
-                logger.error("GPT-Live task failed (call_id=%s, exception_type=%s)",
+                logger.error("Native voice task failed (call_id=%s, exception_type=%s)",
                              self.context.call_id, type(failure).__name__)
             raise
 
@@ -246,6 +310,13 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                     self.recorder.record_assistant(audio, start_ms=recording_start)
                     self._recording_audio_end_ms = recording_start + (len(audio) + 7) // 8
                     self._audio_sent += len(audio)
+                    # Live has no output-audio-done event. Measure actual
+                    # playout silence instead of gaps between transcript events.
+                    if audioop.rms(audioop.ulaw2lin(audio, 2), 2) > 64:
+                        self._last_audible_at = self._monotonic()
+                        self._output_silence_bytes = 0
+                    else:
+                        self._output_silence_bytes += len(audio)
                     if self._audio_sent - last_mark >= 800 or self._output.empty():
                         await websocket.send_json(build_mark_message(stream_sid=str(self._stream_sid), name=f"live-audio-{self._audio_sent}"))
                         last_mark = self._audio_sent
@@ -276,32 +347,56 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                     self.repository.connection_factory, self.context.call_id,
                     conversation_id=self.context.conversation_id,
                 ):
-                    await self._delegate(delegation_id)
+                    reply_started = await self._delegate(delegation_id)
                 directive = self.end_controller.pending
-                if directive is not None:
-                    # The Live model paraphrases the backend's farewell. Keep
-                    # both streams alive before the explicit session close.
-                    started = time.monotonic()
-                    while time.monotonic() - started < 10:
-                        await asyncio.sleep(0.2)
-                        if self.end_controller.pending is not directive:
-                            break
-                        if time.monotonic() - started > 4 and time.monotonic() - self._last_spoken_at > 2:
-                            break
-                    if self.end_controller.pending is not directive:
-                        continue
+                if directive is not None and directive.cancelable_by_real_speech and reply_started is not None:
+                    await self._finish_delegated_call(directive, reply_started)
+            finally:
+                self._delegate_active = False
+                self._delegations.task_done()
+
+    async def _finish_delegated_call(self, directive, reply_started):
+        """Wait for the completed reply and Twilio playback confirmation.
+
+        A long answer must not be cut at a fixed deadline. The normal call
+        clock and balance controls still enforce their independent limits.
+        """
+        playout_target = None
+        while not self._stopping.is_set() and self.end_controller.pending is directive:
+            spoke = self._last_spoken_at > reply_started and self._last_audible_at > reply_started
+            quiet = (
+                spoke
+                and self._monotonic() - self._last_spoken_at >= 0.5
+                and (self._last_turn_complete_at > reply_started and self._output.empty()
+                     if self._gemini else self._output_silence_bytes >= 4000)
+            )
+            if quiet:
+                if playout_target is None:
+                    playout_target = self._audio_sent
+                if self._audio_confirmed >= playout_target:
                     await self.stt.close()
                     await asyncio.wait_for(self._output.join(), 4)
                     async with asyncio.timeout(4):
                         while self._audio_confirmed < self._audio_sent:
                             await asyncio.sleep(0.05)
-                    await self._hangup(directive.reason.value)
-            finally:
-                self._delegate_active = False
-                self._delegations.task_done()
+                    if self.end_controller.pending is directive:
+                        self.end_controller.audio_confirmed()
+                        await self._hangup(directive.reason.value)
+                    return
+            else:
+                playout_target = None
+            if not spoke and self._monotonic() - reply_started >= 30:
+                # Missing speech is not permission to hang up silently.
+                self.end_controller.pending = None
+                logger.warning("Native voice hangup canceled: reply not audible (call_id=%s)", self.context.call_id)
+                return
+            await asyncio.sleep(0.1)
 
     async def _delegate(self, delegation_id):
         from ai_runtime.messages import process_save_message
+
+        if delegation_id in self._canceled_delegations:
+            return
 
         # Context comes from timestamped live transcripts, not a fabricated
         # utterance in the delegation event (the API supplies none).
@@ -314,6 +409,8 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             parts.append(text)
             previous = role
         recent = "".join(parts)[-16000:]
+        if delegation_id in self._delegation_requests:
+            recent += "\nCurrent delegated request: " + self._delegation_requests.pop(delegation_id)
         if not any(role == "caller" for role, _ in self._recent):
             await self.stt.commentary("Ask the caller what they need before requesting backend work.", delegation_id=delegation_id)
             return
@@ -326,10 +423,13 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             prompt_id=int(self.context.call_snapshot["prompt_id"]),
             application_channel=self.context.application_channel,
             internal_turn_context=(
-                "You are the backend of an ongoing GPT-Live phone conversation. "
+                "You are the backend of an ongoing native voice phone conversation. "
                 "Use the recent transcript and existing history to handle the current request. "
                 "Run the normal permitted tools, including end_call when requested. "
-                "Return concise verified results for the voice assistant to communicate. "
+                "Return the actual verified findings in at most 100 words for the voice assistant to say. "
+                "Nothing you write or pass to end_call has been spoken yet. For 'search, tell me, then hang up', "
+                "perform the search and include its findings before the farewell, either in your response "
+                "text or in end_call.final_message. Never say you already told the caller the answer. "
                 "Your response is backend context, not speech. Transcript fragments may overlap."
             ),
         )
@@ -340,6 +440,7 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             None, self.context.conversation_id, self._current_user,
             text_plain=recent, files=[], is_whatsapp=True, prevalidated=False,
             expected_llm_id=int(self.context.call_snapshot["llm_id"]),
+            runtime_llm_id=self.context.call_snapshot.get("backend_llm_id"),
             channel_context=context,
         )
         failed = not isinstance(response, StreamingResponse)
@@ -351,6 +452,9 @@ class OpenAILivePhoneSession(PhoneMediaSession):
             except TimeoutError:
                 failed = True
         if failed or not sink.committed or not sink.content:
+            pending = self.end_controller.pending
+            if pending is not None and pending.cancelable_by_real_speech:
+                self.end_controller.pending = None
             # The canonical backend retains any unresolved charges itself.
             # Report its failure truthfully, without treating a failed web
             # search as a failure of the ongoing voice transport.
@@ -360,11 +464,13 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                 "Continue the conversation and wait for the caller's next request.",
                 delegation_id=delegation_id,
             )
-            logger.warning("GPT-Live backend request failed (call_id=%s)", self.context.call_id)
+            logger.warning("Native voice backend request failed (call_id=%s)", self.context.call_id)
             return
         if not self._stopping.is_set():
+            reply_started = self._monotonic()
             await self.stt.commentary(sink.content, delegation_id=delegation_id)
-        logger.info("GPT-Live delegation completed (call_id=%s)", self.context.call_id)
+            logger.info("Native voice delegation completed (call_id=%s, result_chars=%s)", self.context.call_id, len(sink.content))
+            return reply_started
 
     async def _transcript_loop(self):
         while not self._stopping.is_set():
@@ -373,7 +479,10 @@ class OpenAILivePhoneSession(PhoneMediaSession):
 
     async def _flush_transcripts(self, *, force=False):
         async with self._flush_lock:
-            ready = [s for s in self._segments if force or time.monotonic() - s.updated_at >= 1.5]
+            ready = [s for s in self._segments if force or (
+                time.monotonic() - s.updated_at >= 1.5
+                and (not self._gemini or s.participant == "caller" or s.suppressed
+                     or s.audio_end_bytes is not None and s.audio_end_bytes <= self._audio_confirmed))]
             for segment in ready:
                 # Freeze before the transaction yields; new fragments get a new
                 # display segment. Grouping is never used to trigger an action.
@@ -396,7 +505,7 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                         await conn.rollback()
                         return
                     if call[0] not in CALL_TERMINAL_STATUSES:
-                        raise PhoneMediaSessionError("GPT-Live transcript foreground changed")
+                        raise PhoneMediaSessionError("Native voice transcript foreground changed")
                 existing = await (await conn.execute(
                     "SELECT id FROM PHONE_LIVE_TRANSCRIPTS WHERE call_id=? AND stream_attempt=? AND segment_id=?",
                     (self.context.call_id, self.context.stream_attempt, segment.id),
@@ -408,7 +517,10 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                 # Keep withheld output as raw private fragments, never as an
                 # assistant message. No transcript timestamp is presented as
                 # an exact word/audio playback alignment.
-                if foreground_owned and (segment.participant == "caller" or (not segment.suppressed and self._audio_sent > 0)):
+                heard = (not segment.suppressed and self._audio_sent > 0 and (
+                    not self._gemini or segment.audio_end_bytes is not None
+                    and segment.audio_end_bytes <= self._audio_confirmed))
+                if foreground_owned and (segment.participant == "caller" or heard):
                     cursor = await conn.execute(
                         "INSERT INTO MESSAGES(conversation_id,user_id,message,type,llm_id) VALUES(?,?,?,?,?)",
                         (self.context.conversation_id, self.context.owner_user_id, segment.text,
@@ -469,10 +581,12 @@ class OpenAILivePhoneSession(PhoneMediaSession):
         finally:
             for event in self.stt.drain_events():
                 await self._provider_event(event, self._live_websocket, draining=True)
+            if self._native_usage:
+                await self._native_usage.close(confirmed=self.stt.final_usage_confirmed)
             await self._flush_transcripts(force=True)
             await self._link_recorded_message_audio()
             logger.info(
-                "GPT-Live session finalized (call_id=%s, audio_received=%s, audio_sent=%s, "
+                "Native voice session finalized (call_id=%s, audio_received=%s, audio_sent=%s, "
                 "audio_confirmed=%s, delegations=%s, usage_seconds=%s, final_usage=%s)",
                 self.context.call_id, self._audio_received, self._audio_sent,
                 self._audio_confirmed, len(self._delegation_ids), self.stt.usage_seconds,
@@ -513,12 +627,12 @@ class OpenAILivePhoneSession(PhoneMediaSession):
                     track_bytes=tracks,
                 )
                 await conn.commit()
-            logger.info("GPT-Live recorded message audio linked (call_id=%s, messages=%s)",
+            logger.info("Native voice recorded message audio linked (call_id=%s, messages=%s)",
                         self.context.call_id, count)
         except Exception as exc:
             # A replay indexing failure must not turn an otherwise completed
             # call into a technical-error hangup. Raw audio remains repairable.
-            logger.error("GPT-Live recorded message audio linking failed (call_id=%s, exception_type=%s)",
+            logger.error("Native voice recorded message audio linking failed (call_id=%s, exception_type=%s)",
                          self.context.call_id, type(exc).__name__)
 
     async def _interrupt_active_output(self, *, reason):

@@ -12,6 +12,7 @@ import json
 import uuid
 import subprocess
 import time
+from itertools import islice
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Literal
@@ -21,7 +22,6 @@ from marketplace.landing.sandbox import get_wizard_sandbox_status
 # Project paths. This module lives under marketplace/landing/.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 JOBS_DIR = PROJECT_ROOT / "data" / "jobs" / "landing"
-LANDING_WIZARD_PATH = PROJECT_ROOT / "marketplace" / "landing" / "wizard.py"
 
 # Ensure jobs directory exists
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -152,8 +152,8 @@ def get_job(task_id: str) -> Optional[dict]:
         if "target" not in job:
             job["target"] = "landing"
 
-        # Check for timeout if job is still running
-        if job["status"] == "running":
+        # Pending records can also be orphaned by a failed/interrupted launch.
+        if job["status"] in ("pending", "running"):
             job = _check_job_timeout(job)
 
         return job
@@ -163,7 +163,7 @@ def get_job(task_id: str) -> Optional[dict]:
 
 def _check_job_timeout(job: dict) -> dict:
     """
-    Check if a running job has timed out.
+    Check if a pending or running job has timed out.
 
     A job is considered timed out if:
     1. More than timeout_seconds have passed since updated_at
@@ -242,7 +242,7 @@ def delete_job(task_id: str) -> bool:
 
 def cleanup_old_jobs(max_age_hours: int = 24) -> int:
     """
-    Delete job files older than max_age_hours.
+    Delete at most 100 old terminal records, preserving active jobs.
 
     Args:
         max_age_hours: Maximum age in hours
@@ -254,11 +254,14 @@ def cleanup_old_jobs(max_age_hours: int = 24) -> int:
     now = time.time()
     max_age_seconds = max_age_hours * 3600
 
-    for job_file in JOBS_DIR.glob("*.json"):
+    for job_file in islice(JOBS_DIR.glob("*.json"), 100):
         try:
             if now - job_file.stat().st_mtime > max_age_seconds:
-                job_file.unlink()
-                deleted += 1
+                with job_file.open(encoding="utf-8") as handle:
+                    job = json.load(handle)
+                if job.get("status") in ("completed", "failed", "timeout"):
+                    job_file.unlink()
+                    deleted += 1
         except Exception:
             pass
 
@@ -376,101 +379,6 @@ def get_active_welcome_job_for_pack(pack_id: int) -> Optional[dict]:
     return None
 
 
-# Worker script content - executed as subprocess
-WORKER_SCRIPT = '''
-import sys
-import json
-import os
-
-# Add project root to path
-sys.path.insert(0, r"{project_root}")
-
-# Target determines which wizard functions to use
-TARGET = "{target}"
-
-if TARGET == "welcome":
-    from marketplace.landing.wizard import generate_welcome as generate_fn, modify_welcome as modify_fn, list_prompt_files
-else:
-    from marketplace.landing.wizard import generate_landing as generate_fn, modify_landing as modify_fn, list_prompt_files
-
-from marketplace.landing.jobs import update_job
-
-def run_job(task_id, job_type, prompt_dir, params):
-    """Execute the wizard job and update status."""
-    pid = os.getpid()
-
-    # Mark as running with PID
-    update_job(task_id, status="running", pid=pid)
-
-    try:
-        if job_type == "generate":
-            kwargs = {
-                "prompt_dir": prompt_dir,
-                "user_description": params.get("description", ""),
-                "style": params.get("style", "modern"),
-                "primary_color": params.get("primary_color", "#3B82F6"),
-                "secondary_color": params.get("secondary_color", "#10B981"),
-                "language": params.get("language", "es"),
-                "timeout": params.get("timeout", 300),
-                "product_name": params.get("product_name", ""),
-                "ai_system_prompt": params.get("ai_system_prompt", ""),
-                "product_description": params.get("product_description", ""),
-            }
-            if TARGET == "welcome":
-                kwargs["avatar_path"] = params.get("avatar_path", "")
-                kwargs["chat_url"] = params.get("chat_url", "/chat")
-            else:
-                kwargs["landing_url"] = params.get("landing_url", "")
-            result = generate_fn(**kwargs)
-        else:  # modify
-            kwargs = {
-                "prompt_dir": prompt_dir,
-                "instructions": params.get("instructions", ""),
-                "timeout": params.get("timeout", 300),
-                "product_name": params.get("product_name", ""),
-                "ai_system_prompt": params.get("ai_system_prompt", ""),
-                "product_description": params.get("product_description", ""),
-            }
-            if TARGET == "welcome":
-                kwargs["avatar_path"] = params.get("avatar_path", "")
-                kwargs["chat_url"] = params.get("chat_url", "/chat")
-            else:
-                kwargs["landing_url"] = params.get("landing_url", "")
-            result = modify_fn(**kwargs)
-
-        if result.get("success"):
-            update_job(
-                task_id,
-                status="completed",
-                files_created=result.get("files_created", []),
-                completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-            )
-        else:
-            update_job(
-                task_id,
-                status="failed",
-                error=result.get("error", "Unknown error"),
-                completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-            )
-
-    except Exception as e:
-        update_job(
-            task_id,
-            status="failed",
-            error=str(e),
-            completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-        )
-
-if __name__ == "__main__":
-    task_id = sys.argv[1]
-    job_type = sys.argv[2]
-    prompt_dir = sys.argv[3]
-    params = json.loads(sys.argv[4])
-
-    run_job(task_id, job_type, prompt_dir, params)
-'''
-
-
 def start_job(
     prompt_id: int,
     job_type: Literal["generate", "modify"],
@@ -525,71 +433,50 @@ def start_job(
             "existing_task_id": existing["task_id"]
         }
 
-    # Create job record
     task_id = generate_task_id()
-    job = create_job(
-        task_id=task_id,
-        prompt_id=prompt_id,
-        job_type=job_type,
-        timeout_seconds=timeout_seconds,
-        request_data=params,
-        pack_id=pack_id,
-        target=target
-    )
-
-    # Write worker script to temp file
-    worker_script = WORKER_SCRIPT.format(project_root=str(PROJECT_ROOT), target=target)
-    worker_path = JOBS_DIR / f"worker_{task_id}.py"
-
-    with open(worker_path, 'w', encoding='utf-8') as f:
-        f.write(worker_script)
-
-    # Prepare params JSON (escape for command line)
-    params_json = json.dumps(params)
-
     try:
-        # Launch worker process
+        cleanup_old_jobs()
+        create_job(
+            task_id=task_id,
+            prompt_id=prompt_id,
+            job_type=job_type,
+            timeout_seconds=timeout_seconds,
+            request_data=params,
+            pack_id=pack_id,
+            target=target,
+        )
+
+        command = [
+            sys.executable, "-m", "marketplace.landing.worker",
+            str(get_job_path(task_id).resolve()), str(prompt_dir),
+        ]
+        process_options = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "cwd": str(PROJECT_ROOT),
+        }
         if sys.platform == "win32":
-            # Windows: use CREATE_NO_WINDOW to hide console
-            CREATE_NO_WINDOW = 0x08000000
-            process = subprocess.Popen(
-                [sys.executable, str(worker_path), task_id, job_type, prompt_dir, params_json],
-                creationflags=CREATE_NO_WINDOW,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=str(PROJECT_ROOT)
-            )
+            process_options["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         else:
-            # Unix: standard background process
-            process = subprocess.Popen(
-                [sys.executable, str(worker_path), task_id, job_type, prompt_dir, params_json],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                cwd=str(PROJECT_ROOT)
-            )
+            process_options["start_new_session"] = True
+        subprocess.Popen(command, **process_options)
 
-        # Update job with PID
-        update_job(task_id, pid=process.pid)
-
+        # The worker owns PID/status writes. A parent write after Popen can
+        # overwrite an already completed job with an older pending snapshot.
         result = {
             "success": True,
             "task_id": task_id,
             "status": "pending",
-            "prompt_id": prompt_id
+            "prompt_id": prompt_id,
         }
         if pack_id:
             result["pack_id"] = pack_id
         return result
-
-    except Exception as e:
-        # Clean up on failure
-        update_job(task_id, status="failed", error=str(e))
-        if worker_path.exists():
-            worker_path.unlink()
-
-        return {
-            "success": False,
-            "error": str(e),
-            "task_id": task_id
-        }
+    except Exception as exc:
+        update_job(
+            task_id,
+            status="failed",
+            error=str(exc),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return {"success": False, "error": str(exc), "task_id": task_id}

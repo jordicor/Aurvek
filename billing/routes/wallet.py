@@ -44,6 +44,7 @@ async def payment_success_page(
     request: Request,
     session_id: str = None,
     current_user: User = Depends(get_current_user),
+    check: int = 0,
 ):
     if not current_user:
         return RedirectResponse(url="/login", status_code=302)
@@ -57,6 +58,10 @@ async def payment_success_page(
 
     context = await get_template_context(request, current_user)
     context.update(model)
+    context["refresh_url"] = (
+        str(request.url.include_query_params(check=check + 1))
+        if model["payment_state"] in {"pending", "crediting"} and 0 <= check < 4 else None
+    )
     return templates.TemplateResponse("payment_success.html", context)
 
 

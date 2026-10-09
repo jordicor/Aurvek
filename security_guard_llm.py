@@ -17,7 +17,9 @@ import logging
 import os
 import aiohttp
 from typing import Optional
-from ai_runtime.providers.claude_capabilities import claude_omits_temperature
+from ai_runtime.providers.claude_capabilities import claude_supports_temperature
+from ai_runtime.providers.openai_capabilities import openai_supports_temperature
+from ai_runtime.providers.gemini_capabilities import gemini_supports_temperature
 from database import get_db_connection
 
 logger = logging.getLogger(__name__)
@@ -160,8 +162,8 @@ async def _call_claude_security_check(model: str, user_input: str) -> str:
             }
         ],
     }
-    if not claude_omits_temperature(model):
-        data["temperature"] = 0.0  # Deterministic for security checks on legacy models
+    if claude_supports_temperature(model):
+        data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as response:
@@ -189,7 +191,7 @@ async def _call_openai_security_check(model: str, user_input: str) -> str:
 
     data = {
         "model": model,
-        "max_tokens": 500,
+        "max_completion_tokens": 500,
         "messages": [
             {
                 "role": "system",
@@ -200,8 +202,9 @@ async def _call_openai_security_check(model: str, user_input: str) -> str:
                 "content": SECURITY_GUARD_USER_PROMPT.format(user_input=user_input)
             }
         ],
-        "temperature": 0.0
     }
+    if openai_supports_temperature(model):
+        data["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as response:
@@ -235,10 +238,11 @@ async def _call_gemini_security_check(model: str, user_input: str) -> str:
             }
         ],
         "generationConfig": {
-            "temperature": 0.0,
             "maxOutputTokens": 500
         }
     }
+    if gemini_supports_temperature(model):
+        data["generationConfig"]["temperature"] = 0.0
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as response:

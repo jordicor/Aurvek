@@ -13,6 +13,7 @@ import aiosqlite
 import pytest
 from fastapi import HTTPException, Request, UploadFile
 from jinja2 import Environment, FileSystemLoader
+from markupsafe import escape
 from i18n import LANGUAGES, Translator
 
 
@@ -47,8 +48,10 @@ def test_prompt_editor_real_render_and_runtime(name, language):
     assert tr.render('prompt_editor.runtime.' + ('create_new_prompt' if name == 'create' else 'edit_prompt')) in html
     assert 'value="restricted"' in html and 'value="forced"' in html
     assert 'name="markup_per_mtokens"' in html
+    assert tr.render('prompt_editor.realtime.action_model') in html
+    assert 'data-bs-title="' + str(escape(tr.render('prompt_editor.realtime.action_model_help'))) + '"' in html
+    assert 'aria-label="' + str(escape(tr.render('prompt_editor.realtime.action_model_why'))) + '"' in html
     if name == 'create':
-        from markupsafe import escape
         assert 'title="' + str(escape(tr.render('prompt_editor.attribute.monetization_help'))) + '"' in html
     if name == 'edit':
         assert 'Untranslated &lt;instructions&gt;' in html

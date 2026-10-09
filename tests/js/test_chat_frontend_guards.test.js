@@ -610,6 +610,163 @@ test('model selector keeps provider identity when model names collide', () => {
     assert.equal(items[1].classList.contains('current'), false);
 });
 
+test('model changes replace provider warnings and ignore late health for the previous model', async () => {
+    const source = fs.readFileSync(chatPath, 'utf8');
+    const banner = { style: {} };
+    const text = { textContent: '' };
+    const health = {
+        596: { provider: 'anthropic', provider_name: 'Claude', status: 'degraded', source: 'official_status' },
+        820: { provider: 'google', provider_name: 'Gemini', status: 'healthy' },
+    };
+    const models = { 596: 'claude-opus-4-8', 820: 'gemini-3.8-flash' };
+    const context = {
+        window: {},
+        currentConversationId: 91,
+        conversationViewGeneration: 2,
+        currentProviderHealth: null,
+        conversationIdsMatch: (left, right) => String(left) === String(right),
+        isCurrentConversationView: (id, generation) => id === 91 && generation === 2,
+        getCurrentConversationLlmIdForUi: () => context.window.modelSelector.currentLlmId,
+        setCurrentModelAvailability() {},
+        document: {
+            getElementById: id => ({
+                'provider-health-banner': banner,
+                'provider-health-banner-text': text,
+            })[id] || null,
+            querySelectorAll: () => [],
+        },
+        fetch: async (_url, options) => {
+            const id = JSON.parse(options.body).llm_id;
+            return { ok: true, json: async () => ({
+                success: true, updated: true, llm_id: id, model: models[id], provider_health: health[id],
+            }) };
+        },
+    };
+    createChatContext(context);
+    vm.runInContext(extract(source, 'function providerHealthShouldSurface(', 'function escapeProviderHealthHtml('), context);
+    vm.runInContext(`${extract(source, 'class ModelSelector {', 'class ExtensionSelector {')}; globalThis.ModelSelector = ModelSelector;`, context);
+    const selector = Object.create(context.ModelSelector.prototype);
+    Object.assign(selector, {
+        currentLlmId: 596, currentModel: models[596], requestGeneration: 0,
+        chatModel: { textContent: '' },
+        updateModelDisplay() {}, closeDropdown() {}, showSuccess() {},
+    });
+    context.window.modelSelector = selector;
+    context.setCurrentProviderHealth(health[596], 596);
+    assert.equal(banner.style.display, 'flex');
+    assert.match(text.textContent, /Claude/);
+
+    assert.equal(await selector.selectModel(820, models[820]), true);
+    assert.equal(banner.style.display, 'none');
+    assert.equal(text.textContent, '');
+    context.setCurrentProviderHealth(health[596], 596);
+    assert.equal(banner.style.display, 'none');
+
+    assert.equal(await selector.selectModel(596, models[596]), true);
+    assert.equal(banner.style.display, 'flex');
+    assert.match(text.textContent, /Claude/);
+    context.setCurrentProviderHealth(health[820], 820);
+    assert.equal(banner.style.display, 'flex');
+    assert.equal(selector.applyCommittedModel(820, models[820], 92, 2, health[820]), false);
+    assert.match(text.textContent, /Claude/);
+});
+
+test('conversation navigation replaces provider health before the model header updates', async () => {
+    const source = fs.readFileSync(chatPath, 'utf8');
+    const banner = { style: {} };
+    const text = { textContent: '' };
+    const claude = { provider_name: 'Claude', status: 'degraded', source: 'official_status' };
+    const phone = { llm_id: 817, provider_health: null };
+    const whatsapp = { llm_id: 596, provider_health: claude };
+    const pending = [];
+    const context = {
+        window: {},
+        currentConversationId: 91,
+        conversationViewGeneration: 0,
+        currentProviderHealth: null,
+        activeMessageLoad: null,
+        activeBookmarksLoad: null,
+        currentAbortController: null,
+        conversationDetailsController: null,
+        isLoading: false,
+        allMessagesLoaded: false,
+        oldestLoadedMessageId: null,
+        limitMessage: 25,
+        AbortController,
+        disableInputControls() {}, enableInputControls() {},
+        refreshModelAvailabilityBanner() {}, setCurrentModelAvailability() {},
+        setIncognitoUiState() {}, isConversationIncognitoData: () => false,
+        showPromptInfo() {},
+        document: {
+            createElement: tag => new FakeElement(tag),
+            getElementById: id => ({
+                'provider-health-banner': banner,
+                'provider-health-banner-text': text,
+                'chat-window': { scrollTop: 0, scrollHeight: 0 },
+                'chat-messages-container': new FakeElement('div'),
+            })[id] || null,
+            querySelector: () => null,
+            querySelectorAll: () => [],
+        },
+        secureFetch: () => new Promise(resolve => pending.push(info => resolve({
+            ok: true,
+            json: async () => ({ messages: [], has_more: true, conversation_info: info }),
+        }))),
+        console: { error: (...args) => assert.fail(args.join(' ')) },
+    };
+    createChatContext(context);
+    vm.runInContext(extract(source, 'function conversationIdsMatch(', '// Auto-scroll state management'), context);
+    vm.runInContext(extract(source, 'function providerHealthShouldSurface(', 'function escapeProviderHealthHtml('), context);
+    vm.runInContext(extract(source, 'function getCurrentConversationLlmIdForUi()', 'function currentConversationUsesChatGptSubscription()'), context);
+    vm.runInContext(extract(source, 'async function loadMessages(', 'function refreshActiveConversation()'), context);
+    vm.runInContext(`${extract(source, 'class ModelSelector {', 'class ExtensionSelector {')}; globalThis.ModelSelector = ModelSelector;`, context);
+    const selector = Object.create(context.ModelSelector.prototype);
+    Object.assign(selector, {
+        currentLlmId: 596, requestGeneration: 0,
+        chatModel: { textContent: '' }, updateModelDisplay() {},
+    });
+    context.window.modelSelector = selector;
+    context.setCurrentProviderHealth(claude, 596);
+
+    function navigate(id) {
+        const generation = context.beginConversationViewTransition();
+        context.currentConversationId = id;
+        return context.loadMessages(id, false, null, 0, generation);
+    }
+
+    const phoneLoad = navigate(92);
+    pending.shift()(phone);
+    assert.ok(await phoneLoad);
+    assert.equal(banner.style.display, 'none');
+    assert.equal(text.textContent, '');
+    selector.currentLlmId = phone.llm_id;
+
+    const whatsappLoad = navigate(91);
+    pending.shift()(whatsapp);
+    assert.ok(await whatsappLoad);
+    assert.equal(banner.style.display, 'flex');
+    assert.match(text.textContent, /Claude/);
+    selector.currentLlmId = whatsapp.llm_id;
+
+    // A slow history response must not undo a model change in the same chat.
+    const historyLoad = context.loadMessages(91);
+    selector.applyCommittedModel(phone.llm_id, 'gpt-5.6-luna');
+    pending.shift()(whatsapp);
+    assert.ok(await historyLoad);
+    assert.equal(banner.style.display, 'none');
+
+    context.setCurrentProviderHealth(claude);
+    const abandonedLoad = navigate(92);
+    assert.equal(banner.style.display, 'none');
+    const currentLoad = navigate(91);
+    pending.shift()(whatsapp);
+    assert.equal(await abandonedLoad, null);
+    assert.equal(banner.style.display, 'none');
+    pending.shift()(phone);
+    assert.ok(await currentLoad);
+    assert.equal(banner.style.display, 'none');
+});
+
 test('GPTSub is an exact owned credential for API-key and balance UI', () => {
     const chatSource = fs.readFileSync(chatPath, 'utf8');
     const mainSource = fs.readFileSync(mainPath, 'utf8');
@@ -1122,6 +1279,7 @@ test('disabled model guidance respects assistant restrictions and clears after a
         conversationViewGeneration: 2,
         currentModelAvailability: null,
         isCurrentConversationView: (id, generation) => id === 91 && generation === 2,
+        setCurrentProviderHealth() {},
         document: {
             querySelector: selector => selector === '#llmDropdown option[value="41"]' ? newChatOption : null,
             getElementById: id => ({
@@ -1645,6 +1803,45 @@ test('persistence SSE errors preserve streamed response content', () => {
     assert.match(sendMessageSource, /if \(streamSucceeded\) \{/);
 });
 
+test('provider error after streamed content keeps the visible answer', () => {
+    const source = fs.readFileSync(chatPath, 'utf8');
+    const errorBranch = extract(
+        source,
+        '} else if (parsedData.error && !parsedData.multi_ai_error)',
+        '} else if (parsedData.video_content && botMessageParagraph)'
+    ).replace('} else if', 'if') + '}';
+    const paragraph = new FakeElement('div');
+    const answer = new FakeElement('span');
+    answer.textContent = 'Respuesta parcial';
+    paragraph.appendChild(answer);
+    const context = {
+        parsedData: { error: 'OpenRouter unexpected error. Please try again.' },
+        botMessageParagraph: paragraph,
+        botMessageText: 'Respuesta parcial',
+        streamContentReceived: true,
+        streamErrorOccurred: false,
+        multiAiCarousel: null,
+        pdfTooLargeError: null,
+        window: { AurvekEmbed: null, AurvekI18n: { t: key => key } },
+        document: { createElement: tag => {
+            const element = new FakeElement(tag);
+            element.setAttribute = () => {};
+            return element;
+        } },
+        console: { error() {} },
+        showProviderAwareError() {},
+        setCurrentProviderHealth() {},
+    };
+
+    vm.runInNewContext(`for (const item of [1]) { ${errorBranch} }`, context);
+
+    assert.equal(context.streamErrorOccurred, true);
+    assert.equal(paragraph.innerHTMLWrites.length, 0);
+    assert.equal(paragraph.children[0], answer);
+    assert.equal(paragraph.children[1].textContent, context.parsedData.error);
+    assert.match(paragraph.children[1].className, /message-stream-warning/);
+});
+
 test('chat template drops jQuery and defers ordered head dependencies', () => {
     const source = fs.readFileSync(chatTemplatePath, 'utf8');
 
@@ -1713,4 +1910,26 @@ test('Multi-AI excludes GPTSub and disabled models from the picker and visibilit
         assert.match(modelSource, /m\.enabled !== false && m\.enabled !== 0/);
     }
     assert.match(visibilitySource, /multiAiCandidates\.filter\(m => allowedLlms\.includes\(m\.id\)\)/);
+});
+
+
+test('embedded text uses sponsor availability with a zero personal balance', () => {
+    const source = extract(fs.readFileSync(mainPath, 'utf8'),
+        '    const embedConfig = window.AurvekEmbed?.config;',
+        '    function checkBalanceAndHideInput()');
+    for (const available of [true, false]) {
+        const context = createChatContext({
+            window: {AurvekEmbed: {config: {
+                conversation_id: '12', application: {funding: {sponsored: true, available}}
+            }}},
+            currentConversationId: 12, userBalance: 0,
+            messageInputContainer: {style: {}},
+            insufficientBalanceMessage: {style: {}, innerHTML: ''}
+        });
+        context.window.AurvekI18n.bindText = () => {};
+        vm.runInContext(source, context);
+        context.window.updateConversationBalanceAvailability();
+        assert.equal(context.messageInputContainer.style.display, available ? 'flex' : 'none');
+        assert.equal(context.insufficientBalanceMessage.style.display, available ? 'none' : 'block');
+    }
 });

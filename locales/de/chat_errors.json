@@ -70,6 +70,7 @@
   "pdf_paths_required": "Keine PDF-Pfade angegeben",
   "mp3_paths_required": "Keine MP3-Pfade angegeben",
   "media_delete_result": "Erfolgreich gelöscht: {deleted}, fehlgeschlagen: {failed}",
+  "model_voice_only": "Dieses Modell unterstützt nur Echtzeit-Sprachgespräche. Wähle ein Chatmodell.",
   "model_unavailable": "Dieses KI-Modell ist für neue Antworten nicht mehr verfügbar.",
   "expected_llm_id_required": "Laden Sie die Unterhaltung neu, damit Aurvek das ausgewählte KI-Modell bestätigen kann.",
   "conversation_model_changed": "Das KI-Modell wurde in einer anderen Sitzung geändert. Prüfen Sie es und senden Sie erneut.",

@@ -97,7 +97,7 @@ def _bridge_from_context() -> RealtimeBridgeHandle | RealtimeTurnBridge:
     bound = current_channel_turn()
     if bound is None or bound.context.channel != "phone":
         raise RuntimeError("OpenAI Realtime requires an active phone channel turn")
-    bridge = bound.context.provenance.get("openai_realtime_bridge")
+    bridge = bound.context.provenance.get("native_audio_bridge")
     if not getattr(bridge, "_aurvek_internal_realtime_bridge", False):
         raise RuntimeError("Phone channel has no trusted OpenAI Realtime bridge")
     return bridge

@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 
 from database import get_db_connection
 from integrations.applications.models import ApplicationContext
-from integrations.applications.billing_schema import initialize_billing_schema
 from integrations.embed.models import EmbedError
 
 
@@ -151,6 +150,11 @@ async def admit_application_billing_in_transaction(
     grant = await _grant(connection, context)
     if not grant or not grant['active']:
         raise EmbedError('application_funding_unavailable', 403)
+    saas_bound = False
+    from importlib.util import find_spec
+    if find_spec('application_saas') is not None:
+        from application_saas.chat import admit_chat_funding
+        saas_bound = await admit_chat_funding(connection, context, grant)
     payer = grant['payer_user_id']
     if grant['mode'] == 'native':
         member = await _one(connection, 'SELECT COALESCE(billing_account_id,user_id) AS payer FROM USER_DETAILS WHERE user_id=?', (context.user_id,))
@@ -158,10 +162,12 @@ async def admit_application_billing_in_transaction(
             raise EmbedError('application_funding_unavailable', 403)
         payer = member['payer']
     context = replace(context, payer_user_id=int(payer))
+    from .external_execution import profiles
+    external = (context.app_id in profiles() or saas_bound) and grant["mode"] == "sponsored"
     operation = ApplicationBillingOperation(
         operation_id=secrets.token_urlsafe(24), scope=context,
         funding_grant_id=grant['grant_id'], funding_version=grant['version'],
-        payer_user_id=int(payer), mode=grant['mode'],
+        payer_user_id=int(payer), mode='external' if external else grant['mode'],
         budget_month=datetime.now(timezone.utc).strftime('%Y-%m'),
         monthly_limit=grant['monthly_limit'])
     await connection.execute("""INSERT INTO APPLICATION_BILLING_OPERATIONS
@@ -256,7 +262,7 @@ async def _revalidate_funding(connection, operation):
         payer = member['payer'] if member else None
     if (grant['grant_id'] != operation.funding_grant_id
             or int(grant['version']) != operation.funding_version
-            or grant['mode'] != operation.mode
+            or grant['mode'] != ('sponsored' if operation.mode == 'external' else operation.mode)
             or payer != operation.payer_user_id
             or grant['monthly_limit'] != operation.monthly_limit):
         raise EmbedError('application_funding_changed', 403)
@@ -307,6 +313,11 @@ async def application_funding_status(connection, context):
         return {'sponsored': sponsored, 'available': False}
     if not sponsored:
         return None
+    from .external_execution import profiles
+    if context.app_id in profiles():
+        # This describes the active grant. The external authority checks its
+        # actual wallet before any preflight or provider work.
+        return {'sponsored': True, 'available': True}
     payer = await _one(connection, 'SELECT balance FROM USER_DETAILS WHERE user_id=?',
                        (grant['payer_user_id'],))
     remaining = await _remaining_grant_budget(connection, grant['grant_id'],
