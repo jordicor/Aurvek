@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import orjson
@@ -8,12 +9,15 @@ from auth import get_user_from_phone_number, get_user_by_id
 from billing.usage_reservations import serialize_user_billing_response
 from clients import async_twilio, twilio_validator
 from common import (
+    MAX_PDF_SIZE_MB,
     PRIMARY_APP_DOMAIN,
     validate_twilio_media_url,
 )
 from database import get_db_connection
 from file_storage import create_pending_audio_attachment, discard_pending_attachments
 from chat.services.localization import chat_translator
+from chat.services.attachment_uploads import attachment_error_text
+from chat.services.office_documents import OFFICE_DOCUMENT_TYPES, office_document_to_text
 from integrations.conversations import (
     escape_markdown,
     can_use_platform,
@@ -694,7 +698,7 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
                 m_url = media_item["url"]
                 m_type = media_item["type"]
 
-                normalized_media_type = str(m_type or "").strip().lower()
+                normalized_media_type = str(m_type or "").split(";", 1)[0].strip().lower()
                 if "audio" in normalized_media_type or normalized_media_type.startswith("application/ogg"):
                     try:
                         await _discard_voice_note_attachment(
@@ -720,28 +724,49 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
                             to=from_number
                         )
                         return {"status": "error", "message": "Error transcribing audio"}
-                elif "image" in m_type:
+                elif normalized_media_type.startswith("image/"):
                     try:
                         await check_messaging(application_state, "attachments")
                         img_data = await download_external_media(m_url, max_bytes=5 * 1024 * 1024, total_timeout=60)
                         files_list.append({
                             'data': img_data,
-                            'content_type': m_type,
+                            'content_type': normalized_media_type,
                             'filename': f"image_{len(files_list)}.jpg"
                         })
                     except Exception as e:
                         logger.error(f"Error downloading image: {e}")
-                elif "pdf" in m_type or "document" in m_type:
-                    await _discard_voice_note_attachment(
-                        voice_note_metadata,
-                        "whatsapp_unsupported_document",
-                    )
-                    await twilio_client.send_message(
-                        body=tr.t("channel_notices.documents_unsupported"),
-                        from_=to_number,
-                        to=from_number
-                    )
-                    return {"status": "success", "message": "Unsupported media type"}
+                elif normalized_media_type == "application/pdf" or normalized_media_type in OFFICE_DOCUMENT_TYPES:
+                    if not current_user.can_send_files:
+                        await twilio_client.send_message(
+                            body=tr.t("chat_errors.file_uploads_disabled"),
+                            from_=to_number, to=from_number,
+                        )
+                        await _discard_voice_note_attachment(voice_note_metadata, "whatsapp_files_disabled")
+                        return {"status": "success", "message": "File uploads disabled"}
+                    extension = OFFICE_DOCUMENT_TYPES.get(normalized_media_type, "pdf")
+                    filename = f"document_{len(files_list) + 1}.{extension}"
+                    max_document_mb = min(16, MAX_PDF_SIZE_MB)
+                    try:
+                        document_data = await download_external_media(
+                            m_url, max_bytes=max_document_mb * 1024 * 1024, total_timeout=60,
+                        )
+                        document_file = {
+                            "data": document_data, "content_type": normalized_media_type,
+                            "filename": filename,
+                        }
+                        if normalized_media_type in OFFICE_DOCUMENT_TYPES:
+                            document_file = await asyncio.to_thread(
+                                office_document_to_text, document_data, normalized_media_type, filename,
+                            )
+                        files_list.append(document_file)
+                    except (HTTPException, ValueError) as exc:
+                        if isinstance(exc, HTTPException) and exc.status_code == 413:
+                            notice = tr.t("chat_errors.file_size_limit", filename=filename, size=max_document_mb)
+                        else:
+                            notice = attachment_error_text(current_user, exc)
+                        await _discard_voice_note_attachment(voice_note_metadata, "whatsapp_document_failed")
+                        await twilio_client.send_message(body=notice, from_=to_number, to=from_number)
+                        return {"status": "success", "message": "Document could not be processed"}
                 else:
                     logger.warning(f"Unsupported WhatsApp media type: {m_type}")
                     await _discard_voice_note_attachment(
@@ -768,7 +793,11 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
         if voice_note_metadata is not None:
             content_kind = audio_content_kind or "audio"
         elif files_list:
-            content_kind = "mixed" if message_body else "image"
+            attachment_kinds = {
+                "image" if item["content_type"].startswith("image/") else "document"
+                for item in files_list
+            }
+            content_kind = "mixed" if message_body or len(attachment_kinds) > 1 else next(iter(attachment_kinds))
         else:
             content_kind = "text"
 
@@ -788,7 +817,10 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
             if application_state.operation is not None:
                 message_provenance["application_operation_id"] = application_state.operation.operation_id
         # Log incoming WhatsApp message
-        msg_type = "audio" if transcribed_text else ("image" if file_dict else "text")
+        msg_type = "audio" if transcribed_text else (
+            "document" if any(not item["content_type"].startswith("image/") for item in files_list)
+            else "image" if files_list else "text"
+        )
         async with get_db_connection() as log_conn:
             await log_conn.execute(
                 "INSERT INTO WHATSAPP_LOG (user_id, phone_number, direction, message_type, response_mode) VALUES (?, ?, 'in', ?, ?)",
@@ -910,7 +942,7 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
 
                 await send_whatsapp_text(chunk if isinstance(chunk, str) else orjson.dumps(chunk).decode())
 
-        # Prepare files list with all downloaded images
+        # Reuse the web chat runtime for validation, storage, quota and provider input.
         files = files_list if files_list else None
 
         foreground_turn = await capture_non_phone_channel_turn(
@@ -1010,7 +1042,6 @@ async def _process_whatsapp_message(request, data, *, application_state=None, tw
                     time_limit=28_800_000,
                 )
             else:
-                import asyncio
                 asyncio.create_task(
                     process_gransabio_external(
                         conversation_id=conversation_id,

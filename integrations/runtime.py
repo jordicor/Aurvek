@@ -20,7 +20,7 @@ async def ensure_integration_schema() -> None:
                 user_id INTEGER,
                 phone_number TEXT,
                 direction TEXT CHECK(direction IN ('in', 'out')),
-                message_type TEXT CHECK(message_type IN ('text', 'audio', 'image', 'error', 'system')),
+                message_type TEXT CHECK(message_type IN ('text', 'audio', 'image', 'document', 'error', 'system')),
                 response_mode TEXT CHECK(response_mode IN ('text', 'voice')),
                 FOREIGN KEY (user_id) REFERENCES USERS(id)
             )
@@ -69,7 +69,7 @@ async def ensure_integration_schema() -> None:
                 direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')),
                 external_message_id TEXT,
                 content_kind TEXT NOT NULL CHECK(content_kind IN (
-                    'text', 'voice_note', 'audio', 'image', 'mixed', 'voice_reply'
+                    'text', 'voice_note', 'audio', 'image', 'document', 'mixed', 'voice_reply'
                 )),
                 response_mode TEXT CHECK(response_mode IN ('text', 'voice')),
                 delivery_state TEXT NOT NULL DEFAULT 'pending'

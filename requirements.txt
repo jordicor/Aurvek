@@ -135,6 +135,7 @@ nltk==3.8.1
 num2words==0.5.13
 numpy==1.26.2
 oauthlib==3.2.2
+office-oxide==0.1.14
 openai>=2.26.0
 orjson==3.11.6
 packaging>=24.0

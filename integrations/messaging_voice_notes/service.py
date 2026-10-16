@@ -35,6 +35,7 @@ SUPPORTED_CONTENT_KINDS = {
     "voice_note",
     "audio",
     "image",
+    "document",
     "mixed",
     "voice_reply",
 }
